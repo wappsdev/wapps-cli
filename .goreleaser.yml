@@ -29,9 +29,16 @@ brews:
     repository:
       owner: wappsdev
       name: homebrew-tap
+      branch: main
+      # Explicit token (auto-provided GITHUB_TOKEN only has wapps-cli repo scope;
+      # HOMEBREW_TAP_PAT has cross-repo `repo` scope for wappsdev/homebrew-tap push).
+      token: "{{ .Env.HOMEBREW_TAP_PAT }}"
     homepage: https://github.com/wappsdev/wapps-cli
     description: "wapps umbrella CLI for infra-tofu monorepo"
     license: MIT
+    commit_author:
+      name: wapps-release-bot
+      email: bot@wapps.co
     install: |
       bin.install "wapps"
     test: |

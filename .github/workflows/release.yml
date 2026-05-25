@@ -22,4 +22,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_PAT }}
+          # Used by .goreleaser.yml `brews[].repository.token` template substitution
+          # (cross-repo push to wappsdev/homebrew-tap; auto GITHUB_TOKEN scope insufficient).
+          HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}
