@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/wappsdev/wapps-cli/cmd/secrets"
 )
 
 var (
@@ -40,4 +41,5 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&noSync, "no-sync", false, "Skip git auto-sync preflight")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "Config file (default: ./.wapps.yaml)")
+	rootCmd.AddCommand(secrets.SecretsCmd)
 }
