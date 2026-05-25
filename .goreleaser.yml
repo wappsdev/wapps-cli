@@ -26,6 +26,9 @@ checksum:
 
 brews:
   - name: wapps
+    # Place wapps.rb under Formula/ per Homebrew tap convention
+    # (default is repo root; mixing with .gitkeep / README in root hides the formula from `brew tap`).
+    directory: Formula
     repository:
       owner: wappsdev
       name: homebrew-tap
