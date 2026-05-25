@@ -1,0 +1,89 @@
+package coolify
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestCreateDockerComposeApp_POST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/applications/dockercompose" {
+			t.Errorf("Expected /applications/dockercompose, got %s", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("Expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("User-Agent") != "curl/8" {
+			t.Errorf("Expected User-Agent: curl/8, got %s", r.Header.Get("User-Agent"))
+		}
+		if r.Header.Get("Authorization") != "Bearer fake-token" {
+			t.Errorf("Expected Bearer fake-token, got %s", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"uuid": "abc-uuid-123"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	uuid, err := c.CreateDockerComposeApp(CreateAppRequest{
+		ProjectUUID: "proj-1",
+		ServerUUID:  "srv-1",
+		Name:        "test-app",
+		ComposeYAML: "services:\n  app:\n    image: nginx",
+	})
+	if err != nil {
+		t.Fatalf("CreateDockerComposeApp failed: %v", err)
+	}
+	if uuid != "abc-uuid-123" {
+		t.Errorf("Want abc-uuid-123, got %q", uuid)
+	}
+}
+
+func TestSetCustomLabels_Base64PATCH(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PATCH" {
+			t.Errorf("Expected PATCH, got %s", r.Method)
+		}
+		if r.URL.Path != "/applications/app-uuid-xyz" {
+			t.Errorf("Expected /applications/app-uuid-xyz, got %s", r.URL.Path)
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if labels, ok := body["custom_labels"].(string); !ok || labels == "" {
+			t.Errorf("Expected non-empty custom_labels (base64), got %v", body["custom_labels"])
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	err := c.SetCustomLabels("app-uuid-xyz", []string{
+		"traefik.enable=true",
+		"traefik.http.routers.x.rule=Host(`example.com`)",
+	})
+	if err != nil {
+		t.Fatalf("SetCustomLabels failed: %v", err)
+	}
+}
+
+func TestStartApp_POST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("Expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/applications/app-1/start" {
+			t.Errorf("Expected /applications/app-1/start, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"started":true}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	if err := c.StartApp("app-1"); err != nil {
+		t.Fatalf("StartApp failed: %v", err)
+	}
+}
