@@ -57,7 +57,13 @@ var importAppCmd = &cobra.Command{
 
 		count := 0
 		for _, a := range apps {
-			srv, _ := a["server_uuid"].(string)
+			// Coolify v4 nests server uuid under destination.server.uuid (not top-level).
+			var srv string
+			if dest, ok := a["destination"].(map[string]interface{}); ok {
+				if server, ok := dest["server"].(map[string]interface{}); ok {
+					srv, _ = server["uuid"].(string)
+				}
+			}
 			if imServerUUID != "" && srv != imServerUUID {
 				continue
 			}
