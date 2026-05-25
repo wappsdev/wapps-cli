@@ -50,6 +50,59 @@ func (c *Client) CreateDockerComposeApp(req CreateAppRequest) (string, error) {
 	return uuid, nil
 }
 
+// CreatePrivateGitHubAppApp creates a Coolify "Application" (not service) from
+// a private GitHub repo via a previously-configured GitHub App in Coolify.
+// Coolify v4 endpoint: POST /applications/private-github-app
+type CreateGitHubAppAppRequest struct {
+	ProjectUUID        string `json:"project_uuid"`
+	EnvironmentName    string `json:"environment_name,omitempty"` // default "production"
+	ServerUUID         string `json:"server_uuid"`
+	GithubAppUUID      string `json:"github_app_uuid"`
+	GitRepository      string `json:"git_repository"` // "org/repo"
+	GitBranch          string `json:"git_branch"`     // "main"
+	GitCommitSHA       string `json:"git_commit_sha,omitempty"`
+	BuildPack          string `json:"build_pack"` // "dockerfile" | "nixpacks" | "static"
+	Name               string `json:"name"`
+	BaseDirectory      string `json:"base_directory,omitempty"`      // "/" default
+	DockerfileLocation string `json:"dockerfile_location,omitempty"` // e.g. "/cmd/gateway/Dockerfile"
+	Ports              string `json:"ports_exposes,omitempty"`       // "8099" or "8099,3000"
+	WatchPaths         string `json:"watch_paths,omitempty"`         // multi-line newline-separated
+	InstantDeploy      bool   `json:"instant_deploy"`                // true → build immediately
+}
+
+func (c *Client) CreatePrivateGitHubAppApp(req CreateGitHubAppAppRequest) (string, error) {
+	body := map[string]interface{}{
+		"project_uuid":        req.ProjectUUID,
+		"environment_name":    "production",
+		"server_uuid":         req.ServerUUID,
+		"github_app_uuid":     req.GithubAppUUID,
+		"git_repository":      req.GitRepository,
+		"git_branch":          req.GitBranch,
+		"build_pack":          req.BuildPack,
+		"name":                req.Name,
+		"base_directory":      "/",
+		"dockerfile_location": req.DockerfileLocation,
+		"ports_exposes":       req.Ports,
+		"watch_paths":         req.WatchPaths,
+		"instant_deploy":      req.InstantDeploy,
+	}
+	if req.BaseDirectory != "" {
+		body["base_directory"] = req.BaseDirectory
+	}
+	if req.EnvironmentName != "" {
+		body["environment_name"] = req.EnvironmentName
+	}
+	resp, err := c.do("POST", "/applications/private-github-app", body)
+	if err != nil {
+		return "", fmt.Errorf("coolify.CreatePrivateGitHubAppApp: %w", err)
+	}
+	uuid, _ := resp["uuid"].(string)
+	if uuid == "" {
+		return "", fmt.Errorf("coolify.CreatePrivateGitHubAppApp: no uuid in response: %v", resp)
+	}
+	return uuid, nil
+}
+
 func (c *Client) UpdateAppEnvs(appUUID string, envs map[string]string) error {
 	body := map[string]interface{}{"envs": envs}
 	if _, err := c.do("PATCH", "/applications/"+appUUID+"/envs/bulk", body); err != nil {

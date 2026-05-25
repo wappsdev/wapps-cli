@@ -116,6 +116,48 @@ func TestListApplications_DataEnvelope(t *testing.T) {
 	}
 }
 
+func TestCreatePrivateGitHubAppApp_POST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/applications/private-github-app" {
+			t.Errorf("expected /applications/private-github-app, got %s", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["github_app_uuid"] != "gh-uuid" {
+			t.Errorf("expected github_app_uuid=gh-uuid, got %v", body["github_app_uuid"])
+		}
+		if body["git_repository"] != "wappsdev/test-repo" {
+			t.Errorf("git_repository mismatch: %v", body["git_repository"])
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"uuid": "app-new-uuid"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	uuid, err := c.CreatePrivateGitHubAppApp(CreateGitHubAppAppRequest{
+		ProjectUUID:        "proj-1",
+		ServerUUID:         "srv-1",
+		GithubAppUUID:      "gh-uuid",
+		Name:               "test-app",
+		GitRepository:      "wappsdev/test-repo",
+		GitBranch:          "main",
+		BuildPack:          "dockerfile",
+		DockerfileLocation: "/Dockerfile",
+		Ports:              "8080",
+		InstantDeploy:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreatePrivateGitHubAppApp: %v", err)
+	}
+	if uuid != "app-new-uuid" {
+		t.Errorf("want app-new-uuid, got %q", uuid)
+	}
+}
+
 func TestStartApp_POST(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
