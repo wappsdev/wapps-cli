@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	coolifycmd "github.com/wappsdev/wapps-cli/cmd/coolify"
 	gitcmd "github.com/wappsdev/wapps-cli/cmd/git"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
 	"github.com/wappsdev/wapps-cli/internal/git"
@@ -67,4 +68,5 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "Config file (default: ./.wapps.yaml)")
 	rootCmd.AddCommand(secrets.SecretsCmd)
 	rootCmd.AddCommand(gitcmd.GitCmd)
+	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
 }
