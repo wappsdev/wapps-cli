@@ -19,24 +19,23 @@ func TestImportApp_ServerUUIDFromDestination(t *testing.T) {
 			t.Errorf("Expected /applications, got %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"data": []map[string]interface{}{
-				{
-					"uuid": "app-abc",
-					"name": "test-app",
-					"destination": map[string]interface{}{
-						"server": map[string]interface{}{
-							"uuid": "srv-target",
-						},
+		// Coolify v4 returns a top-level JSON array for /applications (no "data" envelope).
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{
+				"uuid": "app-abc",
+				"name": "test-app",
+				"destination": map[string]interface{}{
+					"server": map[string]interface{}{
+						"uuid": "srv-target",
 					},
 				},
-				{
-					"uuid": "app-other",
-					"name": "other-app",
-					"destination": map[string]interface{}{
-						"server": map[string]interface{}{
-							"uuid": "srv-different",
-						},
+			},
+			{
+				"uuid": "app-other",
+				"name": "other-app",
+				"destination": map[string]interface{}{
+					"server": map[string]interface{}{
+						"uuid": "srv-different",
 					},
 				},
 			},

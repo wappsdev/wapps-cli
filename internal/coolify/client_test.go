@@ -69,6 +69,53 @@ func TestSetCustomLabels_Base64PATCH(t *testing.T) {
 	}
 }
 
+func TestListApplications_TopLevelArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/applications" {
+			t.Errorf("Expected /applications, got %s", r.URL.Path)
+		}
+		// Coolify v4 returns a top-level JSON array, not {"data": [...]}.
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"uuid": "a-1", "name": "first"},
+			{"uuid": "a-2", "name": "second"},
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	apps, err := c.ListApplications()
+	if err != nil {
+		t.Fatalf("ListApplications failed: %v", err)
+	}
+	if len(apps) != 2 {
+		t.Fatalf("Expected 2 apps from top-level array, got %d", len(apps))
+	}
+	if apps[0]["uuid"] != "a-1" {
+		t.Errorf("Expected uuid a-1, got %v", apps[0]["uuid"])
+	}
+}
+
+func TestListApplications_DataEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Some Coolify endpoints / future versions may use {"data": [...]} envelope.
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{
+				{"uuid": "b-1", "name": "wrapped"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	apps, err := c.ListApplications()
+	if err != nil {
+		t.Fatalf("ListApplications failed: %v", err)
+	}
+	if len(apps) != 1 {
+		t.Fatalf("Expected 1 app from envelope shape, got %d", len(apps))
+	}
+}
+
 func TestStartApp_POST(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
