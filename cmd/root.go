@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
+	"github.com/wappsdev/wapps-cli/internal/git"
 )
 
 var (
@@ -25,7 +26,29 @@ It wraps:
   - git auto-sync preflight (pull latest secrets/all.enc.age before any read)
   - doctor (end-to-end dependency check)`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Auto git-sync runs here in Task 17. Stub for now.
+		if noSync {
+			return nil
+		}
+		// Skip auto-sync for `doctor` (preflight) and `git status` (introspection)
+		if cmd.Name() == "doctor" {
+			return nil
+		}
+		if cmd.Parent() != nil && cmd.Parent().Name() == "git" {
+			return nil
+		}
+		drift, err := git.HasDrift(".", "secrets/all.enc.age")
+		if err != nil {
+			// Non-fatal: warn and proceed (offline / not-a-repo cases)
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ git fetch failed: %v (continuing; use --no-sync to silence)\n", err)
+			return nil
+		}
+		if drift {
+			fmt.Fprintln(cmd.ErrOrStderr(), "⚠ Remote has newer secrets/all.enc.age — pulling...")
+			if err := git.Pull("."); err != nil {
+				return fmt.Errorf("auto pull failed: %w. Resolve manually or use --no-sync", err)
+			}
+			fmt.Fprintln(cmd.ErrOrStderr(), "✓ Pulled latest")
+		}
 		return nil
 	},
 }
