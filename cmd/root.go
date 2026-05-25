@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	gitcmd "github.com/wappsdev/wapps-cli/cmd/git"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
 	"github.com/wappsdev/wapps-cli/internal/git"
 )
@@ -65,4 +66,5 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "Config file (default: ./.wapps.yaml)")
 	rootCmd.AddCommand(secrets.SecretsCmd)
+	rootCmd.AddCommand(gitcmd.GitCmd)
 }
