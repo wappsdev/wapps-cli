@@ -46,15 +46,25 @@ var doctorCmd = &cobra.Command{
 		if coolifyURL == "" {
 			coolifyURL = "https://coolify.meapps.dev/api/v1/health"
 		}
-		req, _ := http.NewRequest("GET", coolifyURL, nil)
-		req.Header.Set("User-Agent", "curl/8")
-		resp, err := client.Do(req)
-		if err != nil || resp.StatusCode >= 500 {
-			fmt.Fprintf(out, "✗ Coolify API unreachable: %v\n", err)
+		req, reqErr := http.NewRequest("GET", coolifyURL, nil)
+		if reqErr != nil {
+			fmt.Fprintf(out, "✗ Coolify API URL invalid: %v\n", reqErr)
 			allOK = false
 		} else {
-			fmt.Fprintln(out, "✓ Coolify API reachable")
-			resp.Body.Close()
+			req.Header.Set("User-Agent", "curl/8")
+			resp, err := client.Do(req)
+			switch {
+			case err != nil:
+				fmt.Fprintf(out, "✗ Coolify API unreachable: %v\n", err)
+				allOK = false
+			case resp.StatusCode >= 500:
+				resp.Body.Close()
+				fmt.Fprintf(out, "✗ Coolify API server error (HTTP %d)\n", resp.StatusCode)
+				allOK = false
+			default:
+				resp.Body.Close()
+				fmt.Fprintln(out, "✓ Coolify API reachable")
+			}
 		}
 
 		// Git remote

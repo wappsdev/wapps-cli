@@ -38,6 +38,9 @@ func syncWithTofuOutput(outputFn func() ([]byte, error), destPath string) error 
 	}
 
 	fmt.Printf("✓ Wrote %s (%d bytes)\n", destPath, len(encrypted))
+	// Split "+" + "%Y-%m-%d" emits the literal shell snippet "$(date +%Y-%m-%d)"
+	// for the user's shell to evaluate. Combined into one literal would trigger
+	// go vet's printf format-string check (treating %Y/%m/%d as Go format verbs).
 	dateFmt := "+" + "%Y-%m-%d"
 	fmt.Printf("Next: git add secrets/all.enc.age && git commit -m 'chore: secret sync $(date %s)'\n", dateFmt)
 	return nil
