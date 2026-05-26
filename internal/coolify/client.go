@@ -120,16 +120,24 @@ func (c *Client) UpdateAppEnvs(appUUID string, envs map[string]string) error {
 }
 
 // SetBuildArgs uploads the given KEY=VALUE pairs as build-time env vars
-// (is_build_time=true) on the given Application. Use this to feed --build-arg
-// values into Coolify's docker build step. Existing build args with the same
-// key are upserted by Coolify.
+// (is_buildtime=true) on the given Application. Use this to feed --build-arg
+// values into Coolify's docker build step.
+//
+// Coolify v4 quirks (probed 2026-05-26):
+//   - POST /envs accepts "is_buildtime" but NOT "is_build_time" (422)
+//   - PATCH /envs (no uuid in path) upserts by key, single env at a time
+//   - PATCH /envs/bulk accepts "is_build_time" but does NOT upsert — it
+//     appends new rows, causing duplicate keys across calls.
+//
+// To keep idempotency under repeated runs (Tofu re-applies, etc.), we use
+// PATCH /envs which is upsert-by-key. One HTTP call per pair, but the
+// catalog is small (~3 build args per service) so this is cheap.
 //
 // Pairs should already be in "KEY=VALUE" form. Empty pairs are skipped.
 func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
 	if len(pairs) == 0 {
 		return nil
 	}
-	data := make([]map[string]interface{}, 0, len(pairs))
 	for _, p := range pairs {
 		idx := -1
 		for i := 0; i < len(p); i++ {
@@ -143,20 +151,16 @@ func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
 		}
 		key := p[:idx]
 		val := p[idx+1:]
-		data = append(data, map[string]interface{}{
-			"key":           key,
-			"value":         val,
-			"is_preview":    false,
-			"is_build_time": true,
-			"is_literal":    true,
-		})
-	}
-	if len(data) == 0 {
-		return nil
-	}
-	body := map[string]interface{}{"data": data}
-	if _, err := c.doBytes("PATCH", "/applications/"+appUUID+"/envs/bulk", body); err != nil {
-		return fmt.Errorf("coolify.SetBuildArgs: %w", err)
+		body := map[string]interface{}{
+			"key":          key,
+			"value":        val,
+			"is_preview":   false,
+			"is_buildtime": true,
+			"is_literal":   true,
+		}
+		if _, err := c.doBytes("PATCH", "/applications/"+appUUID+"/envs", body); err != nil {
+			return fmt.Errorf("coolify.SetBuildArgs[%s]: %w", key, err)
+		}
 	}
 	return nil
 }

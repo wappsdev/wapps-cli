@@ -159,18 +159,23 @@ func TestCreatePrivateGitHubAppApp_POST(t *testing.T) {
 	}
 }
 
-func TestSetBuildArgs_PATCHesEnvsBulkAsBuildTime(t *testing.T) {
-	var gotBody map[string]interface{}
+func TestSetBuildArgs_PATCHesEnvsUpsertPerKey(t *testing.T) {
+	var calls []map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PATCH" {
 			t.Errorf("expected PATCH, got %s", r.Method)
 		}
-		if !strings.HasSuffix(r.URL.Path, "/envs/bulk") {
-			t.Errorf("expected /envs/bulk endpoint, got %s", r.URL.Path)
+		if !strings.HasSuffix(r.URL.Path, "/envs") {
+			t.Errorf("expected /envs (single, upsert) endpoint, got %s", r.URL.Path)
 		}
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		if strings.HasSuffix(r.URL.Path, "/envs/bulk") {
+			t.Errorf("should not hit /envs/bulk (it doesn't upsert)")
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, body)
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`[]`))
+		_, _ = w.Write([]byte(`{"uuid":"x"}`))
 	}))
 	defer srv.Close()
 
@@ -178,25 +183,21 @@ func TestSetBuildArgs_PATCHesEnvsBulkAsBuildTime(t *testing.T) {
 	if err := c.SetBuildArgs("app-uuid-xyz", []string{
 		"SERVICE_NAME=gateway",
 		"VERSION=dev",
-		"=bogus",       // should be skipped (empty key)
+		"=bogus",        // should be skipped (empty key)
 		"NO_EQUAL_SIGN", // should be skipped
 	}); err != nil {
 		t.Fatalf("SetBuildArgs: %v", err)
 	}
 
-	data, ok := gotBody["data"].([]interface{})
-	if !ok {
-		t.Fatalf("expected data array in body, got %v", gotBody)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 PATCH calls (malformed skipped), got %d", len(calls))
 	}
-	if len(data) != 2 {
-		t.Fatalf("expected 2 build args (malformed skipped), got %d: %v", len(data), data)
+	if calls[0]["key"] != "SERVICE_NAME" || calls[0]["value"] != "gateway" {
+		t.Errorf("first call mismatch: %v", calls[0])
 	}
-	first := data[0].(map[string]interface{})
-	if first["key"] != "SERVICE_NAME" || first["value"] != "gateway" {
-		t.Errorf("first entry mismatch: %v", first)
-	}
-	if first["is_build_time"] != true {
-		t.Errorf("expected is_build_time=true, got %v", first["is_build_time"])
+	// Coolify v4 requires is_buildtime (NOT is_build_time) on POST/PATCH /envs.
+	if calls[0]["is_buildtime"] != true {
+		t.Errorf("expected is_buildtime=true (Coolify v4 field name), got %v", calls[0]["is_buildtime"])
 	}
 }
 
