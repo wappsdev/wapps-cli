@@ -53,6 +53,14 @@ func (c *Client) CreateDockerComposeApp(req CreateAppRequest) (string, error) {
 // CreatePrivateGitHubAppApp creates a Coolify "Application" (not service) from
 // a private GitHub repo via a previously-configured GitHub App in Coolify.
 // Coolify v4 endpoint: POST /applications/private-github-app
+//
+// BuildArgs note: Coolify v4 has no direct "build args" field on the Application
+// create body. Build args are stored as env vars with is_build_time=true. The
+// CLI's --build-arg flag is converted into a follow-up PATCH against
+// /applications/<uuid>/envs/bulk after the app is created. To make sure those
+// build args are present BEFORE the first build, callers should pass
+// InstantDeploy=false here, set build args via SetBuildArgs, then trigger
+// deploy via TriggerDeploy.
 type CreateGitHubAppAppRequest struct {
 	ProjectUUID        string `json:"project_uuid"`
 	EnvironmentName    string `json:"environment_name,omitempty"` // default "production"
@@ -107,6 +115,57 @@ func (c *Client) UpdateAppEnvs(appUUID string, envs map[string]string) error {
 	body := map[string]interface{}{"envs": envs}
 	if _, err := c.do("PATCH", "/applications/"+appUUID+"/envs/bulk", body); err != nil {
 		return fmt.Errorf("coolify.UpdateAppEnvs: %w", err)
+	}
+	return nil
+}
+
+// SetBuildArgs uploads the given KEY=VALUE pairs as build-time env vars
+// (is_build_time=true) on the given Application. Use this to feed --build-arg
+// values into Coolify's docker build step. Existing build args with the same
+// key are upserted by Coolify.
+//
+// Pairs should already be in "KEY=VALUE" form. Empty pairs are skipped.
+func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
+	if len(pairs) == 0 {
+		return nil
+	}
+	data := make([]map[string]interface{}, 0, len(pairs))
+	for _, p := range pairs {
+		idx := -1
+		for i := 0; i < len(p); i++ {
+			if p[i] == '=' {
+				idx = i
+				break
+			}
+		}
+		if idx <= 0 {
+			continue
+		}
+		key := p[:idx]
+		val := p[idx+1:]
+		data = append(data, map[string]interface{}{
+			"key":           key,
+			"value":         val,
+			"is_preview":    false,
+			"is_build_time": true,
+			"is_literal":    true,
+		})
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	body := map[string]interface{}{"data": data}
+	if _, err := c.doBytes("PATCH", "/applications/"+appUUID+"/envs/bulk", body); err != nil {
+		return fmt.Errorf("coolify.SetBuildArgs: %w", err)
+	}
+	return nil
+}
+
+// TriggerDeploy queues a redeploy for the given Application UUID. Coolify
+// returns a deployment UUID that can be polled separately (we ignore it here).
+func (c *Client) TriggerDeploy(appUUID string) error {
+	if _, err := c.doBytes("GET", "/deploy?uuid="+appUUID, nil); err != nil {
+		return fmt.Errorf("coolify.TriggerDeploy: %w", err)
 	}
 	return nil
 }

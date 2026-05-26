@@ -22,6 +22,7 @@ var (
 	dgWatchPaths    []string
 	dgBuildPack     string
 	dgInstantDeploy bool
+	dgBuildArgs     []string
 )
 
 var deployAppGitCmd = &cobra.Command{
@@ -34,6 +35,16 @@ var deployAppGitCmd = &cobra.Command{
 		}
 
 		c := coolify.New(getEndpoint(), token)
+
+		// If build args are present, defer the initial deploy. We want build
+		// args set BEFORE Coolify kicks off the docker build, so we override
+		// instant_deploy=false on create, push build args, then trigger deploy
+		// ourselves.
+		createInstant := dgInstantDeploy
+		if len(dgBuildArgs) > 0 && dgInstantDeploy {
+			createInstant = false
+		}
+
 		uuid, err := c.CreatePrivateGitHubAppApp(coolify.CreateGitHubAppAppRequest{
 			ProjectUUID:        dgProjectUUID,
 			ServerUUID:         dgServerUUID,
@@ -46,7 +57,7 @@ var deployAppGitCmd = &cobra.Command{
 			DockerfileLocation: dgDockerfile,
 			Ports:              dgPorts,
 			WatchPaths:         strings.Join(dgWatchPaths, "\n"),
-			InstantDeploy:      dgInstantDeploy,
+			InstantDeploy:      createInstant,
 		})
 		if err != nil {
 			return fmt.Errorf("create app: %w", err)
@@ -57,6 +68,20 @@ var deployAppGitCmd = &cobra.Command{
 
 		fmt.Printf("✓ Created Coolify Application '%s' (uuid=%s, source=github:%s@%s)\n",
 			dgName, uuid, dgGitRepo, dgGitBranch)
+
+		if len(dgBuildArgs) > 0 {
+			if err := c.SetBuildArgs(uuid, dgBuildArgs); err != nil {
+				return fmt.Errorf("set build args: %w", err)
+			}
+			fmt.Printf("✓ Set %d build arg(s) on '%s'\n", len(dgBuildArgs), dgName)
+
+			if dgInstantDeploy {
+				if err := c.TriggerDeploy(uuid); err != nil {
+					return fmt.Errorf("trigger deploy: %w", err)
+				}
+				fmt.Printf("✓ Triggered deploy for '%s'\n", dgName)
+			}
+		}
 		return nil
 	},
 }
@@ -74,6 +99,7 @@ func init() {
 	deployAppGitCmd.Flags().StringSliceVar(&dgWatchPaths, "watch-path", []string{}, "Path patterns to trigger rebuild (repeatable, e.g. cmd/gateway/**)")
 	deployAppGitCmd.Flags().StringVar(&dgBuildPack, "build-pack", "dockerfile", "Build pack: dockerfile, nixpacks, static")
 	deployAppGitCmd.Flags().BoolVar(&dgInstantDeploy, "instant-deploy", true, "Trigger initial build immediately on create")
+	deployAppGitCmd.Flags().StringSliceVar(&dgBuildArgs, "build-arg", []string{}, "Docker build arg KEY=VALUE (repeatable). Stored as is_build_time env var.")
 
 	for _, flag := range []string{"project-uuid", "server-uuid", "github-app-uuid", "name", "git-repo"} {
 		_ = deployAppGitCmd.MarkFlagRequired(flag)

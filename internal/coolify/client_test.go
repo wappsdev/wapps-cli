@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -155,6 +156,83 @@ func TestCreatePrivateGitHubAppApp_POST(t *testing.T) {
 	}
 	if uuid != "app-new-uuid" {
 		t.Errorf("want app-new-uuid, got %q", uuid)
+	}
+}
+
+func TestSetBuildArgs_PATCHesEnvsBulkAsBuildTime(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PATCH" {
+			t.Errorf("expected PATCH, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/envs/bulk") {
+			t.Errorf("expected /envs/bulk endpoint, got %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	if err := c.SetBuildArgs("app-uuid-xyz", []string{
+		"SERVICE_NAME=gateway",
+		"VERSION=dev",
+		"=bogus",       // should be skipped (empty key)
+		"NO_EQUAL_SIGN", // should be skipped
+	}); err != nil {
+		t.Fatalf("SetBuildArgs: %v", err)
+	}
+
+	data, ok := gotBody["data"].([]interface{})
+	if !ok {
+		t.Fatalf("expected data array in body, got %v", gotBody)
+	}
+	if len(data) != 2 {
+		t.Fatalf("expected 2 build args (malformed skipped), got %d: %v", len(data), data)
+	}
+	first := data[0].(map[string]interface{})
+	if first["key"] != "SERVICE_NAME" || first["value"] != "gateway" {
+		t.Errorf("first entry mismatch: %v", first)
+	}
+	if first["is_build_time"] != true {
+		t.Errorf("expected is_build_time=true, got %v", first["is_build_time"])
+	}
+}
+
+func TestSetBuildArgs_EmptySkipsAPICall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	if err := c.SetBuildArgs("app-uuid", []string{}); err != nil {
+		t.Fatalf("SetBuildArgs: %v", err)
+	}
+	if called {
+		t.Errorf("expected no API call for empty build args, but server was hit")
+	}
+}
+
+func TestTriggerDeploy_GETsDeployEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if !strings.Contains(r.URL.RawQuery, "uuid=app-1") {
+			t.Errorf("expected uuid=app-1 in query, got %s", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"deployments":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	if err := c.TriggerDeploy("app-1"); err != nil {
+		t.Fatalf("TriggerDeploy: %v", err)
 	}
 }
 
