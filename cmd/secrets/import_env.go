@@ -87,25 +87,15 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 	return nil
 }
 
-// encryptAndWriteArchiveLookup is the same as encryptAndWriteArchive but
-// takes a passphrase argument directly (set.go's version reads from env via
-// the closure). Kept separate so test seams stay clean.
+// encryptAndWriteArchiveLookup wraps ageutil.EncryptWriteAtomic with the
+// import-env error context. Same atomic guarantee as set/sync paths.
 func encryptAndWriteArchiveLookup(path string, archive map[string]json.RawMessage, passphrase string) error {
 	payload, err := json.Marshal(archive)
 	if err != nil {
 		return fmt.Errorf("marshal archive: %w", err)
 	}
-	encrypted, err := ageutil.Encrypt(payload, passphrase)
-	if err != nil {
-		return fmt.Errorf("encrypt: %w", err)
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encrypted, 0600); err != nil {
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename: %w", err)
+	if err := ageutil.EncryptWriteAtomic(path, payload, passphrase); err != nil {
+		return fmt.Errorf("import-env: %w", err)
 	}
 	return nil
 }
