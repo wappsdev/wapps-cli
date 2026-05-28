@@ -9,6 +9,7 @@
 //
 //	version: 1
 //	dest: secrets/all.enc.age
+//	default_prefix: ""
 //	sources:
 //	  - type: tofu
 //	    workdir: .
@@ -16,6 +17,10 @@
 //	  - type: file
 //	    path: .env.shared
 //	    prefix: ""
+//	targets:
+//	  - path: .env.local
+//	  - path: terraform.tfvars.json
+//	    prefix: "TF_VAR_"
 //	redact_in_logs: true
 //	require_clean_git: true
 package config
@@ -23,17 +28,38 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/wappsdev/wapps-cli/internal/source"
 	"gopkg.in/yaml.v3"
 )
+
+// Target deklarasyonu: archive'dan üretilen plaintext consumption dosyası.
+// Prefix *string çünkü "yokken default'u kullan" ile "açıkça boş istiyorum"
+// arasında fark var: default_prefix='TF_VAR_' iken bir target'in '' istemesi
+// gerçek bir senaryo (terraform.tfvars için TF_VAR_, .env.local için plain).
+type Target struct {
+	Path   string  `yaml:"path"`
+	Prefix *string `yaml:"prefix,omitempty"`
+}
+
+// EffectivePrefix returns the prefix actually used for this target: explicit
+// per-target prefix if set (even to ""), otherwise the repo-wide default.
+func (t Target) EffectivePrefix(defaultPrefix string) string {
+	if t.Prefix != nil {
+		return *t.Prefix
+	}
+	return defaultPrefix
+}
 
 // WappsYAML is the parsed schema. Defaults are applied during Load, so callers
 // can rely on fields being populated.
 type WappsYAML struct {
 	Version         int             `yaml:"version"`
 	Dest            string          `yaml:"dest"`
+	DefaultPrefix   string          `yaml:"default_prefix"`
 	Sources         []source.Config `yaml:"sources"`
+	Targets         []Target        `yaml:"targets"`
 	RedactInLogs    bool            `yaml:"redact_in_logs"`
 	RequireCleanGit bool            `yaml:"require_clean_git"`
 }
@@ -88,6 +114,28 @@ func applyDefaultsAndValidate(y *WappsYAML) error {
 		if _, err := source.New(cfg); err != nil {
 			return fmt.Errorf("config: sources[%d]: %w", i, err)
 		}
+	}
+	if err := validateTargets(y.Targets); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateTargets enforces: path non-empty, no duplicates, no path traversal
+// (../) so a misconfigured yaml can't write outside the repo root.
+func validateTargets(targets []Target) error {
+	seen := make(map[string]int, len(targets))
+	for i, t := range targets {
+		if t.Path == "" {
+			return fmt.Errorf("config: targets[%d]: missing required field 'path'", i)
+		}
+		if strings.Contains(t.Path, "..") {
+			return fmt.Errorf("config: targets[%d]: path %q contains '..' (path traversal not allowed)", i, t.Path)
+		}
+		if j, dup := seen[t.Path]; dup {
+			return fmt.Errorf("config: targets[%d]: duplicate path %q (also at targets[%d])", i, t.Path, j)
+		}
+		seen[t.Path] = i
 	}
 	return nil
 }
