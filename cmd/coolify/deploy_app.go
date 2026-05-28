@@ -30,13 +30,9 @@ var deployAppCmd = &cobra.Command{
 			return fmt.Errorf("read compose file: %w", err)
 		}
 
-		envs := make(map[string]string)
-		for _, key := range depEnvFromShell {
-			val := os.Getenv(key)
-			if val == "" {
-				return fmt.Errorf("env %s not set in current shell (expected by --env-from-shell)", key)
-			}
-			envs[key] = val
+		envs, err := collectEnvFromShell(depEnvFromShell, os.Getenv)
+		if err != nil {
+			return err
 		}
 
 		c := coolify.New(getEndpoint(), token)
@@ -68,6 +64,24 @@ var deployAppCmd = &cobra.Command{
 		fmt.Printf("✓ Deployed %s (uuid=%s)\n", depName, uuid)
 		return nil
 	},
+}
+
+// collectEnvFromShell resolves --env-from-shell key names to their current
+// shell values via lookup (os.Getenv in production, fake in tests). Refuses
+// to silently propagate empties: if the operator listed FOO but FOO isn't
+// set, the command fails before any API call rather than deploying an app
+// missing a required env. Extracted from the command's RunE so the
+// validation can be unit-tested without hitting the Coolify API.
+func collectEnvFromShell(keys []string, lookup func(string) string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		val := lookup(key)
+		if val == "" {
+			return nil, fmt.Errorf("env %s not set in current shell (expected by --env-from-shell)", key)
+		}
+		out[key] = val
+	}
+	return out, nil
 }
 
 func init() {
