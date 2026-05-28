@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -129,6 +130,41 @@ func TestEncryptWriteAtomic_BadPassphraseDoesNotPartiallyWrite(t *testing.T) {
 		if strings.HasSuffix(e.Name(), ".tmp") {
 			t.Errorf("temp file %s left behind", e.Name())
 		}
+	}
+}
+
+// TestWriteFileAtomic_ConcurrentWritersDontCorrupt closes the race where two
+// processes calling WriteFileAtomic on the same path used to share a fixed
+// .<name>.tmp file: the second OpenFile with O_TRUNC would wipe the first's
+// in-flight buffer, and the rename order could leave a half-written byte
+// stream visible. With os.CreateTemp's unique suffix, both writers complete
+// independently and the result is always one of their full payloads.
+func TestWriteFileAtomic_ConcurrentWritersDontCorrupt(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "racey")
+
+	payloadA := bytes.Repeat([]byte("A"), 4096)
+	payloadB := bytes.Repeat([]byte("B"), 4096)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = WriteFileAtomic(path, payloadA, 0600)
+	}()
+	go func() {
+		defer wg.Done()
+		_ = WriteFileAtomic(path, payloadB, 0600)
+	}()
+	wg.Wait()
+
+	final, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read final: %v", err)
+	}
+	// Result must be exactly one of the two payloads — never a hybrid.
+	if !bytes.Equal(final, payloadA) && !bytes.Equal(final, payloadB) {
+		t.Errorf("concurrent writers produced corrupt output (len=%d, first byte=%q)", len(final), final[0])
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
 // FileSourceHeader is prepended to env files written by `wapps secrets set`.
@@ -86,13 +88,12 @@ func writeAll(path string, kv map[string]string) error {
 		fmt.Fprintf(&buf, "%s='%s'\n", k, escaped)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0600); err != nil {
-		return fmt.Errorf("WriteFileSource: write temp %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("WriteFileSource: rename %s -> %s: %w", tmp, path, err)
+	// Use the shared atomic-write helper so we get fsync + unique temp name
+	// (concurrent-writer safe) for free. Earlier versions used os.WriteFile +
+	// os.Rename which skipped fsync; a power loss between rename and the
+	// kernel's data flush could leave the file present but empty.
+	if err := ageutil.WriteFileAtomic(path, buf.Bytes(), 0600); err != nil {
+		return fmt.Errorf("WriteFileSource: %w", err)
 	}
 	return nil
 }
