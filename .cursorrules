@@ -1,0 +1,36 @@
+# wapps-cli — Cursor rules
+
+This repo uses wapps-cli for team secrets. Apply-only pattern: agents
+never read raw secret values.
+
+## Allowed (apply secrets without seeing values)
+
+- `wapps secrets env --write <path>` — writes env file to disk
+- `wapps secrets exec -- <command>` — injects env vars into subprocess
+- `wapps secrets sync` — rebuilds archive from sources
+
+## Forbidden (would put secret values into your chat transcript)
+
+- `wapps secrets get <KEY>` — operator-only command
+- Reading `.env.local`, `.env.shared`, or any `.env*` file
+- Echoing fetched values back to the user
+- Passing secrets as positional args (argv ends up in `ps aux`)
+
+## Common workflows
+
+Need .env to run dev server? `wapps secrets env --write .env.local`
+Need to run one command with creds? `wapps secrets exec -- <cmd>`
+Added a new secret via tofu/file source? `wapps secrets sync`
+Push archive to Coolify app? `wapps secrets sync --target=coolify --app <UUID>`
+
+## If passphrase missing
+
+`WAPPS_SECRETS_PASSPHRASE` is in operator's Apple Passwords. Ask them to
+export it; do NOT ask them to paste the value into chat.
+
+## Diagnostics
+
+`wapps doctor --for tofu` — env vars + tofu binary check
+`wapps doctor` — full check (R2, Coolify reachability, git remote)
+
+Full agent guidance: see `.claude/skills/wapps-secrets/SKILL.md`.
