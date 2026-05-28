@@ -3,10 +3,12 @@ package secrets
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
 
+	"github.com/wappsdev/wapps-cli/internal/config"
 	"github.com/wappsdev/wapps-cli/internal/coolify"
 )
 
@@ -15,11 +17,12 @@ import (
 // substitute a fake transport.
 type coolifyOptions struct {
 	appUUID   string
+	allApps   bool   // multi-app mode driven by coolify_sync.apps in .wapps.yaml
 	force     bool
 	prefix    string
 	apiURL    string
 	apiToken  string
-	stdoutW   *os.File // dry-run output goes here (os.Stdout in prod)
+	stdoutW   io.Writer // dry-run output goes here (os.Stdout in prod, buffer in tests)
 	newClient func(baseURL, token string) coolifyAPI
 }
 
@@ -45,8 +48,11 @@ type coolifyAPI interface {
 //
 // Token comes from COOLIFY_API_TOKEN; URL from --coolify-url or default.
 func runSyncCoolify(opts coolifyOptions) error {
-	if opts.appUUID == "" {
-		return fmt.Errorf("sync --target=coolify: --app <uuid> required")
+	if opts.appUUID != "" && opts.allApps {
+		return fmt.Errorf("sync --target=coolify: --app and --all-apps are mutually exclusive")
+	}
+	if opts.appUUID == "" && !opts.allApps {
+		return fmt.Errorf("sync --target=coolify: one of --app <uuid> or --all-apps required")
 	}
 	if opts.apiToken == "" {
 		return fmt.Errorf("sync --target=coolify: COOLIFY_API_TOKEN not set")
@@ -70,15 +76,23 @@ func runSyncCoolify(opts coolifyOptions) error {
 		return err
 	}
 
+	client := opts.newClient(opts.apiURL, opts.apiToken)
+
+	if opts.allApps {
+		return runSyncCoolifyAllApps(opts, cfg, archive, client)
+	}
+
+	// Single-app, whole-archive destructive-mirror path (unchanged: vaulter
+	// depends on it). deleteUnmanaged=true preserves the documented behavior
+	// where Coolify keys absent from the archive are removed.
 	desired := archiveToFlatMap(archive, opts.prefix)
 
-	client := opts.newClient(opts.apiURL, opts.apiToken)
 	current, err := client.ListAppEnvs(opts.appUUID)
 	if err != nil {
 		return fmt.Errorf("sync --target=coolify: %w", err)
 	}
 
-	diff := computeCoolifyDiff(desired, current)
+	diff := computeCoolifyDiff(desired, current, true)
 	writeCoolifyDiff(opts.stdoutW, diff)
 
 	if !opts.force {
@@ -87,6 +101,72 @@ func runSyncCoolify(opts coolifyOptions) error {
 	}
 
 	return applyCoolifyDiff(client, opts.appUUID, diff, opts.stdoutW)
+}
+
+// runSyncCoolifyAllApps pushes a multi-app archive to each app declared in
+// coolify_sync.apps. Per app: filter the archive to keys matching the app's
+// archive_prefix, strip the prefix, diff against live Coolify state, print,
+// and (with --force) apply. Non-destructive by default (delete_unmanaged).
+//
+// Failure isolation: an error on one app (e.g. 404 on a stale UUID) is
+// reported and the remaining apps still run. Any failure makes the whole
+// command exit non-zero so CI/scripts notice.
+func runSyncCoolifyAllApps(opts coolifyOptions, cfg *config.WappsYAML, archive map[string]json.RawMessage, client coolifyAPI) error {
+	w := opts.stdoutW
+	if w == nil {
+		w = os.Stdout
+	}
+	cs := cfg.CoolifySync
+	if cs == nil || len(cs.Apps) == 0 {
+		return fmt.Errorf("sync --target=coolify --all-apps: no apps configured (add a coolify_sync.apps block to %s)", wappsYAMLPath)
+	}
+
+	var failed []string
+	for _, app := range cs.Apps {
+		label := app.Name
+		if label == "" {
+			label = app.UUID
+		}
+
+		desired := archiveToAppMap(archive, app.ArchivePrefix)
+		if len(desired) == 0 {
+			// Non-fatal: a prefix matching nothing is usually a config typo
+			// or an app not yet populated. Warn (names only) and move on.
+			fmt.Fprintf(w, "\n⚠ %s: 0 keys matched prefix %q — skipping\n", label, app.ArchivePrefix)
+			continue
+		}
+
+		current, err := client.ListAppEnvs(app.UUID)
+		if err != nil {
+			fmt.Fprintf(w, "\n✗ %s (%s): list envs failed: %v\n", label, app.UUID, err)
+			failed = append(failed, app.UUID)
+			continue
+		}
+
+		diff := computeCoolifyDiff(desired, current, cs.DeleteUnmanaged)
+		fmt.Fprintf(w, "\n=== %s (%s) ===\n", label, app.UUID)
+		writeCoolifyDiff(w, diff)
+
+		if opts.force {
+			if err := applyCoolifyDiff(client, app.UUID, diff, w); err != nil {
+				// Apply is fail-fast: some keys for this app may already be
+				// written. That's safe to recover from — the next --all-apps
+				// run recomputes the diff from live Coolify state, so applied
+				// keys become no-ops and the rest (including any pending
+				// deletes) are retried. We tell the operator that explicitly.
+				fmt.Fprintf(w, "✗ %s apply failed (partial — re-run 'sync --all-apps --force' to finish; it's idempotent): %v\n", label, err)
+				failed = append(failed, app.UUID)
+			}
+		}
+	}
+
+	if !opts.force {
+		fmt.Fprintln(w, "\nDry-run only. Re-run with --all-apps --force to apply.")
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("sync --target=coolify --all-apps: %d app(s) failed: %s", len(failed), strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 // coolifyDiff buckets desired vs current Coolify state. Computed before
@@ -107,7 +187,12 @@ type coolifyChange struct {
 	newValue string
 }
 
-func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry) coolifyDiff {
+// computeCoolifyDiff buckets desired vs current. When deleteUnmanaged is
+// false, the remove bucket stays empty — Coolify keys absent from `desired`
+// are left untouched (additive merge). The single-app mirror path passes
+// true (its documented destructive behavior); multi-app passes the
+// coolify_sync.delete_unmanaged config value (default false).
+func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry, deleteUnmanaged bool) coolifyDiff {
 	diff := coolifyDiff{
 		add:    make(map[string]string),
 		change: make(map[string]coolifyChange),
@@ -129,9 +214,11 @@ func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry) c
 			diff.add[key] = desiredVal
 		}
 	}
-	for key, existing := range currentByKey {
-		if _, ok := desired[key]; !ok {
-			diff.remove[key] = existing.UUID
+	if deleteUnmanaged {
+		for key, existing := range currentByKey {
+			if _, ok := desired[key]; !ok {
+				diff.remove[key] = existing.UUID
+			}
 		}
 	}
 	return diff
@@ -141,7 +228,7 @@ func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry) c
 // dry-run and --force modes) so the operator has a record of what changed.
 // Values are NOT printed for changes/adds — only key names and counts —
 // because the diff itself may be captured by the agent transcript.
-func writeCoolifyDiff(w *os.File, diff coolifyDiff) {
+func writeCoolifyDiff(w io.Writer, diff coolifyDiff) {
 	if w == nil {
 		w = os.Stdout
 	}
@@ -161,7 +248,7 @@ func writeCoolifyDiff(w *os.File, diff coolifyDiff) {
 	fmt.Fprintf(w, "  = %d unchanged\n", len(diff.noop))
 }
 
-func applyCoolifyDiff(client coolifyAPI, appUUID string, diff coolifyDiff, w *os.File) error {
+func applyCoolifyDiff(client coolifyAPI, appUUID string, diff coolifyDiff, w io.Writer) error {
 	for _, key := range sortedKeys(diff.add) {
 		if err := client.UpsertAppEnv(appUUID, key, diff.add[key], false); err != nil {
 			return fmt.Errorf("apply ADD %s: %w", key, err)
@@ -202,23 +289,54 @@ func applyCoolifyDiff(client coolifyAPI, appUUID string, diff coolifyDiff, w *os
 func archiveToFlatMap(archive map[string]json.RawMessage, prefix string) map[string]string {
 	out := make(map[string]string, len(archive))
 	for key, raw := range archive {
-		var envelope struct {
-			Value json.RawMessage `json:"value"`
-		}
-		if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Value) == 0 {
-			// Not the tofu-output shape — emit the raw bytes as-is.
-			out[prefix+key] = string(raw)
-			continue
-		}
-		var s string
-		if err := json.Unmarshal(envelope.Value, &s); err == nil {
-			out[prefix+key] = s
-			continue
-		}
-		// Non-string value: emit compact JSON (Coolify stores as string).
-		out[prefix+key] = strings.TrimSpace(string(envelope.Value))
+		out[prefix+key] = unwrapArchiveValue(raw)
 	}
 	return out
+}
+
+// archiveToAppMap is the multi-app counterpart of archiveToFlatMap: it
+// selects only the archive keys that start with archivePrefix and STRIPS that
+// prefix (the opposite of archiveToFlatMap's prepend). Keys not matching the
+// prefix are excluded entirely — this is how Tofu outputs (lab_01_*) and other
+// apps' keys are kept out of this app's push.
+//
+// A key equal to the prefix (stripping to "") is skipped: an empty env var
+// name is never valid.
+func archiveToAppMap(archive map[string]json.RawMessage, archivePrefix string) map[string]string {
+	out := make(map[string]string)
+	for key, raw := range archive {
+		if !strings.HasPrefix(key, archivePrefix) {
+			continue
+		}
+		stripped := strings.TrimPrefix(key, archivePrefix)
+		if stripped == "" {
+			continue
+		}
+		out[stripped] = unwrapArchiveValue(raw)
+	}
+	return out
+}
+
+// unwrapArchiveValue converts a single archive entry to the flat string Coolify
+// stores. Tofu-output-shaped envelopes ({"value": ...}) are unwrapped; string
+// values emit verbatim, non-string values (list/map/bool/number) emit their
+// compact JSON. Bytes that aren't the envelope shape pass through unchanged.
+//
+// Slice-aliasing note: the envelope struct MUST be declared fresh per call.
+// An earlier draft reused a Value=raw field; json.RawMessage's UnmarshalJSON
+// appends onto the backing array and silently corrupted the source bytes.
+func unwrapArchiveValue(raw json.RawMessage) string {
+	var envelope struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Value) == 0 {
+		return string(raw)
+	}
+	var s string
+	if err := json.Unmarshal(envelope.Value, &s); err == nil {
+		return s
+	}
+	return strings.TrimSpace(string(envelope.Value))
 }
 
 func sortedKeys(m map[string]string) []string {

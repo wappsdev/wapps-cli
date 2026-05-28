@@ -18,11 +18,12 @@ import (
 const wappsYAMLPath = ".wapps.yaml"
 
 var (
-	syncTarget      string
-	syncCoolifyApp  string
-	syncCoolifyURL  string
-	syncForce       bool
-	syncPrefix      string
+	syncTarget        string
+	syncCoolifyApp    string
+	syncCoolifyAllApps bool
+	syncCoolifyURL    string
+	syncForce         bool
+	syncPrefix        string
 )
 
 var syncCmd = &cobra.Command{
@@ -35,13 +36,23 @@ With --target=coolify: read the existing archive and push its contents to
 a Coolify application's env vars. Default is dry-run — pass --force to
 actually apply (which deletes Coolify-only keys to mirror the archive).
 
-  wapps secrets sync                                      # rebuild archive
-  wapps secrets sync --target=coolify --app <uuid>        # dry-run diff
-  wapps secrets sync --target=coolify --app <uuid> --force  # apply`,
+Single-app (--app): pushes the WHOLE archive to one app, mirroring
+destructively (Coolify keys absent from the archive deleted on --force).
+
+Multi-app (--all-apps): requires coolify_sync.apps in .wapps.yaml. Each app
+gets only the archive keys matching its archive_prefix, prefix stripped.
+Non-destructive unless coolify_sync.delete_unmanaged: true.
+
+  wapps secrets sync                                        # rebuild archive
+  wapps secrets sync --target=coolify --app <uuid>          # single-app dry-run
+  wapps secrets sync --target=coolify --app <uuid> --force  # single-app apply
+  wapps secrets sync --target=coolify --all-apps            # multi-app dry-run
+  wapps secrets sync --target=coolify --all-apps --force    # multi-app apply`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if syncTarget == "coolify" {
 			return runSyncCoolify(coolifyOptions{
 				appUUID:   syncCoolifyApp,
+				allApps:   syncCoolifyAllApps,
 				force:     syncForce,
 				prefix:    syncPrefix,
 				apiURL:    syncCoolifyURL,
@@ -210,7 +221,9 @@ func init() {
 	syncCmd.Flags().StringVar(&syncTarget, "target", "",
 		"sync target: empty rebuilds archive from sources; 'coolify' pushes archive to a Coolify app's env")
 	syncCmd.Flags().StringVar(&syncCoolifyApp, "app", "",
-		"Coolify app UUID (required when --target=coolify)")
+		"Coolify app UUID for single-app push (mutually exclusive with --all-apps)")
+	syncCmd.Flags().BoolVar(&syncCoolifyAllApps, "all-apps", false,
+		"push to every app in .wapps.yaml's coolify_sync.apps (prefix-stripped, non-destructive)")
 	syncCmd.Flags().StringVar(&syncCoolifyURL, "coolify-url", "https://coolify.meapps.dev/api/v1",
 		"Coolify API base URL")
 	syncCmd.Flags().BoolVar(&syncForce, "force", false,

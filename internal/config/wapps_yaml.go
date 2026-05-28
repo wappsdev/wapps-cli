@@ -52,6 +52,32 @@ func (t Target) EffectivePrefix(defaultPrefix string) string {
 	return defaultPrefix
 }
 
+// CoolifyApp maps an archive key-prefix to a single Coolify application for
+// multi-app sync (`wapps secrets sync --target=coolify --all-apps`).
+//
+// ArchivePrefix is matched against archive keys; matching keys are pushed to
+// the app's env with the prefix STRIPPED. e.g. ArchivePrefix "KREEVA_WEB_"
+// turns archive key "KREEVA_WEB_VITE_API_URL" into Coolify env "VITE_API_URL".
+// This is the opposite direction from the single-app `--prefix` flag (which
+// prepends).
+type CoolifyApp struct {
+	UUID          string `yaml:"uuid"`
+	Name          string `yaml:"name"`           // comment-only, for readability
+	ArchivePrefix string `yaml:"archive_prefix"` // archive keys with this prefix → this app (stripped)
+}
+
+// CoolifySync configures multi-app push. Optional; only consulted by
+// `--all-apps`. Keys not matched by ANY app's ArchivePrefix are never pushed
+// (this is how Tofu outputs like lab_01_* are excluded automatically).
+type CoolifySync struct {
+	// DeleteUnmanaged, when false (default), makes sync purely additive: a
+	// Coolify env key absent from the app's mapped+stripped set is left
+	// alone. When true, such keys are deleted to mirror the archive — a
+	// destructive operation, off by default on purpose.
+	DeleteUnmanaged bool         `yaml:"delete_unmanaged"`
+	Apps            []CoolifyApp `yaml:"apps"`
+}
+
 // WappsYAML is the parsed schema. Defaults are applied during Load, so callers
 // can rely on fields being populated.
 type WappsYAML struct {
@@ -60,6 +86,7 @@ type WappsYAML struct {
 	DefaultPrefix   string          `yaml:"default_prefix"`
 	Sources         []source.Config `yaml:"sources"`
 	Targets         []Target        `yaml:"targets"`
+	CoolifySync     *CoolifySync    `yaml:"coolify_sync,omitempty"`
 	RedactInLogs    bool            `yaml:"redact_in_logs"`
 	RequireCleanGit bool            `yaml:"require_clean_git"`
 }
@@ -117,6 +144,48 @@ func applyDefaultsAndValidate(y *WappsYAML) error {
 	}
 	if err := validateTargets(y.Targets); err != nil {
 		return err
+	}
+	if err := validateCoolifySync(y.CoolifySync); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateCoolifySync enforces, when the block is present:
+//   - each app has a non-empty uuid + archive_prefix
+//   - no duplicate uuid (two mappings to the same app is almost always a typo)
+//   - no overlapping archive_prefix. We REJECT overlap rather than picking
+//     longest-match: silent longest-match could misroute a secret to the
+//     wrong app (e.g. "ROYCO_" vs "ROYCO_API_" — a key meant for one could
+//     land on the other). For secret material, explicit beats clever.
+func validateCoolifySync(cs *CoolifySync) error {
+	if cs == nil {
+		return nil
+	}
+	seenUUID := make(map[string]int, len(cs.Apps))
+	for i, app := range cs.Apps {
+		if app.UUID == "" {
+			return fmt.Errorf("config: coolify_sync.apps[%d]: missing required field 'uuid'", i)
+		}
+		if app.ArchivePrefix == "" {
+			return fmt.Errorf("config: coolify_sync.apps[%d] (%s): missing required field 'archive_prefix'", i, app.UUID)
+		}
+		if j, dup := seenUUID[app.UUID]; dup {
+			return fmt.Errorf("config: coolify_sync.apps[%d]: duplicate uuid %q (also at apps[%d])", i, app.UUID, j)
+		}
+		seenUUID[app.UUID] = i
+	}
+	// Overlap check: any prefix that is a prefix of another is ambiguous.
+	for i := range cs.Apps {
+		for j := range cs.Apps {
+			if i == j {
+				continue
+			}
+			if strings.HasPrefix(cs.Apps[j].ArchivePrefix, cs.Apps[i].ArchivePrefix) {
+				return fmt.Errorf("config: coolify_sync.apps: overlapping archive_prefix %q (apps[%d]) and %q (apps[%d]) — prefixes must be mutually exclusive so a key routes to exactly one app",
+					cs.Apps[i].ArchivePrefix, i, cs.Apps[j].ArchivePrefix, j)
+			}
+		}
 	}
 	return nil
 }

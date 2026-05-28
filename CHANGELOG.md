@@ -2,6 +2,33 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [Unreleased]
+
+### Added
+- `wapps secrets sync --target=coolify --all-apps` — multi-app push. Each app declared in `.wapps.yaml`'s new `coolify_sync.apps` block receives only the archive keys matching its `archive_prefix`, with the prefix STRIPPED (opposite of single-app `--prefix` which prepends). Unmapped keys (Tofu outputs like `lab_01_*`, other apps' keys) are excluded automatically.
+- `.wapps.yaml` `coolify_sync` block: `apps[]` (uuid, name, archive_prefix) + `delete_unmanaged` (default false). Non-destructive by default — Coolify keys absent from an app's mapped set are left alone unless `delete_unmanaged: true`. Config-load rejects missing uuid/prefix, duplicate uuid, and overlapping prefixes (explicit over silent longest-match).
+- Update-available notice: released binaries check GitHub once a day (cached in `~/.cache/wapps/version-check.json`) and print a one-line upgrade hint on stderr. Interactive-only, opt-out via `WAPPS_NO_UPDATE_CHECK=1`, skips local `dev`/`main-<sha>` builds. Display version reconstructed from parsed integers so a compromised release can't inject terminal escapes.
+- `cmd/coolify` test coverage for `deploy-app` (collectEnvFromShell), `deploy-app-git` (shouldDeferDeploy), `update-env` (parseEnvKVs); 50.0% → 61.7%.
+
+### Changed
+- Single-app `--app` Coolify sync unchanged (whole-archive destructive mirror). `--app` and `--all-apps` are mutually exclusive.
+
+### Fixed (hardening sweep)
+- `internal/coolify`: validate UUIDs before URL concat (path-injection), truncate `HTTPError` body to 200 bytes (token leak), strip `Authorization` on redirect, `UpdateAppEnvs` loops upsert instead of append-only `/envs/bulk`.
+- `internal/ageutil`: `WriteFileAtomic` uses unique temp names (concurrent-writer safe).
+- `internal/source`: `WriteFileSource` fsyncs; `parseEnvFile` error no longer echoes raw line content.
+- `cmd/secrets`: `rotate-master` rejects passphrases < 16 chars; `set` names the inconsistent-state recovery path; `sync_coolify` writes through the injected writer.
+- `cmd/coolify`: `set-labels` refuses an empty label set (was a silent wipe).
+- `cmd/doctor`: appends `/health` to a set `COOLIFY_URL`.
+- `internal/git`: `HasDrift` resolves `origin/HEAD` instead of hardcoded `origin/main`.
+
+## [v0.12.0] - 2026-05-28
+
+### Added (diff + apply + targets)
+- `wapps secrets apply` — materializes every consumption target declared in `.wapps.yaml`'s `targets:` block. Idempotent (byte-equal files keep their mtime so file watchers don't reload). Auto-invoked after `set`/`import-env`/`sync`.
+- `wapps secrets diff [ref]` — key-level diff vs a git ref (default `HEAD~1`). AI-safe: values never reach stdout; change detection via in-process sha256. Refuses flag-shaped refs (argv-injection guard).
+- `.wapps.yaml`: `default_prefix` + `targets:` (path, optional per-target prefix override).
+
 ## [v0.11.1] - 2026-05-28
 
 ### Fixed

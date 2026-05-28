@@ -303,6 +303,157 @@ sources:
 	}
 }
 
+func TestParse_CoolifySync_Basic(t *testing.T) {
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+coolify_sync:
+  delete_unmanaged: false
+  apps:
+    - uuid: vaesbm45up4jyk7hhk77ka74
+      name: kreeva-web
+      archive_prefix: "KREEVA_WEB_"
+    - uuid: wpv0glv7usj90t268ntfggby
+      name: labellens-api
+      archive_prefix: "LABELLENS_API_"
+`)
+	got, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.CoolifySync == nil {
+		t.Fatal("CoolifySync should be parsed")
+	}
+	if got.CoolifySync.DeleteUnmanaged {
+		t.Error("delete_unmanaged should be false")
+	}
+	if len(got.CoolifySync.Apps) != 2 {
+		t.Fatalf("expected 2 apps, got %d", len(got.CoolifySync.Apps))
+	}
+	if got.CoolifySync.Apps[0].ArchivePrefix != "KREEVA_WEB_" {
+		t.Errorf("apps[0].ArchivePrefix: %q", got.CoolifySync.Apps[0].ArchivePrefix)
+	}
+}
+
+func TestParse_CoolifySync_AbsentIsNil(t *testing.T) {
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+`)
+	got, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.CoolifySync != nil {
+		t.Errorf("CoolifySync should be nil when absent, got %+v", got.CoolifySync)
+	}
+}
+
+func TestParse_CoolifySync_RejectsMissingUUID(t *testing.T) {
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+coolify_sync:
+  apps:
+    - archive_prefix: "FOO_"
+`)
+	_, err := Parse(data)
+	if err == nil || !strings.Contains(err.Error(), "uuid") {
+		t.Errorf("expected uuid error, got: %v", err)
+	}
+}
+
+func TestParse_CoolifySync_RejectsMissingPrefix(t *testing.T) {
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+coolify_sync:
+  apps:
+    - uuid: app-1
+`)
+	_, err := Parse(data)
+	if err == nil || !strings.Contains(err.Error(), "archive_prefix") {
+		t.Errorf("expected archive_prefix error, got: %v", err)
+	}
+}
+
+func TestParse_CoolifySync_RejectsDuplicateUUID(t *testing.T) {
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+coolify_sync:
+  apps:
+    - uuid: app-1
+      archive_prefix: "A_"
+    - uuid: app-1
+      archive_prefix: "B_"
+`)
+	_, err := Parse(data)
+	if err == nil || !strings.Contains(err.Error(), "duplicate uuid") {
+		t.Errorf("expected duplicate uuid error, got: %v", err)
+	}
+}
+
+func TestParse_CoolifySync_RejectsOverlappingPrefix(t *testing.T) {
+	// "ROYCO_" is a prefix of "ROYCO_API_" → ambiguous routing, must error.
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+coolify_sync:
+  apps:
+    - uuid: app-royco
+      archive_prefix: "ROYCO_"
+    - uuid: app-royco-api
+      archive_prefix: "ROYCO_API_"
+`)
+	_, err := Parse(data)
+	if err == nil || !strings.Contains(err.Error(), "overlapping") {
+		t.Errorf("expected overlapping prefix error, got: %v", err)
+	}
+}
+
+func TestParse_CoolifySync_OverlapErrorRegardlessOfOrder(t *testing.T) {
+	// Same overlap but declared in the opposite order — must still error.
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+coolify_sync:
+  apps:
+    - uuid: app-royco-api
+      archive_prefix: "ROYCO_API_"
+    - uuid: app-royco
+      archive_prefix: "ROYCO_"
+`)
+	_, err := Parse(data)
+	if err == nil || !strings.Contains(err.Error(), "overlapping") {
+		t.Errorf("expected overlapping prefix error regardless of order, got: %v", err)
+	}
+}
+
+func TestParse_CoolifySync_NonOverlappingOK(t *testing.T) {
+	data := []byte(`
+version: 1
+sources:
+  - type: tofu
+coolify_sync:
+  apps:
+    - uuid: app-royco
+      archive_prefix: "ROYCO_"
+    - uuid: app-kreeva
+      archive_prefix: "KREEVA_"
+`)
+	if _, err := Parse(data); err != nil {
+		t.Errorf("non-overlapping prefixes should be valid, got: %v", err)
+	}
+}
+
 func TestParse_MultiTofuMultiFile(t *testing.T) {
 	data := []byte(`
 version: 1
