@@ -37,17 +37,34 @@ func EncryptWriteAtomic(path string, plaintext []byte, passphrase string) error 
 // separately so callers that already have ciphertext (or are writing
 // non-encrypted artifacts like .env.local from env --write) can reuse
 // the same durability guarantees.
+//
+// Concurrency: each invocation creates a uniquely-named temp file via
+// os.CreateTemp, so two processes writing the same target path don't
+// trample each other's temp file. The winner of the rename race wins; the
+// loser overwrites the winner — last writer wins, but neither sees the
+// archive in a partial state mid-write.
 func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	// Temp file in the SAME directory as the target so the rename is
 	// guaranteed to stay within one filesystem (cross-fs rename can fail
-	// or fall back to copy+delete, defeating atomicity).
+	// or fall back to copy+delete, defeating atomicity). The "*" placeholder
+	// in CreateTemp's pattern is replaced with a random suffix so concurrent
+	// writers don't open and truncate each other's tmp file.
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
-	tmp := filepath.Join(dir, "."+base+".tmp")
-
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	f, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("ageutil.WriteFileAtomic: open temp %s: %w", tmp, err)
+		return fmt.Errorf("ageutil.WriteFileAtomic: create temp in %s: %w", dir, err)
+	}
+	tmp := f.Name()
+	// CreateTemp opens with 0600. Most callers want 0600 anyway (secrets);
+	// for ones that ask for something else (rare), chmod after open before
+	// any write.
+	if mode != 0600 {
+		if err := os.Chmod(tmp, mode); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return fmt.Errorf("ageutil.WriteFileAtomic: chmod temp: %w", err)
+		}
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
