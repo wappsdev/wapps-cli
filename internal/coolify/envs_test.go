@@ -39,6 +39,36 @@ func TestListAppEnvs_TopLevelArray(t *testing.T) {
 	}
 }
 
+func TestListAppEnvs_ParsesIsCoolify(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"uuid": "e1", "key": "SERVICE_URL_API", "value": "https://x", "is_coolify": true},
+			{"uuid": "e2", "key": "DB_URL", "value": "pg", "is_coolify": false},
+			{"uuid": "e3", "key": "NO_FLAG", "value": "v"}, // absent → false
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok")
+	envs, err := c.ListAppEnvs("app-1")
+	if err != nil {
+		t.Fatalf("ListAppEnvs: %v", err)
+	}
+	byKey := map[string]EnvEntry{}
+	for _, e := range envs {
+		byKey[e.Key] = e
+	}
+	if !byKey["SERVICE_URL_API"].IsCoolify {
+		t.Error("SERVICE_URL_API should be is_coolify=true")
+	}
+	if byKey["DB_URL"].IsCoolify {
+		t.Error("DB_URL should be is_coolify=false")
+	}
+	if byKey["NO_FLAG"].IsCoolify {
+		t.Error("absent is_coolify should default to false")
+	}
+}
+
 func TestListAppEnvs_DataEnvelope(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{

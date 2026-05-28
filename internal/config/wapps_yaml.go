@@ -74,8 +74,14 @@ type CoolifySync struct {
 	// Coolify env key absent from the app's mapped+stripped set is left
 	// alone. When true, such keys are deleted to mirror the archive — a
 	// destructive operation, off by default on purpose.
-	DeleteUnmanaged bool         `yaml:"delete_unmanaged"`
-	Apps            []CoolifyApp `yaml:"apps"`
+	DeleteUnmanaged bool `yaml:"delete_unmanaged"`
+	// ExcludeKeys are STRIPPED env-var names (as Coolify sees them, after
+	// archive_prefix removal) that sync never pushes, changes, or deletes.
+	// For keys owned by the deploy pipeline rather than the archive — e.g.
+	// SENTRY_RELEASE, which CI rewrites every deploy and would otherwise
+	// perpetually show as drift. Applied to both sides of the diff.
+	ExcludeKeys []string     `yaml:"exclude_keys"`
+	Apps        []CoolifyApp `yaml:"apps"`
 }
 
 // WappsYAML is the parsed schema. Defaults are applied during Load, so callers

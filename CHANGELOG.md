@@ -5,6 +5,9 @@ All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachange
 ## [Unreleased]
 
 ### Added
+- Coolify multi-app sync skips Coolify-managed envs (`is_coolify=true`, e.g. `SERVICE_FQDN_*`/`SERVICE_URL_*`): they're read-only, filtered from both sides of the diff so a `--force` never PATCHes a read-only env (422) and a stale archive copy can't be re-added. Applies to single-app too. Prints `(skipped N Coolify-managed keys)`.
+- `coolify_sync.exclude_keys` — operator deny-list of stripped key names (e.g. `SENTRY_RELEASE`) never pushed/changed/deleted, for keys owned by the deploy pipeline rather than the archive.
+
 - `wapps secrets sync --target=coolify --all-apps` — multi-app push. Each app declared in `.wapps.yaml`'s new `coolify_sync.apps` block receives only the archive keys matching its `archive_prefix`, with the prefix STRIPPED (opposite of single-app `--prefix` which prepends). Unmapped keys (Tofu outputs like `lab_01_*`, other apps' keys) are excluded automatically.
 - `.wapps.yaml` `coolify_sync` block: `apps[]` (uuid, name, archive_prefix) + `delete_unmanaged` (default false). Non-destructive by default — Coolify keys absent from an app's mapped set are left alone unless `delete_unmanaged: true`. Config-load rejects missing uuid/prefix, duplicate uuid, and overlapping prefixes (explicit over silent longest-match).
 - Update-available notice: released binaries check GitHub once a day (cached in `~/.cache/wapps/version-check.json`) and print a one-line upgrade hint on stderr. Interactive-only, opt-out via `WAPPS_NO_UPDATE_CHECK=1`, skips local `dev`/`main-<sha>` builds. Display version reconstructed from parsed integers so a compromised release can't inject terminal escapes.
