@@ -92,7 +92,10 @@ func runSyncCoolify(opts coolifyOptions) error {
 		return fmt.Errorf("sync --target=coolify: %w", err)
 	}
 
-	diff := computeCoolifyDiff(desired, current, true)
+	// Single-app honors the is_coolify filter (a universal correctness fix —
+	// never PATCH a read-only managed env) but not exclude_keys, which is a
+	// multi-app coolify_sync concept.
+	diff := computeCoolifyDiff(desired, current, true, nil)
 	writeCoolifyDiff(opts.stdoutW, diff)
 
 	if !opts.force {
@@ -121,6 +124,11 @@ func runSyncCoolifyAllApps(opts coolifyOptions, cfg *config.WappsYAML, archive m
 		return fmt.Errorf("sync --target=coolify --all-apps: no apps configured (add a coolify_sync.apps block to %s)", wappsYAMLPath)
 	}
 
+	excludeKeys := make(map[string]bool, len(cs.ExcludeKeys))
+	for _, k := range cs.ExcludeKeys {
+		excludeKeys[k] = true
+	}
+
 	var failed []string
 	for _, app := range cs.Apps {
 		label := app.Name
@@ -143,7 +151,7 @@ func runSyncCoolifyAllApps(opts coolifyOptions, cfg *config.WappsYAML, archive m
 			continue
 		}
 
-		diff := computeCoolifyDiff(desired, current, cs.DeleteUnmanaged)
+		diff := computeCoolifyDiff(desired, current, cs.DeleteUnmanaged, excludeKeys)
 		fmt.Fprintf(w, "\n=== %s (%s) ===\n", label, app.UUID)
 		writeCoolifyDiff(w, diff)
 
@@ -176,6 +184,13 @@ type coolifyDiff struct {
 	change map[string]coolifyChange  // key → {old, new} (PATCH)
 	remove map[string]string         // key → env-uuid (DELETE)
 	noop   []string                  // keys identical on both sides (visibility)
+
+	// Filtered-out keys, surfaced for operator visibility (names never
+	// printed — only counts). skippedManaged are Coolify-generated
+	// (is_coolify=true) read-only envs; skippedExcluded matched the
+	// operator's coolify_sync.exclude_keys deny-list.
+	skippedManaged  int
+	skippedExcluded int
 }
 
 // coolifyChange tracks the desired (new) value for a key whose current
@@ -192,18 +207,60 @@ type coolifyChange struct {
 // are left untouched (additive merge). The single-app mirror path passes
 // true (its documented destructive behavior); multi-app passes the
 // coolify_sync.delete_unmanaged config value (default false).
-func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry, deleteUnmanaged bool) coolifyDiff {
+//
+// Two classes of keys are filtered out of BOTH desired and current before
+// bucketing, so they can never land in add/change/remove:
+//   - Coolify-managed (is_coolify=true): read-only "magic" envs Coolify
+//     generates. A PATCH would 422; a DELETE under delete_unmanaged would
+//     fight Coolify. Dropping them from desired too prevents a stale archive
+//     copy from being re-added.
+//   - excludeKeys: operator deny-list (stripped names) for pipeline-owned
+//     keys like SENTRY_RELEASE that perpetually drift.
+func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry, deleteUnmanaged bool, excludeKeys map[string]bool) coolifyDiff {
 	diff := coolifyDiff{
 		add:    make(map[string]string),
 		change: make(map[string]coolifyChange),
 		remove: make(map[string]string),
 	}
-	currentByKey := make(map[string]coolify.EnvEntry, len(current))
+
+	// Build the skip set from Coolify-managed keys (seen in current) plus the
+	// operator deny-list, and copy desired so we can prune it non-destructively.
+	skip := make(map[string]bool)
 	for _, e := range current {
-		currentByKey[e.Key] = e
+		if e.IsCoolify {
+			skip[e.Key] = true
+			diff.skippedManaged++
+		}
+	}
+	prunedDesired := make(map[string]string, len(desired))
+	for k, v := range desired {
+		prunedDesired[k] = v
+	}
+	for k := range excludeKeys {
+		// Count an exclusion only when it would otherwise have mattered
+		// (present on either side), so the visibility line isn't noisy with
+		// deny-list entries that don't apply to this app.
+		_, inDesired := prunedDesired[k]
+		if inDesired || keyInCurrent(current, k) {
+			if !skip[k] {
+				diff.skippedExcluded++
+			}
+		}
+		skip[k] = true
 	}
 
-	for key, desiredVal := range desired {
+	currentByKey := make(map[string]coolify.EnvEntry, len(current))
+	for _, e := range current {
+		if skip[e.Key] {
+			continue
+		}
+		currentByKey[e.Key] = e
+	}
+	for k := range skip {
+		delete(prunedDesired, k)
+	}
+
+	for key, desiredVal := range prunedDesired {
 		if existing, ok := currentByKey[key]; ok {
 			if existing.Value != desiredVal {
 				diff.change[key] = coolifyChange{newValue: desiredVal}
@@ -216,12 +273,21 @@ func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry, d
 	}
 	if deleteUnmanaged {
 		for key, existing := range currentByKey {
-			if _, ok := desired[key]; !ok {
+			if _, ok := prunedDesired[key]; !ok {
 				diff.remove[key] = existing.UUID
 			}
 		}
 	}
 	return diff
+}
+
+func keyInCurrent(current []coolify.EnvEntry, key string) bool {
+	for _, e := range current {
+		if e.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // writeCoolifyDiff prints a human-readable diff to w. Always called (in both
@@ -246,6 +312,12 @@ func writeCoolifyDiff(w io.Writer, diff coolifyDiff) {
 		fmt.Fprintf(w, "      %s\n", k)
 	}
 	fmt.Fprintf(w, "  = %d unchanged\n", len(diff.noop))
+	if diff.skippedManaged > 0 {
+		fmt.Fprintf(w, "  (skipped %d Coolify-managed keys)\n", diff.skippedManaged)
+	}
+	if diff.skippedExcluded > 0 {
+		fmt.Fprintf(w, "  (skipped %d excluded keys)\n", diff.skippedExcluded)
+	}
 }
 
 func applyCoolifyDiff(client coolifyAPI, appUUID string, diff coolifyDiff, w io.Writer) error {

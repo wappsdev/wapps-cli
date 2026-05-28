@@ -221,14 +221,14 @@ func TestRunSyncCoolify_PropagatesListErr(t *testing.T) {
 }
 
 func TestComputeCoolifyDiff_EmptyBothSides(t *testing.T) {
-	diff := computeCoolifyDiff(map[string]string{}, nil, true)
+	diff := computeCoolifyDiff(map[string]string{}, nil, true, nil)
 	if len(diff.add)+len(diff.change)+len(diff.remove)+len(diff.noop) != 0 {
 		t.Errorf("expected fully empty diff, got %+v", diff)
 	}
 }
 
 func TestComputeCoolifyDiff_PureAdd(t *testing.T) {
-	diff := computeCoolifyDiff(map[string]string{"FOO": "bar"}, nil, true)
+	diff := computeCoolifyDiff(map[string]string{"FOO": "bar"}, nil, true, nil)
 	if len(diff.add) != 1 || diff.add["FOO"] != "bar" {
 		t.Errorf("add: %v", diff.add)
 	}
@@ -242,6 +242,7 @@ func TestComputeCoolifyDiff_PureRemove(t *testing.T) {
 		map[string]string{},
 		[]coolify.EnvEntry{{UUID: "u1", Key: "GONE", Value: "x"}},
 		true, // deleteUnmanaged
+		nil,
 	)
 	if len(diff.remove) != 1 || diff.remove["GONE"] != "u1" {
 		t.Errorf("remove: %v", diff.remove)
@@ -256,6 +257,7 @@ func TestComputeCoolifyDiff_DeleteUnmanagedFalse_NoRemove(t *testing.T) {
 		map[string]string{"KEEP": "v"},
 		[]coolify.EnvEntry{{UUID: "u1", Key: "COOLIFY_ONLY", Value: "x"}},
 		false, // deleteUnmanaged off
+		nil,
 	)
 	if len(diff.remove) != 0 {
 		t.Errorf("delete_unmanaged=false must leave remove empty, got: %v", diff.remove)
@@ -270,12 +272,88 @@ func TestComputeCoolifyDiff_ChangeAndNoop(t *testing.T) {
 		map[string]string{"A": "new", "B": "same"},
 		[]coolify.EnvEntry{{UUID: "u1", Key: "A", Value: "old"}, {UUID: "u2", Key: "B", Value: "same"}},
 		true,
+		nil,
 	)
 	if len(diff.change) != 1 || diff.change["A"].newValue != "new" {
 		t.Errorf("change: %v", diff.change)
 	}
 	if len(diff.noop) != 1 || diff.noop[0] != "B" {
 		t.Errorf("noop: %v", diff.noop)
+	}
+}
+
+// TestComputeCoolifyDiff_SkipsCoolifyManaged is the ADDENDUM core: an
+// is_coolify=true env must never appear in add/change/remove, even when the
+// archive carries a stale copy of it (which would otherwise become a change
+// or, after filtering current, a spurious add).
+func TestComputeCoolifyDiff_SkipsCoolifyManaged(t *testing.T) {
+	diff := computeCoolifyDiff(
+		// archive has a stale copy of the managed key + a real one
+		map[string]string{"SERVICE_URL_API": "https://stale", "REAL": "v"},
+		[]coolify.EnvEntry{
+			{UUID: "u1", Key: "SERVICE_URL_API", Value: "https://live", IsCoolify: true},
+			{UUID: "u2", Key: "REAL", Value: "old"},
+		},
+		true, // even with destructive mode on
+		nil,
+	)
+	if _, bad := diff.change["SERVICE_URL_API"]; bad {
+		t.Error("managed key must not be a change")
+	}
+	if _, bad := diff.add["SERVICE_URL_API"]; bad {
+		t.Error("stale archive copy of a managed key must not become an add")
+	}
+	if _, bad := diff.remove["SERVICE_URL_API"]; bad {
+		t.Error("managed key must not be removed even under delete_unmanaged")
+	}
+	if diff.skippedManaged != 1 {
+		t.Errorf("skippedManaged should be 1, got %d", diff.skippedManaged)
+	}
+	// The real key still diffs normally.
+	if diff.change["REAL"].newValue != "v" {
+		t.Errorf("real key should still change: %v", diff.change)
+	}
+}
+
+// TestComputeCoolifyDiff_ManagedCoolifyOnly_NotRemoved covers the case the
+// ADDENDUM calls out: a managed key that exists ONLY on Coolify (not in the
+// archive) must not be removed under delete_unmanaged=true.
+func TestComputeCoolifyDiff_ManagedCoolifyOnly_NotRemoved(t *testing.T) {
+	diff := computeCoolifyDiff(
+		map[string]string{"REAL": "v"},
+		[]coolify.EnvEntry{
+			{UUID: "u1", Key: "SERVICE_FQDN_API", Value: "x.sslip.io", IsCoolify: true},
+			{UUID: "u2", Key: "REAL", Value: "v"},
+		},
+		true,
+		nil,
+	)
+	if len(diff.remove) != 0 {
+		t.Errorf("managed Coolify-only key must not be removed, got: %v", diff.remove)
+	}
+	if diff.skippedManaged != 1 {
+		t.Errorf("skippedManaged should be 1, got %d", diff.skippedManaged)
+	}
+}
+
+// TestComputeCoolifyDiff_ExcludeKeys drops deny-listed keys from both sides
+// and counts the exclusion only when it actually matched something.
+func TestComputeCoolifyDiff_ExcludeKeys(t *testing.T) {
+	diff := computeCoolifyDiff(
+		map[string]string{"SENTRY_RELEASE": "v2", "REAL": "v"},
+		[]coolify.EnvEntry{
+			{UUID: "u1", Key: "SENTRY_RELEASE", Value: "v1"}, // would be a change
+			{UUID: "u2", Key: "REAL", Value: "v"},
+		},
+		true,
+		map[string]bool{"SENTRY_RELEASE": true, "NEVER_PRESENT": true},
+	)
+	if _, bad := diff.change["SENTRY_RELEASE"]; bad {
+		t.Error("excluded key must not be a change")
+	}
+	// Only SENTRY_RELEASE actually matched; NEVER_PRESENT shouldn't inflate count.
+	if diff.skippedExcluded != 1 {
+		t.Errorf("skippedExcluded should be 1 (only matched keys count), got %d", diff.skippedExcluded)
 	}
 }
 
@@ -666,6 +744,55 @@ func TestRunSyncCoolifyAllApps_ApplyFailure_IsolatedAndIdempotentHint(t *testing
 	// Operator told it's safe to re-run.
 	if !strings.Contains(buf.String(), "idempotent") {
 		t.Errorf("apply-failure message should mention idempotent re-run, got: %q", buf.String())
+	}
+}
+
+// TestRunSyncCoolifyAllApps_SkipsManagedAndExcluded is the end-to-end check:
+// a managed (is_coolify) key and an exclude_keys entry are never upserted,
+// even with --force.
+func TestRunSyncCoolifyAllApps_SkipsManagedAndExcluded(t *testing.T) {
+	fake, opts := setupMultiApp(t,
+		map[string]string{
+			"KREEVA_WEB_SERVICE_URL_API": "https://stale", // managed (live), stale archive copy
+			"KREEVA_WEB_SENTRY_RELEASE":  "abc123",         // excluded
+			"KREEVA_WEB_REAL":            "v",              // genuine
+		},
+		`coolify_sync:
+  exclude_keys:
+    - SENTRY_RELEASE
+  apps:
+    - uuid: kreeva-uuid
+      archive_prefix: "KREEVA_WEB_"
+`)
+	fake.current["kreeva-uuid"] = []coolify.EnvEntry{
+		{UUID: "c1", Key: "SERVICE_URL_API", Value: "https://live", IsCoolify: true},
+	}
+	opts.force = true
+	buf := &bytes.Buffer{}
+	opts.stdoutW = buf
+
+	if err := runSyncCoolify(opts); err != nil {
+		t.Fatalf("runSyncCoolify: %v", err)
+	}
+
+	for _, u := range fake.upserts["kreeva-uuid"] {
+		if u.key == "SERVICE_URL_API" {
+			t.Error("managed key was upserted (should be skipped)")
+		}
+		if u.key == "SENTRY_RELEASE" {
+			t.Error("excluded key was upserted (should be skipped)")
+		}
+	}
+	// REAL is the only genuine push.
+	if len(fake.upserts["kreeva-uuid"]) != 1 || fake.upserts["kreeva-uuid"][0].key != "REAL" {
+		t.Errorf("only REAL should be pushed, got: %+v", fake.upserts["kreeva-uuid"])
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Coolify-managed") {
+		t.Errorf("should report skipped managed keys, got: %q", out)
+	}
+	if !strings.Contains(out, "excluded") {
+		t.Errorf("should report skipped excluded keys, got: %q", out)
 	}
 }
 

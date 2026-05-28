@@ -75,6 +75,8 @@ targets:                            # OUTPUT (local files) — optional
 
 coolify_sync:                       # OUTPUT (Coolify multi-app) — optional
   delete_unmanaged: false           # default: never delete Coolify-only keys
+  exclude_keys:                     # stripped names never pushed/diffed
+    - SENTRY_RELEASE                # (deploy-pipeline-owned, perpetual drift)
   apps:
     - uuid: vaesbm45up4jyk7hhk77ka74
       name: kreeva-web              # comment-only, for readability
@@ -158,6 +160,20 @@ keys) are silently excluded. A prefix matching zero keys warns and skips.
 One app failing (e.g. 404 on a stale UUID) doesn't stop the others; the
 command exits non-zero. Apply is fail-fast but recovery is a plain idempotent
 re-run (the diff is recomputed from live state each time).
+
+### Keys that are never touched
+
+Two classes are filtered out of **both sides** of the diff (never add/change/
+remove), with a `(skipped N …)` visibility line:
+
+- **Coolify-managed** (`is_coolify=true`) — magic envs Coolify generates
+  (`SERVICE_FQDN_*`, `SERVICE_URL_*`). They're read-only; a PATCH would 422.
+  Filtering them from `desired` too means a stale archive copy can't get
+  re-added. Applies to **both** single-app and multi-app (it's a property of
+  the live data, not config).
+- **`coolify_sync.exclude_keys`** — operator deny-list of stripped names for
+  pipeline-owned keys (`SENTRY_RELEASE` etc.) that CI rewrites every deploy
+  and would otherwise show perpetual drift. Multi-app only.
 
 ---
 

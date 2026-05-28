@@ -287,6 +287,16 @@ wapps secrets sync --target=coolify --all-apps --force   # apply
 ```
 
 Notes:
+- **Coolify-managed envs are skipped automatically.** Vars Coolify generates
+  (`SERVICE_FQDN_*`, `SERVICE_URL_*`, marked `is_coolify=true`) are read-only;
+  sync never tries to push/change/delete them. The dry-run prints
+  `(skipped N Coolify-managed keys)`.
+- **Pipeline-owned keys** (e.g. `SENTRY_RELEASE` that CI rewrites each deploy)
+  can be deny-listed so they don't show perpetual drift:
+  ```yaml
+  coolify_sync:
+    exclude_keys: [SENTRY_RELEASE]
+  ```
 - **Non-destructive by default.** Unlike single-app `--force`, multi-app
   leaves Coolify-only keys alone unless you set `delete_unmanaged: true`.
 - **Unmapped keys are skipped silently** — Tofu outputs (`lab_01_*`) and

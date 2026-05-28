@@ -14,6 +14,11 @@ type EnvEntry struct {
 	Key         string `json:"key"`
 	Value       string `json:"value"`
 	IsBuildtime bool   `json:"is_buildtime"`
+	// IsCoolify marks env vars Coolify generates and manages itself
+	// (SERVICE_FQDN_*, SERVICE_URL_*, etc.). The UI shows these as
+	// "cannot be edited manually". A PATCH against one returns 422 or
+	// silently no-ops, so sync must exclude them from the diff entirely.
+	IsCoolify bool `json:"is_coolify"`
 }
 
 // ListAppEnvs returns every env entry on the given application. Used by
@@ -40,6 +45,7 @@ func (c *Client) ListAppEnvs(appUUID string) ([]EnvEntry, error) {
 			Key:         asString(m, "key"),
 			Value:       asString(m, "value"),
 			IsBuildtime: asBool(m, "is_buildtime"),
+			IsCoolify:   asBool(m, "is_coolify"),
 		}
 		out = append(out, entry)
 	}
