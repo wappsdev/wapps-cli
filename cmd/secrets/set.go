@@ -124,7 +124,13 @@ func runSet(key string, opts setOptions) error {
 		return err
 	}
 	if err := source.WriteFileSource(filePath, key, value); err != nil {
-		return fmt.Errorf("secrets.set: %w", err)
+		// Archive was written but file source write failed. The next
+		// `wapps secrets sync` would read the file source (missing the
+		// new key), merge, and overwrite the archive — silently undoing
+		// this set. Surface the divergence loudly with a recovery hint
+		// so the operator can re-run set (which is idempotent) or fix
+		// the file source manually before any sync runs.
+		return fmt.Errorf("secrets.set: archive updated at %s but file source write failed: %w (the next 'wapps secrets sync' would overwrite the new key — re-run 'wapps secrets set %s' after fixing the file source error, or manually add %s to %s before syncing)", cfg.Dest, err, key, key, filePath)
 	}
 
 	// Auto-apply targets after the archive write so consumption files

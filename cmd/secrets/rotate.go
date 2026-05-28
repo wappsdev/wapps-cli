@@ -14,6 +14,10 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
+// minNewPassphraseLen is the floor for WAPPS_SECRETS_PASSPHRASE_NEW. Matches
+// the generated-password length recommended by Apple Passwords and 1Password.
+const minNewPassphraseLen = 16
+
 var rotateMasterCmd = &cobra.Command{
 	Use:   "rotate-master",
 	Short: "Re-encrypt archive with NEW master passphrase + write audit log",
@@ -47,6 +51,15 @@ func runRotateMaster(lookup func(string) string) error {
 	newPass := lookup("WAPPS_SECRETS_PASSPHRASE_NEW")
 	if newPass == "" {
 		return fmt.Errorf("rotate-master: set WAPPS_SECRETS_PASSPHRASE_NEW (new passphrase) — save to Apple Passwords first")
+	}
+	// Minimum length: 16 chars. Operators who accidentally set
+	// PASSPHRASE_NEW='x' (typo, half-pasted, default-shell-fragment) would
+	// otherwise re-encrypt the archive under brute-forceable protection and
+	// the failure would be silent — rotation succeeds, audit log records it,
+	// team distributes the weak passphrase. 16 chars is the same minimum
+	// 1Password / Apple Passwords recommend for generated passwords.
+	if len(newPass) < minNewPassphraseLen {
+		return fmt.Errorf("rotate-master: WAPPS_SECRETS_PASSPHRASE_NEW too short (%d chars; need >= %d) — generate one with Apple Passwords or 1Password before retrying", len(newPass), minNewPassphraseLen)
 	}
 	if oldPass == newPass {
 		return fmt.Errorf("rotate-master: new passphrase equals old — nothing to rotate")

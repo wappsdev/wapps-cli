@@ -17,7 +17,12 @@ func TestVersion_DefaultIsDev(t *testing.T) {
 	// We can't easily test the ldflag-injected case here (test binaries
 	// don't carry the release ldflag), but we CAN assert the default
 	// fallback so a future refactor doesn't silently clear it.
-	if Version != "dev" && Version == "" {
+	//
+	// Earlier this guard read `if Version != "dev" && Version == ""` which
+	// is unsatisfiable (a string can't simultaneously be != "dev" and ==
+	// "") — meaning the test could never fail and so the assertion was
+	// load-bearing for nothing. Tightened to `Version == ""`.
+	if Version == "" {
 		t.Errorf("Version must default to a non-empty placeholder; got empty")
 	}
 }

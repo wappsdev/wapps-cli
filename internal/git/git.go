@@ -7,7 +7,14 @@ import (
 	"strings"
 )
 
-// HasDrift reports whether `file` differs between HEAD and origin/main.
+// HasDrift reports whether `file` differs between HEAD and the remote-
+// tracking branch for the repo's default branch (origin/main, origin/master,
+// or whatever `origin/HEAD` resolves to). Earlier versions hardcoded
+// `origin/main`, which silently produced spurious drift=true on repos whose
+// default is `master`/`trunk`/etc. — the local sha was real but the remote
+// ref didn't exist, so fileSha returned "" and the comparison reported
+// drift even when there was none.
+//
 // Errors are returned to the caller; the soft-fail (warn + proceed) is the
 // caller's policy decision (see cmd/root.go PersistentPreRunE for the preflight
 // soft-fail behavior).
@@ -19,11 +26,30 @@ func HasDrift(repoPath, file string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("git.HasDrift: local sha: %w", err)
 	}
-	remoteSha, err := fileSha(repoPath, file, "origin/main")
+	remoteRef, err := defaultRemoteRef(repoPath)
+	if err != nil {
+		return false, fmt.Errorf("git.HasDrift: resolve default remote ref: %w", err)
+	}
+	remoteSha, err := fileSha(repoPath, file, remoteRef)
 	if err != nil {
 		return false, fmt.Errorf("git.HasDrift: remote sha: %w", err)
 	}
 	return localSha != remoteSha, nil
+}
+
+// defaultRemoteRef returns the name of the remote-tracking branch that
+// follows origin's HEAD (typically "origin/main", "origin/master", etc.).
+// Falls back to "origin/main" if the symbolic ref isn't set so older repos
+// with the previous hardcoded behavior keep working.
+func defaultRemoteRef(repoPath string) (string, error) {
+	out, err := runGit(repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	if err != nil {
+		// origin/HEAD may not be set on freshly cloned repos or test
+		// fixtures. Fall back to origin/main — the previous behavior — so
+		// we don't regress repos that worked before this change.
+		return "origin/main", nil
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // Pull runs `git pull --rebase` in repoPath.

@@ -90,8 +90,26 @@ func TestFileSource_RejectsMalformedLine(t *testing.T) {
 	if !strings.Contains(msg, "line 2") {
 		t.Errorf("error should name line number, got: %v", err)
 	}
-	if !strings.Contains(msg, "MALFORMED_NO_EQUAL") {
-		t.Errorf("error should quote offending line, got: %v", err)
+	// We deliberately do NOT echo the line content — if a user pasted a
+	// raw secret with no KEY= prefix, the line IS the value. We report the
+	// length instead so the operator can pinpoint without leaking.
+	if !strings.Contains(msg, "line length") {
+		t.Errorf("error should report line length, got: %v", err)
+	}
+}
+
+// TestFileSource_MalformedLineErrorDoesNotEchoSecretValue is the explicit
+// safety regression: if a token-shaped value is on a malformed line, the
+// error message must NOT contain it.
+func TestFileSource_MalformedLineErrorDoesNotEchoSecretValue(t *testing.T) {
+	secret := "sk_live_supersecret_token_pasted_by_mistake"
+	data := []byte("VALID=ok\n" + secret + "\n")
+	_, err := parseEnvFile(".env", data)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("malformed-line error leaked secret value: %v", err)
 	}
 }
 

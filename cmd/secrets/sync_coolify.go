@@ -86,7 +86,7 @@ func runSyncCoolify(opts coolifyOptions) error {
 		return nil
 	}
 
-	return applyCoolifyDiff(client, opts.appUUID, diff)
+	return applyCoolifyDiff(client, opts.appUUID, diff, opts.stdoutW)
 }
 
 // coolifyDiff buckets desired vs current Coolify state. Computed before
@@ -98,8 +98,12 @@ type coolifyDiff struct {
 	noop   []string                  // keys identical on both sides (visibility)
 }
 
+// coolifyChange tracks the desired (new) value for a key whose current
+// Coolify value differs. We deliberately do NOT carry the old value across
+// the apply step — earlier versions kept it for "future diff display" that
+// was never used and meant the Coolify-side plaintext lived in memory for
+// the whole apply phase as a GC-visible string.
 type coolifyChange struct {
-	oldValue string
 	newValue string
 }
 
@@ -117,7 +121,7 @@ func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry) c
 	for key, desiredVal := range desired {
 		if existing, ok := currentByKey[key]; ok {
 			if existing.Value != desiredVal {
-				diff.change[key] = coolifyChange{oldValue: existing.Value, newValue: desiredVal}
+				diff.change[key] = coolifyChange{newValue: desiredVal}
 			} else {
 				diff.noop = append(diff.noop, key)
 			}
@@ -157,7 +161,7 @@ func writeCoolifyDiff(w *os.File, diff coolifyDiff) {
 	fmt.Fprintf(w, "  = %d unchanged\n", len(diff.noop))
 }
 
-func applyCoolifyDiff(client coolifyAPI, appUUID string, diff coolifyDiff) error {
+func applyCoolifyDiff(client coolifyAPI, appUUID string, diff coolifyDiff, w *os.File) error {
 	for _, key := range sortedKeys(diff.add) {
 		if err := client.UpsertAppEnv(appUUID, key, diff.add[key], false); err != nil {
 			return fmt.Errorf("apply ADD %s: %w", key, err)
@@ -173,7 +177,13 @@ func applyCoolifyDiff(client coolifyAPI, appUUID string, diff coolifyDiff) error
 			return fmt.Errorf("apply REMOVE %s: %w", key, err)
 		}
 	}
-	fmt.Fprintf(os.Stdout, "✓ Applied: %d added, %d changed, %d removed\n",
+	// Write through the injected writer (test buffer or os.Stdout in prod).
+	// Earlier this hard-coded os.Stdout, which bypassed the stdoutW
+	// discipline the rest of the function uses.
+	if w == nil {
+		w = os.Stdout
+	}
+	fmt.Fprintf(w, "✓ Applied: %d added, %d changed, %d removed\n",
 		len(diff.add), len(diff.change), len(diff.remove))
 	return nil
 }
