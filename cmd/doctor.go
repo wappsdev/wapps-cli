@@ -104,13 +104,14 @@ func runDoctorFull(out interface{ Write(p []byte) (int, error) }) error {
 		fmt.Fprintln(out, "✓ R2 access env vars set")
 	}
 
-	// Coolify API reachable
+	// Coolify API reachable. COOLIFY_URL is the BASE url (matches getEndpoint
+	// in cmd/coolify/coolify.go), so we append /health here. Earlier this
+	// path used COOLIFY_URL verbatim, which made doctor probe the base URL
+	// when an operator had set it and report a false failure if the base
+	// URL didn't respond with a 2xx to a plain GET.
 	client := &http.Client{Timeout: 5 * time.Second}
-	coolifyURL := os.Getenv("COOLIFY_URL")
-	if coolifyURL == "" {
-		coolifyURL = "https://coolify.meapps.dev/api/v1/health"
-	}
-	req, reqErr := http.NewRequest("GET", coolifyURL, nil)
+	coolifyHealthURL := coolifyHealthEndpoint(os.Getenv("COOLIFY_URL"))
+	req, reqErr := http.NewRequest("GET", coolifyHealthURL, nil)
 	if reqErr != nil {
 		fmt.Fprintf(out, "✗ Coolify API URL invalid: %v\n", reqErr)
 		allOK = false
@@ -145,6 +146,25 @@ func runDoctorFull(out interface{ Write(p []byte) (int, error) }) error {
 	}
 	fmt.Fprintln(out, "\nAll checks passed.")
 	return nil
+}
+
+// coolifyHealthEndpoint derives the /health URL from the operator's base
+// COOLIFY_URL. If the operator didn't set anything we fall back to the
+// hard-coded default. Otherwise we append /health to whatever they gave us
+// — accommodating the COOLIFY_URL convention shared with cmd/coolify which
+// stores the base ("https://coolify.example.com/api/v1") rather than a
+// concrete endpoint.
+func coolifyHealthEndpoint(base string) string {
+	if base == "" {
+		return "https://coolify.meapps.dev/api/v1/health"
+	}
+	if strings.HasSuffix(base, "/health") {
+		return base
+	}
+	if strings.HasSuffix(base, "/") {
+		return base + "health"
+	}
+	return base + "/health"
 }
 
 func init() {

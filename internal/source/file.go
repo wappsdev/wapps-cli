@@ -76,7 +76,12 @@ func parseEnvFile(path string, data []byte) (map[string]json.RawMessage, error) 
 		line = strings.TrimPrefix(line, "export ")
 		idx := strings.Index(line, "=")
 		if idx <= 0 {
-			return nil, fmt.Errorf("source[file (%s)]: line %d: no '=' delimiter (got %q)", path, lineNo, line)
+			// Don't echo the raw line — when a user accidentally pastes a
+			// bare token into a .env (no `KEY=` prefix), the whole token
+			// IS the line. We report length so operators can pinpoint the
+			// line without dragging the value into terminal output, CI
+			// logs, or AI agent transcripts.
+			return nil, fmt.Errorf("source[file (%s)]: line %d: no '=' delimiter (line length %d)", path, lineNo, len(line))
 		}
 		key := strings.TrimSpace(line[:idx])
 		val := strings.TrimSpace(line[idx+1:])

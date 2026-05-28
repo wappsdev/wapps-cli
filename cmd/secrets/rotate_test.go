@@ -15,8 +15,11 @@ func setupRotateTest(t *testing.T, archive map[string]string) (oldPass, newPass 
 	t.Helper()
 	tmp := t.TempDir()
 	t.Chdir(tmp)
-	oldPass = "old-pp-123"
-	newPass = "new-pp-456"
+	// Both passphrases must be >= minNewPassphraseLen (16) so the rotation
+	// flow's new-pp length guard is satisfied. Test fixtures use long
+	// padding so they look obviously synthetic.
+	oldPass = "old-pp-test-fixture-123"
+	newPass = "new-pp-test-fixture-456"
 
 	if err := os.MkdirAll("secrets", 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -146,7 +149,7 @@ func TestRunRotateMaster_AppendsToExistingLog(t *testing.T) {
 	}
 
 	// Second rotation: newPass becomes old, generate a fresh new one.
-	even2Pass := "newer-pp-789"
+	even2Pass := "newer-pp-test-fixture-789"
 	lookup2 := func(k string) string {
 		switch k {
 		case "WAPPS_SECRETS_PASSPHRASE":
@@ -173,7 +176,7 @@ func TestRunRotateMaster_ErrorWhenSamePassphrase(t *testing.T) {
 	lookup := func(k string) string {
 		switch k {
 		case "WAPPS_SECRETS_PASSPHRASE", "WAPPS_SECRETS_PASSPHRASE_NEW":
-			return "same-pp"
+			return "same-pp-padded-for-length"
 		}
 		return ""
 	}
@@ -261,5 +264,29 @@ func TestCountArchiveKeys_ValidJSON(t *testing.T) {
 func TestCountArchiveKeys_InvalidJSONReturnsMinusOne(t *testing.T) {
 	if got := countArchiveKeys([]byte(`not json`)); got != -1 {
 		t.Errorf("got %d, want -1 for non-JSON", got)
+	}
+}
+
+// TestRunRotateMaster_RejectsShortNewPassphrase is the regression for the
+// silent weak-passphrase rotation: an operator who set WAPPS_SECRETS_PASSPHRASE_NEW=x
+// (typo, partial paste) previously rotated successfully and the team
+// distributed the brute-forceable passphrase. Now the rotation refuses.
+func TestRunRotateMaster_RejectsShortNewPassphrase(t *testing.T) {
+	oldPass, _ := setupRotateTest(t, map[string]string{"K": "v"})
+	lookup := func(k string) string {
+		switch k {
+		case "WAPPS_SECRETS_PASSPHRASE":
+			return oldPass
+		case "WAPPS_SECRETS_PASSPHRASE_NEW":
+			return "x" // 1 char, well below min
+		}
+		return ""
+	}
+	err := runRotateMaster(lookup)
+	if err == nil {
+		t.Fatal("expected error for too-short new passphrase")
+	}
+	if !strings.Contains(err.Error(), "too short") {
+		t.Errorf("error should explain length, got: %v", err)
 	}
 }

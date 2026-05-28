@@ -34,6 +34,14 @@ var setLabelsCmd = &cobra.Command{
 			}
 		}
 
+		// Refuse to PATCH with an empty label set. Coolify's PATCH treats
+		// custom_labels="" as "clear all labels", which is a destructive
+		// no-warn data loss path — an operator who forgot --label would
+		// silently wipe their traefik routing rules.
+		if len(filtered) == 0 {
+			return fmt.Errorf("set-labels: no labels to set (pass --label at least once); refusing to wipe existing labels")
+		}
+
 		c := coolify.New(getEndpoint(), token)
 		if err := c.SetCustomLabels(slAppUUID, filtered); err != nil {
 			return err

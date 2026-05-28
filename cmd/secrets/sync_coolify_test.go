@@ -3,6 +3,7 @@ package secrets
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -292,10 +293,10 @@ func TestApplyCoolifyDiff_OrdersAddChangeRemove(t *testing.T) {
 	fake := &fakeCoolify{}
 	diff := coolifyDiff{
 		add:    map[string]string{"NEW": "v"},
-		change: map[string]coolifyChange{"EXISTING": {oldValue: "o", newValue: "n"}},
+		change: map[string]coolifyChange{"EXISTING": {newValue: "n"}},
 		remove: map[string]string{"GONE": "u1"},
 	}
-	if err := applyCoolifyDiff(fake, "app-1", diff); err != nil {
+	if err := applyCoolifyDiff(fake, "app-1", diff, nil); err != nil {
 		t.Fatalf("applyCoolifyDiff: %v", err)
 	}
 	if len(fake.upserts) != 2 {
@@ -313,12 +314,37 @@ func TestApplyCoolifyDiff_StopsOnFirstError(t *testing.T) {
 		change: map[string]coolifyChange{},
 		remove: map[string]string{},
 	}
-	err := applyCoolifyDiff(fake, "app", diff)
+	err := applyCoolifyDiff(fake, "app", diff, nil)
 	if err == nil {
 		t.Fatal("expected error to propagate")
 	}
 	// First add should have been attempted, but flow stops there.
 	if len(fake.upserts) > 1 {
 		t.Errorf("should stop on first failure, got %d attempts", len(fake.upserts))
+	}
+}
+
+// TestApplyCoolifyDiff_WritesToInjectedWriter is the regression for the
+// os.Stdout-bypass fix: the "✓ Applied" summary must go through the writer
+// the caller passed in (test buffer in tests, opts.stdoutW in production),
+// not the hard-coded process stdout. Earlier the line would always land on
+// real stdout regardless of who called applyCoolifyDiff.
+func TestApplyCoolifyDiff_WritesToInjectedWriter(t *testing.T) {
+	fake := &fakeCoolify{}
+	diff := coolifyDiff{
+		add:    map[string]string{"NEW": "v"},
+		change: map[string]coolifyChange{},
+		remove: map[string]string{},
+	}
+	// Use an os.File backed by a pipe so we can read what was written without
+	// real stdout being involved.
+	r, w, _ := os.Pipe()
+	if err := applyCoolifyDiff(fake, "app", diff, w); err != nil {
+		t.Fatalf("applyCoolifyDiff: %v", err)
+	}
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "Applied") {
+		t.Errorf("expected 'Applied' on injected writer, got: %q", out)
 	}
 }
