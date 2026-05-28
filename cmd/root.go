@@ -9,6 +9,8 @@ import (
 	gitcmd "github.com/wappsdev/wapps-cli/cmd/git"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
 	"github.com/wappsdev/wapps-cli/internal/git"
+	"github.com/wappsdev/wapps-cli/internal/updatecheck"
+	"golang.org/x/term"
 )
 
 // Version is set at link time by GoReleaser via:
@@ -63,10 +65,33 @@ It wraps:
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+
+	// Best-effort "newer release available" notice, printed AFTER the command's
+	// own output so it's the last thing the user sees. Never affects exit code.
+	maybeNotifyUpdate()
+
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// maybeNotifyUpdate gates the update check so it only runs in interactive
+// sessions and never in CI/scripts/pipes:
+//   - WAPPS_NO_UPDATE_CHECK set → fully disabled (opt-out for any context)
+//   - stderr is not a TTY → skip (piped output, CI logs, cron)
+//
+// The version/semver gating (skip "dev" and "main-<sha>" local builds) lives
+// in updatecheck.MaybeNotify itself.
+func maybeNotifyUpdate() {
+	if os.Getenv("WAPPS_NO_UPDATE_CHECK") != "" {
+		return
+	}
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		return
+	}
+	updatecheck.MaybeNotify(os.Stderr, updatecheck.Options{CurrentVersion: Version})
 }
 
 func init() {

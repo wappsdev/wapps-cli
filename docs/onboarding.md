@@ -30,6 +30,20 @@ If you're not on macOS, build from source:
 go install github.com/wappsdev/wapps-cli@latest
 ```
 
+### Staying current
+
+Released binaries check GitHub once a day (cached in
+`~/.cache/wapps/version-check.json`) and print a one-line notice on stderr
+when a newer version is out:
+
+```
+⚡ wapps v0.13.0 is available (you have v0.12.0). Upgrade: brew upgrade wapps
+```
+
+The check only runs in interactive terminals — it's silent in CI, scripts,
+and piped output. Local `go build` binaries (version `dev` or `main-<sha>`)
+never nag. To disable entirely, set `WAPPS_NO_UPDATE_CHECK=1`.
+
 ## Step 2 — Get the master passphrase
 
 Ask the operator who runs your team's rotations (currently the founder).
