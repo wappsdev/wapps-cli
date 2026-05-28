@@ -2,6 +2,11 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [v0.13.2] - 2026-05-29
+
+### Fixed
+- Coolify sync now ignores per-PR preview-deployment env copies (`is_preview=true`). Coolify returns the same key twice (runtime + preview) with possibly different values; the diff now compares the archive against the RUNTIME entry only, so preview-duplicated keys no longer show perpetual false drift. A key existing only as preview is treated as absent. Prints `(skipped N preview-context entries)`. Combined filter: a current entry diffs only when `is_coolify=false AND is_preview=false`.
+
 ## [v0.13.1] - 2026-05-28
 
 ### Added

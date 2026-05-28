@@ -336,6 +336,66 @@ func TestComputeCoolifyDiff_ManagedCoolifyOnly_NotRemoved(t *testing.T) {
 	}
 }
 
+// TestComputeCoolifyDiff_SkipsPreviewDuplicate is ADDENDUM 2: Coolify returns
+// the same key twice (runtime is_preview=false + preview is_preview=true) with
+// different values. The diff must compare the archive against the RUNTIME
+// value, not the preview value — otherwise every preview-dup key shows
+// perpetual false drift.
+func TestComputeCoolifyDiff_SkipsPreviewDuplicate(t *testing.T) {
+	diff := computeCoolifyDiff(
+		map[string]string{"DATABASE_URL": "runtime-val"}, // archive = runtime value
+		[]coolify.EnvEntry{
+			{UUID: "r1", Key: "DATABASE_URL", Value: "runtime-val", IsPreview: false},
+			{UUID: "p1", Key: "DATABASE_URL", Value: "preview-val", IsPreview: true},
+		},
+		true,
+		nil,
+	)
+	if len(diff.change) != 0 {
+		t.Errorf("preview dup must not cause a change (runtime matches), got: %v", diff.change)
+	}
+	if len(diff.noop) != 1 || diff.noop[0] != "DATABASE_URL" {
+		t.Errorf("runtime entry should noop, got: %+v", diff.noop)
+	}
+	if diff.skippedPreview != 1 {
+		t.Errorf("skippedPreview should be 1, got %d", diff.skippedPreview)
+	}
+}
+
+// TestComputeCoolifyDiff_PreviewDupOrderIndependent guards the original bug:
+// the naive last-write-wins map made the result depend on Coolify's return
+// order. With the preview filter, the runtime entry wins regardless of order.
+func TestComputeCoolifyDiff_PreviewDupOrderIndependent(t *testing.T) {
+	for _, order := range [][]coolify.EnvEntry{
+		{{Key: "K", Value: "rt", IsPreview: false}, {Key: "K", Value: "pv", IsPreview: true}},
+		{{Key: "K", Value: "pv", IsPreview: true}, {Key: "K", Value: "rt", IsPreview: false}},
+	} {
+		diff := computeCoolifyDiff(map[string]string{"K": "rt"}, order, true, nil)
+		if len(diff.change) != 0 {
+			t.Errorf("order %v: runtime matches, expected no change, got %v", order, diff.change)
+		}
+	}
+}
+
+// TestComputeCoolifyDiff_PreviewOnlyKeyAbsentFromCurrent: a key existing ONLY
+// as a preview entry is treated as absent from current — so if the archive
+// has it, it's an add (a runtime env we should create), not a comparison
+// against the preview value.
+func TestComputeCoolifyDiff_PreviewOnlyKeyAbsentFromCurrent(t *testing.T) {
+	diff := computeCoolifyDiff(
+		map[string]string{"PREVIEW_ONLY": "v"},
+		[]coolify.EnvEntry{{UUID: "p1", Key: "PREVIEW_ONLY", Value: "other", IsPreview: true}},
+		true,
+		nil,
+	)
+	if _, ok := diff.add["PREVIEW_ONLY"]; !ok {
+		t.Errorf("preview-only key should be absent from current → add, got: %+v", diff)
+	}
+	if len(diff.change) != 0 {
+		t.Errorf("must not compare against preview value, got: %v", diff.change)
+	}
+}
+
 // TestComputeCoolifyDiff_ExcludeKeys drops deny-listed keys from both sides
 // and counts the exclusion only when it actually matched something.
 func TestComputeCoolifyDiff_ExcludeKeys(t *testing.T) {

@@ -69,6 +69,38 @@ func TestListAppEnvs_ParsesIsCoolify(t *testing.T) {
 	}
 }
 
+func TestListAppEnvs_ParsesIsPreview(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"uuid": "r1", "key": "DB", "value": "rt", "is_preview": false},
+			{"uuid": "p1", "key": "DB", "value": "pv", "is_preview": true},
+			{"uuid": "n1", "key": "OTHER", "value": "v"}, // absent → false
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok")
+	envs, err := c.ListAppEnvs("app-1")
+	if err != nil {
+		t.Fatalf("ListAppEnvs: %v", err)
+	}
+	var previewSeen, runtimeSeen bool
+	for _, e := range envs {
+		if e.Key == "DB" && e.IsPreview {
+			previewSeen = true
+		}
+		if e.Key == "DB" && !e.IsPreview {
+			runtimeSeen = true
+		}
+		if e.Key == "OTHER" && e.IsPreview {
+			t.Error("absent is_preview should default to false")
+		}
+	}
+	if !previewSeen || !runtimeSeen {
+		t.Errorf("both preview and runtime DB entries should parse (preview=%v runtime=%v)", previewSeen, runtimeSeen)
+	}
+}
+
 func TestListAppEnvs_DataEnvelope(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{

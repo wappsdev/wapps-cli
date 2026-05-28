@@ -19,6 +19,13 @@ type EnvEntry struct {
 	// "cannot be edited manually". A PATCH against one returns 422 or
 	// silently no-ops, so sync must exclude them from the diff entirely.
 	IsCoolify bool `json:"is_coolify"`
+	// IsPreview marks the per-PR preview-deployment copy of an env. Coolify
+	// returns the SAME key twice when it's defined for both runtime and
+	// preview — once is_preview=false (production runtime, what we manage)
+	// and once is_preview=true, with possibly different values. Sync must
+	// ignore the preview entry or every preview-duplicated key shows false
+	// drift (the preview value lands last in a naive key→entry map).
+	IsPreview bool `json:"is_preview"`
 }
 
 // ListAppEnvs returns every env entry on the given application. Used by
@@ -46,6 +53,7 @@ func (c *Client) ListAppEnvs(appUUID string) ([]EnvEntry, error) {
 			Value:       asString(m, "value"),
 			IsBuildtime: asBool(m, "is_buildtime"),
 			IsCoolify:   asBool(m, "is_coolify"),
+			IsPreview:   asBool(m, "is_preview"),
 		}
 		out = append(out, entry)
 	}
