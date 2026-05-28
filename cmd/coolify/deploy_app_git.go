@@ -36,14 +36,12 @@ var deployAppGitCmd = &cobra.Command{
 
 		c := coolify.New(getEndpoint(), token)
 
-		// If build args are present, defer the initial deploy. We want build
-		// args set BEFORE Coolify kicks off the docker build, so we override
-		// instant_deploy=false on create, push build args, then trigger deploy
-		// ourselves.
-		createInstant := dgInstantDeploy
-		if len(dgBuildArgs) > 0 && dgInstantDeploy {
-			createInstant = false
-		}
+		// shouldDeferDeploy: when build args are present, we MUST set them
+		// before Coolify kicks off the docker build (Coolify ignores
+		// post-build env changes for the in-flight build). The decision
+		// logic is extracted to a helper so it can be unit-tested without
+		// needing a real Coolify instance.
+		createInstant := dgInstantDeploy && !shouldDeferDeploy(dgInstantDeploy, dgBuildArgs)
 
 		uuid, err := c.CreatePrivateGitHubAppApp(coolify.CreateGitHubAppAppRequest{
 			ProjectUUID:        dgProjectUUID,
@@ -84,6 +82,15 @@ var deployAppGitCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// shouldDeferDeploy returns true when the create call must NOT trigger an
+// instant deploy because we still have build args to push first. If the
+// operator already passed --instant-deploy=false, no deferral needed (the
+// human is already controlling the trigger). If no build args, no deferral
+// needed (nothing to push between create and deploy).
+func shouldDeferDeploy(instantDeployRequested bool, buildArgs []string) bool {
+	return instantDeployRequested && len(buildArgs) > 0
 }
 
 func init() {
