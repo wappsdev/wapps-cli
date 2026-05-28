@@ -182,24 +182,16 @@ func decryptArchive(path, passphrase string) (map[string]json.RawMessage, error)
 	return out, nil
 }
 
-// encryptAndWriteArchive marshals + encrypts + atomically writes. Atomic
-// (temp + rename) so partial writes can't leave the archive truncated.
+// encryptAndWriteArchive marshals the archive map, then delegates to
+// ageutil.EncryptWriteAtomic for the encrypt + temp/fsync/rename dance.
+// One implementation across sync/set/import-env keeps atomicity uniform.
 func encryptAndWriteArchive(path string, archive map[string]json.RawMessage, passphrase string) error {
 	payload, err := json.Marshal(archive)
 	if err != nil {
 		return fmt.Errorf("secrets.set: marshal archive: %w", err)
 	}
-	encrypted, err := ageutil.Encrypt(payload, passphrase)
-	if err != nil {
-		return fmt.Errorf("secrets.set: encrypt: %w", err)
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encrypted, 0600); err != nil {
-		return fmt.Errorf("secrets.set: write temp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("secrets.set: rename temp -> archive: %w", err)
+	if err := ageutil.EncryptWriteAtomic(path, payload, passphrase); err != nil {
+		return fmt.Errorf("secrets.set: %w", err)
 	}
 	return nil
 }

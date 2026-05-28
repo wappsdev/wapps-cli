@@ -21,7 +21,8 @@ var rotateMasterCmd = &cobra.Command{
 			return fmt.Errorf("set WAPPS_SECRETS_PASSPHRASE_NEW (new passphrase) — print + save to Apple Passwords before continuing")
 		}
 
-		enc, err := os.ReadFile("secrets/all.enc.age")
+		archivePath := resolveArchivePath()
+		enc, err := os.ReadFile(archivePath)
 		if err != nil {
 			return err
 		}
@@ -29,12 +30,8 @@ var rotateMasterCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("decrypt with OLD pass failed: %w", err)
 		}
-		newEnc, err := ageutil.Encrypt(dec, newPass)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile("secrets/all.enc.age", newEnc, 0600); err != nil {
-			return err
+		if err := ageutil.EncryptWriteAtomic(archivePath, dec, newPass); err != nil {
+			return fmt.Errorf("rotate-master: %w", err)
 		}
 		fmt.Println("✓ Archive re-encrypted with new passphrase")
 		fmt.Println("Next: commit + push, then share new passphrase to team via Signal E2E")

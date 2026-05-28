@@ -71,17 +71,12 @@ func runSync(ctx context.Context, lookup func(string) string) error {
 		return fmt.Errorf("secrets.sync: marshal merged: %w", err)
 	}
 
-	encrypted, err := ageutil.Encrypt(payload, passphrase)
-	if err != nil {
-		return fmt.Errorf("secrets.sync: encrypt: %w", err)
+	if err := ageutil.EncryptWriteAtomic(cfg.Dest, payload, passphrase); err != nil {
+		return fmt.Errorf("secrets.sync: %w", err)
 	}
 
-	if err := os.WriteFile(cfg.Dest, encrypted, 0600); err != nil {
-		return fmt.Errorf("secrets.sync: write %s: %w", cfg.Dest, err)
-	}
-
-	fmt.Printf("✓ Wrote %s (%d bytes, %d keys from %d sources)\n",
-		cfg.Dest, len(encrypted), len(merged), len(cfg.Sources))
+	fmt.Printf("✓ Wrote %s (%d keys from %d sources)\n",
+		cfg.Dest, len(merged), len(cfg.Sources))
 	emitCommitHint(cfg.Dest)
 	return nil
 }
@@ -207,16 +202,11 @@ func syncWithTofuOutput(outputFn func() ([]byte, error), destPath string) error 
 		return fmt.Errorf("secrets.sync: tofu output: %w", err)
 	}
 
-	encrypted, err := ageutil.Encrypt(out, passphrase)
-	if err != nil {
-		return fmt.Errorf("secrets.sync: encrypt: %w", err)
+	if err := ageutil.EncryptWriteAtomic(destPath, out, passphrase); err != nil {
+		return fmt.Errorf("secrets.sync: %w", err)
 	}
 
-	if err := os.WriteFile(destPath, encrypted, 0600); err != nil {
-		return fmt.Errorf("secrets.sync: write: %w", err)
-	}
-
-	fmt.Printf("✓ Wrote %s (%d bytes)\n", destPath, len(encrypted))
+	fmt.Printf("✓ Wrote %s\n", destPath)
 	emitCommitHint(destPath)
 	return nil
 }
