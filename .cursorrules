@@ -5,9 +5,11 @@ never read raw secret values.
 
 ## Allowed (apply secrets without seeing values)
 
-- `wapps secrets env --write <path>` — writes env file to disk
+- `wapps secrets apply` — writes every target declared in `.wapps.yaml` (preferred)
+- `wapps secrets env --write <path>` — writes one ad-hoc env file
 - `wapps secrets exec -- <command>` — injects env vars into subprocess
-- `wapps secrets sync` — rebuilds archive from sources
+- `wapps secrets sync` — rebuilds archive from sources (auto-applies targets)
+- `wapps secrets diff [ref]` — shows added/changed/removed key names only
 
 ## Forbidden (would put secret values into your chat transcript)
 
@@ -18,9 +20,11 @@ never read raw secret values.
 
 ## Common workflows
 
-Need .env to run dev server? `wapps secrets env --write .env.local`
+Need .env to run dev server? `wapps secrets apply` (targets declared) or
+  `wapps secrets env --write .env.local --prefix ''` (ad-hoc)
 Need to run one command with creds? `wapps secrets exec -- <cmd>`
 Added a new secret via tofu/file source? `wapps secrets sync`
+See what changed since last pull? `wapps secrets diff`
 Push archive to Coolify app? `wapps secrets sync --target=coolify --app <UUID>`
 
 ## If passphrase missing
