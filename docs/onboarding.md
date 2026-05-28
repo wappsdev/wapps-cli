@@ -257,9 +257,45 @@ wapps secrets sync --target=coolify --app <APP_UUID>
 wapps secrets sync --target=coolify --app <APP_UUID> --force
 ```
 
-You need `COOLIFY_API_TOKEN` set. `--force` is destructive — it deletes
-Coolify-only keys that aren't in the archive. The dry-run output shows
-exactly what will happen.
+You need `COOLIFY_API_TOKEN` set. Single-app `--force` is destructive — it
+deletes Coolify-only keys that aren't in the archive. The dry-run output
+shows exactly what will happen.
+
+### Multi-app archives (`--all-apps`)
+
+When one archive holds secrets for several apps (prefixed per app, e.g.
+`KREEVA_WEB_*`, `ROYCO_API_*`), declare a `coolify_sync` block and push them
+all at once. Each app gets only its prefix-matched keys, with the prefix
+**stripped**:
+
+```yaml
+# .wapps.yaml
+coolify_sync:
+  delete_unmanaged: false        # default: never delete Coolify-only keys
+  apps:
+    - uuid: vaesbm45up4jyk7hhk77ka74
+      name: kreeva-web            # comment-only, for readability
+      archive_prefix: "KREEVA_WEB_"   # KREEVA_WEB_VITE_API_URL → VITE_API_URL
+    - uuid: wpv0glv7usj90t268ntfggby
+      name: royco-api
+      archive_prefix: "ROYCO_API_"
+```
+
+```bash
+wapps secrets sync --target=coolify --all-apps           # per-app dry-run
+wapps secrets sync --target=coolify --all-apps --force   # apply
+```
+
+Notes:
+- **Non-destructive by default.** Unlike single-app `--force`, multi-app
+  leaves Coolify-only keys alone unless you set `delete_unmanaged: true`.
+- **Unmapped keys are skipped silently** — Tofu outputs (`lab_01_*`) and
+  keys for apps not in the block never get pushed.
+- **Prefixes must be mutually exclusive** — `ROYCO_` and `ROYCO_API_`
+  together is a config-load error (a key could route to either app).
+- A prefix matching zero archive keys warns and skips that app (non-fatal).
+- One app failing (e.g. a stale UUID → 404) doesn't stop the others; the
+  command exits non-zero so you notice.
 
 ## Working with AI tools
 
