@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
@@ -154,9 +153,10 @@ func TestRunApply_Idempotent_SkipsUnchanged(t *testing.T) {
 	}
 	mtime1 := info1.ModTime()
 
-	// Wait long enough that a write would produce a different mtime even on
-	// coarse filesystems (HFS+ has 1-second granularity).
-	time.Sleep(1100 * time.Millisecond)
+	// Modern filesystems (ext4, APFS) have nanosecond mtime resolution, so
+	// two consecutive writes would show different mtimes without sleep. The
+	// test assumes CI / dev machines aren't on legacy HFS+ or coarse-resolution
+	// filesystems. If that assumption breaks, restore a small sleep here.
 
 	// Second run: same content, must skip — mtime unchanged proves no write.
 	var stdout bytes.Buffer
@@ -207,8 +207,6 @@ func TestRunApply_MultipleTargets_MtimeIndependent(t *testing.T) {
 	}
 	otherPath := filepath.Join(tmp, ".env.other")
 	info1, _ := os.Stat(otherPath)
-
-	time.Sleep(1100 * time.Millisecond)
 
 	// Corrupt only the first target — second should remain idempotent.
 	if err := os.WriteFile(".env.local", []byte("garbage"), 0600); err != nil {
