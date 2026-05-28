@@ -10,18 +10,57 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
 	"github.com/wappsdev/wapps-cli/internal/config"
+	"github.com/wappsdev/wapps-cli/internal/coolify"
 	"github.com/wappsdev/wapps-cli/internal/source"
 	"github.com/wappsdev/wapps-cli/internal/tofu"
 )
 
 const wappsYAMLPath = ".wapps.yaml"
 
+var (
+	syncTarget      string
+	syncCoolifyApp  string
+	syncCoolifyURL  string
+	syncForce       bool
+	syncPrefix      string
+)
+
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sources → encrypted archive (suggest commit)",
+	Short: "Sources → encrypted archive (or push archive to a target with --target)",
+	Long: `Without --target: read all sources declared in .wapps.yaml, merge
+them, and write an encrypted archive to dest.
+
+With --target=coolify: read the existing archive and push its contents to
+a Coolify application's env vars. Default is dry-run — pass --force to
+actually apply (which deletes Coolify-only keys to mirror the archive).
+
+  wapps secrets sync                                      # rebuild archive
+  wapps secrets sync --target=coolify --app <uuid>        # dry-run diff
+  wapps secrets sync --target=coolify --app <uuid> --force  # apply`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if syncTarget == "coolify" {
+			return runSyncCoolify(coolifyOptions{
+				appUUID:   syncCoolifyApp,
+				force:     syncForce,
+				prefix:    syncPrefix,
+				apiURL:    syncCoolifyURL,
+				apiToken:  os.Getenv("COOLIFY_API_TOKEN"),
+				stdoutW:   os.Stdout,
+				newClient: defaultCoolifyClient,
+			})
+		}
+		if syncTarget != "" {
+			return fmt.Errorf("sync: unknown --target %q (allowed: coolify)", syncTarget)
+		}
 		return runSync(cmd.Context(), os.Getenv)
 	},
+}
+
+// defaultCoolifyClient returns a real coolify.Client wrapped in the
+// coolifyAPI interface. Tests substitute their own fake.
+func defaultCoolifyClient(baseURL, token string) coolifyAPI {
+	return coolify.New(baseURL, token)
 }
 
 // runSync is the testable entry point for `wapps secrets sync`. It picks
@@ -162,5 +201,15 @@ func syncWithTofuOutput(outputFn func() ([]byte, error), destPath string) error 
 }
 
 func init() {
+	syncCmd.Flags().StringVar(&syncTarget, "target", "",
+		"sync target: empty rebuilds archive from sources; 'coolify' pushes archive to a Coolify app's env")
+	syncCmd.Flags().StringVar(&syncCoolifyApp, "app", "",
+		"Coolify app UUID (required when --target=coolify)")
+	syncCmd.Flags().StringVar(&syncCoolifyURL, "coolify-url", "https://coolify.meapps.dev/api/v1",
+		"Coolify API base URL")
+	syncCmd.Flags().BoolVar(&syncForce, "force", false,
+		"with --target=coolify: apply the diff (default is dry-run only)")
+	syncCmd.Flags().StringVar(&syncPrefix, "prefix", "",
+		"with --target=coolify: prefix prepended to each pushed env var name (default empty)")
 	SecretsCmd.AddCommand(syncCmd)
 }
