@@ -10,7 +10,9 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      # cmd.Version is consumed by rootCmd.Version → enables `wapps --version`.
+      # Previously pointed at main.version which had no matching var (no-op).
+      - -s -w -X github.com/wappsdev/wapps-cli/cmd.Version={{.Version}}
 
 archives:
   - formats: [tar.gz]

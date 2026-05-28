@@ -11,6 +11,12 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/git"
 )
 
+// Version is set at link time by GoReleaser via:
+//   -ldflags="-X github.com/wappsdev/wapps-cli/cmd.Version=<tag>"
+// Local builds (go build/install without ldflags) carry "dev" so support
+// can see the binary came from an untagged build.
+var Version = "dev"
+
 var (
 	noSync  bool
 	verbose bool
@@ -18,8 +24,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "wapps",
-	Short: "wapps umbrella CLI — Tofu monorepo helper for Coolify + age secrets + git auto-sync",
+	Use:     "wapps",
+	Version: Version,
+	Short:   "wapps umbrella CLI — Tofu monorepo helper for Coolify + age secrets + git auto-sync",
 	Long: `wapps is the umbrella CLI for the wappsdev/infra-tofu monorepo.
 
 It wraps:
