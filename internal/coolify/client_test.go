@@ -2,11 +2,40 @@ package coolify
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// HTTPError is unwrappable via errors.As. This is the contract SetBuildArgs
+// relies on for typed status-code checks; if it breaks, the 409 fallback
+// in SetBuildArgs silently regresses (POST errors are returned to caller
+// instead of falling through to PATCH).
+func TestHTTPError_UnwrapsViaErrorsAs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"conflict"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	_, err := c.doBytes("POST", "/anything", map[string]string{"k": "v"})
+	if err == nil {
+		t.Fatal("expected error from 409 response")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected *HTTPError via errors.As, got %T: %v", err, err)
+	}
+	if httpErr.StatusCode != http.StatusConflict {
+		t.Errorf("expected StatusCode=409, got %d", httpErr.StatusCode)
+	}
+	if httpErr.Method != "POST" {
+		t.Errorf("expected Method=POST, got %s", httpErr.Method)
+	}
+}
 
 func TestCreateDockerComposeApp_POST(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,21 +188,26 @@ func TestCreatePrivateGitHubAppApp_POST(t *testing.T) {
 	}
 }
 
-func TestSetBuildArgs_PATCHesEnvsUpsertPerKey(t *testing.T) {
-	var calls []map[string]interface{}
+// SetBuildArgs uses POST-then-PATCH idempotent upsert: POST /envs first
+// (create), on 409 fall back to PATCH /envs (update). Happy path = only POST.
+func TestSetBuildArgs_PostsEnvsPerKey(t *testing.T) {
+	var calls []struct {
+		method string
+		body   map[string]interface{}
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PATCH" {
-			t.Errorf("expected PATCH, got %s", r.Method)
-		}
 		if !strings.HasSuffix(r.URL.Path, "/envs") {
-			t.Errorf("expected /envs (single, upsert) endpoint, got %s", r.URL.Path)
+			t.Errorf("expected /envs endpoint, got %s", r.URL.Path)
 		}
 		if strings.HasSuffix(r.URL.Path, "/envs/bulk") {
 			t.Errorf("should not hit /envs/bulk (it doesn't upsert)")
 		}
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		calls = append(calls, body)
+		calls = append(calls, struct {
+			method string
+			body   map[string]interface{}
+		}{r.Method, body})
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"uuid":"x"}`))
 	}))
@@ -190,14 +224,104 @@ func TestSetBuildArgs_PATCHesEnvsUpsertPerKey(t *testing.T) {
 	}
 
 	if len(calls) != 2 {
-		t.Fatalf("expected 2 PATCH calls (malformed skipped), got %d", len(calls))
+		t.Fatalf("expected 2 calls (malformed skipped), got %d", len(calls))
 	}
-	if calls[0]["key"] != "SERVICE_NAME" || calls[0]["value"] != "gateway" {
-		t.Errorf("first call mismatch: %v", calls[0])
+	for i, call := range calls {
+		if call.method != "POST" {
+			t.Errorf("call %d: expected POST (happy path), got %s", i, call.method)
+		}
+	}
+	if calls[0].body["key"] != "SERVICE_NAME" || calls[0].body["value"] != "gateway" {
+		t.Errorf("first call body mismatch: %v", calls[0].body)
 	}
 	// Coolify v4 requires is_buildtime (NOT is_build_time) on POST/PATCH /envs.
-	if calls[0]["is_buildtime"] != true {
-		t.Errorf("expected is_buildtime=true (Coolify v4 field name), got %v", calls[0]["is_buildtime"])
+	if calls[0].body["is_buildtime"] != true {
+		t.Errorf("expected is_buildtime=true (Coolify v4 field name), got %v", calls[0].body["is_buildtime"])
+	}
+}
+
+// When the env key already exists, Coolify returns 409 on POST. SetBuildArgs
+// must fall back to PATCH /envs (update) to remain idempotent across re-runs.
+func TestSetBuildArgs_FallsBackToPatchOn409(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method)
+		if r.Method == "POST" {
+			// Simulate key already exists.
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"key already exists"}`))
+			return
+		}
+		if r.Method == "PATCH" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"updated":true}`))
+			return
+		}
+		t.Errorf("unexpected method %s", r.Method)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	if err := c.SetBuildArgs("app-uuid-xyz", []string{"SERVICE_NAME=gateway"}); err != nil {
+		t.Fatalf("SetBuildArgs (expected 409 fallback to succeed): %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected POST then PATCH (2 calls), got %d", len(calls))
+	}
+	if calls[0] != "POST" || calls[1] != "PATCH" {
+		t.Errorf("expected POST→PATCH sequence, got %v", calls)
+	}
+}
+
+// Non-409 errors on POST propagate without attempting PATCH fallback.
+func TestSetBuildArgs_NonConflictPostErrorPropagates(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"server exploded"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	err := c.SetBuildArgs("app-uuid-xyz", []string{"KEY=value"})
+	if err == nil {
+		t.Fatal("expected error from non-409 POST failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "POST") {
+		t.Errorf("expected error to mention POST stage, got: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "POST" {
+		t.Errorf("expected exactly one POST call (no PATCH fallback on non-409), got %v", calls)
+	}
+}
+
+// When POST returns 409 and the PATCH fallback also fails, the error from
+// PATCH propagates (with "PATCH after 409" context) instead of being silently
+// swallowed.
+func TestSetBuildArgs_PatchAfter409FailurePropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"exists"}`))
+			return
+		}
+		if r.Method == "PATCH" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"bad request"}`))
+			return
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "fake-token")
+	err := c.SetBuildArgs("app-uuid-xyz", []string{"KEY=value"})
+	if err == nil {
+		t.Fatal("expected error from PATCH-after-409 failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "PATCH after 409") {
+		t.Errorf("expected error to mention 'PATCH after 409' context, got: %v", err)
 	}
 }
 

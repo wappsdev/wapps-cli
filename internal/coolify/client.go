@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,25 @@ type Client struct {
 	BaseURL string
 	Token   string
 	HTTP    *http.Client
+}
+
+// HTTPError is returned by doBytes/do when the Coolify API replies with a
+// non-2xx status. Callers can pattern-match on the status code via errors.As
+// rather than parsing error strings:
+//
+//	var httpErr *HTTPError
+//	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
+//	    // handle 409
+//	}
+type HTTPError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Body       []byte
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
 func New(baseURL, token string) *Client {
@@ -124,16 +144,15 @@ func (c *Client) UpdateAppEnvs(appUUID string, envs map[string]string) error {
 // values into Coolify's docker build step.
 //
 // Coolify v4 quirks (probed 2026-05-26):
-//   - POST /envs accepts "is_buildtime" but NOT "is_build_time" (422)
-//   - PATCH /envs (no uuid in path) upserts by key, single env at a time
-//   - PATCH /envs/bulk accepts "is_build_time" but does NOT upsert — it
-//     appends new rows, causing duplicate keys across calls.
+//   - POST /envs creates; returns 409 if key already exists
+//   - PATCH /envs updates an existing env by key; returns 404 if not yet present
+//   - PATCH /envs/bulk APPENDS rows (does NOT upsert by key), causing duplicate
+//     keys across repeated calls — avoid.
+//   - Both POST and PATCH /envs require field "is_buildtime" (NOT "is_build_time")
 //
-// To keep idempotency under repeated runs (Tofu re-applies, etc.), we use
-// PATCH /envs which is upsert-by-key. One HTTP call per pair, but the
-// catalog is small (~3 build args per service) so this is cheap.
+// Idempotent upsert: try POST first, on 409 fall back to PATCH.
 //
-// Pairs should already be in "KEY=VALUE" form. Empty pairs are skipped.
+// Pairs should already be in "KEY=VALUE" form. Empty/malformed pairs skipped.
 func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
 	if len(pairs) == 0 {
 		return nil
@@ -158,8 +177,17 @@ func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
 			"is_buildtime": true,
 			"is_literal":   true,
 		}
+		// Try POST (create). 409 → key exists, fall through to PATCH (update).
+		_, postErr := c.doBytes("POST", "/applications/"+appUUID+"/envs", body)
+		if postErr == nil {
+			continue
+		}
+		var httpErr *HTTPError
+		if !errors.As(postErr, &httpErr) || httpErr.StatusCode != http.StatusConflict {
+			return fmt.Errorf("coolify.SetBuildArgs[%s] POST: %w", key, postErr)
+		}
 		if _, err := c.doBytes("PATCH", "/applications/"+appUUID+"/envs", body); err != nil {
-			return fmt.Errorf("coolify.SetBuildArgs[%s]: %w", key, err)
+			return fmt.Errorf("coolify.SetBuildArgs[%s] PATCH after 409: %w", key, err)
 		}
 	}
 	return nil
@@ -261,7 +289,7 @@ func (c *Client) doBytes(method, path string, body interface{}) ([]byte, error) 
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, respBody)
+		return nil, &HTTPError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: respBody}
 	}
 	return respBody, nil
 }
@@ -291,7 +319,7 @@ func (c *Client) do(method, path string, body interface{}) (map[string]interface
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, respBody)
+		return nil, &HTTPError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: respBody}
 	}
 	var parsed map[string]interface{}
 	_ = json.Unmarshal(respBody, &parsed)
