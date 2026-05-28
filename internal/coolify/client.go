@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -150,7 +149,7 @@ func (c *Client) UpdateAppEnvs(appUUID string, envs map[string]string) error {
 //     keys across repeated calls — avoid.
 //   - Both POST and PATCH /envs require field "is_buildtime" (NOT "is_build_time")
 //
-// Idempotent upsert: try POST first, on 409 fall back to PATCH.
+// Idempotent upsert via UpsertAppEnv: POST first, on 409 PATCH.
 //
 // Pairs should already be in "KEY=VALUE" form. Empty/malformed pairs skipped.
 func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
@@ -170,24 +169,8 @@ func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
 		}
 		key := p[:idx]
 		val := p[idx+1:]
-		body := map[string]interface{}{
-			"key":          key,
-			"value":        val,
-			"is_preview":   false,
-			"is_buildtime": true,
-			"is_literal":   true,
-		}
-		// Try POST (create). 409 → key exists, fall through to PATCH (update).
-		_, postErr := c.doBytes("POST", "/applications/"+appUUID+"/envs", body)
-		if postErr == nil {
-			continue
-		}
-		var httpErr *HTTPError
-		if !errors.As(postErr, &httpErr) || httpErr.StatusCode != http.StatusConflict {
-			return fmt.Errorf("coolify.SetBuildArgs[%s] POST: %w", key, postErr)
-		}
-		if _, err := c.doBytes("PATCH", "/applications/"+appUUID+"/envs", body); err != nil {
-			return fmt.Errorf("coolify.SetBuildArgs[%s] PATCH after 409: %w", key, err)
+		if err := c.UpsertAppEnv(appUUID, key, val, true); err != nil {
+			return fmt.Errorf("coolify.SetBuildArgs[%s]: %w", key, err)
 		}
 	}
 	return nil
