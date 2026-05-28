@@ -88,12 +88,35 @@ You'll touch one of three commands daily:
 
 ### Read into an env file (for `next dev`, `pnpm start`, etc.)
 
+For repos with `targets:` declared in `.wapps.yaml` (recommended):
+
 ```bash
-wapps secrets env --write .env.local
+wapps secrets apply
 ```
 
-Atomic write, mode 0600. Stdout is silent. Your runtime tool loads
-`.env.local` as normal.
+Writes every consumption file declared in `targets:` (e.g., `.env.local`,
+`apps/api/.env`) idempotently — files unchanged keep their mtime, so file
+watchers don't spuriously reload. Run as part of `predev` / `prebuild`:
+
+```jsonc
+// package.json
+{
+  "scripts": {
+    "predev": "wapps secrets apply",
+    "dev": "next dev"
+  }
+}
+```
+
+For one-off writes (no `targets:` block, ad-hoc paths):
+
+```bash
+wapps secrets env --write .env.local --prefix ''
+```
+
+Atomic write, mode 0600. Stdout is silent. The `--prefix ''` is needed
+because the CLI default is `TF_VAR_` (preserved for Tofu workflows);
+`targets:` declarations don't need this — they default to plain.
 
 ### Run a one-shot command with creds injected
 
@@ -111,8 +134,21 @@ shell history.
 wapps secrets sync
 ```
 
-Rebuilds the encrypted archive from sources. Commit the resulting
-`secrets/all.enc.age` change.
+Rebuilds the encrypted archive from sources. If `targets:` is declared,
+all consumption files are auto-refreshed in the same command. Commit the
+resulting `secrets/all.enc.age` change.
+
+### See what changed since a git ref
+
+```bash
+wapps secrets diff             # vs HEAD~1 (default)
+wapps secrets diff main        # vs main branch
+wapps secrets diff v0.10.0     # vs a tag
+```
+
+Shows added / changed / removed keys only — values never reach stdout
+(change detection uses sha256 hashes in-process). Useful after `git pull`
+to see what teammates added.
 
 ## Step 6 — Add a new secret
 
@@ -125,8 +161,10 @@ wapps secrets set NEW_TOKEN_NAME
 # masked prompt appears — paste the value, press enter
 ```
 
-This updates both `secrets/all.enc.age` AND `.env.shared` (the file
-source declared in `.wapps.yaml`). Commit both:
+This updates `secrets/all.enc.age`, `.env.shared` (the file source
+declared in `.wapps.yaml`), AND every declared target (e.g.,
+`.env.local`) — all in one atomic operation. Commit the archive + file
+source:
 
 ```bash
 git add secrets/all.enc.age .env.shared
@@ -134,7 +172,11 @@ git commit -m "chore: capture NEW_TOKEN_NAME"
 git push
 ```
 
-Your teammates run `git pull` and immediately have the new token.
+Don't commit the targets — they're consumption files, regenerated from
+the archive on every `apply` / `predev`. Add them to `.gitignore`.
+
+Your teammates run `git pull && npm run dev` (or equivalent) and the
+`predev` script rematerializes their `.env.local` from the new archive.
 
 ### Bulk import from an existing `.env` file
 
@@ -160,6 +202,34 @@ or `tofu` source without it. Edit `.wapps.yaml` if you need both.
 
 Then populate via either `wapps secrets set <KEY>` (one at a time) or
 `wapps secrets import-env <file>` (bulk).
+
+### `.wapps.yaml` reference
+
+```yaml
+version: 1
+dest: secrets/all.enc.age      # encrypted archive location
+default_prefix: ""             # prefix for `apply` (default empty)
+
+sources:                       # where archive contents come from
+  - type: tofu
+    workdir: .
+  - type: file
+    path: .env.shared
+
+targets:                       # where to materialize plaintext after archive write
+  - path: .env.local           # uses default_prefix
+  - path: apps/api/.env
+  - path: terraform.tfvars.json
+    prefix: "TF_VAR_"          # per-target override
+
+redact_in_logs: true
+require_clean_git: true
+```
+
+`sources:` is the input direction (where archive contents come from).
+`targets:` is the output direction (where to materialize plaintext after
+archive write). `set` / `import-env` / `sync` auto-write all declared
+targets on success.
 
 ## Step 8 — Server-side env (Coolify deploys)
 

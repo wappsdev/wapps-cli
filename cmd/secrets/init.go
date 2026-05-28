@@ -121,6 +121,13 @@ func writeWappsYAML(path string, withFile bool) error {
 		b.WriteString("    prefix: \"\"\n")
 	}
 	b.WriteString("\n")
+	b.WriteString("# Optional consumption targets. 'wapps secrets apply' (and set/sync)\n")
+	b.WriteString("# materialize these from the archive — atomic, mode 0600, idempotent.\n")
+	b.WriteString("# Add them to your repo-root .gitignore.\n")
+	b.WriteString("# targets:\n")
+	b.WriteString("#   - path: .env.local\n")
+	b.WriteString("#     prefix: \"\"\n")
+	b.WriteString("\n")
 	b.WriteString("# Set redact_in_logs / require_clean_git to harden behavior.\n")
 	b.WriteString("redact_in_logs: true\n")
 	b.WriteString("require_clean_git: true\n")
