@@ -52,7 +52,17 @@ func runGit(dir string, args ...string) (string, error) {
 }
 
 func fileSha(repoPath, file, ref string) (string, error) {
-	out, err := runGit(repoPath, "rev-parse", ref+":"+file)
+	// Prefix the path with "./" so git treats it as cwd-relative regardless of
+	// whether the caller invoked wapps from the git root or a subdirectory.
+	// Without this, "HEAD:secrets/all.enc.age" is interpreted as git-root-relative,
+	// which fails when the caller is inside a subproject (e.g.,
+	// infra-tofu/projects/vaulter where the archive lives at
+	// projects/vaulter/secrets/all.enc.age in git-root terms).
+	path := file
+	if !strings.HasPrefix(path, "./") && !strings.HasPrefix(path, "/") {
+		path = "./" + path
+	}
+	out, err := runGit(repoPath, "rev-parse", ref+":"+path)
 	if err != nil {
 		// "exists in" and "Path 'X' does not exist in 'Y'" → file missing in that ref.
 		// Return empty sha (treated as "no entry" by caller; missing-in-both = no drift).
