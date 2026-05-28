@@ -386,3 +386,68 @@ sources:
 		t.Errorf("file source temp %s should not persist", envTmp)
 	}
 }
+
+// TestRunSet_AutoAppliesTargets verifies the wired behavior: a successful set
+// writes every declared target as part of the same command. Without this,
+// teammates would set+commit but their own .env.local would lag until they
+// remembered to run apply.
+func TestRunSet_AutoAppliesTargets(t *testing.T) {
+	setUpSetTestRepo(t, struct {
+		yamlContent  string
+		envContent   string
+		archiveSeed  map[string]string
+		passphrase   string
+	}{
+		yamlContent: `
+version: 1
+default_prefix: ""
+sources:
+  - type: file
+    path: .env.shared
+targets:
+  - path: .env.local
+`,
+	})
+
+	if err := runSet("API_KEY", setOptions{
+		promptValue: happyPathPrompt("sk_live_xyz"),
+		driftCheck:  cleanDrift,
+	}); err != nil {
+		t.Fatalf("runSet: %v", err)
+	}
+
+	data, err := os.ReadFile(".env.local")
+	if err != nil {
+		t.Fatalf(".env.local should have been auto-written: %v", err)
+	}
+	if !strings.Contains(string(data), "export API_KEY='sk_live_xyz'") {
+		t.Errorf("target should contain captured value, got:\n%s", data)
+	}
+}
+
+// TestRunSet_NoTargetsDeclared_NoOp verifies the auto-apply hook gracefully
+// skips when .wapps.yaml has no targets: block (legacy/non-Next repos).
+func TestRunSet_NoTargetsDeclared_NoOp(t *testing.T) {
+	setUpSetTestRepo(t, struct {
+		yamlContent  string
+		envContent   string
+		archiveSeed  map[string]string
+		passphrase   string
+	}{
+		yamlContent: `
+version: 1
+sources:
+  - type: file
+    path: .env.shared
+`,
+	})
+
+	// No targets declared. Set should still succeed without trying to write
+	// any consumption file.
+	if err := runSet("X", setOptions{
+		promptValue: happyPathPrompt("y"),
+		driftCheck:  cleanDrift,
+	}); err != nil {
+		t.Fatalf("runSet should succeed with no targets: %v", err)
+	}
+}

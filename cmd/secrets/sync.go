@@ -113,6 +113,12 @@ func runSync(ctx context.Context, lookup func(string) string) error {
 		return fmt.Errorf("secrets.sync: %w", err)
 	}
 
+	// Auto-apply targets so 'sync' fully refreshes the dev environment in
+	// one command — sources → archive → consumption files.
+	if err := applyTargetsAfterArchiveWrite(cfg, payload, os.Stderr); err != nil {
+		return err
+	}
+
 	fmt.Printf("✓ Wrote %s (%d keys from %d sources)\n",
 		cfg.Dest, len(merged), len(cfg.Sources))
 	emitCommitHint(cfg.Dest)
