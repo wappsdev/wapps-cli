@@ -50,6 +50,15 @@ func (f *fileSource) Read(ctx context.Context) (map[string]json.RawMessage, erro
 	return parseEnvFile(f.path, data)
 }
 
+// ParseEnvFileBytes is the public re-export of the internal env parser so
+// commands outside this package (e.g. `wapps secrets import-env`) can reuse
+// the same comment/quote/export handling as the file source adapter. Keeping
+// one parser keeps file source and import-env behaviorally consistent — a
+// .env that imports cleanly will also work as a file source.
+func ParseEnvFileBytes(path string, data []byte) (map[string]json.RawMessage, error) {
+	return parseEnvFile(path, data)
+}
+
 // parseEnvFile walks an env-file byte stream and returns the same shape as
 // tofu output -json: {"KEY": {"value": "..."}}. Errors quote the file path
 // and line number so operators can fix the source quickly.
