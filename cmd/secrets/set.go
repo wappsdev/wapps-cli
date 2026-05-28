@@ -119,11 +119,22 @@ func runSet(key string, opts setOptions) error {
 	}
 	archive[key] = envelope
 
-	if err := encryptAndWriteArchive(cfg.Dest, archive, passphrase); err != nil {
+	payload, err := encryptAndWriteArchive(cfg.Dest, archive, passphrase)
+	if err != nil {
 		return err
 	}
 	if err := source.WriteFileSource(filePath, key, value); err != nil {
 		return fmt.Errorf("secrets.set: %w", err)
+	}
+
+	// Auto-apply targets after the archive write so consumption files
+	// (.env.local, etc.) stay in sync without a second command. Reuses the
+	// payload bytes the encrypt step already produced — re-marshaling the
+	// same map twice would risk diverging key order (Go map iteration is
+	// non-deterministic) which downstream consumers could mistake for real
+	// drift.
+	if err := applyTargetsAfterArchiveWrite(cfg, payload, os.Stderr); err != nil {
+		return err
 	}
 
 	fmt.Printf("✓ Set %s\n", key)
@@ -182,18 +193,19 @@ func decryptArchive(path, passphrase string) (map[string]json.RawMessage, error)
 	return out, nil
 }
 
-// encryptAndWriteArchive marshals the archive map, then delegates to
-// ageutil.EncryptWriteAtomic for the encrypt + temp/fsync/rename dance.
-// One implementation across sync/set/import-env keeps atomicity uniform.
-func encryptAndWriteArchive(path string, archive map[string]json.RawMessage, passphrase string) error {
+// encryptAndWriteArchive marshals the archive map, encrypts, and writes
+// atomically (temp + fsync + rename). Returns the marshaled payload bytes so
+// callers can reuse them for follow-up steps (e.g., applyTargets) without
+// re-marshaling the same map and risking a different key order.
+func encryptAndWriteArchive(path string, archive map[string]json.RawMessage, passphrase string) ([]byte, error) {
 	payload, err := json.Marshal(archive)
 	if err != nil {
-		return fmt.Errorf("secrets.set: marshal archive: %w", err)
+		return nil, fmt.Errorf("secrets.set: marshal archive: %w", err)
 	}
 	if err := ageutil.EncryptWriteAtomic(path, payload, passphrase); err != nil {
-		return fmt.Errorf("secrets.set: %w", err)
+		return nil, fmt.Errorf("secrets.set: %w", err)
 	}
-	return nil
+	return payload, nil
 }
 
 // defaultDriftCheck combines two preflight conditions:

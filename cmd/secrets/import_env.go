@@ -75,7 +75,16 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 		archive[k] = v
 	}
 
-	if err := encryptAndWriteArchiveLookup(cfg.Dest, archive, passphrase); err != nil {
+	payload, err := encryptAndWriteArchiveLookup(cfg.Dest, archive, passphrase)
+	if err != nil {
+		return err
+	}
+
+	// Auto-apply: targets declared in .wapps.yaml are written immediately so
+	// the consumption side (.env.local, etc.) reflects the import without a
+	// follow-up command. Reuses the payload bytes the encrypt step produced
+	// — same reasoning as set.go (avoid double-marshal key-order drift).
+	if err := applyTargetsAfterArchiveWrite(cfg, payload, os.Stderr); err != nil {
 		return err
 	}
 
@@ -88,16 +97,17 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 }
 
 // encryptAndWriteArchiveLookup wraps ageutil.EncryptWriteAtomic with the
-// import-env error context. Same atomic guarantee as set/sync paths.
-func encryptAndWriteArchiveLookup(path string, archive map[string]json.RawMessage, passphrase string) error {
+// import-env error context. Returns the marshaled payload bytes so callers
+// reuse them (see set.go's encryptAndWriteArchive for the same pattern).
+func encryptAndWriteArchiveLookup(path string, archive map[string]json.RawMessage, passphrase string) ([]byte, error) {
 	payload, err := json.Marshal(archive)
 	if err != nil {
-		return fmt.Errorf("marshal archive: %w", err)
+		return nil, fmt.Errorf("marshal archive: %w", err)
 	}
 	if err := ageutil.EncryptWriteAtomic(path, payload, passphrase); err != nil {
-		return fmt.Errorf("import-env: %w", err)
+		return nil, fmt.Errorf("import-env: %w", err)
 	}
-	return nil
+	return payload, nil
 }
 
 func init() {
