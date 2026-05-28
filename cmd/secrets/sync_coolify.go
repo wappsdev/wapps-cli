@@ -188,9 +188,12 @@ type coolifyDiff struct {
 	// Filtered-out keys, surfaced for operator visibility (names never
 	// printed — only counts). skippedManaged are Coolify-generated
 	// (is_coolify=true) read-only envs; skippedExcluded matched the
-	// operator's coolify_sync.exclude_keys deny-list.
+	// operator's coolify_sync.exclude_keys deny-list; skippedPreview are
+	// per-PR preview-deployment copies (is_preview=true) — we manage only
+	// the runtime entry.
 	skippedManaged  int
 	skippedExcluded int
+	skippedPreview  int
 }
 
 // coolifyChange tracks the desired (new) value for a key whose current
@@ -208,7 +211,7 @@ type coolifyChange struct {
 // true (its documented destructive behavior); multi-app passes the
 // coolify_sync.delete_unmanaged config value (default false).
 //
-// Two classes of keys are filtered out of BOTH desired and current before
+// Two classes of KEYS are filtered out of BOTH desired and current before
 // bucketing, so they can never land in add/change/remove:
 //   - Coolify-managed (is_coolify=true): read-only "magic" envs Coolify
 //     generates. A PATCH would 422; a DELETE under delete_unmanaged would
@@ -216,6 +219,14 @@ type coolifyChange struct {
 //     copy from being re-added.
 //   - excludeKeys: operator deny-list (stripped names) for pipeline-owned
 //     keys like SENTRY_RELEASE that perpetually drift.
+//
+// One class of ENTRIES (not keys) is filtered from current only:
+//   - preview (is_preview=true): Coolify returns the same key twice when it's
+//     defined for both runtime and preview, with possibly different values.
+//     We manage the runtime entry (is_preview=false); the preview copy is
+//     ignored. The key stays in desired and diffs against the runtime value,
+//     so a preview dup no longer shows perpetual false drift. A key existing
+//     ONLY as preview is treated as absent from current.
 func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry, deleteUnmanaged bool, excludeKeys map[string]bool) coolifyDiff {
 	diff := coolifyDiff{
 		add:    make(map[string]string),
@@ -252,6 +263,14 @@ func computeCoolifyDiff(desired map[string]string, current []coolify.EnvEntry, d
 	currentByKey := make(map[string]coolify.EnvEntry, len(current))
 	for _, e := range current {
 		if skip[e.Key] {
+			continue
+		}
+		if e.IsPreview {
+			// Per-PR preview copy — ignore. If the key also has a runtime
+			// (is_preview=false) entry, that one populates currentByKey; if
+			// it exists only as preview, the key is correctly absent from
+			// current (not a runtime env we manage).
+			diff.skippedPreview++
 			continue
 		}
 		currentByKey[e.Key] = e
@@ -317,6 +336,9 @@ func writeCoolifyDiff(w io.Writer, diff coolifyDiff) {
 	}
 	if diff.skippedExcluded > 0 {
 		fmt.Fprintf(w, "  (skipped %d excluded keys)\n", diff.skippedExcluded)
+	}
+	if diff.skippedPreview > 0 {
+		fmt.Fprintf(w, "  (skipped %d preview-context entries)\n", diff.skippedPreview)
 	}
 }
 

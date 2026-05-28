@@ -174,6 +174,13 @@ remove), with a `(skipped N …)` visibility line:
 - **`coolify_sync.exclude_keys`** — operator deny-list of stripped names for
   pipeline-owned keys (`SENTRY_RELEASE` etc.) that CI rewrites every deploy
   and would otherwise show perpetual drift. Multi-app only.
+- **Preview entries** (`is_preview=true`) — Coolify returns the same key twice
+  when it's defined for both runtime and preview deployments. Only the runtime
+  copy is managed; the preview entry is ignored (per-entry, not per-key, so the
+  key still diffs against its runtime value). Universal.
+
+Combined rule: a live Coolify entry is eligible for the diff only when
+`is_coolify == false AND is_preview == false`.
 
 ---
 
