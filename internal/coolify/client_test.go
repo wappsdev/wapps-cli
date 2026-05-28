@@ -379,3 +379,96 @@ func TestStartApp_POST(t *testing.T) {
 		t.Fatalf("StartApp failed: %v", err)
 	}
 }
+
+// TestValidateUUID_RejectsPathTraversal closes the URL-injection vector where
+// an appUUID like "../servers" or "../../admin" would normalize past the
+// /applications/ prefix and hit a different Coolify endpoint. Operator
+// .wapps.yaml is a trusted source today, but the validation is cheap defense
+// in depth against a misconfigured config or future agent-driven UUID input.
+func TestValidateUUID_RejectsPathTraversal(t *testing.T) {
+	for _, bad := range []string{
+		"../servers",
+		"../../admin",
+		"app/../etc",
+		"app%2F..",
+		"a/b",
+		"app uuid",
+		"",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			if err := validateUUID("test", bad); err == nil {
+				t.Errorf("validateUUID accepted %q — path-traversal vector", bad)
+			}
+		})
+	}
+}
+
+func TestValidateUUID_AcceptsCanonicalAndLaxShapes(t *testing.T) {
+	for _, good := range []string{
+		"12345678-1234-1234-1234-123456789abc", // canonical UUID
+		"app-1",                                 // lax test fixture
+		"abc123",                                // lax alnum
+		"my-app-prod",                           // lax slug
+	} {
+		t.Run(good, func(t *testing.T) {
+			if err := validateUUID("test", good); err != nil {
+				t.Errorf("validateUUID rejected legitimate %q: %v", good, err)
+			}
+		})
+	}
+}
+
+func TestListAppEnvs_RefusesBadUUID(t *testing.T) {
+	c := New("http://unused", "tok")
+	if _, err := c.ListAppEnvs("../servers"); err == nil {
+		t.Fatal("ListAppEnvs accepted path-traversal appUUID")
+	}
+}
+
+func TestDeleteAppEnv_RefusesBadEnvUUID(t *testing.T) {
+	c := New("http://unused", "tok")
+	if err := c.DeleteAppEnv("12345678-1234-1234-1234-123456789abc", "../other-env"); err == nil {
+		t.Fatal("DeleteAppEnv accepted path-traversal envUUID")
+	}
+}
+
+func TestHTTPError_Error_TruncatesLongBody(t *testing.T) {
+	// Bodies long enough to potentially carry echoed request headers or
+	// other sensitive context must be cut at maxErrorBodyBytes so they
+	// don't drag credentials into operator transcripts / CI logs.
+	long := make([]byte, 500)
+	for i := range long {
+		long[i] = 'x'
+	}
+	e := &HTTPError{Method: "POST", Path: "/x", StatusCode: 500, Body: long}
+	msg := e.Error()
+	if len(msg) > 400 {
+		t.Errorf("Error() should truncate long body, got %d chars", len(msg))
+	}
+	if !strings.Contains(msg, "…") {
+		t.Errorf("Error() should mark truncation with ellipsis, got: %q", msg)
+	}
+}
+
+func TestNew_HTTPClient_StripsAuthorizationOnRedirect(t *testing.T) {
+	// Same-host redirect: Go's default would forward the Bearer token.
+	// Our CheckRedirect strips Authorization on every hop so a misconfigured
+	// reverse proxy redirect can't exfiltrate the operator's API token.
+	var secondReqAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/first" {
+			http.Redirect(w, r, "/second", http.StatusFound)
+			return
+		}
+		secondReqAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "secret-token")
+	_, _ = c.doBytes("GET", "/first", nil)
+	if secondReqAuth != "" {
+		t.Errorf("Authorization leaked across redirect: %q", secondReqAuth)
+	}
+}

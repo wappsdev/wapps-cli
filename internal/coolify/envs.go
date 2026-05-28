@@ -22,6 +22,9 @@ type EnvEntry struct {
 // Coolify v4 response may be either a top-level array OR a {"data": [...]}
 // envelope (same as ListApplications). We accept both shapes via doRaw.
 func (c *Client) ListAppEnvs(appUUID string) ([]EnvEntry, error) {
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return nil, err
+	}
 	data, err := c.doRaw("GET", "/applications/"+appUUID+"/envs", nil)
 	if err != nil {
 		return nil, fmt.Errorf("coolify.ListAppEnvs: %w", err)
@@ -49,6 +52,9 @@ func (c *Client) ListAppEnvs(appUUID string) ([]EnvEntry, error) {
 // from SetBuildArgs so sync --target=coolify (isBuildtime=false) and
 // SetBuildArgs (isBuildtime=true) share one upsert implementation.
 func (c *Client) UpsertAppEnv(appUUID, key, value string, isBuildtime bool) error {
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return err
+	}
 	body := map[string]interface{}{
 		"key":          key,
 		"value":        value,
@@ -75,8 +81,11 @@ func (c *Client) UpsertAppEnv(appUUID, key, value string, isBuildtime bool) erro
 // returned by ListAppEnvs). The CLI doesn't expose key-based delete because
 // the underlying API requires the UUID.
 func (c *Client) DeleteAppEnv(appUUID, envUUID string) error {
-	if envUUID == "" {
-		return fmt.Errorf("coolify.DeleteAppEnv: empty envUUID")
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return err
+	}
+	if err := validateUUID("envUUID", envUUID); err != nil {
+		return err
 	}
 	if _, err := c.doBytes("DELETE", "/applications/"+appUUID+"/envs/"+envUUID, nil); err != nil {
 		return fmt.Errorf("coolify.DeleteAppEnv[%s]: %w", envUUID, err)

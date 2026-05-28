@@ -7,8 +7,49 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"time"
 )
+
+// uuidPattern enforces canonical 8-4-4-4-12 hex UUID. Coolify v4 issues these
+// for every application and env entry. Validating before concatenating into
+// API paths closes a path-injection vector — a value like "../servers" would
+// otherwise resolve to /applications/../servers and hit a different endpoint.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// validateUUID rejects empty or shape-invalid UUIDs. Coolify itself sometimes
+// uses shorter slugs in test fixtures, so the strict 36-char pattern can be
+// relaxed via a second permissive shape: lowercase alphanumeric + dash, at
+// least 8 chars and no path separators / parent-dir tokens. We accept either
+// shape to avoid breaking the existing test fixtures, but always block path
+// traversal characters.
+func validateUUID(label, value string) error {
+	if value == "" {
+		return fmt.Errorf("coolify: %s is empty", label)
+	}
+	if containsPathTraversal(value) {
+		return fmt.Errorf("coolify: %s contains invalid characters: %q", label, value)
+	}
+	if uuidPattern.MatchString(value) {
+		return nil
+	}
+	// Lax fallback for test/dev fixtures: alphanum + dash, no path chars.
+	for _, r := range value {
+		if !(r == '-' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return fmt.Errorf("coolify: %s has invalid character %q in %q", label, r, value)
+		}
+	}
+	return nil
+}
+
+func containsPathTraversal(s string) bool {
+	for _, ch := range []string{"/", "\\", "..", "?", "&", "#", " "} {
+		if bytes.Contains([]byte(s), []byte(ch)) {
+			return true
+		}
+	}
+	return false
+}
 
 type Client struct {
 	BaseURL string
@@ -31,15 +72,38 @@ type HTTPError struct {
 	Body       []byte
 }
 
+// maxErrorBodyBytes caps the response-body slice we include in the error
+// string. Coolify sometimes echoes the original request — including custom
+// headers — back into 4xx/5xx bodies. A long body could carry credentials
+// (PATs the operator pasted into a Bearer field, internal tokens, etc.) into
+// CI logs and operator transcripts. 200 bytes is enough to debug the failure
+// (status + first line of the JSON message) without dragging the rest along.
+const maxErrorBodyBytes = 200
+
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+	body := e.Body
+	if len(body) > maxErrorBodyBytes {
+		body = append(body[:maxErrorBodyBytes:maxErrorBodyBytes], []byte("…")...)
+	}
+	return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, body)
 }
 
 func New(baseURL, token string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		Token:   token,
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		HTTP: &http.Client{
+			Timeout: 30 * time.Second,
+			// CheckRedirect strips Authorization on every hop. Go's default
+			// only strips on cross-host redirects, so a same-host 301 →
+			// /api/v1/applications would forward the Bearer token to a path
+			// we did not intend. We don't expect redirects from Coolify's
+			// REST API, but if one occurs, fail safe — token does not leak.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				req.Header.Del("Authorization")
+				return nil
+			},
+		},
 	}
 }
 
@@ -130,10 +194,26 @@ func (c *Client) CreatePrivateGitHubAppApp(req CreateGitHubAppAppRequest) (strin
 	return uuid, nil
 }
 
+// UpdateAppEnvs upserts every key in envs onto the application. Earlier
+// implementations hit PATCH /envs/bulk which APPENDS rows rather than
+// upserting by key — causing silent duplicates and "envs not updated" on
+// every redeploy. We now loop UpsertAppEnv (POST-then-PATCH-on-409) which
+// is the same idempotent pattern SetBuildArgs uses.
+//
+// isBuildtime is false: these are runtime envs. deploy-app / update-env
+// commands call this for application secrets that the running container
+// needs (not for docker build --build-arg values).
 func (c *Client) UpdateAppEnvs(appUUID string, envs map[string]string) error {
-	body := map[string]interface{}{"envs": envs}
-	if _, err := c.do("PATCH", "/applications/"+appUUID+"/envs/bulk", body); err != nil {
-		return fmt.Errorf("coolify.UpdateAppEnvs: %w", err)
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return err
+	}
+	if len(envs) == 0 {
+		return nil
+	}
+	for key, val := range envs {
+		if err := c.UpsertAppEnv(appUUID, key, val, false); err != nil {
+			return fmt.Errorf("coolify.UpdateAppEnvs[%s]: %w", key, err)
+		}
 	}
 	return nil
 }
@@ -153,6 +233,9 @@ func (c *Client) UpdateAppEnvs(appUUID string, envs map[string]string) error {
 //
 // Pairs should already be in "KEY=VALUE" form. Empty/malformed pairs skipped.
 func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return err
+	}
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -179,6 +262,9 @@ func (c *Client) SetBuildArgs(appUUID string, pairs []string) error {
 // TriggerDeploy queues a redeploy for the given Application UUID. Coolify
 // returns a deployment UUID that can be polled separately (we ignore it here).
 func (c *Client) TriggerDeploy(appUUID string) error {
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return err
+	}
 	if _, err := c.doBytes("GET", "/deploy?uuid="+appUUID, nil); err != nil {
 		return fmt.Errorf("coolify.TriggerDeploy: %w", err)
 	}
@@ -186,6 +272,9 @@ func (c *Client) TriggerDeploy(appUUID string) error {
 }
 
 func (c *Client) SetCustomLabels(appUUID string, labels []string) error {
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return err
+	}
 	labelsStr := ""
 	for i, l := range labels {
 		if i > 0 {
@@ -203,6 +292,9 @@ func (c *Client) SetCustomLabels(appUUID string, labels []string) error {
 }
 
 func (c *Client) StartApp(appUUID string) error {
+	if err := validateUUID("appUUID", appUUID); err != nil {
+		return err
+	}
 	if _, err := c.do("POST", "/applications/"+appUUID+"/start", nil); err != nil {
 		return fmt.Errorf("coolify.StartApp: %w", err)
 	}
