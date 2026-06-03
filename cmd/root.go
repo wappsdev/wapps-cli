@@ -3,12 +3,15 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	coolifycmd "github.com/wappsdev/wapps-cli/cmd/coolify"
 	gitcmd "github.com/wappsdev/wapps-cli/cmd/git"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
+	"github.com/wappsdev/wapps-cli/internal/config"
 	"github.com/wappsdev/wapps-cli/internal/git"
+	"github.com/wappsdev/wapps-cli/internal/projects"
 	"github.com/wappsdev/wapps-cli/internal/updatecheck"
 	"golang.org/x/term"
 )
@@ -20,9 +23,10 @@ import (
 var Version = "dev"
 
 var (
-	noSync  bool
-	verbose bool
-	cfgFile string
+	noSync      bool
+	verbose     bool
+	cfgFile     string
+	projectName string
 )
 
 var rootCmd = &cobra.Command{
@@ -37,6 +41,21 @@ It wraps:
   - git auto-sync preflight (pull latest secrets/all.enc.age before any read)
   - doctor (end-to-end dependency check)`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Resolve --project → cfgFile first, then hand the resolved config path
+		// to the secrets package so its loaders + path resolution use the
+		// config dir (configRoot), not cwd. This runs even under --no-sync (it
+		// gates config resolution, not git).
+		if err := resolveProjectFlag(); err != nil {
+			return err
+		}
+		if cfgFile != "" {
+			abs, err := filepath.Abs(cfgFile)
+			if err != nil {
+				return fmt.Errorf("resolve --config path: %w", err)
+			}
+			secrets.SetConfigPath(abs)
+		}
+
 		if noSync {
 			return nil
 		}
@@ -47,21 +66,60 @@ It wraps:
 		if cmd.Parent() != nil && cmd.Parent().Name() == "git" {
 			return nil
 		}
-		drift, err := git.HasDrift(".", "secrets/all.enc.age")
+
+		// git preflight runs against configRoot (the .wapps.yaml dir) when
+		// --config/--project is set, else cwd. The archive path stays
+		// repo-relative (git.fileSha prefixes "./" itself).
+		repoPath := "."
+		archiveRel := "secrets/all.enc.age"
+		if cfgFile != "" {
+			repoPath = filepath.Dir(cfgFile)
+			if cfg, err := config.Load(cfgFile); err == nil && cfg.Dest != "" {
+				archiveRel = cfg.Dest
+			}
+		}
+		// Robust outside a git repo (spec Fix 3): skip the preflight cleanly when
+		// the target dir isn't a work tree, rather than relying on the soft-fail
+		// warning. Covers --config pointing at a non-repo and bare cwd usage.
+		if !git.IsRepo(repoPath) {
+			return nil
+		}
+
+		drift, err := git.HasDrift(repoPath, archiveRel)
 		if err != nil {
-			// Non-fatal: warn and proceed (offline / not-a-repo cases)
+			// Non-fatal: warn and proceed (offline / fetch failure cases)
 			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ git fetch failed: %v (continuing; use --no-sync to silence)\n", err)
 			return nil
 		}
 		if drift {
-			fmt.Fprintln(cmd.ErrOrStderr(), "⚠ Remote has newer secrets/all.enc.age — pulling...")
-			if err := git.Pull("."); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ Remote has newer %s — pulling...\n", archiveRel)
+			if err := git.Pull(repoPath); err != nil {
 				return fmt.Errorf("auto pull failed: %w. Resolve manually or use --no-sync", err)
 			}
 			fmt.Fprintln(cmd.ErrOrStderr(), "✓ Pulled latest")
 		}
 		return nil
 	},
+}
+
+// resolveProjectFlag turns --project <name> into cfgFile = <dir>/.wapps.yaml via
+// the registry. No-op when --project is unset. cobra's
+// MarkFlagsMutuallyExclusive already rejects --config + --project at parse time;
+// the explicit check here covers programmatic/test invocation that bypasses
+// cobra parsing.
+func resolveProjectFlag() error {
+	if projectName == "" {
+		return nil
+	}
+	if cfgFile != "" {
+		return fmt.Errorf("--config and --project are mutually exclusive")
+	}
+	dir, err := projects.Resolve(projectName)
+	if err != nil {
+		return err
+	}
+	cfgFile = filepath.Join(dir, ".wapps.yaml")
+	return nil
 }
 
 func Execute() {
@@ -97,7 +155,9 @@ func maybeNotifyUpdate() {
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&noSync, "no-sync", false, "Skip git auto-sync preflight")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "Config file (default: ./.wapps.yaml)")
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to a .wapps.yaml; secrets resolve against its dir (default: ./.wapps.yaml)")
+	rootCmd.PersistentFlags().StringVarP(&projectName, "project", "p", "", "Registered project name (see ~/.config/wapps/projects.yaml); resolves to that project's .wapps.yaml")
+	rootCmd.MarkFlagsMutuallyExclusive("config", "project")
 	rootCmd.AddCommand(secrets.SecretsCmd)
 	rootCmd.AddCommand(gitcmd.GitCmd)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
