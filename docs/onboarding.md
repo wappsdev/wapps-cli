@@ -96,6 +96,29 @@ If you only care about Tofu-source repos (no Coolify):
 wapps doctor --for tofu
 ```
 
+### Running from any directory
+
+You don't have to `cd` into the project. Point at its config or register a
+short name:
+
+```bash
+# By config path (works from anywhere):
+wapps secrets get coolify_token --config /abs/.../vaulter/.wapps.yaml
+
+# By registered project name (cleaner) — add it once to
+# ~/.config/wapps/projects.yaml:
+#   projects:
+#     vaulter: /Users/you/Documents/Projects/infra-tofu/projects/vaulter
+wapps secrets get coolify_token --project vaulter
+wapps secrets list --project vaulter
+wapps secrets exec --project vaulter -- terraform plan
+```
+
+All relative paths in that `.wapps.yaml` resolve against its own directory, so
+the archive is found no matter where you run from. `--config` and `--project`
+are mutually exclusive. In the project dir with no flag, everything works
+exactly as before.
+
 ## Step 5 — Use secrets in your dev loop
 
 You'll touch one of three commands daily:
