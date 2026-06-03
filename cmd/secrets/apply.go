@@ -33,7 +33,7 @@ func runApply(stdoutW io.Writer) error {
 		return fmt.Errorf("apply: WAPPS_SECRETS_PASSPHRASE not set")
 	}
 
-	cfg, err := config.Load(wappsYAMLPath)
+	cfg, err := config.Load(wappsConfigPath())
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)
 	}
@@ -41,7 +41,7 @@ func runApply(stdoutW io.Writer) error {
 		return fmt.Errorf("apply: no targets declared in %s — add a 'targets:' block or use 'wapps secrets env --write <file>' for one-off writes", wappsYAMLPath)
 	}
 
-	enc, err := os.ReadFile(cfg.Dest)
+	enc, err := os.ReadFile(cfg.ResolveDest())
 	if err != nil {
 		return fmt.Errorf("apply: read %s: %w", cfg.Dest, err)
 	}
@@ -69,10 +69,16 @@ func applyTargets(cfg *config.WappsYAML, decryptedArchive []byte, stdoutW io.Wri
 		}
 		want := buf.Bytes()
 
+		// Resolve the target path against configRoot so a --project/--config
+		// apply writes <project>/.env.local, not <cwd>/.env.local — never
+		// scatter plaintext secret files into whatever dir the operator was in.
+		// The display lines keep the raw t.Path (repo-relative) for readability.
+		target := t.ResolvePath(cfg.ConfigRoot())
+
 		// Idempotency: if the file already contains exactly these bytes, leave
 		// it alone. Avoids spurious mtime updates that confuse file watchers
 		// (Next.js dev server, Vite HMR, fs.watch consumers).
-		existing, err := os.ReadFile(t.Path)
+		existing, err := os.ReadFile(target)
 		if err == nil && bytes.Equal(existing, want) {
 			fmt.Fprintf(stdoutW, "unchanged %s\n", t.Path)
 			continue
@@ -81,7 +87,7 @@ func applyTargets(cfg *config.WappsYAML, decryptedArchive []byte, stdoutW io.Wri
 			return fmt.Errorf("apply: targets[%d] %s: stat existing: %w", i, t.Path, err)
 		}
 
-		if err := ageutil.WriteFileAtomic(t.Path, want, 0600); err != nil {
+		if err := ageutil.WriteFileAtomic(target, want, 0600); err != nil {
 			return fmt.Errorf("apply: targets[%d] %s: write: %w", i, t.Path, err)
 		}
 		fmt.Fprintf(stdoutW, "wrote %s\n", t.Path)

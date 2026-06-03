@@ -37,6 +37,49 @@ func setupRotateTest(t *testing.T, archive map[string]string) (oldPass, newPass 
 	return
 }
 
+// TestRunRotateMaster_AuditPathRelativeWithWappsYAML locks the audit-log path
+// format for the rolled-out case (a .wapps.yaml present, so resolveArchivePath
+// returns an absolute path): the audit entry's archive_paths must stay the raw
+// repo-relative "secrets/all.enc.age", not the absolute resolved path. The
+// rotation itself must still succeed (reads/writes the resolved archive).
+func TestRunRotateMaster_AuditPathRelativeWithWappsYAML(t *testing.T) {
+	oldPass, newPass := setupRotateTest(t, map[string]string{"K": "v"})
+	// Seed a .wapps.yaml in cwd → resolveArchivePath resolves to an absolute
+	// path; the audit field should remain relative.
+	if err := os.WriteFile(".wapps.yaml", []byte("version: 1\nsources:\n  - type: tofu\n"), 0644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	lookup := func(k string) string {
+		switch k {
+		case "WAPPS_SECRETS_PASSPHRASE":
+			return oldPass
+		case "WAPPS_SECRETS_PASSPHRASE_NEW":
+			return newPass
+		}
+		return ""
+	}
+	if err := runRotateMaster(lookup); err != nil {
+		t.Fatalf("runRotateMaster: %v", err)
+	}
+
+	logData, err := os.ReadFile("secrets/rotation.log")
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var entry rotationAuditEntry
+	if err := json.Unmarshal([]byte(strings.SplitN(string(logData), "\n", 2)[0]), &entry); err != nil {
+		t.Fatalf("parse JSONL: %v", err)
+	}
+	if len(entry.ArchivePaths) != 1 || entry.ArchivePaths[0] != "secrets/all.enc.age" {
+		t.Errorf("archive_paths = %v, want [secrets/all.enc.age] (raw relative even with .wapps.yaml present)", entry.ArchivePaths)
+	}
+	// Rotation actually happened: archive now decrypts with the new pp.
+	enc, _ := os.ReadFile("secrets/all.enc.age")
+	if _, err := ageutil.Decrypt(enc, newPass); err != nil {
+		t.Errorf("archive not re-encrypted with new pp: %v", err)
+	}
+}
+
 func TestRunRotateMaster_HappyPath(t *testing.T) {
 	oldPass, newPass := setupRotateTest(t, map[string]string{
 		"DB_PASSWORD": "secret",

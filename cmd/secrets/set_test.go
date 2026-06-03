@@ -18,9 +18,9 @@ func happyPathPrompt(val string) func(string) (string, bool, error) {
 	}
 }
 
-func cleanDrift(string) (bool, error)  { return false, nil }
-func dirtyDrift(string) (bool, error)  { return true, nil }
-func driftErr(string) (bool, error)    { return false, errors.New("git fetch failed") }
+func cleanDrift(string, string) (bool, error) { return false, nil }
+func dirtyDrift(string, string) (bool, error) { return true, nil }
+func driftErr(string, string) (bool, error)   { return false, errors.New("git fetch failed") }
 
 func setUpSetTestRepo(t *testing.T, opts struct {
 	yamlContent  string

@@ -26,7 +26,12 @@ var verifyCmd = &cobra.Command{
 		}
 		liveSha := sha256.Sum256(liveOut)
 
-		enc, err := os.ReadFile("secrets/all.enc.age")
+		// Archive read honors --config/--project via resolveArchivePath. Note:
+		// tofu.Output() above still runs in cwd, so `verify` under --config
+		// compares against the wrong tofu dir — that side is a known cwd-bound
+		// limitation (verify is not part of the secrets-from-anywhere
+		// acceptance set; the archive read is fixed for consistency).
+		enc, err := os.ReadFile(resolveArchivePath())
 		if err != nil {
 			return fmt.Errorf("verify: read archive: %w", err)
 		}

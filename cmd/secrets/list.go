@@ -15,7 +15,7 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List secret names (no values)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return listKeys("secrets/all.enc.age", os.Stdout)
+		return listKeys(resolveArchivePath(), os.Stdout)
 	},
 }
 
