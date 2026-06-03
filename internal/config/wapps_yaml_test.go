@@ -1,9 +1,119 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// --- config-dir-relative path resolution (secrets-from-anywhere) ---
+
+func TestLoad_RecordsConfigRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".wapps.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nsources:\n  - type: file\n    path: .env.shared\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	absDir, _ := filepath.Abs(dir)
+	if cfg.ConfigRoot() != absDir {
+		t.Errorf("ConfigRoot = %q, want %q", cfg.ConfigRoot(), absDir)
+	}
+}
+
+func TestParse_NoConfigRoot(t *testing.T) {
+	cfg, err := Parse([]byte("version: 1\nsources:\n  - type: tofu\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.ConfigRoot() != "" {
+		t.Errorf("Parse-built config should have empty ConfigRoot, got %q", cfg.ConfigRoot())
+	}
+	// With empty configRoot, ResolveDest returns the raw relative dest (no Join).
+	if got := cfg.ResolveDest(); got != "secrets/all.enc.age" {
+		t.Errorf("ResolveDest with empty configRoot = %q, want raw default", got)
+	}
+}
+
+func TestResolveDest_RelativeJoined(t *testing.T) {
+	cfg, _ := Parse([]byte("version: 1\ndest: secrets/all.enc.age\nsources:\n  - type: tofu\n"))
+	cfg.configRoot = "/p/vaulter"
+	if got := cfg.ResolveDest(); got != "/p/vaulter/secrets/all.enc.age" {
+		t.Errorf("ResolveDest = %q, want joined", got)
+	}
+}
+
+func TestResolveDest_AbsoluteUnchanged(t *testing.T) {
+	cfg, _ := Parse([]byte("version: 1\ndest: /abs/secrets/all.enc.age\nsources:\n  - type: tofu\n"))
+	cfg.configRoot = "/p/vaulter"
+	if got := cfg.ResolveDest(); got != "/abs/secrets/all.enc.age" {
+		t.Errorf("absolute dest must pass through unchanged, got %q", got)
+	}
+}
+
+func TestResolveTargetPath(t *testing.T) {
+	rel := Target{Path: ".env.local"}
+	if got := rel.ResolvePath("/p/vaulter"); got != "/p/vaulter/.env.local" {
+		t.Errorf("relative target = %q, want joined", got)
+	}
+	abs := Target{Path: "/etc/app/.env"}
+	if got := abs.ResolvePath("/p/vaulter"); got != "/etc/app/.env" {
+		t.Errorf("absolute target must pass through, got %q", got)
+	}
+	// Empty configRoot → unchanged (parse-only / legacy cwd path).
+	if got := rel.ResolvePath(""); got != ".env.local" {
+		t.Errorf("empty configRoot must leave path raw, got %q", got)
+	}
+}
+
+func TestResolvedSources_JoinsPathAndWorkdir(t *testing.T) {
+	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: tofu\n    workdir: .\n  - type: file\n    path: .env.shared\n"))
+	cfg.configRoot = "/p/vaulter"
+	got := cfg.ResolvedSources()
+	if got[0].Workdir != "/p/vaulter" {
+		t.Errorf("tofu workdir = %q, want joined (filepath.Join('/p/vaulter','.'))", got[0].Workdir)
+	}
+	if got[1].Path != "/p/vaulter/.env.shared" {
+		t.Errorf("file source path = %q, want joined", got[1].Path)
+	}
+	// Original cfg.Sources must be untouched (ResolvedSources returns a copy).
+	if cfg.Sources[1].Path != ".env.shared" {
+		t.Errorf("ResolvedSources mutated the original Sources: %q", cfg.Sources[1].Path)
+	}
+}
+
+func TestResolvedSources_AbsoluteUnchanged(t *testing.T) {
+	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: file\n    path: /abs/.env\n"))
+	cfg.configRoot = "/p"
+	if got := cfg.ResolvedSources(); got[0].Path != "/abs/.env" {
+		t.Errorf("absolute source path must pass through, got %q", got[0].Path)
+	}
+}
+
+// A tofu source with an omitted workdir must resolve to configRoot, not stay
+// empty (which would make tofu run in cwd). Regression for the review finding.
+func TestResolvedSources_OmittedTofuWorkdirDefaultsToConfigRoot(t *testing.T) {
+	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: tofu\n"))
+	cfg.configRoot = "/p/vaulter"
+	got := cfg.ResolvedSources()
+	if got[0].Workdir != "/p/vaulter" {
+		t.Errorf("omitted tofu workdir should default to configRoot, got %q", got[0].Workdir)
+	}
+}
+
+// A file source must NOT gain a workdir (it rejects one) — empty stays empty.
+func TestResolvedSources_FileSourceWorkdirStaysEmpty(t *testing.T) {
+	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: file\n    path: .env.shared\n"))
+	cfg.configRoot = "/p/vaulter"
+	got := cfg.ResolvedSources()
+	if got[0].Workdir != "" {
+		t.Errorf("file source workdir must stay empty (file rejects workdir), got %q", got[0].Workdir)
+	}
+}
 
 func TestParse_VaulterExample(t *testing.T) {
 	// Matches the design-doc example for infra-tofu/projects/vaulter.
