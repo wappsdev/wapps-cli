@@ -14,7 +14,7 @@ var getCmd = &cobra.Command{
 	Short: "Decrypt + extract single secret value",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		val, err := readKey("secrets/all.enc.age", args[0])
+		val, err := readKey(resolveArchivePath(), args[0])
 		if err != nil {
 			return err
 		}

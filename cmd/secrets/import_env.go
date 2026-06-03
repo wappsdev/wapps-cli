@@ -33,7 +33,7 @@ var importEnvCmd = &cobra.Command{
 //  4. Merge imported keys (later wins — typical "import overwrites" semantics)
 //  5. Re-encrypt + atomic write
 func runImportEnv(envFilePath string, lookup func(string) string) error {
-	cfg, err := loadOrNil(wappsYAMLPath)
+	cfg, err := loadOrNil(wappsConfigPath())
 	if err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 		return fmt.Errorf("secrets.import-env: WAPPS_SECRETS_PASSPHRASE not set")
 	}
 
-	archive, err := decryptArchive(cfg.Dest, passphrase)
+	archive, err := decryptArchive(cfg.ResolveDest(), passphrase)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 		archive[k] = v
 	}
 
-	payload, err := encryptAndWriteArchiveLookup(cfg.Dest, archive, passphrase)
+	payload, err := encryptAndWriteArchiveLookup(cfg.ResolveDest(), archive, passphrase)
 	if err != nil {
 		return err
 	}

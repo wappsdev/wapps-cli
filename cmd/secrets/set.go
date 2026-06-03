@@ -21,9 +21,11 @@ type setOptions struct {
 	// + whether a TTY was used (false → operator may have piped, value is in
 	// the clear in shell history).
 	promptValue func(prompt string) (string, bool, error)
-	// driftCheck verifies git state for the archive. Returns true if there's
-	// drift / dirty working tree (caller refuses to write).
-	driftCheck func(archivePath string) (dirty bool, err error)
+	// driftCheck verifies git state for the archive in repoPath. Returns true
+	// if there's drift / dirty working tree (caller refuses to write). repoPath
+	// is the configRoot (the .wapps.yaml dir) so a --project set checks the
+	// project's repo, not cwd.
+	driftCheck func(repoPath, archivePath string) (dirty bool, err error)
 }
 
 var setCmd = &cobra.Command{
@@ -65,7 +67,7 @@ func runSet(key string, opts setOptions) error {
 		return fmt.Errorf("secrets.set: KEY argument is required")
 	}
 
-	cfg, err := loadOrNil(wappsYAMLPath)
+	cfg, err := loadOrNil(wappsConfigPath())
 	if err != nil {
 		return err
 	}
@@ -79,7 +81,14 @@ func runSet(key string, opts setOptions) error {
 	}
 
 	if opts.driftCheck != nil {
-		dirty, err := opts.driftCheck(cfg.Dest)
+		// Drift check runs in configRoot (the .wapps.yaml repo dir) with the
+		// raw repo-relative archive path. configRoot is always set here (cfg
+		// came from Load); fall back to cwd defensively.
+		repoPath := cfg.ConfigRoot()
+		if repoPath == "" {
+			repoPath = "."
+		}
+		dirty, err := opts.driftCheck(repoPath, cfg.Dest)
 		if err != nil {
 			return fmt.Errorf("secrets.set: drift preflight: %w", err)
 		}
@@ -93,7 +102,7 @@ func runSet(key string, opts setOptions) error {
 		return fmt.Errorf("secrets.set: WAPPS_SECRETS_PASSPHRASE not set")
 	}
 
-	archive, err := decryptArchive(cfg.Dest, passphrase)
+	archive, err := decryptArchive(cfg.ResolveDest(), passphrase)
 	if err != nil {
 		return err
 	}
@@ -119,11 +128,14 @@ func runSet(key string, opts setOptions) error {
 	}
 	archive[key] = envelope
 
-	payload, err := encryptAndWriteArchive(cfg.Dest, archive, passphrase)
+	payload, err := encryptAndWriteArchive(cfg.ResolveDest(), archive, passphrase)
 	if err != nil {
 		return err
 	}
-	if err := source.WriteFileSource(filePath, key, value); err != nil {
+	// filePath is the raw (repo-relative) file-source path for display; resolve
+	// it against configRoot for the actual write so --project writes into the
+	// project dir.
+	if err := source.WriteFileSource(cfg.Resolve(filePath), key, value); err != nil {
 		// Archive was written but file source write failed. The next
 		// `wapps secrets sync` would read the file source (missing the
 		// new key), merge, and overwrite the archive — silently undoing
@@ -218,12 +230,15 @@ func encryptAndWriteArchive(path string, archive map[string]json.RawMessage, pas
 //  1. Local archive sha equals origin's archive sha (no incoming changes)
 //  2. Working tree is clean for the archive path (no uncommitted local edits)
 // Either failing returns dirty=true so runSet refuses to write.
-func defaultDriftCheck(archivePath string) (bool, error) {
-	if !git.IsRepo(".") {
+func defaultDriftCheck(repoPath, archivePath string) (bool, error) {
+	if repoPath == "" {
+		repoPath = "."
+	}
+	if !git.IsRepo(repoPath) {
 		// Not a git repo — skip preflight, operator is on their own.
 		return false, nil
 	}
-	hasDrift, err := git.HasDrift(".", archivePath)
+	hasDrift, err := git.HasDrift(repoPath, archivePath)
 	if err != nil {
 		return false, err
 	}

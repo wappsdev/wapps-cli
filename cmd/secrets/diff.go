@@ -49,7 +49,15 @@ func runDiff(ref string, gitShow gitShowFn, stdoutW io.Writer) error {
 		return fmt.Errorf("diff: WAPPS_SECRETS_PASSPHRASE not set")
 	}
 
+	// Two paths: the filesystem path (resolved against configRoot, works from
+	// any cwd) for reading the current archive, and the raw repo-relative path
+	// for `git show <ref>:./<path>` — git interprets its arg as a pathspec, not
+	// a filesystem path, so an absolute path would break it. Under
+	// --config/--project the git-ref side runs in cwd (not the project repo) and
+	// is therefore best-effort/cwd-bound; the current-archive read is fully
+	// config-aware.
 	archivePath := resolveArchivePath()
+	gitPath := archiveRelForGit()
 
 	currentEnc, err := os.ReadFile(archivePath)
 	if err != nil {
@@ -64,7 +72,7 @@ func runDiff(ref string, gitShow gitShowFn, stdoutW io.Writer) error {
 		return fmt.Errorf("diff: parse current: %w", err)
 	}
 
-	refEnc, err := gitShow(ref, archivePath)
+	refEnc, err := gitShow(ref, gitPath)
 	if err != nil {
 		return fmt.Errorf("diff: fetch archive at %s: %w", ref, err)
 	}

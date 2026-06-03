@@ -84,7 +84,10 @@ func runRotateMaster(lookup func(string) string) error {
 		return fmt.Errorf("rotate-master: %w", err)
 	}
 
-	if err := appendRotationAudit(archivePath, oldPass, newPass, keyCount); err != nil {
+	// archivePath is resolved (absolute) for the read/write + log location;
+	// the audit entry records the raw repo-relative path for readability and
+	// parity with pre-config-root behavior.
+	if err := appendRotationAudit(archivePath, archiveRelForGit(), oldPass, newPass, keyCount); err != nil {
 		// Don't fail the rotation if audit write fails — the archive is
 		// already re-encrypted and operator needs to distribute the new pp.
 		// Warn instead so they know to investigate the log separately.
@@ -114,7 +117,10 @@ type rotationAuditEntry struct {
 // confirm-only fingerprint to verify "yes this rotation went from pp-A to
 // pp-B", but NOT enough to brute-force the passphrase offline. The log is
 // expected to be gitignored.
-func appendRotationAudit(archivePath, oldPass, newPass string, archiveCount int) error {
+// archivePath is the resolved (absolute) path — used only to locate the
+// rotation.log next to the archive. archiveRel is the raw repo-relative path
+// recorded in the audit entry (readable + stable across cwd / --config).
+func appendRotationAudit(archivePath, archiveRel, oldPass, newPass string, archiveCount int) error {
 	currentUser := "unknown"
 	if u, err := user.Current(); err == nil {
 		currentUser = u.Username
@@ -124,7 +130,7 @@ func appendRotationAudit(archivePath, oldPass, newPass string, archiveCount int)
 		SchemaVersion:    1,
 		Timestamp:        time.Now().UTC().Format(time.RFC3339),
 		Actor:            currentUser,
-		ArchivePaths:     []string{archivePath},
+		ArchivePaths:     []string{archiveRel},
 		ArchiveCount:     archiveCount,
 		OldPPFingerprint: passphraseFingerprint(oldPass),
 		NewPPFingerprint: passphraseFingerprint(newPass),

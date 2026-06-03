@@ -58,7 +58,7 @@ func runSyncCoolify(opts coolifyOptions) error {
 		return fmt.Errorf("sync --target=coolify: COOLIFY_API_TOKEN not set")
 	}
 
-	cfg, err := loadOrNil(wappsYAMLPath)
+	cfg, err := loadOrNil(wappsConfigPath())
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func runSyncCoolify(opts coolifyOptions) error {
 		return fmt.Errorf("sync --target=coolify: WAPPS_SECRETS_PASSPHRASE not set")
 	}
 
-	archive, err := decryptArchive(cfg.Dest, passphrase)
+	archive, err := decryptArchive(cfg.ResolveDest(), passphrase)
 	if err != nil {
 		return err
 	}

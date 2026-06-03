@@ -105,11 +105,28 @@ func writeEnvFileAtomic(writePath string, archiveDecrypted []byte, prefix string
 // legacy default is a safe fallback for old repos. Sync/Set are the
 // commands that halt on broken config because they WRITE.
 func resolveArchivePath() string {
-	cfg, _ := loadOrNil(wappsYAMLPath)
+	cfg, _ := loadOrNil(wappsConfigPath())
+	if cfg != nil && cfg.Dest != "" {
+		// Resolve against the .wapps.yaml dir (configRoot) so reads work from
+		// any cwd under --config/--project. When no override is set, configRoot
+		// == cwd → identical to the old cwd-relative behavior.
+		return cfg.ResolveDest()
+	}
+	// No/absent config: resolve the default against the override dir if one was
+	// given, else cwd-relative (legacy).
+	return resolveLegacyDest()
+}
+
+// archiveRelForGit returns the repo-relative archive path for `git show`, which
+// treats its argument as a pathspec (not a filesystem path). Always the raw
+// cfg.Dest (or the default) — never configRoot-resolved, since an absolute path
+// would make `git show <ref>:./<path>` fail. Used by diff's git-ref side.
+func archiveRelForGit() string {
+	cfg, _ := loadOrNil(wappsConfigPath())
 	if cfg != nil && cfg.Dest != "" {
 		return cfg.Dest
 	}
-	return "secrets/all.enc.age"
+	return defaultArchiveRel
 }
 
 // writeTofuOutputsAsEnv parses tofu-output-shaped JSON and emits

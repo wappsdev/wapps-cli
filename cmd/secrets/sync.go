@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
@@ -15,7 +16,57 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/tofu"
 )
 
+// defaultArchiveRel is the archive path used when no .wapps.yaml declares one.
+const defaultArchiveRel = "secrets/all.enc.age"
+
+// resolveLegacyDest resolves the default archive path against an override dir
+// (when --config/--project pointed at a dir lacking a parseable .wapps.yaml),
+// or returns it cwd-relative when there's no override.
+func resolveLegacyDest() string {
+	root := overrideRoot()
+	if root == "" {
+		return defaultArchiveRel
+	}
+	return filepath.Join(root, defaultArchiveRel)
+}
+
+// wappsYAMLPath is the default config filename, used (cwd-relative) when no
+// --config/--project override has been supplied — the legacy behavior.
 const wappsYAMLPath = ".wapps.yaml"
+
+// configPathOverride is set by the root command from --config/--project. When
+// non-empty it is the absolute path to a .wapps.yaml; the secrets commands load
+// it instead of ./.wapps.yaml, and config.Load records its directory as the
+// configRoot all relative archive/target/source paths resolve against.
+//
+// It is a package-level var (not threaded through every runX signature) because
+// those entry points are reached via cobra RunE and adding a configRoot
+// argument would churn every command + test for no behavioral gain. The seam is
+// test-settable; tests must SetConfigPath("") in cleanup to avoid leaking it.
+var configPathOverride string
+
+// SetConfigPath is called by cmd/root (PersistentPreRunE) with the resolved
+// absolute .wapps.yaml path, or "" for the cwd default.
+func SetConfigPath(path string) { configPathOverride = path }
+
+// wappsConfigPath returns the .wapps.yaml path to load: the override when set,
+// else the cwd-relative default.
+func wappsConfigPath() string {
+	if configPathOverride != "" {
+		return configPathOverride
+	}
+	return wappsYAMLPath
+}
+
+// overrideRoot returns the directory of the config override (for resolving the
+// default archive path when no .wapps.yaml exists), or "" when no override is
+// set (→ cwd-relative legacy behavior).
+func overrideRoot() string {
+	if configPathOverride == "" {
+		return ""
+	}
+	return filepath.Dir(configPathOverride)
+}
 
 var (
 	syncTarget        string
@@ -85,7 +136,7 @@ func defaultCoolifyClient(baseURL, token string) coolifyAPI {
 // lookup is os.Getenv in production; tests inject their own to drive specific
 // env states without polluting the parent process.
 func runSync(ctx context.Context, lookup func(string) string) error {
-	cfg, err := loadOrNil(wappsYAMLPath)
+	cfg, err := loadOrNil(wappsConfigPath())
 	if err != nil {
 		return err
 	}
@@ -95,7 +146,7 @@ func runSync(ctx context.Context, lookup func(string) string) error {
 		if err := preflightTofuEnv(lookup); err != nil {
 			return err
 		}
-		return syncWithTofuOutput(tofu.Output, "secrets/all.enc.age")
+		return syncWithTofuOutput(tofu.Output, resolveLegacyDest())
 	}
 
 	// Config-driven path. Only preflight tofu env if at least one source needs it.
@@ -105,7 +156,9 @@ func runSync(ctx context.Context, lookup func(string) string) error {
 		}
 	}
 
-	merged, err := readAndMerge(ctx, cfg.Sources)
+	// ResolvedSources joins each source's path/workdir to configRoot so a
+	// --project sync reads the right .env.shared / tofu dir, not cwd's.
+	merged, err := readAndMerge(ctx, cfg.ResolvedSources())
 	if err != nil {
 		return err
 	}
@@ -120,7 +173,7 @@ func runSync(ctx context.Context, lookup func(string) string) error {
 		return fmt.Errorf("secrets.sync: marshal merged: %w", err)
 	}
 
-	if err := ageutil.EncryptWriteAtomic(cfg.Dest, payload, passphrase); err != nil {
+	if err := ageutil.EncryptWriteAtomic(cfg.ResolveDest(), payload, passphrase); err != nil {
 		return fmt.Errorf("secrets.sync: %w", err)
 	}
 
