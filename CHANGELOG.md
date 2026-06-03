@@ -2,6 +2,16 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [Unreleased]
+
+### Added
+- `wapps secrets` works from any cwd. All relative paths in `.wapps.yaml` (`dest`, `targets[].path`, `sources[].path`, tofu `workdir`) now resolve against the **.wapps.yaml's directory** (configRoot), not cwd. `--config <abs>/.wapps.yaml` and the new `--project <name>` flag let you `get`/`list`/`exec`/`env`/`apply`/`sync` without `cd`-ing into the project. Previously `--config` was a dead flag and the archive always resolved against cwd.
+- `--project <name>` / `-p` resolves a registered project from `~/.config/wapps/projects.yaml` (name → dir) to its `.wapps.yaml`. Mutually exclusive with `--config`. Unknown project → `unknown project "x" (add to ~/.config/wapps/projects.yaml or use --config)`. `--config` gained the `-c` shorthand.
+- git auto-sync preflight runs against configRoot (the project repo) when `--config`/`--project` is set, and skips cleanly when that dir isn't a git work tree.
+
+### Changed
+- `apply` writes targets under configRoot (e.g. `<project>/.env.local`), never scattering plaintext into whatever cwd you ran from. `set`/`import-env`/`sync` resolve the archive + file source + targets against configRoot too. Display/commit hints keep the raw repo-relative paths. Single-app `diff` git-ref comparison and `verify`'s tofu-output stay cwd-bound (their archive reads are config-aware; the git/tofu sides are a documented limitation, outside the from-anywhere acceptance set).
+
 ## [v0.13.2] - 2026-05-29
 
 ### Fixed

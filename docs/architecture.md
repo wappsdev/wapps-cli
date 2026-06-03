@@ -132,7 +132,41 @@ A repo with no `.wapps.yaml` falls back to legacy single-tofu mode for `sync`
 | `--version` | Print version (ldflag-injected on releases, `dev`/`main-<sha>` locally). |
 
 Persistent flags: `--no-sync` (skip git auto-sync preflight), `--verbose`,
-`--config`.
+`--config`/`-c`, `--project`/`-p`.
+
+### Running from any cwd (`--config` / `--project`)
+
+By default `wapps secrets` reads `./.wapps.yaml` and resolves the archive
+relative to **cwd** — so you must `cd` into the project. Two flags lift that:
+
+- `--config <path>/.wapps.yaml` — load that config and resolve all its relative
+  paths (`dest`, `targets`, `sources`) against **its own directory**
+  (configRoot), not cwd. So `wapps secrets get X --config /abs/vaulter/.wapps.yaml`
+  works from anywhere.
+- `--project <name>` / `-p` — sugar over `--config`: looks `<name>` up in
+  `~/.config/wapps/projects.yaml` (a `name: dir` map) and uses
+  `<dir>/.wapps.yaml`. Mutually exclusive with `--config`.
+
+```yaml
+# ~/.config/wapps/projects.yaml  (honors XDG_CONFIG_HOME)
+projects:
+  vaulter:  /Users/me/Documents/Projects/infra-tofu/projects/vaulter
+  vibe-pro: /Users/me/Documents/Projects/infra-tofu/projects/vibe-pro
+  lab:      /Users/me/Documents/Projects/infra-tofu/projects/lab
+```
+
+```bash
+wapps secrets get coolify_token --project vaulter
+wapps secrets list --config /abs/vaulter/.wapps.yaml
+wapps secrets exec --project vaulter -- terraform plan
+```
+
+Resolution rule: a relative path joins configRoot; an absolute path is used
+verbatim. With no flag, configRoot == cwd → byte-identical to the legacy
+behavior. The git preflight and `apply` target writes also follow configRoot
+(so `--project vaulter apply` writes `vaulter/.env.local`, never `cwd/.env.local`).
+Two read commands stay cwd-bound for their non-archive side: `diff`'s git-ref
+comparison (`git show` is a cwd pathspec) and `verify`'s `tofu output`.
 
 ---
 
