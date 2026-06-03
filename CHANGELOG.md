@@ -2,7 +2,7 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
-## [Unreleased]
+## [v0.14.0] - 2026-06-03
 
 ### Added
 - `wapps secrets` works from any cwd. All relative paths in `.wapps.yaml` (`dest`, `targets[].path`, `sources[].path`, tofu `workdir`) now resolve against the **.wapps.yaml's directory** (configRoot), not cwd. `--config <abs>/.wapps.yaml` and the new `--project <name>` flag let you `get`/`list`/`exec`/`env`/`apply`/`sync` without `cd`-ing into the project. Previously `--config` was a dead flag and the archive always resolved against cwd.
