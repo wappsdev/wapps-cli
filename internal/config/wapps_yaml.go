@@ -28,6 +28,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wappsdev/wapps-cli/internal/source"
@@ -50,6 +51,25 @@ func (t Target) EffectivePrefix(defaultPrefix string) string {
 		return *t.Prefix
 	}
 	return defaultPrefix
+}
+
+// ResolvePath resolves this target's path against configRoot. Relative paths
+// are joined to configRoot; absolute paths (and the empty-configRoot case from
+// a Parse-constructed config) pass through unchanged.
+func (t Target) ResolvePath(configRoot string) string {
+	return resolveRel(configRoot, t.Path)
+}
+
+// resolveRel joins p onto configRoot when p is relative. Absolute paths and
+// the empty-configRoot case (a config built via Parse, with no file on disk —
+// e.g. unit tests) pass through unchanged. This is the single rule the
+// secrets-from-anywhere spec mandates: a relative path resolves against the
+// .wapps.yaml's directory, an absolute path is used verbatim.
+func resolveRel(configRoot, p string) string {
+	if p == "" || configRoot == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(configRoot, p)
 }
 
 // CoolifyApp maps an archive key-prefix to a single Coolify application for
@@ -95,6 +115,53 @@ type WappsYAML struct {
 	CoolifySync     *CoolifySync    `yaml:"coolify_sync,omitempty"`
 	RedactInLogs    bool            `yaml:"redact_in_logs"`
 	RequireCleanGit bool            `yaml:"require_clean_git"`
+
+	// configRoot is the absolute directory of the loaded .wapps.yaml. Set by
+	// Load (not Parse). Empty for Parse-constructed configs (no file on disk,
+	// e.g. unit tests), which the Resolve* helpers treat as "leave relative
+	// paths as-is" (cwd-relative — the legacy behavior).
+	configRoot string
+}
+
+// ConfigRoot is the absolute directory of the loaded .wapps.yaml, or "" when
+// the config was Parse-constructed.
+func (c *WappsYAML) ConfigRoot() string { return c.configRoot }
+
+// Resolve joins an arbitrary relative path against this config's configRoot
+// (absolute paths and the empty-configRoot case pass through). Used for paths
+// that don't have a dedicated helper, e.g. the single file-source path in `set`.
+func (c *WappsYAML) Resolve(p string) string { return resolveRel(c.configRoot, p) }
+
+// ResolveDest returns the archive path resolved against configRoot. Dest is
+// already defaulted to "secrets/all.enc.age" by applyDefaultsAndValidate, so
+// this only ever joins (relative) or passes through (absolute) — the default
+// interacts here lazily and Dest itself is never mutated (display/commit hints
+// keep the raw repo-relative value).
+func (c *WappsYAML) ResolveDest() string { return resolveRel(c.configRoot, c.Dest) }
+
+// ResolvedSources returns a copy of Sources with Path (file source env-file)
+// and Workdir (tofu .tf dir) joined to configRoot. Callers pass these to
+// source.New so the file/tofu adapters read from the config dir, not cwd. The
+// spec lists sources[].path explicitly; we resolve Workdir too because a tofu
+// source whose workdir resolved against cwd would silently run `tofu output`
+// in the wrong directory — the same class of bug as the dest one.
+func (c *WappsYAML) ResolvedSources() []source.Config {
+	out := make([]source.Config, len(c.Sources))
+	for i, s := range c.Sources {
+		s.Path = resolveRel(c.configRoot, s.Path)
+		// A tofu source with an omitted workdir defaults to the config dir, not
+		// the process cwd. Without this, `--project sync` of a repo whose tofu
+		// source leaves workdir blank would silently run `tofu output` in the
+		// operator's cwd. We map "" → "." so resolveRel joins it to configRoot
+		// (Join(root,".")==root); explicit "." already works the same way. Only
+		// applied to tofu — a file source rejects a non-empty workdir.
+		if s.Type == "tofu" && s.Workdir == "" {
+			s.Workdir = "."
+		}
+		s.Workdir = resolveRel(c.configRoot, s.Workdir)
+		out[i] = s
+	}
+	return out
 }
 
 const (
@@ -111,7 +178,20 @@ func Load(path string) (*WappsYAML, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
-	return Parse(data)
+	y, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	// Record the absolute directory of the loaded file so all relative paths
+	// (dest, targets, sources) resolve against it rather than cwd. Load is the
+	// only entry point that knows the on-disk path; Parse stays pure (configRoot
+	// "") so the parse-only unit tests are unaffected.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: resolve abs path %s: %w", path, err)
+	}
+	y.configRoot = filepath.Dir(abs)
+	return y, nil
 }
 
 // Parse is Load split out for testability. Same validation runs in both paths.
