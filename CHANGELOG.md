@@ -2,7 +2,7 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
-## [Unreleased]
+## [v0.14.1] - 2026-06-04
 
 ### Fixed
 - `wapps secrets get <key>` no longer crashes when a *different* key in the archive holds a non-string value (e.g. the array `vaulter_traefik_cert_paths`). `get` previously unmarshaled the whole archive into a value-is-string struct and failed before reaching the requested key. It now reads each value as raw JSON and renders only the requested one (string verbatim, array/map/number/bool as compact JSON, null/absent as empty). `BUG-secrets-read-broken` #1.
