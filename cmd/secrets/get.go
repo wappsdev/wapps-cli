@@ -1,9 +1,11 @@
 package secrets
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
@@ -39,8 +41,12 @@ func readKey(archivePath, key string) (string, error) {
 		return "", fmt.Errorf("secrets.get: decrypt: %w", err)
 	}
 
+	// Keep the value as raw JSON, NOT a struct that assumes value is a string.
+	// Otherwise a single non-string value anywhere in the archive (e.g. an
+	// array like vaulter_traefik_cert_paths) fails the whole unmarshal and
+	// `get` crashes before it ever reaches the requested key.
 	var outputs map[string]struct {
-		Value string `json:"value"`
+		Value json.RawMessage `json:"value"`
 	}
 	if err := json.Unmarshal(dec, &outputs); err != nil {
 		return "", fmt.Errorf("secrets.get: unmarshal: %w", err)
@@ -50,7 +56,28 @@ func readKey(archivePath, key string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("secrets.get: key %q not found", key)
 	}
-	return entry.Value, nil
+	return rawValueToString(entry.Value), nil
+}
+
+// rawValueToString renders one archive value for `get`:
+//   - absent "value" field or JSON null → "" (matches the pre-fix struct-into-
+//     string zero-value semantics; never prints a raw envelope blob)
+//   - JSON string → the string verbatim (unquoted, for piping)
+//   - any other type (array/map/number/bool) → compact JSON
+func rawValueToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		// Covers JSON string (→ value) and JSON null (→ ""), matching legacy.
+		return s
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err == nil {
+		return compact.String()
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func init() {
