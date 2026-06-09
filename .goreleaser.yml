@@ -46,5 +46,14 @@ brews:
       email: bot@wapps.co
     install: |
       bin.install "wapps"
+    caveats: |
+      Enable the AI-safe "wapps-secrets" skill so coding agents (Claude Code,
+      Cursor, Aider) use apply-only secret commands and never read your .env:
+
+        wapps skill install                 # user-wide (~/.claude/skills) — recommended
+        wapps skill install --local --copy  # committable copy in the current repo
+
+      After a future `brew upgrade wapps`, the skill auto-refreshes on the next
+      `wapps` run — no need to re-install.
     test: |
       assert_match "wapps", shell_output("#{bin}/wapps --help")
