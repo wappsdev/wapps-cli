@@ -2,6 +2,11 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [Unreleased]
+
+### Added
+- `wapps skill install` — installs the AI-safe `wapps-secrets` Claude Code skill, which ships embedded in the binary (`go:embed`), so a Homebrew install with no repo checkout works. Default is user-wide (`~/.claude/skills`, file-symlink into a real dir — the layout Claude Code's loader accepts); `--local --copy` writes committable files into a repo's `.claude/skills`. `wapps skill status` / `uninstall` round it out. After `brew upgrade wapps`, an existing symlink install auto-refreshes in place on the next run (gated, opt-out via `WAPPS_NO_UPDATE_CHECK`). Brew caveats prompt the one-time `wapps skill install`.
+
 ## [v0.14.1] - 2026-06-04
 
 ### Fixed
