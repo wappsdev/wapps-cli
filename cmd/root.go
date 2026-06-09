@@ -9,15 +9,19 @@ import (
 	coolifycmd "github.com/wappsdev/wapps-cli/cmd/coolify"
 	gitcmd "github.com/wappsdev/wapps-cli/cmd/git"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
+	skillcmd "github.com/wappsdev/wapps-cli/cmd/skill"
 	"github.com/wappsdev/wapps-cli/internal/config"
 	"github.com/wappsdev/wapps-cli/internal/git"
 	"github.com/wappsdev/wapps-cli/internal/projects"
+	skillpkg "github.com/wappsdev/wapps-cli/internal/skill"
 	"github.com/wappsdev/wapps-cli/internal/updatecheck"
 	"golang.org/x/term"
 )
 
 // Version is set at link time by GoReleaser via:
-//   -ldflags="-X github.com/wappsdev/wapps-cli/cmd.Version=<tag>"
+//
+//	-ldflags="-X github.com/wappsdev/wapps-cli/cmd.Version=<tag>"
+//
 // Local builds (go build/install without ldflags) carry "dev" so support
 // can see the binary came from an untagged build.
 var Version = "dev"
@@ -27,6 +31,10 @@ var (
 	verbose     bool
 	cfgFile     string
 	projectName string
+	// skillCmdInvoked is set by PersistentPreRunE when the running command is
+	// `skill ...`, so the post-command auto-refresh doesn't double-print a
+	// "refreshed" notice on top of `skill install`'s own output.
+	skillCmdInvoked bool
 )
 
 var rootCmd = &cobra.Command{
@@ -41,6 +49,14 @@ It wraps:
   - git auto-sync preflight (pull latest secrets/all.enc.age before any read)
   - doctor (end-to-end dependency check)`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Record a `skill ...` invocation up front (before any early return) so
+		// the post-command skill auto-refresh stays quiet for it. Cobra-resolved,
+		// so flag-before-subcommand forms (`wapps --no-sync skill install`) are
+		// handled correctly — an os.Args[1] check would miss those.
+		if cmd.Name() == "skill" || (cmd.Parent() != nil && cmd.Parent().Name() == "skill") {
+			skillCmdInvoked = true
+		}
+
 		// Resolve --project → cfgFile first, then hand the resolved config path
 		// to the secrets package so its loaders + path resolution use the
 		// config dir (configRoot), not cwd. This runs even under --no-sync (it
@@ -64,6 +80,11 @@ It wraps:
 			return nil
 		}
 		if cmd.Parent() != nil && cmd.Parent().Name() == "git" {
+			return nil
+		}
+		// Skip auto-sync for `skill` — it installs local files, never touches
+		// the repo's encrypted secrets, so a git preflight would be pure noise.
+		if skillCmdInvoked {
 			return nil
 		}
 
@@ -128,6 +149,10 @@ func Execute() {
 	// Best-effort "newer release available" notice, printed AFTER the command's
 	// own output so it's the last thing the user sees. Never affects exit code.
 	maybeNotifyUpdate()
+	// After a `brew upgrade wapps`, an existing symlink install of the
+	// wapps-secrets skill is refreshed in place automatically (no manual
+	// re-install). Honors WAPPS_NO_UPDATE_CHECK; one-line notice on a TTY.
+	maybeAutoRefreshSkill()
 
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -152,6 +177,25 @@ func maybeNotifyUpdate() {
 	updatecheck.MaybeNotify(os.Stderr, updatecheck.Options{CurrentVersion: Version})
 }
 
+// maybeAutoRefreshSkill brings an existing symlink install of the wapps-secrets
+// skill up to date with this binary's embedded copy, in place. The refresh runs
+// even non-interactively (so CI gets the current skill) but only when a prior
+// symlink install exists; the confirmation line is printed on a TTY only. Stays
+// quiet during `wapps skill ...` (those commands manage the skill explicitly)
+// and honors WAPPS_NO_UPDATE_CHECK as a full opt-out.
+func maybeAutoRefreshSkill() {
+	if os.Getenv("WAPPS_NO_UPDATE_CHECK") != "" {
+		return
+	}
+	if skillCmdInvoked {
+		// `skill ...` manages the skill explicitly; don't double-report.
+		return
+	}
+	if skillpkg.AutoRefresh() && term.IsTerminal(int(os.Stderr.Fd())) {
+		fmt.Fprintln(os.Stderr, "✓ wapps-secrets skill refreshed to match the new wapps version.")
+	}
+}
+
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&noSync, "no-sync", false, "Skip git auto-sync preflight")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
@@ -161,4 +205,5 @@ func init() {
 	rootCmd.AddCommand(secrets.SecretsCmd)
 	rootCmd.AddCommand(gitcmd.GitCmd)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
+	rootCmd.AddCommand(skillcmd.SkillCmd)
 }
