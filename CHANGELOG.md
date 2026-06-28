@@ -2,7 +2,7 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
-## [Unreleased]
+## [v0.16.0] - 2026-06-28
 
 ### Added
 - `wapps deploy <service>` — first-class client for the company-deploy-proxy, the only supported path to redeploy the root-level vaulter trio (proxy/db-admin/migrator) + gateway (whose scoped Coolify tokens 403 on the direct API by design). Implements the full proxy contract (validated against the server's `deploy-proxy/main.go`): `POST /v1/deploy/<service>` → `--wait` polls `/v1/deployments/<uuid>` with the exact `ci.yml` status classification (finished→ok, failed/cancelled*/error→fail), `--poll-interval`/`--timeout`, `--repo` (vaulter→vaulter-api alias), `--json`, and local `serviceNameRe` pre-validation. **9 distinct exit codes** (0 ok · 1 usage · 2 creds · 3 auth/scope · 4 CF Access edge · 5 network · 6 proxy/upstream · 7 timeout · 8 failed), with a proxy-403-vs-Cloudflare-edge-403 discriminator. Credentials (proxy token + CF Access service-token) resolve **env-first then the config-resolved archive** (`DEPLOY_PROXY_TOKEN_<REPO>` + `DEPLOY_PROXY_CF_ACCESS_*`, with legacy `PROXY_TOKEN`/`CF_ACCESS_*` fallbacks); never printed (AI-safe in human, `-v`, and `--json` output). `docs/coolify-tokens.md` documents the token model + exit codes.
