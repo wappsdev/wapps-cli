@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	coolifycmd "github.com/wappsdev/wapps-cli/cmd/coolify"
+	deploycmd "github.com/wappsdev/wapps-cli/cmd/deploy"
 	gitcmd "github.com/wappsdev/wapps-cli/cmd/git"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
 	skillcmd "github.com/wappsdev/wapps-cli/cmd/skill"
@@ -206,4 +207,5 @@ func init() {
 	rootCmd.AddCommand(gitcmd.GitCmd)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
 	rootCmd.AddCommand(skillcmd.SkillCmd)
+	rootCmd.AddCommand(deploycmd.DeployCmd)
 }
