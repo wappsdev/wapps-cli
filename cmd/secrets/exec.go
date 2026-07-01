@@ -125,7 +125,7 @@ func buildExecEnv(archiveDecrypted []byte, prefix string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("key %s: %w", k, err)
 		}
-		env = append(env, prefix+k+"="+val)
+		env = append(env, envName(prefix, k)+"="+val)
 	}
 	return env, nil
 }
