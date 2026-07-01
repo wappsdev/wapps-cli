@@ -2,6 +2,11 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [v0.16.1] - 2026-07-01
+
+### Fixed
+- `wapps secrets exec` / `wapps secrets env` no longer double-prefix a key that already carries the source prefix. The `.wapps.yaml` prefix (default `TF_VAR_`) was prepended unconditionally, so an archive key stored already-prefixed (e.g. `TF_VAR_gemini_api_key`, set directly into the archive rather than derived from a Tofu output) was emitted as `TF_VAR_TF_VAR_gemini_api_key` and never reached Tofu. Prefixing is now idempotent (`envName`): a key that already starts with the prefix is emitted verbatim; bare keys still gain it; `--prefix ''` is unchanged. Fixes `wapps secrets exec -- tofu …` on mixed archives that hold both bare Tofu outputs and already-`TF_VAR_`-prefixed apply-input secrets.
+
 ## [v0.16.0] - 2026-06-28
 
 ### Added

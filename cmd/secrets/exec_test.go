@@ -240,6 +240,45 @@ func TestBuildExecEnv_StringValue(t *testing.T) {
 	}
 }
 
+// A mixed archive (Tofu outputs stored bare + file-source secrets carried in
+// already TF_VAR_-prefixed) must NOT double-prefix the prefixed ones.
+func TestBuildExecEnv_IdempotentPrefix(t *testing.T) {
+	archive := []byte(`{"coolify_uuid":{"value":"u1"},"TF_VAR_gemini_api_key":{"value":"g"}}`)
+	env, err := buildExecEnv(archive, "TF_VAR_")
+	if err != nil {
+		t.Fatalf("buildExecEnv: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range env {
+		got[e] = true
+	}
+	if !got["TF_VAR_coolify_uuid=u1"] {
+		t.Errorf("bare key should gain the prefix; got %v", env)
+	}
+	if !got["TF_VAR_gemini_api_key=g"] {
+		t.Errorf("already-prefixed key should be verbatim; got %v", env)
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "TF_VAR_TF_VAR_") {
+			t.Errorf("double-prefixed: %q", e)
+		}
+	}
+}
+
+func TestEnvName_Idempotent(t *testing.T) {
+	cases := []struct{ prefix, key, want string }{
+		{"TF_VAR_", "coolify_uuid", "TF_VAR_coolify_uuid"},
+		{"TF_VAR_", "TF_VAR_gemini_api_key", "TF_VAR_gemini_api_key"},
+		{"", "anything", "anything"},
+		{"TF_VAR_", "TF_VAR_", "TF_VAR_"},
+	}
+	for _, c := range cases {
+		if got := envName(c.prefix, c.key); got != c.want {
+			t.Errorf("envName(%q,%q)=%q, want %q", c.prefix, c.key, got, c.want)
+		}
+	}
+}
+
 func TestBuildExecEnv_ListValueEmitsCompactJSON(t *testing.T) {
 	archive := []byte(`{"PATHS":{"value":["a","b","c"]}}`)
 	env, err := buildExecEnv(archive, "")

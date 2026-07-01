@@ -129,6 +129,19 @@ func archiveRelForGit() string {
 	return defaultArchiveRel
 }
 
+// envName applies the source prefix to a key idempotently: a key that already
+// starts with the prefix is emitted verbatim, never double-prefixed. This keeps
+// a mixed archive correct — Tofu outputs are stored bare (e.g. coolify_uuid →
+// TF_VAR_coolify_uuid) while file-source secrets carried in already prefixed
+// (e.g. TF_VAR_gemini_api_key) round-trip unchanged instead of becoming
+// TF_VAR_TF_VAR_gemini_api_key. An empty prefix emits every key as-is.
+func envName(prefix, key string) string {
+	if prefix == "" || strings.HasPrefix(key, prefix) {
+		return key
+	}
+	return prefix + key
+}
+
 // writeTofuOutputsAsEnv parses tofu-output-shaped JSON and emits
 // `export <prefix><key>='<value>'` lines to w. Output keys are sorted for
 // deterministic output (important for tests + git diff stability).
@@ -156,12 +169,13 @@ func writeTofuOutputsAsEnv(jsonInput []byte, prefix string, w io.Writer) error {
 	for _, k := range keys {
 		raw := outputs[k].Value
 		trimmed := bytes.TrimSpace(raw)
+		name := envName(prefix, k)
 
 		// JSON null: emit literal 'null' so the user can see it explicitly.
 		// Otherwise json.Unmarshal would silently zero the destination string
 		// and we'd lose the signal.
 		if string(trimmed) == "null" {
-			fmt.Fprintf(w, "export %s%s='null'\n", prefix, k)
+			fmt.Fprintf(w, "export %s='null'\n", name)
 			continue
 		}
 
@@ -169,7 +183,7 @@ func writeTofuOutputsAsEnv(jsonInput []byte, prefix string, w io.Writer) error {
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
 			escaped := strings.ReplaceAll(s, "'", "'\\''")
-			fmt.Fprintf(w, "export %s%s='%s'\n", prefix, k, escaped)
+			fmt.Fprintf(w, "export %s='%s'\n", name, escaped)
 			continue
 		}
 
@@ -183,7 +197,7 @@ func writeTofuOutputsAsEnv(jsonInput []byte, prefix string, w io.Writer) error {
 			compact.WriteString(strings.TrimSpace(string(raw)))
 		}
 		escaped := strings.ReplaceAll(compact.String(), "'", "'\\''")
-		fmt.Fprintf(w, "export %s%s='%s'\n", prefix, k, escaped)
+		fmt.Fprintf(w, "export %s='%s'\n", name, escaped)
 	}
 	return nil
 }
