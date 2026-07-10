@@ -423,7 +423,10 @@ export async function resetWorld(): Promise<void> {
     } while (cursor);
   }
   // D1 tabloları (varsa) temizle. Şema henüz kurulmadıysa DELETE patlayabilir → yut.
-  for (const table of ["audit", "grants", "mirror_state", "pending_ops"]) {
+  // trust_pin dahil: testler arası last-verified pin sızıntısı (§4.4) yanlış
+  // TRUST_DOWNGRADE'lere yol açar (bir testin ilerlettiği epoch, sonrakinin genesis
+  // seed'inin altında kalır) → her testte sıfırla.
+  for (const table of ["audit", "grants", "mirror_state", "pending_ops", "trust_pin"]) {
     try {
       await env.AUDIT_DB.prepare(`DELETE FROM ${table}`).run();
     } catch {

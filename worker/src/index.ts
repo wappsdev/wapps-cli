@@ -259,7 +259,7 @@ async function deriveProjects(bucket: R2Bucket): Promise<string[]> {
 // --- Yardımcılar ------------------------------------------------------------
 
 async function trustHeadOr503(env: Env): Promise<VerifiedEpoch> {
-  return loadTrustHead(env.SECRETS_BUCKET, (env.GENESIS_TRUST_SHA256 ?? "").trim());
+  return loadTrustHead(env.SECRETS_BUCKET, (env.GENESIS_TRUST_SHA256 ?? "").trim(), env.AUDIT_DB);
 }
 
 function ptypeOf(p: Principal): "human" | "machine" {

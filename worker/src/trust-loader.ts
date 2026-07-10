@@ -1,18 +1,26 @@
 // Trust head yükleme (R2'den zincir yürüyüşü + M-of-N doğrulama) — DO commit ve
 // Worker blob-PUT grant kontrolü ortak kullanır. Otoritatif kaynak imzalı trust
-// manifest'idir (§4); D1 mirror G7'ye ertelendi.
+// manifest'idir (§4). Getirilen zincir HEM pinlenmiş genesis'e (parse öncesi hash)
+// HEM de D1'deki MONOTONİK last-verified pin'e (§4.4 yüksek-su-işareti) karşı
+// doğrulanır → kalıcı head'in altına rollback TRUST_DOWNGRADE ile reddedilir.
 
 import { parseSignedObject, newVerifierKey, b64ToBytes, VerifierKey } from "./crypto/verify.js";
 import { keyTrustCurrent, keyTrustManifest, getObject } from "./storage.js";
 import { TrustManifest, VerifiedEpoch, verifyRosterChain, Pin, TrustError } from "./trust.js";
+import { loadLastVerifiedPin, persistLastVerifiedPin } from "./trust-pin.js";
 
 /**
  * loadTrustHead, trust/current'ı okur, genesis→head zincirini R2'den yürütür ve
  * M-of-N doğrulanmış head'i döner (§4.5). genesisSha256 pinlenmiş genesis payload
  * hash'idir (Worker config GENESIS_TRUST_SHA256). Doğrulanamazsa TrustError
  * (çağıran 503 SERVICE_MISCONFIGURED'e eşler — §6.2 step 3).
+ *
+ * db verilirse (AUDIT_DB): getirilen zincir, D1'deki kalıcı last-verified pin'e
+ * karşı da yaptırılır (downgrade tavanı, §4.4). Doğrulama başarılı olduktan sonra
+ * head MONOTONİK olarak kalıcılaştırılır (yalnızca ileri; asla azalmaz). db yoksa
+ * geriye dönük davranış korunur (yalnızca genesis'e karşı doğrulama).
  */
-export async function loadTrustHead(bucket: R2Bucket, genesisSha256: string): Promise<VerifiedEpoch> {
+export async function loadTrustHead(bucket: R2Bucket, genesisSha256: string, db?: D1Database): Promise<VerifiedEpoch> {
   if (!genesisSha256) throw new TrustError("SERVICE_MISCONFIGURED", "no genesis pin configured");
   const cur = await getObject(bucket, keyTrustCurrent());
   if (!cur) throw new TrustError("SERVICE_MISCONFIGURED", "trust/current missing");
@@ -37,12 +45,23 @@ export async function loadTrustHead(bucket: R2Bucket, genesisSha256: string): Pr
   }
 
   const pinnedGenesis: Pin = { admin_epoch: 1, sha256: genesisSha256 };
-  const pinnedLast: Pin = { admin_epoch: 1, sha256: genesisSha256 };
+  // pinnedLast = kalıcı MONOTONİK last-verified pin (§4.4). D1 yoksa (veya kayıt
+  // yoksa) genesis taban-değeri → yalnızca genesis'e karşı doğrulama (geriye dönük).
+  // GENESIS'İ İKİ pin OLARAK kullanma artçısı burada kapanır: last-verified ARTIK
+  // gerçek yüksek-su-işaretidir, genesis DEĞİL.
+  const pinnedLast: Pin = db ? await loadLastVerifiedPin(db, pinnedGenesis) : pinnedGenesis;
   const head = verifyRosterChain(pinnedGenesis, pinnedLast, chain, null);
 
   // trust/current, doğrulanmış head'i işaret etmeli (locator tutarlılığı).
   if (trustSha !== undefined && trustSha !== head.bytesSHA256) {
     throw new TrustError("SERVICE_MISCONFIGURED", "trust/current points to a different epoch than the verified head");
+  }
+
+  // Doğrulanmış head'i MONOTONİK olarak kalıcılaştır (yalnızca ileri epoch'ta yazar;
+  // eşit/düşük ASLA ezmez — SQL guard). Böylece bir sonraki yükleme daha yüksek
+  // tavanla gelir ve altına rollback reddedilir.
+  if (db && head.manifest.admin_epoch > pinnedLast.admin_epoch) {
+    await persistLastVerifiedPin(db, { admin_epoch: head.manifest.admin_epoch, sha256: head.bytesSHA256 });
   }
   return head;
 }

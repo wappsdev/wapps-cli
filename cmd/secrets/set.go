@@ -84,6 +84,12 @@ func runSet(key string, opts setOptions) error {
 		return fmt.Errorf("secrets.set: .wapps.yaml required (set updates the file source declared there; legacy tofu-only mode cannot accept manual writes)")
 	}
 
+	// Backend yönlendirme (§7.12): backend:store ise değer WorkerStore.Commit ile
+	// yazılır (dosya-kaynağı / age-arşivi YOK); aksi halde aşağıdaki legacy yol AYNEN korunur.
+	if cfg.IsStoreBackend() {
+		return runSetStore(key, cfg, opts)
+	}
+
 	filePath, err := singleFileSourcePath(cfg.Sources)
 	if err != nil {
 		return err

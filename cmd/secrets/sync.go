@@ -69,12 +69,12 @@ func overrideRoot() string {
 }
 
 var (
-	syncTarget        string
-	syncCoolifyApp    string
+	syncTarget         string
+	syncCoolifyApp     string
 	syncCoolifyAllApps bool
-	syncCoolifyURL    string
-	syncForce         bool
-	syncPrefix        string
+	syncCoolifyURL     string
+	syncForce          bool
+	syncPrefix         string
 )
 
 var syncCmd = &cobra.Command{
@@ -139,6 +139,12 @@ func runSync(ctx context.Context, lookup func(string) string) error {
 	cfg, err := loadOrNil(wappsConfigPath())
 	if err != nil {
 		return err
+	}
+
+	// Backend yönlendirme (§7.12): backend:store ise kaynaklar merge edilip TEK bir
+	// epoch+1 commit ile store'a yazılır; aksi halde aşağıdaki legacy yol AYNEN korunur.
+	if cfg != nil && cfg.IsStoreBackend() {
+		return runSyncStore(ctx, cfg, lookup)
 	}
 
 	if cfg == nil {

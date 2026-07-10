@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -21,13 +22,32 @@ var getCmd = &cobra.Command{
 		if err := agentmode.Guard(agentmode.PolicyRefuseAgent, agentmode.IsAgent()); err != nil {
 			return err
 		}
-		val, err := readKey(resolveArchivePath(), args[0])
+		return runGet(args[0], cmd.OutOrStdout())
+	},
+}
+
+// runGet, get'in backend-aware çekirdeğidir: backend:store ise değeri store'dan
+// çeker; aksi halde legacy age-arşivinden (readKey AYNEN korunur). Değer + tek
+// newline yazılır (legacy `fmt.Println` ile aynı çıktı).
+func runGet(key string, out io.Writer) error {
+	storeCfg, cerr := storeBackendConfig()
+	if cerr != nil {
+		return cerr
+	}
+	if storeCfg != nil {
+		val, err := getStore(storeCfg, key)
 		if err != nil {
 			return err
 		}
-		fmt.Println(val)
+		fmt.Fprintln(out, val)
 		return nil
-	},
+	}
+	val, err := readKey(resolveArchivePath(), key)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, val)
+	return nil
 }
 
 func readKey(archivePath, key string) (string, error) {

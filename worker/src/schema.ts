@@ -42,6 +42,15 @@ const DDL: string[] = [
      current_trust_epoch INTEGER NOT NULL
    )`,
 
+  // --- last-verified trust pin (§4.4): Worker'ın MONOTONİK yüksek-su-işareti ---
+  // TEK satır (id=1). Go istemcinin roots.json `last_verified` pin'iyle parite;
+  // loadTrustHead downgrade tavanı olarak yaptırır (rollback → TRUST_DOWNGRADE).
+  `CREATE TABLE IF NOT EXISTS trust_pin (
+     id           INTEGER PRIMARY KEY CHECK (id = 1),
+     admin_epoch  INTEGER NOT NULL,
+     trust_sha256 TEXT NOT NULL
+   )`,
+
   // --- pending-ops kuyruğu (§6.9): panel ÖNERİR, CLI törenle imzalar+commit'ler
   `CREATE TABLE IF NOT EXISTS pending_ops (
      id              TEXT PRIMARY KEY,

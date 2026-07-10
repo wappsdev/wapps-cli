@@ -53,6 +53,16 @@ by non-Tofu repos like vaulter-api).`,
 // workflows are unchanged. Empty string disables prefixing (vaulter-api
 // and other non-Tofu repos).
 func runEnv(writePath, prefix string, stdoutW io.Writer) error {
+	// Backend yönlendirme (§7.12): backend:store ise export satırları store
+	// snapshot'ından üretilir; aksi halde aşağıdaki legacy age-arşiv yolu AYNEN korunur.
+	storeCfg, cerr := storeBackendConfig()
+	if cerr != nil {
+		return cerr
+	}
+	if storeCfg != nil {
+		return runEnvStore(storeCfg, writePath, prefix, stdoutW)
+	}
+
 	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
 	if passphrase == "" {
 		return fmt.Errorf("env: WAPPS_SECRETS_PASSPHRASE not set")

@@ -65,6 +65,9 @@ interface DOEnv extends EscrowEnv {
   // AUDIT_LOG: TEK global audit DO (§6.5). Commit attempt/outcome satırları BURADAN
   // SENKRON geçer — erişilemezse commit fail-closed (503 AUDIT_UNAVAILABLE).
   AUDIT_LOG: DurableObjectNamespace;
+  // AUDIT_DB: last-verified trust pin aynası (§4.4). loadTrustHead downgrade tavanını
+  // buradan yaptırır + doğrulanmış head'i monotonik kalıcılaştırır.
+  AUDIT_DB: D1Database;
   // §6.8 escrow write-through: B2 hedefi + alert kanalı (fail-soft push).
   DISCORD_WEBHOOK_URL?: string;
 }
@@ -122,6 +125,8 @@ interface PendingOutcome {
 export class ProjectWriterDO {
   private bucket: R2Bucket;
   private genesisSha: string;
+  // AUDIT_DB: last-verified trust pin aynası (§4.4) — loadTrustHead'e geçilir.
+  private auditDb: D1Database;
   // AUDIT_LOG namespace — testte runInDurableObject ile "unavailable" enjekte edilebilir.
   private auditLog: DurableObjectNamespace;
   // §6.8 escrow write-through config (null = B2 yapılandırılmamış → no-op).
@@ -132,6 +137,7 @@ export class ProjectWriterDO {
   constructor(private ctx: DurableObjectState, env: DOEnv) {
     this.bucket = env.SECRETS_BUCKET;
     this.genesisSha = (env.GENESIS_TRUST_SHA256 ?? "").trim();
+    this.auditDb = env.AUDIT_DB;
     this.auditLog = env.AUDIT_LOG;
     this.escrow = escrowConfig(env);
     this.discordUrl = (env.DISCORD_WEBHOOK_URL ?? "").trim();
@@ -206,7 +212,7 @@ export class ProjectWriterDO {
     }
 
     // 3. CURRENT trust state'i yükle + M-of-N doğrula (§6.2 step 3).
-    const head: VerifiedEpoch = await loadTrustHead(this.bucket, genesisPin);
+    const head: VerifiedEpoch = await loadTrustHead(this.bucket, genesisPin, this.auditDb);
     const ring = dataWriterKeyring(head.manifest);
 
     // 2/4. İmza TAM baytlar üzerinde + writer resolve (§6.2 step 2, verify-before-parse).
