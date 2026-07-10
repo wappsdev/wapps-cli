@@ -25,6 +25,40 @@
     "key_id": "sha256:fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff552263889",
     "sig_hex": "0c8f6858df10d39cba54a14f7f9899e200bc82dca807aa3fb65dfcb181ccfa513d0cb58f56fabc64fc6012670a820b5e44777695d976d1b22816570fa6621c0c"
   },
+  "ed25519_negatives": {
+    "_comment": "NEGATIVE ed25519 cross-vectors (release-blocking). Each case MUST be REJECTED by BOTH the Go verifier (crypto/ed25519, RFC8032 cofactorless, S<L) AND the TS Worker verifier (verifyRaw → @noble ed25519.verify with {zip215:false}). accepted_without_fix=true means @noble's DEFAULT (zip215:true, cofactored) would ACCEPT it → proves the zip215:false fix in verify.ts is load-bearing (a party influencing sig bytes under a trusted key could otherwise craft a sig the Worker ACCEPTS but every Go CLI REJECTS). message is hashed (D=SHA-256(msg)) by the verifier before ed25519 verify, exactly like the positive ed25519 vector. Generation: S+L overflow from a real sig (s_ge_l); the standard ed25519 low-order point set with S=0 forgeries (small-order + one non-canonical x-sign encoding). VECTOR-GENERATION GAP: (1) @noble 1.9.7 enforces S<L in BOTH zip215 modes, so the S>=L vector is parity-only (accepted_without_fix=false), not a cofactor-divergence proof; the small-order/non-canonical S=0 vectors carry that proof. (2) Go's crypto/ed25519 is permissive on SOME degenerate encodings — a non-canonical *identity* pubkey (eeff…7f) and non-canonical y=P order-4 (edff…7f) are ACCEPTED by Go with an all-zero-ish sig, so those are NOT valid reject-on-both vectors and are excluded; we use fc85 (non-canonical order-8, x-sign bit) with R=0-point which Go rejects. (3) A non-canonical R inside an otherwise-valid full-order signature can't be constructed deterministically without a real malleable sig, so R non-canonicality is covered only via these low-order cases.",
+    "message": "wapps-secrets/ed25519-negative/v1",
+    "cases": [
+      {
+        "name": "s_ge_l",
+        "reason": "Malleable signature (R, S+L): S is non-canonical (S >= group order L). RFC8032 requires S<L; @noble rejects S>=L in BOTH zip215 modes, so accepted_without_fix=false (this vector documents S>=L parity, not the cofactor divergence).",
+        "pubkey_hex": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+        "sig_hex": "a821ec018fdaba0839687af522a8cbd05c98f6627c5f223481ed8447771dc469f8bf47f499f05b953787c4a320c730a8ca6e7c420430aea958e44f96dfdf8210",
+        "accepted_without_fix": false
+      },
+      {
+        "name": "small_order_8_pubkey",
+        "reason": "Public key A is a small-order (order-8) point; sig = (R=A, S=0). Cofactored (zip215:true) verify: [8*0]B == [8]R + [8k]A reduces to O==O → FORGERY ACCEPTED for any message. Cofactorless (Go / zip215:false) rejects.",
+        "pubkey_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "sig_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc050000000000000000000000000000000000000000000000000000000000000000",
+        "accepted_without_fix": true
+      },
+      {
+        "name": "small_order_4_pubkey",
+        "reason": "Public key A is the order-4 point (y=0); sig = (R=0-point, S=0). Same cofactor forgery: zip215:true accepts, Go / zip215:false reject.",
+        "pubkey_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sig_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "accepted_without_fix": true
+      },
+      {
+        "name": "noncanonical_order_8_pubkey",
+        "reason": "Public key A is a NON-CANONICAL order-8 encoding (x-sign bit set: fc85, same y-coordinate as the canonical fc05 point); sig = (R=0-point, S=0). zip215:true decodes the non-canonical A (y>=P permitted) and cofactor-forges → accept; Go / zip215:false reject the non-canonical/low-order forgery.",
+        "pubkey_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+        "sig_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "accepted_without_fix": true
+      }
+    ]
+  },
   "shamir": {
     "_comment": "Shamir 2-of-3 over GF(2^8) (§3.9). secret = 0x42*32; deterministic rng = repeating 0xAB,0xCD; x-coords fixed 1,2,3 (last byte of each share).",
     "secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",

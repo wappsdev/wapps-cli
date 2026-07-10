@@ -67,6 +67,79 @@ export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
+// --- JSON parse katılığı (Go parse paritesi, §3.6.3) ----------------------
+//
+// Bunlar KRİPTO DEĞİLDİR; imzalı body'lerin Go json decode'uyla BYTE-parite
+// içinde ayrıştırılması için ortak katılık yardımcılarıdır. trust.ts + manifest.ts
+// ikisi de burayı import eder (çift import merkezi).
+
+const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * isRFC3339, Go `time.Time` JSON decode'unun kabul ettiği KATİ RFC3339 biçimini
+ * doğrular (T ayracı + saniye + Z/offset zorunlu; opsiyonel kesirli saniye).
+ * `Date.parse` GEVŞEK'tir ("2026-07-10", "July 10 2026" vb. kabul eder) →
+ * imzalı bir createdAt için Go ile ayrışır. Regex + gerçek-tarih (Date.parse
+ * NaN değil) kontrolü ikisi birden yapılır; katı taraf fail-closed'dur.
+ */
+export function isRFC3339(s: string): boolean {
+  if (!RFC3339_RE.test(s)) return false;
+  return !Number.isNaN(Date.parse(s));
+}
+
+/**
+ * assertCanonicalIntegerJSON, imzalı bir body metnindeki TÜM sayı literallerinin
+ * Go json integer-decode paritesiyle uyumlu olduğunu doğrular. Bu manifest'lerde
+ * (trust + data) HİÇBİR float alan yoktur; tüm sayılar tam sayıdır. Go, integer
+ * alanına `1e3` / `1.0` gibi literalleri REDDEDER ve >2^53 değerleri TAM taşır.
+ * JS `JSON.parse` ise `1e3`'ü sessizce 1000'e çevirir (literal ayrımı kaybolur)
+ * ve >2^53'ü yuvarlar. Parite için: string DIŞINDAKİ her sayı token'ı kanonik
+ * tam-sayı biçiminde (`-?(0|[1-9][0-9]*)`) ve güvenli aralıkta (≤2^53-1) olmalı;
+ * değilse hata (fail-closed). String literalleri (base64/hex içerik) atlanır.
+ */
+export function assertCanonicalIntegerJSON(text: string): void {
+  const n = text.length;
+  let i = 0;
+  let inStr = false;
+  while (i < n) {
+    const c = text[i];
+    if (inStr) {
+      if (c === "\\") {
+        i += 2; // kaçış dizisi (\", \\, \uXXXX ...) — bir sonraki karakteri atla
+        continue;
+      }
+      if (c === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      i++;
+      continue;
+    }
+    // String dışında bir sayı ancak value pozisyonunda görünür (JSON anahtarları
+    // daima string'tir) → '-' veya rakamla başlayan maksimal token'ı yakala.
+    if (c === "-" || (c >= "0" && c <= "9")) {
+      let j = i;
+      while (j < n) {
+        const d = text[j];
+        if ((d >= "0" && d <= "9") || d === "-" || d === "+" || d === "." || d === "e" || d === "E") j++;
+        else break;
+      }
+      const tok = text.slice(i, j);
+      if (!/^-?(0|[1-9][0-9]*)$/.test(tok)) {
+        throw new Error(`JSON_STRICT: non-integer number literal ${JSON.stringify(tok)}`);
+      }
+      if (!Number.isSafeInteger(Number(tok))) {
+        throw new Error(`JSON_STRICT: integer literal out of safe range ${JSON.stringify(tok)}`);
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+}
+
 // --- Hash -----------------------------------------------------------------
 
 /** sha256, ham baytların SHA-256 digest'ini döner (v1'de TEK digest, §3.1). */
@@ -171,7 +244,14 @@ export function verifyRaw(vk: VerifierKey, msg: Uint8Array, sig: Uint8Array): bo
     case ALG_ED25519:
       if (sig.length !== 64) return false;
       try {
-        return ed25519.verify(sig, d, vk.pub);
+        // Go crypto/ed25519 RFC8032 COFACTORSUZ (cofactorless): non-canonical
+        // (y>=P) nokta kodlamalarını ve küçük-mertebe zaafını REDDEDER, S<L
+        // ister. @noble VARSAYILANI zip215:true'dur → cofactorlu denklemle
+        // non-canonical/küçük-mertebe pubkey'leri KABUL eder. `{ zip215: false }`
+        // ile RFC8032 moduna sabitlenir; aksi halde güvenilir bir anahtar altında
+        // Worker'ın KABUL edip her Go CLI'nin REDDETTİĞİ imzalar üretilebilir
+        // (trust/read desync). Bkz. frozen.test.ts ed25519_negatives çapraz-vektörleri.
+        return ed25519.verify(sig, d, vk.pub, { zip215: false });
       } catch {
         return false;
       }

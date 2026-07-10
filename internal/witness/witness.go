@@ -105,11 +105,16 @@ func NewHTTPWitness(origin, project string) *HTTPWitness {
 	return &HTTPWitness{Origin: origin, Project: project, Client: http.DefaultClient, Now: time.Now, FailOnStale: true}
 }
 
-// HeadEpoch, tanık origin'in bu proje için gördüğü son epoch'u döner (intent.Witness).
-// Erişilemez/bayat/malformed → hata (CheckWitness → WITNESS_UNREACHABLE).
-func (w *HTTPWitness) HeadEpoch() (uint64, error) {
+// fetchHead, tanık origin'in bu proje için gördüğü son head dokümanını çeker +
+// doğrular (schema + staleness). Nil-alıcı guard'ı: typed-nil bir *HTTPWitness
+// (bir intent.Witness arayüzüne saklanmış) panik yerine erişilemez sayılır (P3-c
+// — CheckWitness bunu WITNESS_UNREACHABLE'a çevirir). Erişilemez/bayat/malformed → hata.
+func (w *HTTPWitness) fetchHead() (WitnessHead, error) {
+	if w == nil {
+		return WitnessHead{}, fmt.Errorf("witness: nil witness")
+	}
 	if w.Origin == "" {
-		return 0, fmt.Errorf("witness: no origin configured")
+		return WitnessHead{}, fmt.Errorf("witness: no origin configured")
 	}
 	client := w.Client
 	if client == nil {
@@ -118,19 +123,19 @@ func (w *HTTPWitness) HeadEpoch() (uint64, error) {
 	url := w.Origin + "/witness/" + w.Project + ".json"
 	resp, err := client.Get(url)
 	if err != nil {
-		return 0, fmt.Errorf("witness: fetch head: %w", err)
+		return WitnessHead{}, fmt.Errorf("witness: fetch head: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("witness: origin returned HTTP %d", resp.StatusCode)
+		return WitnessHead{}, fmt.Errorf("witness: origin returned HTTP %d", resp.StatusCode)
 	}
 	var doc WitnessHead
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return 0, fmt.Errorf("witness: head malformed: %w", err)
+		return WitnessHead{}, fmt.Errorf("witness: head malformed: %w", err)
 	}
 	if doc.Schema != SchemaWitnessHead {
-		return 0, fmt.Errorf("witness: unexpected head schema %q", doc.Schema)
+		return WitnessHead{}, fmt.Errorf("witness: unexpected head schema %q", doc.Schema)
 	}
 	if w.FailOnStale {
 		now := time.Now
@@ -138,11 +143,34 @@ func (w *HTTPWitness) HeadEpoch() (uint64, error) {
 			now = w.Now
 		}
 		if doc.IsStale(now()) {
-			return 0, fmt.Errorf("witness: head is stale (verified_at %s > %s ago)", doc.VerifiedAt, StalenessLimit)
+			return WitnessHead{}, fmt.Errorf("witness: head is stale (verified_at %s > %s ago)", doc.VerifiedAt, StalenessLimit)
 		}
+	}
+	return doc, nil
+}
+
+// HeadEpoch, tanık origin'in bu proje için gördüğü son epoch'u döner (intent.Witness).
+func (w *HTTPWitness) HeadEpoch() (uint64, error) {
+	doc, err := w.fetchHead()
+	if err != nil {
+		return 0, err
 	}
 	return doc.Epoch, nil
 }
 
-// ensure HTTPWitness satisfies intent.Witness.
-var _ intent.Witness = (*HTTPWitness)(nil)
+// WitnessHead, tanık origin'in gördüğü son (epoch, manifestSha256) çiftini döner
+// (intent.WitnessHeadReader, P3-c). CheckWitness aynı-epoch FORK kontrolü için
+// manifestSha256'yı bunun üzerinden okur.
+func (w *HTTPWitness) WitnessHead() (uint64, string, error) {
+	doc, err := w.fetchHead()
+	if err != nil {
+		return 0, "", err
+	}
+	return doc.Epoch, doc.ManifestSha256, nil
+}
+
+// ensure HTTPWitness satisfies both intent.Witness and the richer reader.
+var (
+	_ intent.Witness           = (*HTTPWitness)(nil)
+	_ intent.WitnessHeadReader = (*HTTPWitness)(nil)
+)

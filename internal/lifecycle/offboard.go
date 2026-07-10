@@ -416,6 +416,15 @@ func (e *Engine) OffboardStep2Rewrap(recordID string, in Step2Input) (*Step2Outp
 		return nil, ErrDeviceOffboardUnsupported
 	}
 
+	// P1 (§8.5.3/§8.5.6): rewrap-REMOVE + değer-rotasyon YALNIZCA scope.Projects
+	// üzerinde çalışır; Revoke/RetireIdentity ise GLOBAL. Scope, prensibin grant
+	// taşıdığı projelerin üst kümesi DEĞİLSE, atlanan bir projedeki DEK yenilenmez ve
+	// ayrılan prensip o projenin GÜNCEL değerlerini hâlâ çözebilir. Revoke'tan ÖNCE
+	// (grantlar hâlâ in.Head'de görünürken) fail-closed reddet.
+	if err := assertScopeCoversGrants(in.Head.Manifest, rec); err != nil {
+		return nil, err
+	}
+
 	// Ayrılan prensibin enc parmak izleri = Removed kümesi (device+backup).
 	departingFPs := principalEncFingerprints(in.Head.Manifest, rec.Principal)
 
@@ -671,6 +680,12 @@ func (e *Engine) OffboardStep5Close(recordID string, head *trust.VerifiedEpoch, 
 	if rec.Steps.Kill.Status != StepDone || rec.Steps.Rewrap.Status != StepDone {
 		return nil, fmt.Errorf("lifecycle.offboard: close before steps 1-2 done: %w", ErrStepOutOfOrder)
 	}
+	// P1 backstop (§8.5.6): eksik-kapsamlı bir offboard close'da da reddedilir —
+	// close head'inde prensip hâlâ scope DIŞI bir projede grant taşıyorsa (ör. revoke
+	// eksik-kapsamlı çalıştıysa) sahte "all_steps_verified" attestation'ı BASILMAZ.
+	if err := assertScopeCoversGrants(head.Manifest, rec); err != nil {
+		return nil, err
+	}
 	// Step 3 worklist ÜRETİLMİŞ olmalı (rotation_pending veya done).
 	if rec.Steps.Rotate.Status != StepRotationPending && rec.Steps.Rotate.Status != StepDone {
 		return nil, fmt.Errorf("lifecycle.offboard: close before step3 (worklist emitted): %w", ErrStepOutOfOrder)
@@ -759,6 +774,42 @@ func principalHasGrants(tm *trust.TrustManifest, principal string) bool {
 		}
 	}
 	return false
+}
+
+// principalGrantProjects, imzalı trust manifest'inin grant tablosuna göre prensibin
+// grant TAŞIDIĞI (dolayısıyla okuyabildiği) projelerin kümesini döner (§8.5.6). Bu,
+// rewrap-REMOVE + değer-rotasyonun KAPSAMASI GEREKEN proje kümesidir: forward-secrecy
+// için ayrılan prensibin çözebildiği HER projedeki DEK yenilenmeli.
+func principalGrantProjects(tm *trust.TrustManifest, principal string) map[string]bool {
+	out := map[string]bool{}
+	for _, g := range tm.Grants {
+		if g.Principal == principal && g.Project != "" {
+			out[g.Project] = true
+		}
+	}
+	return out
+}
+
+// assertScopeCoversGrants, offboard scope'unun (rec.Scope.Projects) prensibin grant
+// taşıdığı TÜM projeleri kapsadığını (üst küme) doğrular; kapsamıyorsa ErrScopeIncomplete
+// (§8.5.3/§8.5.6). Grant tablosu (in.Head/head.Manifest.Grants) imzalı trust head'inden
+// gelir → spoof edilemez. Boş grant kümesi (grantlar zaten kaldırılmış) vacuously geçer;
+// bu, close'da (revoke SONRASI) beklenen davranıştır ve step-2 gate'i asıl zorlayandır.
+func assertScopeCoversGrants(tm *trust.TrustManifest, rec *OffboardRecord) error {
+	need := principalGrantProjects(tm, rec.Principal)
+	if len(need) == 0 {
+		return nil
+	}
+	inScope := map[string]bool{}
+	for _, p := range rec.Scope.Projects {
+		inScope[p] = true
+	}
+	for p := range need {
+		if !inScope[p] {
+			return ErrScopeIncomplete
+		}
+	}
+	return nil
 }
 
 // principalActive, prensibin kimliği hâlâ active mi.

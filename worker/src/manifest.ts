@@ -11,6 +11,8 @@
 import {
   SignedObject,
   VerifierKey,
+  assertCanonicalIntegerJSON,
+  isRFC3339,
   sha256Hex,
   verifySignatureEnvelope,
 } from "./crypto/verify.js";
@@ -78,7 +80,9 @@ function requireExactKeys(obj: Record<string, unknown>, allowed: readonly string
 }
 
 function asUint(v: unknown, ctx: string): number {
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new ManifestVerifyError("MANIFEST_MALFORMED", `${ctx}: not a uint`);
+  // isSafeInteger: tam sayı VE |v| ≤ 2^53-1 (Go uint64 >2^53'ü tam taşır; JS
+  // yuvarlar → parite için >2^53 reddedilir). v<0 negatifleri eler.
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new ManifestVerifyError("MANIFEST_MALFORMED", `${ctx}: not a uint`);
   return v;
 }
 function asString(v: unknown, ctx: string): string {
@@ -96,11 +100,18 @@ const MANIFEST_KEYS = ["schema", "project", "epoch", "prevManifestSha256", "trus
  * çağrılmalıdır (§3.6.3). Şema yanlışsa UNSUPPORTED_SCHEMA.
  */
 export function parseManifestBody(body: Uint8Array): DataManifest {
+  const text = new TextDecoder().decode(body);
   let doc: unknown;
   try {
-    doc = JSON.parse(new TextDecoder().decode(body));
+    doc = JSON.parse(text);
   } catch {
     throw new ManifestVerifyError("MANIFEST_MALFORMED", "body not valid JSON");
+  }
+  // Sayı literalleri: `1e3`/`1.0`/>2^53 reddi (Go integer-decode paritesi).
+  try {
+    assertCanonicalIntegerJSON(text);
+  } catch (e) {
+    throw new ManifestVerifyError("MANIFEST_MALFORMED", (e as Error).message);
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "body not an object");
   const o = doc as Record<string, unknown>;
@@ -110,7 +121,8 @@ export function parseManifestBody(body: Uint8Array): DataManifest {
   if (schema !== SCHEMA_DATA_MANIFEST) throw new ManifestVerifyError("UNSUPPORTED_SCHEMA", schema);
 
   const createdAt = asString(o.createdAt, "createdAt");
-  if (Number.isNaN(Date.parse(createdAt))) throw new ManifestVerifyError("MANIFEST_MALFORMED", "createdAt not RFC3339");
+  // KATİ RFC3339 (Go time.Time) — Date.parse GEVŞEK'tir, imzalı alanda ayrışır.
+  if (!isRFC3339(createdAt)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "createdAt not RFC3339");
 
   if (!Array.isArray(o.entries)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "entries not an array");
   const entries: KeyEntry[] = o.entries.map((raw, i) => {

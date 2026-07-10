@@ -105,9 +105,39 @@ func TestBlockOfflineWrite(t *testing.T) {
 
 func TestCheckWitness_Stub(t *testing.T) {
 	// nil tanık → NO-OP (G10 stub).
-	require.NoError(t, CheckWitness(nil, 5))
+	require.NoError(t, CheckWitness(nil, 5, ""))
 	// NoWitness → çelişki üretmez.
-	require.NoError(t, CheckWitness(NoWitness{}, 5))
+	require.NoError(t, CheckWitness(NoWitness{}, 5, "sha-abc"))
+}
+
+// fakeReader, epoch + manifestSha256 döndüren zengin bir tanık (WitnessHeadReader)
+// stub'ıdır — P3-c aynı-epoch fork kontrolünü test etmek için.
+type fakeReader struct {
+	epoch uint64
+	sha   string
+	err   error
+}
+
+func (f fakeReader) HeadEpoch() (uint64, error)           { return f.epoch, f.err }
+func (f fakeReader) WitnessHead() (uint64, string, error) { return f.epoch, f.sha, f.err }
+
+// TestCheckWitness_SameEpochForkedManifest (P3-c): tanık aynı epoch'u ama FARKLI bir
+// manifestSha256 görürse (CF-tarafı epoch'u ilerletmeden içeriği değiştirdi) →
+// WITNESS_CONTRADICTION. Aynı epoch + aynı hash → geçer.
+func TestCheckWitness_SameEpochForkedManifest(t *testing.T) {
+	// Aynı epoch, FARKLI hash → forked → contradiction.
+	err := CheckWitness(fakeReader{epoch: 7, sha: "witness-sha"}, 7, "fetched-sha")
+	require.Error(t, err)
+	require.True(t, clierr.Is(err, clierr.WitnessContradiction), "same-epoch forked manifest must contradict: %v", err)
+
+	// Aynı epoch, AYNI hash → geçer.
+	require.NoError(t, CheckWitness(fakeReader{epoch: 7, sha: "same-sha"}, 7, "same-sha"))
+
+	// Tanık GERİDE (epoch < fetched) → CF bize daha yeni sundu, tanık yetişmedi → geçer.
+	require.NoError(t, CheckWitness(fakeReader{epoch: 6, sha: "old"}, 7, "fetched-sha"))
+
+	// Tanık İLERİDE (epoch > fetched) → freeze → contradiction (hash'e bakılmadan).
+	require.True(t, clierr.Is(CheckWitness(fakeReader{epoch: 9, sha: "x"}, 7, "fetched-sha"), clierr.WitnessContradiction))
 }
 
 func TestParseIntent(t *testing.T) {

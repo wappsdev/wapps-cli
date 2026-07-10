@@ -1,10 +1,12 @@
 package rotation
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/wappsdev/wapps-cli/internal/cryptoid"
 	"github.com/wappsdev/wapps-cli/internal/lifecycle"
 )
 
@@ -26,13 +28,21 @@ const (
 	StateNeedsTriage     = "NEEDS_TRIAGE" // metadata eksik (terminal DEĞİL, blocker)
 	// StateMirrorOnly, origin:"tofu" bir anahtarın store-tarafı value-mint yolunu
 	// REDDETTİĞİDİR (§8.6.5): değer origin'de (tofu/DB) döndürülüp `wapps secrets
-	// sync` ile store'a akar — store-tarafı mint DEĞİL. Terminal DEĞİL: run, sync
-	// landing'e kadar pending kalır (bu motorun işi değil).
+	// sync` ile store'a akar — store-tarafı mint DEĞİL. Store-run'ı açısından bu bir
+	// TERMİNAL-origin-notu durumudur (aşağıda isTerminal): tofu anahtarları origin'de
+	// döner ve AYRI attest edilir; store-run'ının yapabileceği daha fazla iş yoktur.
 	StateMirrorOnly = "MIRROR_ONLY_ORIGIN"
 )
 
-// isTerminal, bir durumun run-tamamlanma açısından terminal olup olmadığını döner.
-func isTerminal(state string) bool { return state == StateDone || state == StateSkipped }
+// isTerminal, bir durumun run-tamamlanma açısından terminal olup olmadığını döner
+// (§8.5.5.4). DONE + admin-imzalı SKIPPED terminaldir. MIRROR_ONLY_ORIGIN de TERMİNAL
+// sayılır (FIX #6): origin:tofu anahtarlar store'da rotate EDİLMEZ — değer origin'de
+// döner ve ayrı attest edilir. Aksi halde tofu-origin (her vaulter offboard'ı için
+// NORMAL) VEYA metadata-eksik bir anahtar içeren bir run, MIRROR_ONLY non-terminal
+// kaldığından ASLA close'a ulaşamazdı.
+func isTerminal(state string) bool {
+	return state == StateDone || state == StateSkipped || state == StateMirrorOnly
+}
 
 // progressOrdinal, per-key ileri-akış durumunun sırasal değeridir (resume: bir
 // anahtar NEREYE kadar ilerledi §8.6.4). YALNIZCA ileri-akış durumları sıralanır;
@@ -169,6 +179,62 @@ func (l *RunLedger) Record(runID, project, key, state, by string, evidence any) 
 	return l.store.AppendLedger(ledgerKey(runID), line)
 }
 
+// skipAttestationSchema, imzalı-SKIP attestation şeması.
+const skipAttestationSchema = "wapps.rotation.skip/1"
+
+// skipAttestation, imzalı bir SKIP geçişinin KANONİK gövdesidir (§8.5.5.4): hangi
+// run/proje/anahtarın, hangi admin tarafından, hangi gerekçeyle SKIPPED işaretlendiği.
+// ASLA gizli değer/anahtar materyali taşımaz.
+type skipAttestation struct {
+	Schema  string    `json:"schema"`
+	RunID   string    `json:"run_id"`
+	Project string    `json:"project"`
+	Key     string    `json:"key"`
+	Reason  string    `json:"reason"`
+	By      string    `json:"by"`
+	At      time.Time `json:"at"`
+}
+
+// skipEvidence, StateSkipped ledger satırının evidence gövdesidir: imzalı attestation
+// + imzalayan admin anahtarının parmak izi + base64 imza (audit — doğrulanabilir).
+type skipEvidence struct {
+	Attestation skipAttestation `json:"attestation"`
+	KeyID       string          `json:"key_id"`
+	Sig         string          `json:"sig"`
+}
+
+// SkipKey, bir NEEDS_TRIAGE (veya başka bir pending) anahtarı, ADMIN İMZASIYLA
+// SKIPPED'e geçirir — RunState'in var saydığı imzalı-SKIP kaçış kapısı (§8.5.5.4).
+// İmza kanonik skip-attestation baytları üzerinedir ve evidence'a gömülür. Bir
+// StateSkipped ledger satırı yazar → RunState o anahtarı terminal sayar, triyaj
+// çözülür ve offboard close ilerleyebilir. reason + admin signer ZORUNLUdur; hiçbiri
+// gizli değer taşımaz. (`wapps rotate skip` verb'ünün motor tarafı.)
+func (l *RunLedger) SkipKey(runID, project, key, reason, by string, signer cryptoid.SigningKey) error {
+	if runID == "" || project == "" || key == "" {
+		return fmt.Errorf("rotation.SkipKey: run_id/project/key required")
+	}
+	if reason == "" {
+		return fmt.Errorf("rotation.SkipKey: a --reason is required for a signed skip")
+	}
+	if signer == nil {
+		return fmt.Errorf("rotation.SkipKey: an admin signing key is required for a signed skip")
+	}
+	att := skipAttestation{
+		Schema: skipAttestationSchema, RunID: runID, Project: project, Key: key,
+		Reason: reason, By: by, At: l.now().UTC(),
+	}
+	body, err := json.Marshal(att)
+	if err != nil {
+		return fmt.Errorf("rotation.SkipKey: marshal attestation: %w", err)
+	}
+	sig, err := signer.Sign(body)
+	if err != nil {
+		return fmt.Errorf("rotation.SkipKey: sign: %w", err)
+	}
+	ev := skipEvidence{Attestation: att, KeyID: sig.KeyID, Sig: base64.StdEncoding.EncodeToString(sig.Sig)}
+	return l.Record(runID, project, key, StateSkipped, by, ev)
+}
+
 // plan, run planını okur; ok=false → henüz planlanmamış.
 func (l *RunLedger) plan(runID string) (*runPlan, bool, error) {
 	raw, ok, err := l.store.GetRecord(planKey(runID))
@@ -260,14 +326,18 @@ func (l *RunLedger) RunState(runID string) (lifecycle.RotationRunState, error) {
 	}
 	pending := 0
 	needsTriage := false
+	mirrorOnly := 0
 	for _, en := range p.Entries {
 		st := states[stateKey(en.Project, en.Key)]
 		// Metadata-eksik girdi: imzalı-SKIPPED ile çözülmedikçe triyaj bloklar
-		// (§8.5.5.1) — terminal DEĞİL.
+		// (§8.5.5.1) — terminal DEĞİL. (MIRROR_ONLY triyajı BYPASS ETMEZ.)
 		if en.NeedsTriage && st != StateSkipped {
 			needsTriage = true
 			pending++
 			continue
+		}
+		if st == StateMirrorOnly {
+			mirrorOnly++ // terminal-origin-notu (aşağıda isTerminal ile de terminal)
 		}
 		if isTerminal(st) {
 			continue
@@ -279,6 +349,7 @@ func (l *RunLedger) RunState(runID string) (lifecycle.RotationRunState, error) {
 		Complete:    pending == 0 && !needsTriage,
 		NeedsTriage: needsTriage,
 		Pending:     pending,
+		MirrorOnly:  mirrorOnly,
 	}, nil
 }
 

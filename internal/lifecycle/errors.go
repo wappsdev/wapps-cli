@@ -66,6 +66,16 @@ var (
 	// takip işi = gerçek cihaz-kapsamı desteği).
 	ErrDeviceOffboardUnsupported = errors.New("lifecycle: DEVICE_OFFBOARD_UNSUPPORTED")
 
+	// ErrScopeIncomplete: offboard scope'u (scope.Projects), ayrılan prensibin
+	// GERÇEKTEN grant taşıdığı projelerin bir ÜST KÜMESİ değil — imzalı trust
+	// manifest'inin grant tablosuna göre prensibin okuyabildiği en az bir proje
+	// scope DIŞINDA (§8.5.3/§8.5.6 dürüstlük şartı). rewrap-REMOVE + değer-rotasyon
+	// yalnızca scope.Projects üzerinde çalışır; eksik bir proje, ayrılan prensibin o
+	// projedeki GÜNCEL değerleri hâlâ çözebilmesi demektir (forward-secrecy boşluğu).
+	// Bu yüzden rewrap'e BAŞLAMADAN VE close'a İZİN VERMEDEN önce fail-closed reddet —
+	// eksik-kapsamlı bir offboard sahte "all_steps_verified" attestation'ı üretemez.
+	ErrScopeIncomplete = errors.New("lifecycle: OFFBOARD_SCOPE_INCOMPLETE")
+
 	// ErrHardwareNotWired: donanım (SE/YubiKey) anahtar üretimi bu motorda
 	// desteklenmez — arayüz sağlanır, gerçek plugin yolu G-account/donanım kapsamı.
 	ErrHardwareNotWired = errors.New("lifecycle: HARDWARE_KEYGEN_NOT_WIRED")

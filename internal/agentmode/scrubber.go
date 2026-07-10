@@ -2,12 +2,79 @@ package agentmode
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"sort"
 )
 
 // Redaction, bir gizli değerin yerine yazılan işarettir.
 const Redaction = "***"
+
+// ScrubFloor, bir alt-süreç çıktısından GÜVENLE redakte edilebilecek en kısa gizli
+// değer uzunluğudur (P3-b). exec'in eski 5-karakter tabanından DÜŞÜRÜLDÜ (4): kısa
+// ama gerçek sırlar (PIN, kısa token) da redakte edilsin. Bunun ALTINDAKİ değerler
+// ilgisiz çıktıyı bozmamak için scrubber'a verilmez — ama gerçek-görünümlü (yüksek
+// entropili) biri atlandığında FilterScrubbable operatöre TEK bir uyarı yazar.
+const ScrubFloor = 4
+
+// commonLiteral, redakte EDİLMEYECEK yaygın/düşük-entropili literallerdir: bunları
+// *** yapmak ilgisiz çıktıyı bozardı ve bunlar sır değildir.
+func commonLiteral(v string) bool {
+	switch v {
+	case "", "null", "true", "false", "nil", "none", "n/a":
+		return true
+	}
+	return false
+}
+
+// allDigits, v'nin yalnızca ondalık basamaklardan oluştuğunu döner (port/sayaç/index
+// gibi kısa değerler — sır değil).
+func allDigits(v string) bool {
+	if v == "" {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] < '0' || v[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// IsScrubbable, bir değerin scrubber'a verilip verilmeyeceğini döner: yaygın literal
+// DEĞİL VE en az ScrubFloor uzunlukta.
+func IsScrubbable(v string) bool {
+	if commonLiteral(v) {
+		return false
+	}
+	return len(v) >= ScrubFloor
+}
+
+// FilterScrubbable, verilen aday değer kümesinden scrubber'a verilecek alt kümeyi
+// döndürür. Floor'un ALTINDA kalıp bu yüzden ATLANAN, gerçek-görünümlü (literal/
+// saf-basamak OLMAYAN) en az bir değer varsa note'a TEK bir uyarı satırı yazar
+// (§7.4.3, P3-b): kısa bir sır alt-sürece export edildiğinde redakte EDİLEMEZ ve
+// transcript'e ulaşabilir. Uyarı ASLA değer içermez (yalnızca sayı). note nil ise
+// not yazılmaz. Boş/tekrar eleme NewScrubber'da yapılır.
+func FilterScrubbable(values []string, note io.Writer) []string {
+	out := make([]string, 0, len(values))
+	skipped := 0
+	for _, v := range values {
+		if IsScrubbable(v) {
+			out = append(out, v)
+			continue
+		}
+		// Atlandı — floor-altı VE gerçek-görünümlü (literal değil, saf-basamak değil)
+		// bir değerse sızıntı riski var → say.
+		if len(v) < ScrubFloor && !commonLiteral(v) && !allDigits(v) {
+			skipped++
+		}
+	}
+	if skipped > 0 && note != nil {
+		fmt.Fprintf(note, "wapps: %d short secret value(s) below the %d-char scrub floor were NOT redacted from child output — they may appear in the transcript\n", skipped, ScrubFloor)
+	}
+	return out
+}
 
 // Scrubber, bir alt-sürecin stdout/stderr'ini saran STREAMING tam-eşleşme
 // redaktörüdür (SPEC §7.4.3). Child env'e enjekte edilen gizli DEĞERLERİN her

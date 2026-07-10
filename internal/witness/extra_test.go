@@ -78,16 +78,41 @@ func TestCheckWitness_Contradiction(t *testing.T) {
 	srv := witnessServer(t, WitnessHead{Schema: SchemaWitnessHead, Project: "vaulter", Epoch: 9, VerifiedAt: now.UTC().Format(time.RFC3339)})
 	w := &HTTPWitness{Origin: srv.URL, Project: "vaulter", Client: srv.Client(), Now: func() time.Time { return now }, FailOnStale: true}
 	// Cloudflare bize epoch 5 sundu ama tanık epoch 9 gördü → freeze/rollback.
-	err := intent.CheckWitness(w, 5)
+	err := intent.CheckWitness(w, 5, "fetched-sha")
 	require.Error(t, err)
 	require.True(t, clierr.Is(err, clierr.WitnessContradiction), "want WITNESS_CONTRADICTION, got %v", err)
+}
+
+// TestCheckWitness_SameEpochForkedManifest (P3-c): tanık aynı epoch'u ama FARKLI
+// manifestSha256'yı görürse (aynı-epoch fork) → WITNESS_CONTRADICTION.
+func TestCheckWitness_SameEpochForkedManifest(t *testing.T) {
+	now := time.Now()
+	srv := witnessServer(t, WitnessHead{Schema: SchemaWitnessHead, Project: "vaulter", Epoch: 5, ManifestSha256: "witness-view-sha", VerifiedAt: now.UTC().Format(time.RFC3339)})
+	w := &HTTPWitness{Origin: srv.URL, Project: "vaulter", Client: srv.Client(), Now: func() time.Time { return now }, FailOnStale: true}
+	// CF bize epoch 5 sundu, tanık da epoch 5 gördü — ama hash'ler farklı → fork.
+	err := intent.CheckWitness(w, 5, "cf-served-sha")
+	require.Error(t, err)
+	require.True(t, clierr.Is(err, clierr.WitnessContradiction), "same-epoch forked manifest must contradict, got %v", err)
+
+	// Aynı epoch + aynı hash → geçer.
+	require.NoError(t, intent.CheckWitness(w, 5, "witness-view-sha"))
+}
+
+// TestCheckWitness_TypedNilDegradesToUnreachable (P3-c): intent.Witness arayüzüne
+// saklanmış typed-nil bir *HTTPWitness, nil-panik yerine WITNESS_UNREACHABLE'a
+// düşmeli (fail-closed).
+func TestCheckWitness_TypedNilDegradesToUnreachable(t *testing.T) {
+	var w *HTTPWitness // typed nil
+	err := intent.CheckWitness(w, 5, "fetched-sha")
+	require.Error(t, err)
+	require.True(t, clierr.Is(err, clierr.WitnessUnreachable), "typed-nil witness must degrade to WITNESS_UNREACHABLE, got %v", err)
 }
 
 // Witness unreachable under deploy → WITNESS_UNREACHABLE (fail-closed, F6).
 func TestCheckWitness_Unreachable(t *testing.T) {
 	// Kapalı bir origin (bağlantı reddi) → HeadEpoch hata → CheckWitness fail-closed.
 	w := &HTTPWitness{Origin: "http://127.0.0.1:1", Project: "vaulter", Client: &http.Client{Timeout: 500 * time.Millisecond}, FailOnStale: true}
-	err := intent.CheckWitness(w, 5)
+	err := intent.CheckWitness(w, 5, "fetched-sha")
 	require.Error(t, err)
 	require.True(t, clierr.Is(err, clierr.WitnessUnreachable), "want WITNESS_UNREACHABLE, got %v", err)
 }
@@ -100,7 +125,7 @@ func TestHTTPWitness_StaleFailsClosed(t *testing.T) {
 	_, err := w.HeadEpoch()
 	require.Error(t, err)
 	// deploy tüketiminde bu WITNESS_UNREACHABLE'a çevrilir.
-	require.True(t, clierr.Is(intent.CheckWitness(w, 3), clierr.WitnessUnreachable))
+	require.True(t, clierr.Is(intent.CheckWitness(w, 3, "fetched-sha"), clierr.WitnessUnreachable))
 }
 
 // --- DR restore roundtrip ---------------------------------------------------

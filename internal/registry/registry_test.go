@@ -174,6 +174,29 @@ func TestValidate_Failures(t *testing.T) {
 		}}
 		assert.ErrorIs(t, s.Validate(), ErrIdentityNotEnrolled)
 	})
+	// P3-a: makine prensipleri joker ("*") anahtar yetkisi taşıyamaz — açık allowlist zorunlu.
+	t.Run("machine grant with wildcard keys rejected", func(t *testing.T) {
+		m := machineIdentity(t, "tofu-sync")
+		s := &Snapshot{Schema: SchemaRegistry, Identities: []Identity{m}, Grants: []Grant{
+			{Principal: m.ID, Project: "vaulter", Verbs: []string{"get"}, Keys: []string{"*"}},
+		}}
+		assert.ErrorIs(t, s.Validate(), ErrRegistryInvalid)
+	})
+	t.Run("machine writer allowlist with wildcard keys rejected", func(t *testing.T) {
+		m := machineIdentity(t, "tofu-sync")
+		s := &Snapshot{Schema: SchemaRegistry, Identities: []Identity{m}, WriterAllowlists: []WriterAllow{
+			{Principal: m.ID, Project: "vaulter", Keys: []string{"*"}},
+		}}
+		assert.ErrorIs(t, s.Validate(), ErrRegistryInvalid)
+	})
+	// Kontrol: İNSAN prensibi joker grant TAŞIYABİLİR (kısıt yalnızca makinelere).
+	t.Run("human grant with wildcard keys allowed", func(t *testing.T) {
+		h := base(t)
+		s := &Snapshot{Schema: SchemaRegistry, Identities: []Identity{h}, Grants: []Grant{
+			{Principal: h.ID, Project: "vaulter", Verbs: []string{"get"}, Keys: []string{"*"}},
+		}}
+		require.NoError(t, s.Validate())
+	})
 }
 
 // TestSnapshotSignVerify_Roundtrip, admin-imzalı kayıt anlık görüntüsünün

@@ -14,15 +14,19 @@ import {
   VerifierKey,
   ALG_ED25519,
   ALG_ECDSA_P256_SHA256,
+  assertCanonicalIntegerJSON,
   b64ToBytes,
   fingerprint,
   fingerprintRecipient,
+  isRFC3339,
   newVerifierKey,
   sha256Hex,
   verifySignatureEnvelope,
 } from "./crypto/verify.js";
 
 export const SCHEMA_TRUST = "wapps-trust/v1";
+// Epoch-reset kaydı şeması (§4.8) — trust manifest şemasından AYRIDIR.
+export const SCHEMA_TRUST_RESET = "wapps-trust-reset/v1";
 
 // change_class kapalı kümesi (§4.2.2).
 export const CHANGE_ROSTER = "roster";
@@ -98,6 +102,25 @@ export interface WriterAllow {
   keys: string[];
 }
 
+/** PriorChain, bir epoch-reset kaydının zincirlediği önceki head (§4.8). */
+export interface PriorChain {
+  last_admin_epoch: number;
+  last_trust_sha256: string;
+}
+
+/**
+ * EpochResetRecord, güven zincirinin TEK yaptırımlı süreksizliğinin (§4.8)
+ * payload'ıdır. Go internal/trust EpochReset ile byte-parite (schema, reset_id,
+ * reason, prior_chain{last_admin_epoch,last_trust_sha256}, snapshot_ref).
+ */
+export interface EpochResetRecord {
+  schema: string;
+  reset_id: string;
+  reason: string;
+  prior_chain: PriorChain;
+  snapshot_ref: string;
+}
+
 export interface TrustManifest {
   schema: string;
   admin_epoch: number;
@@ -111,9 +134,9 @@ export interface TrustManifest {
   identities: Identity[];
   grants: Grant[];
   writer_allowlists: WriterAllow[];
-  worker_receipt_pubkey: unknown; // deep-equal için ham korunur
+  worker_receipt_pubkey: unknown; // deep-equal için ham korunur (şekli parse'ta doğrulanır)
   worker_mint_pubkeys: unknown;
-  epoch_reset: unknown;
+  epoch_reset: EpochResetRecord | null; // §4.8; reset dışı epoch'larda null
 }
 
 export interface Pin {
@@ -142,7 +165,8 @@ function str(v: unknown, ctx: string): string {
   return v;
 }
 function uint(v: unknown, ctx: string): number {
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not a uint`);
+  // isSafeInteger: tam sayı VE ≤2^53-1 (Go uint64 >2^53'ü tam taşır; JS yuvarlar).
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not a uint`);
   return v;
 }
 function bool(v: unknown, ctx: string): boolean {
@@ -170,19 +194,84 @@ const TRUST_KEYS = [
   "quorum", "roots", "admins", "identities", "grants", "writer_allowlists",
   "worker_receipt_pubkey", "worker_mint_pubkeys", "epoch_reset",
 ] as const;
+const RECEIPT_KEYS = ["kid", "alg", "jwk"] as const;
+const EPOCH_RESET_KEYS = ["schema", "reset_id", "reason", "prior_chain", "snapshot_ref"] as const;
+const PRIOR_CHAIN_KEYS = ["last_admin_epoch", "last_trust_sha256"] as const;
+
+/**
+ * validateReceiptKey, Go ReceiptKey ({kid,alg,jwk}) şeklini yaptırır: yalnızca
+ * bu üç anahtar, kid/alg string (varsa), jwk opak passthrough (Go json.RawMessage
+ * — yorumlanmaz). Bilinmeyen anahtar → red (Go DisallowUnknownFields paritesi).
+ */
+function validateReceiptKey(v: unknown, ctx: string): void {
+  const o = obj(v, ctx);
+  exactKeys(o, RECEIPT_KEYS, ctx);
+  if (o.kid !== undefined) str(o.kid, `${ctx}.kid`);
+  if (o.alg !== undefined) str(o.alg, `${ctx}.alg`);
+  // jwk: opak (herhangi bir JSON) — doğrulanmaz, yalnızca varlığı serbest.
+}
+
+/** validateReceiptField, worker_receipt_pubkey (tek ReceiptKey | null | absent). */
+function validateReceiptField(v: unknown, ctx: string): void {
+  if (v === undefined || v === null) return; // Go null → zero value; kabul
+  validateReceiptKey(v, ctx);
+}
+
+/** validateMintField, worker_mint_pubkeys ([]ReceiptKey | null | absent). */
+function validateMintField(v: unknown, ctx: string): void {
+  if (v === undefined || v === null) return;
+  if (!Array.isArray(v)) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not an array`);
+  v.forEach((e, i) => validateReceiptKey(e, `${ctx}[${i}]`));
+}
+
+/**
+ * parseEpochReset, epoch_reset kaydını STRICT ayrıştırır (Go EpochReset paritesi,
+ * §4.8). Reset dışı epoch'larda alan omitempty → undefined/null → null döner.
+ * Go, kayıt varsa tüm alanları (kesirsiz de olsa) emit eder; bilinmeyen anahtar
+ * ve yanlış tip reddedilir. Boş reset_id/reason'ı verifyResetInternal reddeder.
+ */
+function parseEpochReset(v: unknown): EpochResetRecord | null {
+  if (v === undefined || v === null) return null;
+  const o = obj(v, "epoch_reset");
+  exactKeys(o, EPOCH_RESET_KEYS, "epoch_reset");
+  const pc = obj(o.prior_chain, "epoch_reset.prior_chain");
+  exactKeys(pc, PRIOR_CHAIN_KEYS, "epoch_reset.prior_chain");
+  return {
+    schema: str(o.schema, "epoch_reset.schema"),
+    reset_id: str(o.reset_id, "epoch_reset.reset_id"),
+    reason: str(o.reason, "epoch_reset.reason"),
+    prior_chain: {
+      last_admin_epoch: uint(pc.last_admin_epoch, "epoch_reset.prior_chain.last_admin_epoch"),
+      last_trust_sha256: str(pc.last_trust_sha256, "epoch_reset.prior_chain.last_trust_sha256"),
+    },
+    snapshot_ref: str(o.snapshot_ref, "epoch_reset.snapshot_ref"),
+  };
+}
 
 /** parseTrustBody, ham payload baytlarını STRICT ayrıştırır (§3.6.3 sonrası). */
 export function parseTrustBody(body: Uint8Array): TrustManifest {
+  const text = new TextDecoder().decode(body);
   let doc: unknown;
   try {
-    doc = JSON.parse(new TextDecoder().decode(body));
+    doc = JSON.parse(text);
   } catch {
     throw new TrustError("TRUST_CHAIN_BROKEN", "body not valid JSON");
+  }
+  // Sayı literalleri: `1e3`/`1.0`/>2^53 reddi (Go integer-decode paritesi).
+  try {
+    assertCanonicalIntegerJSON(text);
+  } catch (e) {
+    throw new TrustError("TRUST_CHAIN_BROKEN", (e as Error).message);
   }
   const o = obj(doc, "trust");
   exactKeys(o, TRUST_KEYS, "trust");
   const schema = str(o.schema, "schema");
   if (schema !== SCHEMA_TRUST) throw new TrustError("UNSUPPORTED_SCHEMA", schema);
+  // KATİ RFC3339 (Go time.Time) — Date.parse GEVŞEK'tir, imzalı alanda ayrışır.
+  if (!isRFC3339(str(o.created_at, "created_at"))) throw new TrustError("TRUST_CHAIN_BROKEN", "created_at not RFC3339");
+  // worker_receipt_pubkey / worker_mint_pubkeys: {kid,alg,jwk} şekli yaptırılır.
+  validateReceiptField(o.worker_receipt_pubkey, "worker_receipt_pubkey");
+  validateMintField(o.worker_mint_pubkeys, "worker_mint_pubkeys");
 
   const q = obj(o.quorum, "quorum");
   exactKeys(q, QUORUM_KEYS, "quorum");
@@ -249,7 +338,7 @@ export function parseTrustBody(body: Uint8Array): TrustManifest {
     writer_allowlists: writerAllow,
     worker_receipt_pubkey: o.worker_receipt_pubkey ?? null,
     worker_mint_pubkeys: o.worker_mint_pubkeys ?? null,
-    epoch_reset: o.epoch_reset ?? null,
+    epoch_reset: parseEpochReset(o.epoch_reset),
   };
 }
 
@@ -411,6 +500,85 @@ function grantTargetClass(parent: TrustManifest, cur: TrustManifest, classifier:
 }
 
 /**
+ * verifyResetInternal, epoch-reset doğrulamasının ortak çekirdeğidir (SPEC §4.8);
+ * Go internal/trust/reset.go verifyResetInternal ile TAM parite. Hem zincir-içi
+ * (verifyNext) hem tek-başına (verifyEpochReset) yollarından çağrılır. İmza:
+ * reset ÖNCESİ epoch'un ≥M KÖK-class Ed25519 anahtarı. Downgrade guard: istemcinin
+ * pin'i reset'in prior sınırından YENİYSE reddedilir → reset bir rollback'i aklayamaz.
+ */
+function verifyResetInternal(
+  o: SignedObject,
+  cand: TrustManifest,
+  hash: string,
+  priorView: SignerView,
+  priorSHA: string,
+  priorAdminEpoch: number,
+  pinnedLast: Pin,
+  witnessBound: number,
+  priorHeadAvailable: boolean,
+): VerifiedEpoch {
+  const er = cand.epoch_reset;
+  if (!er) throw new TrustError("TRUST_CHAIN_BROKEN", "epoch_reset record required");
+  if (er.schema !== SCHEMA_TRUST_RESET) throw new TrustError("TRUST_CHAIN_BROKEN", `reset schema ${er.schema}`);
+  if (er.reset_id === "" || er.reason === "") throw new TrustError("TRUST_CHAIN_BROKEN", "reset missing reset_id/reason");
+
+  // prior_chain, verilen prior roster ile tutarlı olmalı.
+  if (er.prior_chain.last_admin_epoch !== priorAdminEpoch) {
+    throw new TrustError("TRUST_CHAIN_BROKEN", `prior_chain.last_admin_epoch ${er.prior_chain.last_admin_epoch} != prior ${priorAdminEpoch}`);
+  }
+
+  // prev-link (§4.8): prior head mevcutsa prior_chain.last_trust_sha256 ve
+  // prev_trust_sha256 eşleşir; kayıpsa (escrow-restore) prev BOŞ olmalıdır.
+  if (priorHeadAvailable) {
+    if (cand.prev_trust_sha256 !== priorSHA) throw new TrustError("TRUST_CHAIN_BROKEN", "prev_trust_sha256 does not link to prior head");
+    if (er.prior_chain.last_trust_sha256 !== priorSHA) throw new TrustError("TRUST_CHAIN_BROKEN", "prior_chain.last_trust_sha256 mismatch");
+  } else {
+    if (cand.prev_trust_sha256 !== "") throw new TrustError("TRUST_CHAIN_BROKEN", "lost-head reset must carry empty prev_trust_sha256");
+  }
+
+  // Monotonluk: reset epoch'u prior head'ten VE tanık sınırından KATİ büyük olmalı.
+  if (cand.admin_epoch <= er.prior_chain.last_admin_epoch) {
+    throw new TrustError("TRUST_CHAIN_BROKEN", `reset admin_epoch ${cand.admin_epoch} must exceed prior ${er.prior_chain.last_admin_epoch}`);
+  }
+  if (cand.admin_epoch <= witnessBound) {
+    throw new TrustError("TRUST_CHAIN_BROKEN", `reset admin_epoch ${cand.admin_epoch} must exceed witness bound ${witnessBound}`);
+  }
+
+  // Downgrade: reset bir rollback'i aklayamaz — pin, reset'in prior sınırından YENİYSE red.
+  if (pinnedLast.admin_epoch > er.prior_chain.last_admin_epoch) {
+    throw new TrustError("TRUST_DOWNGRADE", `pinned epoch ${pinnedLast.admin_epoch} newer than reset prior ${er.prior_chain.last_admin_epoch}`);
+  }
+
+  // İmza: reset ÖNCESİ epoch'un ≥M KÖK-class anahtarı (parent'ın görünümüne karşı).
+  verifyQuorum(o.bytes, o.sigs, { cls: "root", threshold: priorView.m, distinctHuman: false }, priorView);
+
+  // Reset epoch'u geçerli bir roster taşır.
+  validateRosterInvariants(cand);
+  const view = buildSignerView(cand);
+  return { manifest: cand, bytesSHA256: hash, view };
+}
+
+/**
+ * verifyEpochReset, bir epoch-reset kaydını TEK BAŞINA doğrular (SPEC §4.8) —
+ * felaket kurtarma yolu. Go VerifyEpochReset paritesi. prior = reset öncesi son
+ * (doğrulanmış) roster; priorHeadAvailable=false ise escrow-restore (prev boş).
+ */
+export function verifyEpochReset(
+  o: SignedObject,
+  prior: TrustManifest,
+  priorSHA: string,
+  pinnedLast: Pin,
+  witnessBound: number,
+  priorHeadAvailable: boolean,
+): VerifiedEpoch {
+  const priorView = buildSignerView(prior);
+  const hash = trustObjectHash(o.bytes);
+  const cand = parseTrustBody(o.bytes);
+  if (cand.change_class !== CHANGE_EPOCH_RESET) throw new TrustError("TRUST_CHAIN_BROKEN", `change_class ${cand.change_class} is not epoch_reset`);
+  return verifyResetInternal(o, cand, hash, priorView, priorSHA, prior.admin_epoch, pinnedLast, witnessBound, priorHeadAvailable);
+}
+
+/**
  * verifyGenesis, genesis güven epoch'unu (§4.4/§4.5 istisnası) doğrular: önce
  * payload hash pinlenmiş genesis hash'iyle eşleşmeli (parse ÖNCESİ), sonra
  * roster olduğu + prev boş + ≥M kendi kök imzası doğrulanır.
@@ -429,11 +597,21 @@ export function verifyGenesis(pinnedGenesis: Pin, o: SignedObject): VerifiedEpoc
   return { manifest: cand, bytesSHA256: hash, view };
 }
 
-/** verifyNext, doğrulanmış parent'ın halefi (E+1) olan obj'yi doğrular (§4.5). */
-export function verifyNext(parent: VerifiedEpoch, o: SignedObject, classifier: ProjectClassifier | null): VerifiedEpoch {
+/**
+ * verifyNext, doğrulanmış parent'ın halefi (E+1) olan obj'yi doğrular (§4.5).
+ * pinnedLast + witnessBound, zincir-içi bir epoch_reset'te §4.8 downgrade/rollback
+ * ve tanık monotonluk yaptırımlarını beslemek için verifyResetInternal'a AYNEN
+ * aktarılır (grant/roster/registry yollarında yok sayılır). Aksi halde reset yolu
+ * bu korumaları SIFIRLAR → geçmiş bir epoch'un ≥M kök imzasıyla rollback aklanabilir.
+ */
+export function verifyNext(parent: VerifiedEpoch, o: SignedObject, classifier: ProjectClassifier | null, pinnedLast: Pin, witnessBound: number): VerifiedEpoch {
   const hash = trustObjectHash(o.bytes);
   const cand = parseTrustBody(o.bytes);
-  if (cand.change_class === CHANGE_EPOCH_RESET) throw new TrustError("EPOCH_RESET_DEFERRED", "epoch_reset verification deferred to G7");
+  // Epoch-reset (§4.8) ayrı yolla (gevşetilmiş epoch kuralı) doğrulanır; istemcinin
+  // GERÇEK pin'i ve tanık sınırı aktarılır → downgrade/rollback koruması burada da yaptırılır.
+  if (cand.change_class === CHANGE_EPOCH_RESET) {
+    return verifyResetInternal(o, cand, hash, parent.view, parent.bytesSHA256, parent.manifest.admin_epoch, pinnedLast, witnessBound, true);
+  }
   if (cand.prev_trust_sha256 !== parent.bytesSHA256) throw new TrustError("TRUST_CHAIN_BROKEN", "prev_trust_sha256 does not link to parent");
   if (cand.admin_epoch !== parent.manifest.admin_epoch + 1) throw new TrustError("TRUST_CHAIN_BROKEN", "admin_epoch not +1");
   let projClass: ProjectClass = "";
@@ -455,8 +633,12 @@ export function verifyRosterChain(pinnedGenesis: Pin, pinnedLast: Pin, chain: Si
   if (chain.length === 0) throw new TrustError("TRUST_CHAIN_BROKEN", "empty chain");
   let head = verifyGenesis(pinnedGenesis, chain[0]);
   checkPinPassthrough(head, pinnedLast);
+  // witnessBound = istemcinin last_verified epoch'u: zincir-içi bir reset bundan
+  // KATİ büyük olmalı (§4.8 tanık monotonluğu). pinnedLast ile birlikte verifyNext'e
+  // aktarılır; grant/roster/registry yollarında yok sayılır.
+  const witnessBound = pinnedLast.admin_epoch;
   for (let i = 1; i < chain.length; i++) {
-    head = verifyNext(head, chain[i], classifier);
+    head = verifyNext(head, chain[i], classifier, pinnedLast, witnessBound);
     checkPinPassthrough(head, pinnedLast);
   }
   if (head.manifest.admin_epoch < pinnedLast.admin_epoch) throw new TrustError("TRUST_DOWNGRADE", `head ${head.manifest.admin_epoch} below last-verified ${pinnedLast.admin_epoch}`);

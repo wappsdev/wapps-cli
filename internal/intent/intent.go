@@ -185,6 +185,16 @@ type Witness interface {
 	HeadEpoch() (uint64, error)
 }
 
+// WitnessHeadReader, tanık head'inden HEM epoch HEM manifestSha256 döndüren
+// ZENGİNLEŞTİRİLMİŞ tanıktır (P3-c). Gerçek HTTPWitness bunu uygular; CheckWitness
+// bu arayüzü tespit ederse aynı-epoch FORK kontrolünü de yapar. Bir tanık yalnızca
+// Witness (HeadEpoch) uygularsa CheckWitness yalnızca freeze (epoch) kontrolüne düşer.
+type WitnessHeadReader interface {
+	// WitnessHead, tanık origin'in gördüğü son (epoch, manifestSha256) çiftini döner.
+	// Erişilemez/bayat/malformed → hata (CheckWitness → WITNESS_UNREACHABLE).
+	WitnessHead() (epoch uint64, manifestSha256 string, err error)
+}
+
 // NoWitness, G10'a kadarki STUB tanıktır: çapraz kontrol devre dışı. HeadEpoch
 // asla-çelişmeyen bir 0 döner ve CheckWitness(nil, ...) ile birlikte tanık
 // kontrolünü NO-OP yapar (G10'da gerçek non-CF origin implementasyonuyla değişir).
@@ -193,13 +203,35 @@ type NoWitness struct{}
 // HeadEpoch, stub: her zaman 0 (çelişki üretmez).
 func (NoWitness) HeadEpoch() (uint64, error) { return 0, nil }
 
-// CheckWitness, tanık çapraz kontrolünü uygular (SPEC §7.3.4). w nil ise NO-OP
-// (G10 stub). Gerçek bir Witness ile: tanık epoch > çekilen epoch ⇒
-// WITNESS_CONTRADICTION; erişilemez ⇒ WITNESS_UNREACHABLE.
-func CheckWitness(w Witness, fetchedEpoch uint64) error {
+// CheckWitness, tanık çapraz kontrolünü uygular (SPEC §7.3.4 / §9.3). w nil ise
+// NO-OP (G10 stub). Kontroller:
+//   - tanık epoch > çekilen epoch ⇒ WITNESS_CONTRADICTION (freeze/rollback);
+//   - tanık epoch == çekilen epoch AMA manifestSha256'lar FARKLI ⇒
+//     WITNESS_CONTRADICTION (aynı-epoch FORKED manifest — CF-tarafı epoch'u
+//     ilerletmeden içeriği değiştirir; P3-c, yalnızca WitnessHeadReader tanıklarda);
+//   - erişilemez (typed-nil dahil) ⇒ WITNESS_UNREACHABLE (fail-closed, F6).
+//
+// fetchedManifestSha256, çekilen manifest'in obje hash'idir (read.go'daki ETag) —
+// boşsa fork kontrolü atlanır (epoch-only tanıklar / eksik veri).
+func CheckWitness(w Witness, fetchedEpoch uint64, fetchedManifestSha256 string) error {
 	if w == nil {
 		return nil // stub: tanık yok → kontrol atlanır (G10)
 	}
+	// Zengin tanık: epoch + manifestSha256 → freeze VE aynı-epoch fork kontrolü.
+	if hr, ok := w.(WitnessHeadReader); ok {
+		epoch, sha, err := hr.WitnessHead()
+		if err != nil {
+			return clierr.Wrapf(clierr.WitnessUnreachable, err, "escrow witness unreachable")
+		}
+		if epoch > fetchedEpoch {
+			return clierr.Newf(clierr.WitnessContradiction, "witness epoch %d > fetched %d (freeze detected)", epoch, fetchedEpoch)
+		}
+		if epoch == fetchedEpoch && sha != "" && fetchedManifestSha256 != "" && sha != fetchedManifestSha256 {
+			return clierr.Newf(clierr.WitnessContradiction, "witness manifest hash differs from fetched at epoch %d (forked manifest)", epoch)
+		}
+		return nil
+	}
+	// Yalnızca-epoch tanık (NoWitness/legacy) → freeze kontrolü.
 	head, err := w.HeadEpoch()
 	if err != nil {
 		return clierr.Wrapf(clierr.WitnessUnreachable, err, "escrow witness unreachable")

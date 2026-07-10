@@ -62,7 +62,7 @@ func (f *fakeRunner) runner(name string, args, env []string, stdout, stderr io.W
 // execCall wraps runExec with the non-agent, discard-output defaults so the
 // existing env-injection tests stay concise.
 func execCall(args []string, prefix string, runner execRunner) error {
-	return runExec(args, prefix, false, false, io.Discard, io.Discard, runner)
+	return runExec(args, prefix, "dev", false, false, io.Discard, io.Discard, runner)
 }
 
 func TestRunExec_InjectsSecretsAsEnvVars(t *testing.T) {
@@ -259,7 +259,7 @@ func TestRunExec_ScrubsInjectedValueFromChildOutput(t *testing.T) {
 		return 0, nil
 	}
 
-	if err := runExec([]string{"leak"}, "TF_VAR_", false, false, &out, io.Discard, leaky); err != nil {
+	if err := runExec([]string{"leak"}, "TF_VAR_", "dev", false, false, &out, io.Discard, leaky); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 	if strings.Contains(out.String(), secret) {
@@ -273,12 +273,57 @@ func TestRunExec_ScrubsInjectedValueFromChildOutput(t *testing.T) {
 // TestRunExec_BreakGlassRefusedInAgentMode, --break-glass ajan modunda HARD-REFUSED.
 func TestRunExec_BreakGlassRefusedInAgentMode(t *testing.T) {
 	execTestSetup(t, nil)
-	err := runExec([]string{"true"}, "TF_VAR_", true /*breakGlass*/, true /*isAgent*/, io.Discard, io.Discard, (&fakeRunner{}).runner)
+	err := runExec([]string{"true"}, "TF_VAR_", "dev", true /*breakGlass*/, true /*isAgent*/, io.Discard, io.Discard, (&fakeRunner{}).runner)
 	if err == nil {
 		t.Fatal("expected BREAK_GLASS_REFUSED")
 	}
 	if !clierr.Is(err, clierr.BreakGlassRefused) {
 		t.Fatalf("wrong code: %v", err)
+	}
+}
+
+// TestRunExec_DeployIntentFailsLoudBeforeArchiveRead (FIX #4): --intent deploy,
+// §7.3.4 fresh-or-fail'i VAAT eder ama store'a bağlı DEĞİL — legacy arşivi doğrudan
+// çözmek deploy güvenlik yüzeyini işlevsel gösterirdi. Fail loud: arşivi OKUMADAN
+// clierr döndür, alt-süreci ÇALIŞTIRMA.
+func TestRunExec_DeployIntentFailsLoudBeforeArchiveRead(t *testing.T) {
+	// Kasıtlı olarak arşiv YOK + passphrase YOK: deploy kontrolü bunlara ULAŞMADAN
+	// önce reddetmeli (arşiv asla okunmaz).
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
+
+	r := &fakeRunner{returnCode: 0}
+	err := runExec([]string{"tofu", "apply"}, "TF_VAR_", "deploy", false, false, io.Discard, io.Discard, r.runner)
+	if err == nil {
+		t.Fatal("expected a hard error for --intent deploy")
+	}
+	if !clierr.Is(err, clierr.NotAvailable) {
+		t.Fatalf("wrong code (want NOT_AVAILABLE): %v", err)
+	}
+	if r.gotName != "" {
+		t.Fatalf("subprocess must never run under an unwired deploy intent, got: %q", r.gotName)
+	}
+}
+
+// TestRunExec_BreakGlassFailsLoudEvenNonAgent (FIX #4): --break-glass yalnızca
+// deploy-intent CF-outage override'ıdır; deploy bağlı olmadığından, ajan-dışı bir
+// terminalde bile arşivi okumadan reddedilmeli (sessiz no-op yerine fail loud).
+func TestRunExec_BreakGlassFailsLoudEvenNonAgent(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
+
+	r := &fakeRunner{returnCode: 0}
+	err := runExec([]string{"true"}, "TF_VAR_", "dev", true /*breakGlass*/, false /*isAgent*/, io.Discard, io.Discard, r.runner)
+	if err == nil {
+		t.Fatal("expected a hard error for --break-glass in an unwired deploy build")
+	}
+	if !clierr.Is(err, clierr.NotAvailable) {
+		t.Fatalf("wrong code (want NOT_AVAILABLE): %v", err)
+	}
+	if r.gotName != "" {
+		t.Fatalf("subprocess must never run; got: %q", r.gotName)
 	}
 }
 

@@ -145,7 +145,10 @@ func TestRun_NeedsTriageBlocks(t *testing.T) {
 
 // TestRun_MirrorOnlyRefusesTofu, origin:"tofu" bir girdinin store-tarafı value-mint
 // yolundan REDDEDİLDİĞİNİ (mirror-only §8.6.5) kanıtlar: değer store'a yazılmaz,
-// recipe mint edilmez, run terminal olmaz (sync landing beklenir).
+// recipe mint edilmez. FIX #6: MIRROR_ONLY_ORIGIN artık RunState'te TERMİNAL-origin-
+// notu sayılır (tofu anahtarı origin'de döner + `wapps secrets sync` ile akar, AYRI
+// attest edilir) → run Complete olur ama origin-tarafı takip işi st.MirrorOnly ile
+// görünür kalır. Böylece tofu-origin anahtar içeren bir offboard ASLA deadlock olmaz.
 func TestRun_MirrorOnlyRefusesTofu(t *testing.T) {
 	e, ledger, _, vs := newTestEngine()
 	tofu := lifecycle.WorklistEntry{Project: testProject, Key: "DATABASE_URL", Recipe: RecipeDBRolePhase1, Origin: OriginTofu, BlastTier: lifecycle.TierProdShared, State: StatePending}
@@ -161,8 +164,9 @@ func TestRun_MirrorOnlyRefusesTofu(t *testing.T) {
 
 	st, err := ledger.RunState("wl_tofu")
 	require.NoError(t, err)
-	assert.False(t, st.Complete, "run stays pending until the origin rotation syncs")
-	assert.Equal(t, 1, st.Pending)
+	assert.True(t, st.Complete, "MIRROR_ONLY is terminal-with-origin-note; run must not deadlock (FIX #6)")
+	assert.Equal(t, 0, st.Pending)
+	assert.Equal(t, 1, st.MirrorOnly, "origin-side follow-up (tofu apply + sync) stays visible via MirrorOnly")
 }
 
 // TestRun_ManualPauses, manuel recipe (cf-manual) onay OLMADAN CONSUMER_UPDATED'te

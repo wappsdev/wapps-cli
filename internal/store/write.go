@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -471,7 +472,14 @@ func escrowFingerprints(m *trust.TrustManifest) map[string]bool {
 }
 
 // winnerTouched, base → newBase arasında kazanan yazarın DOKUNDUĞU anahtar
-// adları kümesini döner (eklenen/silinen/değişen blobHash|keyVersion).
+// adları kümesini döner (eklenen/silinen/DEĞİŞEN). "Değişen", TAM girdi
+// karşılaştırmasıdır: blobHash|keyVersion + wrap-set (alıcı kümesi + wrap baytları)
+// + rotation metadata. FIX #3 (§6.2 step 8): read.go'nun yazar-yetkisi kontrolü bu
+// kümeyi tüketir; yalnızca blobHash/keyVersion bakmak, aynı blobHash/keyVersion ile
+// bir alıcı EKLEYEN (wrap-set genişleten) veya rotation'ı mutasyona uğratan yetkisiz
+// bir yazımı ATLARDI — Worker (writer-do.ts entriesEqual) bunu yakalarken istemci
+// re-verify kaçırırdı ("Worker'a asla güvenme" garantisiyle çelişki). Tam karşılaştırma
+// bu tür her mutasyonu "touched" işaretler ve write-authority kontrolünü zorlar.
 func winnerTouched(base, newBase []manifest.KeyEntry) map[string]bool {
 	baseByName := map[string]manifest.KeyEntry{}
 	for _, e := range base {
@@ -484,7 +492,7 @@ func winnerTouched(base, newBase []manifest.KeyEntry) map[string]bool {
 	touched := map[string]bool{}
 	for name, ne := range newByName {
 		be, ok := baseByName[name]
-		if !ok || be.BlobHash != ne.BlobHash || be.KeyVersion != ne.KeyVersion {
+		if !ok || entryChanged(be, ne) {
 			touched[name] = true
 		}
 	}
@@ -494,6 +502,68 @@ func winnerTouched(base, newBase []manifest.KeyEntry) map[string]bool {
 		}
 	}
 	return touched
+}
+
+// entryChanged, iki manifest girdisinin (aynı anahtar adı için) OTORİTATİF olarak
+// farklı olup olmadığını döner: blobHash, keyVersion, wrap-set VEYA rotation metadata
+// değiştiyse true. Worker'ın entriesEqual'ıyla aynı model (differing wrap-set VEYA
+// rotation = changed) → istemci re-verify ile Worker aynı değişiklik-kümesini görür.
+func entryChanged(a, b manifest.KeyEntry) bool {
+	if a.BlobHash != b.BlobHash || a.KeyVersion != b.KeyVersion {
+		return true
+	}
+	if !wrapSetEqual(a.Wraps, b.Wraps) {
+		return true
+	}
+	return !rotationEqual(a.Rotation, b.Rotation)
+}
+
+// wrapSetEqual, iki wrap-set'in AYNI alıcı→wrap-baytları eşlemesini taşıdığını
+// (sıradan bağımsız) döner. Bir alıcı EKLENDİ/ÇIKARILDI veya bir alıcının wrap
+// baytları DEĞİŞTİYSE eşit değildir (§3.8: wrap-set genişletmesi bir mutasyondur).
+func wrapSetEqual(a, b []manifest.DEKWrap) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	am := make(map[string][]byte, len(a))
+	for _, w := range a {
+		am[w.Recipient] = w.Wrap
+	}
+	if len(am) != len(a) {
+		// Aynı alıcı iki kez → sıralı bayt-bayt karşılaştırmaya düş (savunmacı).
+		return wrapSeqEqual(a, b)
+	}
+	for _, w := range b {
+		prev, ok := am[w.Recipient]
+		if !ok || !bytes.Equal(prev, w.Wrap) {
+			return false
+		}
+	}
+	return true
+}
+
+// wrapSeqEqual, wrap dizilerini SIRALI bayt-bayt karşılaştırır (yinelenen alıcı
+// kenar durumu için yedek yol).
+func wrapSeqEqual(a, b []manifest.DEKWrap) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Recipient != b[i].Recipient || !bytes.Equal(a[i].Wrap, b[i].Wrap) {
+			return false
+		}
+	}
+	return true
+}
+
+// rotationEqual, iki opsiyonel rotation metadata'sının byte-exact aynı olup
+// olmadığını döner (RotationMeta ham JSON passthrough'dur). İkisi de nil → eşit;
+// biri nil → farklı.
+func rotationEqual(a, b *manifest.RotationMeta) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return bytes.Equal(a.Raw(), b.Raw())
 }
 
 // overlaps, kazananın dokunduğu anahtarlar ile bizim set'lerimizin kesişip

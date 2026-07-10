@@ -18,6 +18,7 @@ import {
   hexToBytes,
   newVerifierKey,
   parseSignedObject,
+  sha256,
   sha256Hex,
   utf8,
   verifyRaw,
@@ -37,6 +38,27 @@ describe("frozen cross-vectors (Go → TS verify parity)", () => {
     expect(verifySignatureEnvelope(utf8(frozen.ed25519.message), env, vk)).toBe(true);
     // Tampered mesaj → red.
     expect(verifyRaw(vk, utf8(frozen.ed25519.message + "x"), sig)).toBe(false);
+  });
+
+  it("ed25519 negatives: verifyRaw REJECTS every non-canonical / small-order / S>=L cross-vector (zip215:false parity with Go)", () => {
+    const neg = frozen.ed25519_negatives;
+    expect(neg.cases.length).toBeGreaterThan(0);
+    const msg = utf8(neg.message);
+    const d = sha256(msg); // D = SHA-256(msg) — doğrulayıcının imzaladığı digest
+    for (const c of neg.cases) {
+      const pub = hexToBytes(c.pubkey_hex);
+      const sig = hexToBytes(c.sig_hex);
+      const vk = newVerifierKey(ALG_ED25519, pub); // 32B → uzunluk kontrolü geçer
+      // DÜZELTİLMİŞ doğrulayıcı (zip215:false) HER negatif vektörü REDDETMELİ →
+      // Go crypto/ed25519 ile birebir parite.
+      expect(verifyRaw(vk, msg, sig)).toBe(false);
+      // accepted_without_fix=true ise @noble'ın zip215:true (cofactorlu) modu bu
+      // forgery'yi KABUL ederdi — bu, verify.ts'in geçtiği ESKİ varsayılan davranış
+      // → {zip215:false} düzeltmesinin load-bearing (release-blocking) kanıtı.
+      if (c.accepted_without_fix) {
+        expect(ed25519.verify(sig, d, pub, { zip215: true })).toBe(true);
+      }
+    }
   });
 
   it("X25519 recipient: reproduces the canonical-string fingerprint byte-for-byte", () => {

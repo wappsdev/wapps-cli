@@ -45,6 +45,16 @@ type frozenVectors struct {
 		KeyID   string `json:"key_id"`
 		SigHex  string `json:"sig_hex"`
 	} `json:"ed25519"`
+	Ed25519Negatives struct {
+		Message string `json:"message"`
+		Cases   []struct {
+			Name               string `json:"name"`
+			Reason             string `json:"reason"`
+			PubkeyHex          string `json:"pubkey_hex"`
+			SigHex             string `json:"sig_hex"`
+			AcceptedWithoutFix bool   `json:"accepted_without_fix"`
+		} `json:"cases"`
+	} `json:"ed25519_negatives"`
 	Shamir struct {
 		SecretHex string   `json:"secret_hex"`
 		Parts     int      `json:"parts"`
@@ -100,6 +110,27 @@ func TestFrozenVectors_CrossImpl(t *testing.T) {
 		sig, err := k.Sign([]byte(fv.Ed25519.Message))
 		require.NoError(t, err)
 		assert.Equal(t, fv.Ed25519.SigHex, hex.EncodeToString(sig.Sig))
+	})
+
+	// ed25519_negatives: her negatif çapraz-vektör Go doğrulayıcısı tarafından
+	// REDDEDİLMELİDİR (RFC8032 cofactorsuz; S<L; non-canonical/küçük-mertebe zaafı
+	// yok). Bu, verify.ts'in {zip215:false} paritesini kilitler: aynı vektörler TS
+	// tarafında da (worker/test/frozen.test.ts) reddedilir. accepted_without_fix=true
+	// olanlar @noble VARSAYILANI (zip215:true, cofactorlu) ile KABUL edilirdi →
+	// düzeltmenin release-blocking olduğunun kanıtı.
+	t.Run("ed25519_negatives", func(t *testing.T) {
+		require.NotEmpty(t, fv.Ed25519Negatives.Cases, "negative vector set must not be empty")
+		msg := []byte(fv.Ed25519Negatives.Message)
+		for _, c := range fv.Ed25519Negatives.Cases {
+			t.Run(c.Name, func(t *testing.T) {
+				pub := mustHexBytes(t, c.PubkeyHex)
+				sig := mustHexBytes(t, c.SigHex)
+				vk, err := NewVerifierKey(AlgEd25519, pub)
+				require.NoError(t, err, "32-byte ed25519 pubkey must construct (length-only check)")
+				// KATİ: Go doğrulayıcısı her negatif vektörü REDDETMELİ (%s).
+				assert.ErrorIs(t, vk.Verify(msg, sig), ErrSigInvalid, c.Reason)
+			})
+		}
 	})
 
 	t.Run("shamir", func(t *testing.T) {

@@ -165,7 +165,9 @@ func (w *WorkerStore) Fetch(ctx context.Context, project string, opts FetchOpts)
 			return nil, clierr.New(clierr.WitnessNotWired,
 				"deploy intent requires an escrow witness; none is wired")
 		}
-		if err := intent.CheckWitness(w.cfg.Witness, man.Epoch); err != nil {
+		// etag = çekilen manifest'in obje hash'i — aynı-epoch FORK kontrolü için
+		// tanığın manifestSha256'sıyla karşılaştırılır (P3-c).
+		if err := intent.CheckWitness(w.cfg.Witness, man.Epoch, etag); err != nil {
 			return nil, err
 		}
 	}

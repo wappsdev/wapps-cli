@@ -14,6 +14,12 @@ type RotationRunState struct {
 	NeedsTriage bool
 	// Pending, henüz terminal olmayan giriş sayısı (-1 = bilinmiyor/G11 bağlı değil).
 	Pending int
+	// MirrorOnly, TERMİNAL-origin-notu olarak sayılan (MIRROR_ONLY_ORIGIN) giriş
+	// sayısıdır (FIX #6): bu anahtarlar store'da rotate EDİLMEZ — değer origin'de
+	// (tofu/DB) döner + `wapps secrets sync` ile akar ve AYRI attest edilir. Complete
+	// hesabında terminal sayılırlar (offboard close ilerler), ama bu sayaç origin-
+	// tarafı takip işini (migration Phase-2 sync) görünür kılar.
+	MirrorOnly int
 }
 
 // RotationRunLedger, G11 rotasyon-yürütme motorunun bir worklist run'ının

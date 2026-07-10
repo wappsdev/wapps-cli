@@ -206,6 +206,7 @@ func init() {
 	rootCmd.AddCommand(secrets.SecretsCmd)
 	rootCmd.AddCommand(secrets.DrCmd)     // §9.5 disaster recovery (dr verify/restore/repin-genesis/verifier)
 	rootCmd.AddCommand(secrets.EscrowCmd) // §9.1/§9.7 escrow ceremony (keygen + verify-canary)
+	rootCmd.AddCommand(secrets.RotateCmd) // §8.5.5.4 rotation worklist (rotate skip — signed-SKIP escape hatch)
 	rootCmd.AddCommand(gitcmd.GitCmd)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
 	rootCmd.AddCommand(skillcmd.SkillCmd)

@@ -297,10 +297,22 @@ func (s *Snapshot) Validate() error {
 		if principal.Status == StatusRevoked {
 			return fmt.Errorf("registry.Validate: grant names revoked principal %q: %w", g.Principal, ErrRegistryInvalid)
 		}
+		// P3-a: MAKİNE prensipleri joker ("*") anahtar grant'ı TAŞIYAMAZ — makine
+		// yetkisi AÇIK, tam-anahtar allowlist'i olmalı (blast-radius sınırlama, §4.3/§6).
+		// Bir tofu-sync makinesinin "*" grant'ı, tek bir sızmış otomasyon anahtarını
+		// projedeki HER değere erişim/yazıma çevirirdi.
+		if principal.Type == TypeMachine && containsStr(g.Keys, KeyWildcard) {
+			return fmt.Errorf("registry.Validate: machine grant %q must use an explicit key allowlist, not %q: %w", g.Principal, KeyWildcard, ErrRegistryInvalid)
+		}
 	}
 	for _, w := range s.WriterAllowlists {
-		if _, ok := s.IdentityByID(w.Principal); !ok {
+		principal, ok := s.IdentityByID(w.Principal)
+		if !ok {
 			return fmt.Errorf("registry.Validate: writer allowlist names unknown principal %q: %w", w.Principal, ErrIdentityNotEnrolled)
+		}
+		// P3-a: makine yazar-allowlist'i de joker taşıyamaz (aynı gerekçe).
+		if principal.Type == TypeMachine && containsStr(w.Keys, KeyWildcard) {
+			return fmt.Errorf("registry.Validate: machine writer allowlist %q must use an explicit key allowlist, not %q: %w", w.Principal, KeyWildcard, ErrRegistryInvalid)
 		}
 	}
 	return nil
