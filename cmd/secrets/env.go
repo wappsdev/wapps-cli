@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
@@ -29,6 +30,13 @@ or LLM transcript). Use --prefix to control the env var prefix (default
 TF_VAR_ preserves Tofu workflow; pass --prefix '' for plain emit needed
 by non-Tofu repos like vaulter-api).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// env'in print-form'u (--write yok) gizli DÜZ METİN basar → ajan modunda
+		// YAPISAL red; env --write FILE serbest kalır (§7.4.2).
+		if envWritePath == "" {
+			if err := agentmode.Guard(agentmode.PolicyRefuseAgent, agentmode.IsAgent()); err != nil {
+				return err
+			}
+		}
 		return runEnv(envWritePath, envPrefix, os.Stdout)
 	},
 }

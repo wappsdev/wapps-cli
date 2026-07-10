@@ -1,13 +1,16 @@
 package secrets
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/clierr"
 )
 
 // execTestSetup writes an encrypted archive into ./secrets/all.enc.age in
@@ -49,11 +52,17 @@ type fakeRunner struct {
 	returnErr  error
 }
 
-func (f *fakeRunner) runner(name string, args, env []string) (int, error) {
+func (f *fakeRunner) runner(name string, args, env []string, stdout, stderr io.Writer) (int, error) {
 	f.gotName = name
 	f.gotArgs = args
 	f.gotEnv = env
 	return f.returnCode, f.returnErr
+}
+
+// execCall wraps runExec with the non-agent, discard-output defaults so the
+// existing env-injection tests stay concise.
+func execCall(args []string, prefix string, runner execRunner) error {
+	return runExec(args, prefix, false, false, io.Discard, io.Discard, runner)
 }
 
 func TestRunExec_InjectsSecretsAsEnvVars(t *testing.T) {
@@ -63,7 +72,7 @@ func TestRunExec_InjectsSecretsAsEnvVars(t *testing.T) {
 	})
 
 	r := &fakeRunner{returnCode: 0}
-	err := runExec([]string{"printenv"}, "TF_VAR_", r.runner)
+	err := execCall([]string{"printenv"}, "TF_VAR_", r.runner)
 	if err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
@@ -91,7 +100,7 @@ func TestRunExec_EmptyPrefix(t *testing.T) {
 	execTestSetup(t, map[string]string{"STRIPE_KEY": "sk_test"})
 
 	r := &fakeRunner{returnCode: 0}
-	if err := runExec([]string{"true"}, "", r.runner); err != nil {
+	if err := execCall([]string{"true"}, "", r.runner); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 
@@ -117,7 +126,7 @@ func TestRunExec_PassesCommandArgsVerbatim(t *testing.T) {
 
 	r := &fakeRunner{returnCode: 0}
 	args := []string{"pnpm", "dev", "--port", "8080"}
-	if err := runExec(args, "TF_VAR_", r.runner); err != nil {
+	if err := execCall(args, "TF_VAR_", r.runner); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 
@@ -140,7 +149,7 @@ func TestRunExec_InheritsParentEnv(t *testing.T) {
 	t.Setenv("PARENT_VAR", "from-parent")
 
 	r := &fakeRunner{returnCode: 0}
-	if err := runExec([]string{"true"}, "TF_VAR_", r.runner); err != nil {
+	if err := execCall([]string{"true"}, "TF_VAR_", r.runner); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 
@@ -172,7 +181,7 @@ func TestRunExec_InjectedOverridesInheritedEnvOnCollision(t *testing.T) {
 	t.Setenv("TF_VAR_DB_PASSWORD", "from-shell")
 
 	r := &fakeRunner{returnCode: 0}
-	if err := runExec([]string{"true"}, "TF_VAR_", r.runner); err != nil {
+	if err := execCall([]string{"true"}, "TF_VAR_", r.runner); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 
@@ -200,7 +209,7 @@ func TestRunExec_NoPassphraseErrors(t *testing.T) {
 	t.Chdir(tmp)
 	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
 
-	err := runExec([]string{"true"}, "TF_VAR_", (&fakeRunner{}).runner)
+	err := execCall([]string{"true"}, "TF_VAR_", (&fakeRunner{}).runner)
 	if err == nil {
 		t.Fatal("expected error: passphrase required")
 	}
@@ -210,7 +219,7 @@ func TestRunExec_NoPassphraseErrors(t *testing.T) {
 }
 
 func TestRunExec_EmptyArgsErrors(t *testing.T) {
-	err := runExec(nil, "TF_VAR_", (&fakeRunner{}).runner)
+	err := execCall(nil, "TF_VAR_", (&fakeRunner{}).runner)
 	if err == nil {
 		t.Fatal("expected error: empty args")
 	}
@@ -220,12 +229,56 @@ func TestRunExec_RunnerErrorPropagates(t *testing.T) {
 	execTestSetup(t, nil)
 
 	r := &fakeRunner{returnErr: errors.New("command not found: nonexistent-binary")}
-	err := runExec([]string{"nonexistent-binary"}, "TF_VAR_", r.runner)
+	err := execCall([]string{"nonexistent-binary"}, "TF_VAR_", r.runner)
 	if err == nil {
 		t.Fatal("expected error when runner fails")
 	}
 	if !strings.Contains(err.Error(), "command not found") {
 		t.Errorf("runner error should propagate, got: %v", err)
+	}
+}
+
+// TestRunExec_ScrubsInjectedValueFromChildOutput, VERB-seviyesi agent-safety
+// kanıtı (§7.4.3): enjekte edilen bir değeri echo'layan bir alt-süreç, o değeri
+// yakalanan stdout'a ASLA sızdıramaz — scrubber onu *** yapar.
+func TestRunExec_ScrubsInjectedValueFromChildOutput(t *testing.T) {
+	secret := "sk_live_supersecretvalue_1234567890"
+	execTestSetup(t, map[string]string{"STRIPE_KEY": secret})
+
+	var out bytes.Buffer
+	leaky := func(name string, args, env []string, stdout, stderr io.Writer) (int, error) {
+		var val string
+		for _, e := range env {
+			if strings.HasPrefix(e, "TF_VAR_STRIPE_KEY=") {
+				val = strings.TrimPrefix(e, "TF_VAR_STRIPE_KEY=")
+			}
+		}
+		// Sızdıran bir araç gibi değeri stdout'a bas — hatta parçalı.
+		_, _ = stdout.Write([]byte("connecting with " + val))
+		_, _ = stdout.Write([]byte(" ... done\n"))
+		return 0, nil
+	}
+
+	if err := runExec([]string{"leak"}, "TF_VAR_", false, false, &out, io.Discard, leaky); err != nil {
+		t.Fatalf("runExec: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("SECRET LEAKED into transcript: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "***") {
+		t.Fatalf("expected redaction ***, got: %q", out.String())
+	}
+}
+
+// TestRunExec_BreakGlassRefusedInAgentMode, --break-glass ajan modunda HARD-REFUSED.
+func TestRunExec_BreakGlassRefusedInAgentMode(t *testing.T) {
+	execTestSetup(t, nil)
+	err := runExec([]string{"true"}, "TF_VAR_", true /*breakGlass*/, true /*isAgent*/, io.Discard, io.Discard, (&fakeRunner{}).runner)
+	if err == nil {
+		t.Fatal("expected BREAK_GLASS_REFUSED")
+	}
+	if !clierr.Is(err, clierr.BreakGlassRefused) {
+		t.Fatalf("wrong code: %v", err)
 	}
 }
 

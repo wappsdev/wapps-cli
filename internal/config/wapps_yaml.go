@@ -37,7 +37,7 @@ import (
 
 // Target deklarasyonu: archive'dan üretilen plaintext consumption dosyası.
 // Prefix *string çünkü "yokken default'u kullan" ile "açıkça boş istiyorum"
-// arasında fark var: default_prefix='TF_VAR_' iken bir target'in '' istemesi
+// arasında fark var: default_prefix='TF_VAR_' iken bir target'in ” istemesi
 // gerçek bir senaryo (terraform.tfvars için TF_VAR_, .env.local için plain).
 type Target struct {
 	Path   string  `yaml:"path"`
@@ -104,10 +104,26 @@ type CoolifySync struct {
 	Apps        []CoolifyApp `yaml:"apps"`
 }
 
+// Backend değerleri (SPEC §7.12). ABSENT backend → legacy-git.
+const (
+	BackendStore     = "store"
+	BackendLegacyGit = "legacy-git"
+)
+
 // WappsYAML is the parsed schema. Defaults are applied during Load, so callers
 // can rely on fields being populated.
 type WappsYAML struct {
-	Version         int             `yaml:"version"`
+	Version int `yaml:"version"`
+
+	// v2 alanları (SPEC §7.12). Bunlardan HERHANGİ biri varsa version MUST 2.
+	//   - Backend: "store" | "legacy-git". ABSENT → legacy-git (mevcut her dosya
+	//     bugün ne anlama geliyorsa aynen korur).
+	//   - Project: backend:store iken ZORUNLU (repo→proje bağlaması, §7.7).
+	//   - Profiles: opsiyonel; yalnızca store backend (§7.6).
+	Backend  string              `yaml:"backend,omitempty"`
+	Project  string              `yaml:"project,omitempty"`
+	Profiles map[string][]string `yaml:"profiles,omitempty"`
+
 	Dest            string          `yaml:"dest"`
 	DefaultPrefix   string          `yaml:"default_prefix"`
 	Sources         []source.Config `yaml:"sources"`
@@ -207,27 +223,64 @@ func Parse(data []byte) (*WappsYAML, error) {
 }
 
 func applyDefaultsAndValidate(y *WappsYAML) error {
+	// ABSENT version → v1 (yeni binary, eski v1 dosyaları için byte-identical
+	// drop-in). v1|v2 dışı → LOUD fail-closed (SPEC §7.12 parser matrisi).
 	if y.Version == 0 {
 		y.Version = defaultVersion
 	}
-	if y.Version != 1 {
-		return fmt.Errorf("config: unsupported version %d (only 1 is supported by this CLI)", y.Version)
+	if y.Version != 1 && y.Version != 2 {
+		return fmt.Errorf("config: unsupported version %d (only 1 and 2 are supported by this CLI)", y.Version)
 	}
+
+	// v2 alanları (backend/project/profiles) varsa version 2 ZORUNLU (§7.12):
+	// version bump'ı eski binary'lerin sessiz misparse yerine loud hata vermesini
+	// sağlar. v1 + backend = malformed → hata.
+	carriesV2 := y.Backend != "" || y.Project != "" || len(y.Profiles) > 0
+	if carriesV2 && y.Version != 2 {
+		return fmt.Errorf("config: backend/project/profiles require version: 2 (got version %d)", y.Version)
+	}
+
+	// Backend: ABSENT → legacy-git.
+	backend := y.Backend
+	if backend == "" {
+		backend = BackendLegacyGit
+	}
+	if backend != BackendStore && backend != BackendLegacyGit {
+		return fmt.Errorf("config: unknown backend %q (allowed: store, legacy-git)", backend)
+	}
+	y.Backend = backend
+
+	if len(y.Profiles) > 0 && backend != BackendStore {
+		return fmt.Errorf("config: profiles are only valid under backend: store")
+	}
+
 	if y.Dest == "" {
 		y.Dest = defaultDest
 	}
-	if len(y.Sources) == 0 {
-		return fmt.Errorf("config: at least one source required (got empty sources list)")
-	}
-	// Validate each source declaration by attempting to construct its adapter.
-	// This catches unknown types, missing required fields, mutually-exclusive
-	// fields (e.g., tofu source with 'path' set) at config-load time rather
-	// than at first sync.
-	for i, cfg := range y.Sources {
-		if _, err := source.New(cfg); err != nil {
-			return fmt.Errorf("config: sources[%d]: %w", i, err)
+
+	if backend == BackendStore {
+		// backend:store → project ZORUNLU (repo→proje bağlaması, §7.7). sources
+		// OPSİYONEL (yalnızca tofu-sync girdilerini bildirmek için, §8.6.5).
+		if y.Project == "" {
+			return fmt.Errorf("config: backend: store requires a non-empty project (the repo→project binding)")
+		}
+		for i, cfg := range y.Sources {
+			if _, err := source.New(cfg); err != nil {
+				return fmt.Errorf("config: sources[%d]: %w", i, err)
+			}
+		}
+	} else {
+		// legacy-git: bugünkü kurallar DEĞİŞMEDEN (non-empty sources ZORUNLU).
+		if len(y.Sources) == 0 {
+			return fmt.Errorf("config: at least one source required (got empty sources list)")
+		}
+		for i, cfg := range y.Sources {
+			if _, err := source.New(cfg); err != nil {
+				return fmt.Errorf("config: sources[%d]: %w", i, err)
+			}
 		}
 	}
+
 	if err := validateTargets(y.Targets); err != nil {
 		return err
 	}
@@ -235,6 +288,19 @@ func applyDefaultsAndValidate(y *WappsYAML) error {
 		return err
 	}
 	return nil
+}
+
+// IsStoreBackend, config'in store backend'i mi olduğunu döner (SPEC §7.12).
+func (c *WappsYAML) IsStoreBackend() bool { return c.Backend == BackendStore }
+
+// ProfileKeys, adlandırılmış bir profilin anahtar listesini döner (§7.6). Profil
+// yoksa (nil, false). Boş profil adı → tüm granted anahtarlar (nil, true).
+func (c *WappsYAML) ProfileKeys(name string) ([]string, bool) {
+	if name == "" {
+		return nil, true
+	}
+	keys, ok := c.Profiles[name]
+	return keys, ok
 }
 
 // validateCoolifySync enforces, when the block is present:

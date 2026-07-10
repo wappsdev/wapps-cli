@@ -192,14 +192,15 @@ sources:
 }
 
 func TestParse_RejectsUnsupportedVersion(t *testing.T) {
+	// version 3+ hâlâ reddedilir (v1 ve v2 desteklenir, §7.12).
 	data := []byte(`
-version: 2
+version: 3
 sources:
   - type: tofu
 `)
 	_, err := Parse(data)
 	if err == nil {
-		t.Fatal("expected error for version 2")
+		t.Fatal("expected error for version 3")
 	}
 	if !strings.Contains(err.Error(), "version") {
 		t.Errorf("error should mention version: %v", err)

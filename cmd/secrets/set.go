@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
@@ -13,10 +14,17 @@ import (
 	"golang.org/x/term"
 )
 
+// setFromFile, --from-file bayrağı (§7.9.3 umask-077 temp-file kalıbı).
+var setFromFile string
+
 // setOptions wires test seams (prompt source, stdin) without adding cobra flags.
 // Production callers leave them nil; we substitute defaults that hit the real
 // terminal.
 type setOptions struct {
+	// fromFile, when non-empty, reads the value from this file (the §7.9.3
+	// umask-077 temp-file pattern: `printf %s "$V" > /tmp/s; set K --from-file /tmp/s`)
+	// instead of prompting. Agent-friendly: no value on argv, no TTY needed.
+	fromFile string
 	// promptValue reads the secret value from the operator. Returns the value
 	// + whether a TTY was used (false → operator may have piped, value is in
 	// the clear in shell history).
@@ -34,6 +42,7 @@ var setCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSet(args[0], setOptions{
+			fromFile:    setFromFile,
 			promptValue: promptValueNoEcho,
 			driftCheck:  defaultDriftCheck,
 		})
@@ -107,9 +116,22 @@ func runSet(key string, opts setOptions) error {
 		return err
 	}
 
-	value, tty, err := opts.promptValue(fmt.Sprintf("Value for %s: ", key))
-	if err != nil {
-		return fmt.Errorf("secrets.set: read value: %w", err)
+	var value string
+	tty := true
+	if opts.fromFile != "" {
+		// §7.9.3: değeri dosyadan oku (argv'de değer yok, TTY gerekmez). Sondaki
+		// tek newline soyulur (printf %s ... > file kalıbıyla uyum).
+		raw, rerr := os.ReadFile(opts.fromFile)
+		if rerr != nil {
+			return fmt.Errorf("secrets.set: read --from-file: %w", rerr)
+		}
+		value = strings.TrimRight(string(raw), "\r\n")
+	} else {
+		v, isTTY, perr := opts.promptValue(fmt.Sprintf("Value for %s: ", key))
+		if perr != nil {
+			return fmt.Errorf("secrets.set: read value: %w", perr)
+		}
+		value, tty = v, isTTY
 	}
 	if value == "" {
 		return fmt.Errorf("secrets.set: empty value rejected (use a placeholder if you need to declare an empty var)")
@@ -229,6 +251,7 @@ func encryptAndWriteArchive(path string, archive map[string]json.RawMessage, pas
 // defaultDriftCheck combines two preflight conditions:
 //  1. Local archive sha equals origin's archive sha (no incoming changes)
 //  2. Working tree is clean for the archive path (no uncommitted local edits)
+//
 // Either failing returns dirty=true so runSet refuses to write.
 func defaultDriftCheck(repoPath, archivePath string) (bool, error) {
 	if repoPath == "" {
@@ -280,5 +303,7 @@ func promptValueNoEcho(prompt string) (string, bool, error) {
 }
 
 func init() {
+	setCmd.Flags().StringVar(&setFromFile, "from-file", "",
+		"read the value from this file instead of prompting (§7.9.3 umask-077 temp-file pattern)")
 	SecretsCmd.AddCommand(setCmd)
 }

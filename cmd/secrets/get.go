@@ -8,14 +8,19 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
 var getCmd = &cobra.Command{
 	Use:   "get <key>",
-	Short: "Decrypt + extract single secret value",
+	Short: "Decrypt + extract single secret value (TTY only; refused in agent mode)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// get, gizli bir DÜZ METİN değeri basar → ajan modunda YAPISAL red (§7.4.2).
+		if err := agentmode.Guard(agentmode.PolicyRefuseAgent, agentmode.IsAgent()); err != nil {
+			return err
+		}
 		val, err := readKey(resolveArchivePath(), args[0])
 		if err != nil {
 			return err
