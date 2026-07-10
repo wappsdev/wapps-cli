@@ -7,17 +7,25 @@
   "compatibility_date": "2025-06-01",
   "observability": { "enabled": true },
 
-  // Per-project write serializer (idFromName=project) — §6.2.
+  // Durable Objects (§6 binding envanteri):
+  //  - PROJECT_WRITER: proje başına yazma serileştiricisi (idFromName=project, §6.2).
+  //  - AUDIT_LOG: TEK global audit-zinciri serileştiricisi (idFromName="__audit__",
+  //    D1 `audit` tablosunun TEK yazarı, §6.5).
+  //  - ATTESTATION: non-extractable freshness (liveness-receipt) anahtarını tutar (§6.6).
   "durable_objects": {
     "bindings": [
-      { "name": "PROJECT_WRITER", "class_name": "ProjectWriterDO" }
+      { "name": "PROJECT_WRITER", "class_name": "ProjectWriterDO" },
+      { "name": "AUDIT_LOG", "class_name": "AuditLogDO" },
+      { "name": "ATTESTATION", "class_name": "AttestationDO" }
     ]
   },
-  // DO storage KULLANILMIYOR (serileştirme blockConcurrencyWhile + R2 CAS ile).
-  // new_classes (KV-backed) — new_sqlite_classes yerel isolated-storage pop'unu
-  // .sqlite-shm ile bozuyor (vitest-pool-workers known issue).
+  // DO storage: ProjectWriterDO serileştirmeyi blockConcurrencyWhile + R2 CAS ile
+  // yapar; AuditLogDO zincir head'ini + idempotency marker'larını, AttestationDO
+  // non-extractable özel anahtarı DO storage'da tutar. new_classes (KV-backed) —
+  // new_sqlite_classes yerel isolated-storage pop'unu bozuyor (vitest-pool-workers).
   "migrations": [
-    { "tag": "v1", "new_classes": ["ProjectWriterDO"] }
+    { "tag": "v1", "new_classes": ["ProjectWriterDO"] },
+    { "tag": "v2", "new_classes": ["AuditLogDO", "AttestationDO"] }
   ],
 
   // R2: layout §5. Sadece Worker binding üzerinden erişilir (§5.1).
@@ -25,12 +33,28 @@
     { "binding": "SECRETS_BUCKET", "bucket_name": "wapps-secrets-prod" }
   ],
 
+  // D1: audit ledger (§6.5) + grants mirror (§6.3) + pending-ops kuyruğu (§6.9).
+  "d1_databases": [
+    { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit", "database_id": "00000000-0000-0000-0000-000000000000" }
+  ],
+
+  // KV: revoke edilmiş minted-token jti deny-list'i (§6.4) + per-principal
+  // rate-limit sayaçları (§6.1).
+  "kv_namespaces": [
+    { "binding": "JTI_DENYLIST", "id": "jti_denylist_local" },
+    { "binding": "RATE", "id": "rate_local" }
+  ],
+
   // Fail-closed config (§6 intro): eksik/parse edilemez → 503 SERVICE_MISCONFIGURED.
-  // Gerçek AUD/team-domain değerleri deploy'da secret/var olarak set edilir.
+  // Gerçek AUD/team-domain/MINT_KEY/DISCORD değerleri deploy'da secret/var olarak set edilir.
+  // MINT_KEY / MINT_KEY_PREV / DISCORD_WEBHOOK_URL / B2_* = Worker SECRET'ları (burada boş var).
   "vars": {
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD_READ": "",
     "ACCESS_AUD_WRITE": "",
-    "GENESIS_TRUST_SHA256": ""
+    "GENESIS_TRUST_SHA256": "",
+    "MINT_KEY": "",
+    "MINT_KEY_PREV": "",
+    "DISCORD_WEBHOOK_URL": ""
   }
 }

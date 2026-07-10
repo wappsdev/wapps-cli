@@ -1,13 +1,13 @@
 // Read-path testleri (SPEC §5.5 DO-free serving): conditional GET → 304 (manifest
 // current, manifest by-epoch, blob, trust current). ETag = içerik-adresli hash.
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
-import { seedTrust, ensureJwks, validClaims, authHeader, callGate, signDataManifest, seedManifestObject, putBlob, clearBucket } from "./helpers.js";
+import { seedTrust, ensureJwks, validClaims, authHeader, callGate, signDataManifest, seedManifestObject, putBlob, resetWorld } from "./helpers.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
   signer = await ensureJwks();
 });
-beforeEach(clearBucket);
+beforeEach(resetWorld);
 
 async function setup() {
   const t = await seedTrust();

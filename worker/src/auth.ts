@@ -12,14 +12,25 @@
 // Fail-closed: config eksik → 503 SERVICE_MISCONFIGURED.
 
 import { HTTP, jsonError } from "./errors.js";
+import { TokenScope, verifyMintedToken } from "./mint.js";
 
 export interface Env {
   SECRETS_BUCKET: R2Bucket;
   PROJECT_WRITER: DurableObjectNamespace;
+  // G7 binding envanteri (§6): audit DO + D1, attestation DO, deny-list/rate KV.
+  AUDIT_LOG: DurableObjectNamespace;
+  ATTESTATION: DurableObjectNamespace;
+  AUDIT_DB: D1Database;
+  JTI_DENYLIST: KVNamespace;
+  RATE: KVNamespace;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD_READ?: string;
   ACCESS_AUD_WRITE?: string;
   GENESIS_TRUST_SHA256?: string;
+  // Worker secret'ları (§6.4 mint, §6.10 alert).
+  MINT_KEY?: string;
+  MINT_KEY_PREV?: string;
+  DISCORD_WEBHOOK_URL?: string;
 }
 
 export interface AccessConfig {
@@ -52,7 +63,11 @@ export function loadAccessConfig(env: Env): AccessConfig | null {
 
 export type Principal =
   | { kind: "human"; id: string; email: string }
-  | { kind: "seed"; id: string; commonName: string };
+  | { kind: "seed"; id: string; commonName: string }
+  // machine: seed'in POST /v1/token'da exchange ettiği minted token'dan TÜRETİLİR
+  // (§6.1 step 8-9). Kimlik seed'den DEĞİL, minted token sub'ından gelir; scope +
+  // project token'a pinlenmiştir (per-key confinement, §6.3/§6.4).
+  | { kind: "machine"; id: string; scope: TokenScope; project: string; jti: string };
 
 // --- base64url --------------------------------------------------------------
 
@@ -247,4 +262,27 @@ export function stripForgeableHeaders(request: Request): Request {
   const headers = new Headers(request.headers);
   headers.delete(FORGEABLE_EMAIL_HEADER);
   return new Request(request, { headers });
+}
+
+/**
+ * resolveMachinePrincipal, service-token-shaped bir isteğin data-plane'e girebilmesi
+ * için (§6.1 step 8-9) geçerli bir minted machine-token GEREKTİRİR: Authorization:
+ * Bearer <token>. Token ES256 doğrulanır (kid + iss/aud/exp), sonra jti KV deny-list'te
+ * DEĞİL kontrol edilir (≤60s lag). Principal minted token'ın sub/scope/project'inden
+ * türetilir — ASLA seed'den. Eksik token → MACHINE_TOKEN_REQUIRED; revoke → TOKEN_REVOKED.
+ */
+export async function resolveMachinePrincipal(request: Request, env: Env): Promise<Principal> {
+  const authz = request.headers.get("authorization") ?? "";
+  const m = /^Bearer\s+(.+)$/i.exec(authz.trim());
+  if (!m) throw new AuthFail(HTTP.FORBIDDEN, "MACHINE_TOKEN_REQUIRED", "service token needs a minted machine token");
+  const token = m[1].trim();
+  const v = await verifyMintedToken(env, token);
+  if (!v.ok) {
+    if (v.error === "TOKEN_EXPIRED") throw new AuthFail(HTTP.FORBIDDEN, "TOKEN_EXPIRED", "minted token expired");
+    throw new AuthFail(HTTP.FORBIDDEN, "MACHINE_TOKEN_REQUIRED", `minted token invalid: ${v.error}`);
+  }
+  // jti deny-list (§6.1 step 9): HER istekte kontrol; KV propagation ≤60s pinned lag.
+  const denied = await env.JTI_DENYLIST.get(v.claims.jti);
+  if (denied) throw new AuthFail(HTTP.FORBIDDEN, "TOKEN_REVOKED", "minted token revoked");
+  return { kind: "machine", id: v.claims.sub, scope: v.claims.scope, project: v.claims.project, jti: v.claims.jti };
 }

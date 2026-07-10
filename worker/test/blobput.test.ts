@@ -1,14 +1,14 @@
 // Blob PUT endpoint testleri (SPEC §6.2 blob upload): framing-length + hash +
 // write-grant + idempotent content-addressed write.
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
-import { seedTrust, ensureJwks, validClaims, authHeader, callGate, clearBucket } from "./helpers.js";
+import { seedTrust, ensureJwks, validClaims, authHeader, callGate, resetWorld } from "./helpers.js";
 import { sha256Hex } from "../src/crypto/verify.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
   signer = await ensureJwks();
 });
-beforeEach(clearBucket);
+beforeEach(resetWorld);
 
 // Geçerli framing uzunluğu: magic(4)+nonce(24)+tag(16)=44 + bucket(256) = 300.
 function validBlob(fill = 7): Uint8Array {

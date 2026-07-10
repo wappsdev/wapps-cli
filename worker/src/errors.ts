@@ -24,6 +24,8 @@ export function jsonOK(body: unknown, extraHeaders?: Record<string, string>): Re
 // HTTP durum eşlemeleri (§5.7 / §6 route table).
 export const HTTP = {
   OK: 200,
+  CREATED: 201,
+  ACCEPTED: 202,
   NOT_MODIFIED: 304,
   BAD_REQUEST: 400,
   UNAUTHORIZED: 401,

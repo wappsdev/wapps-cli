@@ -11,9 +11,10 @@ import {
   signDataManifest,
   seedManifestObject,
   putBlob,
-  clearBucket,
+  resetWorld,
   p256Key,
   recip,
+  serviceTokenClaims,
   TrustContext,
 } from "./helpers.js";
 import { keyCurrent, keyPointerEvent } from "../src/storage.js";
@@ -22,7 +23,7 @@ let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
   signer = await ensureJwks();
 });
-beforeEach(clearBucket);
+beforeEach(resetWorld);
 
 async function doCommit(pin: string, email: string, bodyStr: string): Promise<Response> {
   const jwt = await signer.makeJWT(validClaims(email));
@@ -359,5 +360,46 @@ describe("commit — semantic-diff authz + CAS", () => {
     await runInDurableObject(stub, (instance) => {
       if (realBucket) (instance as unknown as BucketHolder).bucket = realBucket;
     });
+  });
+});
+
+// P2 (§6.3 / §6.2 step 8): minted machine-token SCOPE (verbs+keys) yazma yolunda
+// zorlanır — dar mint edilmiş bir token, kimliğin write-allowlist'i geniş olsa bile
+// commit süremez (grants ∩ token scope). Bu, machineScopeOk'un okuma+blob-PUT dışında
+// commit'te de geçerli olmasını kanıtlar.
+describe("commit — machine token scope enforcement (P2, §6.3)", () => {
+  it("REJECT: READ-scoped machine token drives a write-granted commit → 403 TOKEN_SCOPE_EXCEEDED (identity holds the write grant)", async () => {
+    const t = await setup();
+    // Makine MACHINE_KEY'i YAZABİLİR (writer_allowlist) VE OKUYABİLİR (grant). Ama token
+    // yalnızca READ scope ile mint edilir → commit ENGELLENMELİDİR (least-privilege).
+    const seedJwt = await signer.makeJWT(serviceTokenClaims(t.machineCommonName));
+    const mintRes = await callGate(
+      "/v1/token",
+      { method: "POST", headers: authHeader(seedJwt), body: JSON.stringify({ project: "vaulter", scope: { verbs: ["read"], keys: ["MACHINE_KEY"] }, ttl_seconds: 600 }) },
+      t.pin,
+    );
+    expect(mintRes.status).toBe(200);
+    const { token } = (await mintRes.json()) as { token: string };
+
+    // MACHINE_KEY için AKSİ HÂLDE tam-geçerli genesis commit (makine device + escrow wrap,
+    // automation Ed25519 imzası) — tek engel token scope olsun diye her şey doğru kurulur.
+    const blobHash = await putBlob("vaulter", new Uint8Array([7, 7, 7, 7]));
+    const w = signDataManifest(
+      {
+        project: "vaulter",
+        epoch: 1,
+        prev: "",
+        trustEpoch: 1,
+        entries: [{ keyName: "MACHINE_KEY", keyVersion: 1, blobHash, wraps: [{ recipient: t.machineDevice, wrap: "m" }, { recipient: t.escrowFp, wrap: "e" }] }],
+      },
+      { keyID: t.machineKey.keyID, alg: "ed25519", sign: (m: Uint8Array) => t.machineKey.sign(m) },
+    );
+    const res = await callGate(
+      "/v1/projects/vaulter/commit",
+      { method: "POST", headers: authHeader(seedJwt, { authorization: `Bearer ${token}` }), body: w.wrapperStr },
+      t.pin,
+    );
+    expect(res.status).toBe(403);
+    expect(await errCode(res)).toBe("TOKEN_SCOPE_EXCEEDED");
   });
 });

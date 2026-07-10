@@ -1,14 +1,14 @@
 // CF Access auth middleware testleri (SPEC §6.1): accept + reject (bad aud/iss,
 // missing assertion, forged email header, expired, bad alg, service-token).
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
-import { seedTrust, ensureJwks, validClaims, authHeader, callGate, clearBucket, ISSUER, AUD_READ } from "./helpers.js";
+import { seedTrust, ensureJwks, validClaims, authHeader, callGate, resetWorld, ISSUER, AUD_READ } from "./helpers.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 
 beforeAll(async () => {
   signer = await ensureJwks();
 });
-beforeEach(clearBucket);
+beforeEach(resetWorld);
 
 async function body(res: Response): Promise<{ error?: string }> {
   return (await res.json()) as { error?: string };

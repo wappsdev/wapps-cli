@@ -46,10 +46,28 @@ import {
   getObject,
   headEtag,
 } from "./storage.js";
+import { auditAppendSync, AuditRow, PrincipalType } from "./audit.js";
+import { TokenScope, scopeAllowsVerb, scopeAllowsKey } from "./mint.js";
 
 interface DOEnv {
   SECRETS_BUCKET: R2Bucket;
   GENESIS_TRUST_SHA256?: string;
+  // AUDIT_LOG: TEK global audit DO (§6.5). Commit attempt/outcome satırları BURADAN
+  // SENKRON geçer — erişilemezse commit fail-closed (503 AUDIT_UNAVAILABLE).
+  AUDIT_LOG: DurableObjectNamespace;
+}
+
+/** ReqMeta, bir commit isteğinin principal/audit metadatası (Worker header'larından). */
+interface ReqMeta {
+  principalId: string;
+  principalType: PrincipalType;
+  tokenJti: string | null;
+  // tokenScope: minted machine-token'ın scope'u (Worker'ın x-token-scope header'ından).
+  // İnsan principal'larında null (CF-Access JWT scope taşımaz). §6.3 grants ∩ token scope.
+  tokenScope: TokenScope | null;
+  intent: string | null;
+  ip: string | null;
+  cfRay: string | null;
 }
 
 /** CommitError, transaction içi tipli abort (ilk hata iptal eder, §6.2). */
@@ -68,6 +86,7 @@ const AUTHZ_WRITE_VERB = "write"; // §6.3 verb kümesi (read|write|rotate)
 // başarısız olursa commit DÜŞMEZ; event DO storage'a "pending" işaretlenir ve alarm
 // ile drene edilir. Marker key = <prefix><project>:<epoch>, value = {r2Key, body}.
 const PENDING_POINTER_EVENT_PREFIX = "pending-pointer-event:";
+const PENDING_OUTCOME_PREFIX = "pending-audit-outcome:";
 const POINTER_EVENT_RETRY_MS = 30_000;
 
 /** PendingPointerEvent, DO storage'da saklanan bekleyen pointer-event kaydı. */
@@ -76,13 +95,22 @@ interface PendingPointerEvent {
   body: string; // orijinal JSON body — retry byte-bayt aynı immutable objeyi yazar.
 }
 
+/** PendingOutcome, CAS sonrası yazılamayan audit outcome satırı (§6.2 case c recovery). */
+interface PendingOutcome {
+  row: AuditRow;
+  idempotencyKey: string; // `${project}:${epoch}` — DO append idempotent dedup marker
+}
+
 export class ProjectWriterDO {
   private bucket: R2Bucket;
   private genesisSha: string;
+  // AUDIT_LOG namespace — testte runInDurableObject ile "unavailable" enjekte edilebilir.
+  private auditLog: DurableObjectNamespace;
 
   constructor(private ctx: DurableObjectState, env: DOEnv) {
     this.bucket = env.SECRETS_BUCKET;
     this.genesisSha = (env.GENESIS_TRUST_SHA256 ?? "").trim();
+    this.auditLog = env.AUDIT_LOG;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -91,7 +119,15 @@ export class ProjectWriterDO {
       return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown DO route");
     }
     const project = url.searchParams.get("project") ?? "";
-    const principalId = request.headers.get("x-principal-id") ?? "";
+    const meta: ReqMeta = {
+      principalId: request.headers.get("x-principal-id") ?? "",
+      principalType: (request.headers.get("x-principal-type") as PrincipalType) || "human",
+      tokenJti: emptyToNull(request.headers.get("x-token-jti")),
+      tokenScope: parseTokenScope(request.headers.get("x-token-scope")),
+      intent: emptyToNull(request.headers.get("x-intent")),
+      ip: emptyToNull(request.headers.get("x-cf-ip")),
+      cfRay: emptyToNull(request.headers.get("x-cf-ray")),
+    };
     // Genesis pin Worker-config'inden internal header ile gelir (fallback: DO env).
     const genesisPin = (request.headers.get("x-genesis-pin") ?? this.genesisSha).trim();
     const rawWrapper = await request.text();
@@ -99,9 +135,16 @@ export class ProjectWriterDO {
     // Tüm transaction tek gate içinde → proje başına linearize (§6.2).
     return this.ctx.blockConcurrencyWhile(async () => {
       try {
-        return await this.commit(project, principalId, rawWrapper, genesisPin);
+        return await this.commit(project, meta, rawWrapper, genesisPin);
       } catch (e) {
-        if (e instanceof CommitError) return e.toResponse();
+        if (e instanceof CommitError) {
+          // Red → deny satırı ekle (§6.2/§6.5 — denials her zaman kaydedilir).
+          // İSTİSNA: AUDIT_UNAVAILABLE'ın kendisi (audit down → deny de yazılamaz).
+          if (e.code !== "AUDIT_UNAVAILABLE") {
+            await this.appendDeny(project, meta, e).catch(() => {});
+          }
+          return e.toResponse();
+        }
         if (e instanceof TrustError) {
           // Doğrulanamayan trust → asla ilerleme (§6.2 step 3).
           return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", e.message);
@@ -111,7 +154,8 @@ export class ProjectWriterDO {
     });
   }
 
-  private async commit(project: string, principalId: string, rawWrapper: string, genesisPin: string): Promise<Response> {
+  private async commit(project: string, meta: ReqMeta, rawWrapper: string, genesisPin: string): Promise<Response> {
+    const principalId = meta.principalId;
     const rawBytes = utf8(rawWrapper);
 
     // 1. Boyut (§6.2 step 1).
@@ -203,6 +247,22 @@ export class ProjectWriterDO {
     for (const e of diff.added) touched.add(e.keyName);
     for (const c of diff.changed) touched.add(c.cur.keyName);
     for (const e of diff.removed) touched.add(e.keyName);
+
+    // 8b. Makine principal'ları: efektif izin = grants ∩ token scope (§6.3 / §6.2 step 8).
+    // Kimlik write-allowlist'i GENİŞ olsa bile, token DAR mint edilmişse (ör. verbs:["read"]
+    // veya keys:["A"]) commit REDDEDİLİR — least-privilege enforcement point. Makine için
+    // scope ZORUNLUDUR (Worker minted token'dan türetir); eksik/geçersizse fail-closed.
+    // İnsan principal'larının (CF-Access JWT) token scope'u yoktur → etkilenmez.
+    if (meta.principalType === "machine") {
+      const scope = meta.tokenScope;
+      if (!scope || !scopeAllowsVerb(scope, AUTHZ_WRITE_VERB)) {
+        throw new CommitError(HTTP.FORBIDDEN, "TOKEN_SCOPE_EXCEEDED", { reason: "token scope lacks write verb" });
+      }
+      for (const key of touched) {
+        if (!scopeAllowsKey(scope, key)) throw new CommitError(HTTP.FORBIDDEN, "TOKEN_SCOPE_EXCEEDED", { key });
+      }
+    }
+
     for (const key of touched) {
       const allowed = isAutomationWriter
         ? writerKeyAllowed(head.manifest, principalId, project, key)
@@ -246,7 +306,27 @@ export class ProjectWriterDO {
     }
     if (missingBlobs.length > 0) throw new CommitError(HTTP.UNPROCESSABLE, "BLOB_MISSING", { hashes: missingBlobs });
 
-    // 12. Audit ATTEMPT — ERTELENDİ (G7 D1 audit DO).
+    // 12. Audit ATTEMPT (SENKRON, §6.2 step 12): manifest yazımından ÖNCE global
+    // audit DO'ya `commit.attempt` satırı. Audit DO erişilemezse commit BURADA
+    // fail-close olur (503 AUDIT_UNAVAILABLE) — henüz HİÇBİR ŞEY yazılmadı (F7).
+    const changedKeys = [...touched];
+    try {
+      await auditAppendSync(this.auditLog, {
+        principal: principalId,
+        principal_type: meta.principalType,
+        project,
+        key: changedKeys.length === 1 ? changedKeys[0] : null,
+        verb: "commit.attempt",
+        decision: "allow",
+        intent: meta.intent ?? (changedKeys.length > 1 ? `keys:${changedKeys.length}` : null),
+        ip: meta.ip,
+        cf_ray: meta.cfRay,
+        token_jti: meta.tokenJti,
+      });
+    } catch {
+      // Fail closed: hiçbir store durumu değişmedi.
+      throw new CommitError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", { reason: "audit DO unavailable at attempt" });
+    }
 
     // 13. Manifest yaz (§6.2 step 13): onlyIf-absent (gate içinde HEAD + put).
     const newManifestSha = manifestObjectHash(rawBytes);
@@ -270,9 +350,32 @@ export class ProjectWriterDO {
       if (updated === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { reason: "pointer CAS lost (out-of-band mutation)" });
     }
 
-    // 15. Audit OUTCOME — ERTELENDİ (G7).
+    // 15. Audit OUTCOME (SENKRON, YALNIZCA pointer CAS başarılı olduktan SONRA,
+    // §6.2 step 15): `commit` allow satırı, idempotency-key `${project}:${epoch}`.
+    // OUTCOME satırı — attempt DEĞİL — başarılı yazımın ledger kaydıdır (F7): current
+    // gerçekten ilerlemeden allow-outcome var olamaz. Outcome append'i CAS SONRASI
+    // patlarsa commit ZATEN kalıcı → pending-outcome marker + alarm retry (case c).
+    const outcomeRow: AuditRow = {
+      principal: principalId,
+      principal_type: meta.principalType,
+      project,
+      key: changedKeys.length === 1 ? changedKeys[0] : null,
+      verb: "commit",
+      decision: "allow",
+      intent: meta.intent,
+      ip: meta.ip,
+      cf_ray: meta.cfRay,
+      token_jti: meta.tokenJti,
+    };
+    const idemKey = `${project}:${m.epoch}`;
+    try {
+      await auditAppendSync(this.auditLog, outcomeRow, idemKey);
+    } catch (err) {
+      console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
+      await this.enqueuePendingOutcome(project, m.epoch, outcomeRow, idemKey);
+    }
 
-    // 17. Escrow write-through: B2 push ERTELENDİ (G7), ama append-only pointer
+    // 17. Escrow write-through: B2 push ERTELENDİ (G10), ama append-only pointer
     // event R2'ye yazılır (§9.2.3 / F2) — immutable, onlyIf-absent.
     //
     // §6.2(d)/step-17: pointer-event/escrow-push HATASI commit'i DÜŞÜREMEZ. Commit
@@ -301,6 +404,38 @@ export class ProjectWriterDO {
   }
 
   /**
+   * appendDeny, reddedilen bir commit için `commit` deny satırı ekler (§6.5 —
+   * denials her zaman kaydedilir). Best-effort: audit DO down ise çağıran yutar
+   * (birincil red — GRANT_DENIED vb. — yine döner; deny logging kritik yol değil).
+   */
+  private async appendDeny(project: string, meta: ReqMeta, e: CommitError): Promise<void> {
+    const key = e.detail && typeof e.detail.key === "string" ? e.detail.key : null;
+    await auditAppendSync(this.auditLog, {
+      principal: meta.principalId,
+      principal_type: meta.principalType,
+      project,
+      key,
+      verb: "commit",
+      decision: "deny",
+      intent: e.code, // başarısız check'in adı (§6.2)
+      ip: meta.ip,
+      cf_ray: meta.cfRay,
+      token_jti: meta.tokenJti,
+    });
+  }
+
+  /**
+   * enqueuePendingOutcome, CAS sonrası yazılamayan audit outcome satırını DO storage'a
+   * kaydeder + alarm zamanlar (§6.2 case c recovery). Retry idempotency-key ile
+   * append eder → audit DO zaten yazılmışsa dedup eder (çift outcome yok).
+   */
+  private async enqueuePendingOutcome(project: string, epoch: number, row: AuditRow, idempotencyKey: string): Promise<void> {
+    const rec: PendingOutcome = { row, idempotencyKey };
+    await this.ctx.storage.put(`${PENDING_OUTCOME_PREFIX}${project}:${epoch}`, rec);
+    await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
+  }
+
+  /**
    * enqueuePendingPointerEvent, R2'ye yazılamayan bir pointer-event'i DO storage'a
    * "pending" olarak kaydeder ve drenaj için bir alarm zamanlar (§6.2 step-17
    * fail-soft). Body AYNEN saklanır ki retry byte-bayt aynı immutable objeyi yazsın.
@@ -320,9 +455,10 @@ export class ProjectWriterDO {
    * zamanlanır (sonsuz-döngü değil; başarı her kaydı tek tek düşürür).
    */
   async alarm(): Promise<void> {
-    const pending = await this.ctx.storage.list<PendingPointerEvent>({ prefix: PENDING_POINTER_EVENT_PREFIX });
     let remaining = 0;
-    for (const [storageKey, rec] of pending) {
+    // (1) Bekleyen pointer-event'ler (§6.2 step-17 fail-soft).
+    const pendingEvents = await this.ctx.storage.list<PendingPointerEvent>({ prefix: PENDING_POINTER_EVENT_PREFIX });
+    for (const [storageKey, rec] of pendingEvents) {
       try {
         // onlyIf-absent: zaten yazılmışsa null döner (idempotent) → yine temizle.
         await this.bucket.put(rec.r2Key, utf8(rec.body), { onlyIf: { etagDoesNotMatch: "*" } });
@@ -332,7 +468,42 @@ export class ProjectWriterDO {
         console.error(`writer-do: pointer-event retry still failing (${storageKey})`, err);
       }
     }
+    // (2) Bekleyen audit outcome'ları (§6.2 case c). Idempotency-key ile retry →
+    // audit DO zaten yazdıysa dedup, çift outcome yok.
+    const pendingOutcomes = await this.ctx.storage.list<PendingOutcome>({ prefix: PENDING_OUTCOME_PREFIX });
+    for (const [storageKey, rec] of pendingOutcomes) {
+      try {
+        await auditAppendSync(this.auditLog, rec.row, rec.idempotencyKey);
+        await this.ctx.storage.delete(storageKey);
+      } catch (err) {
+        remaining++;
+        console.error(`writer-do: audit outcome retry still failing (${storageKey})`, err);
+      }
+    }
     if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
+  }
+}
+
+/** emptyToNull, boş/absent header string'ini null'a çevirir (audit alanları). */
+function emptyToNull(v: string | null): string | null {
+  return v && v.trim() !== "" ? v : null;
+}
+
+/**
+ * parseTokenScope, Worker'ın forward ettiği x-token-scope header'ını (JSON) çözer.
+ * Boş/parse-edilemez/şekilsiz → null (makine yolunda fail-closed: scope yoksa commit reddedilir).
+ */
+function parseTokenScope(raw: string | null): TokenScope | null {
+  if (!raw || raw.trim() === "") return null;
+  try {
+    const p = JSON.parse(raw) as { verbs?: unknown; keys?: unknown };
+    if (!Array.isArray(p.verbs) || !Array.isArray(p.keys)) return null;
+    return {
+      verbs: p.verbs.filter((v): v is string => typeof v === "string"),
+      keys: p.keys.filter((k): k is string => typeof k === "string"),
+    };
+  } catch {
+    return null;
   }
 }
 
