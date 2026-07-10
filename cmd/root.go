@@ -204,6 +204,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&projectName, "project", "p", "", "Registered project name (see ~/.config/wapps/projects.yaml); resolves to that project's .wapps.yaml")
 	rootCmd.MarkFlagsMutuallyExclusive("config", "project")
 	rootCmd.AddCommand(secrets.SecretsCmd)
+	rootCmd.AddCommand(secrets.DrCmd)     // §9.5 disaster recovery (dr verify/restore/repin-genesis/verifier)
+	rootCmd.AddCommand(secrets.EscrowCmd) // §9.1/§9.7 escrow ceremony (keygen + verify-canary)
 	rootCmd.AddCommand(gitcmd.GitCmd)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
 	rootCmd.AddCommand(skillcmd.SkillCmd)

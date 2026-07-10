@@ -48,13 +48,25 @@ import {
 } from "./storage.js";
 import { auditAppendSync, AuditRow, PrincipalType } from "./audit.js";
 import { TokenScope, scopeAllowsVerb, scopeAllowsKey } from "./mint.js";
+import {
+  EscrowConfig,
+  EscrowEnv,
+  escrowConfig,
+  enqueueEscrowPushes,
+  drainEscrowPushes,
+  EscrowPushItem,
+  escrowRetryMs,
+} from "./escrow.js";
+import { deliverAlert, ALERT } from "./alerts.js";
 
-interface DOEnv {
+interface DOEnv extends EscrowEnv {
   SECRETS_BUCKET: R2Bucket;
   GENESIS_TRUST_SHA256?: string;
   // AUDIT_LOG: TEK global audit DO (§6.5). Commit attempt/outcome satırları BURADAN
   // SENKRON geçer — erişilemezse commit fail-closed (503 AUDIT_UNAVAILABLE).
   AUDIT_LOG: DurableObjectNamespace;
+  // §6.8 escrow write-through: B2 hedefi + alert kanalı (fail-soft push).
+  DISCORD_WEBHOOK_URL?: string;
 }
 
 /** ReqMeta, bir commit isteğinin principal/audit metadatası (Worker header'larından). */
@@ -88,6 +100,12 @@ const AUTHZ_WRITE_VERB = "write"; // §6.3 verb kümesi (read|write|rotate)
 const PENDING_POINTER_EVENT_PREFIX = "pending-pointer-event:";
 const PENDING_OUTCOME_PREFIX = "pending-audit-outcome:";
 const POINTER_EVENT_RETRY_MS = 30_000;
+// ESCROW_CONFIG_KEY: escrow config'in DO storage'a persist edildiği anahtar. ÜRETİMDE
+// KULLANILMAZ (config env'den gelir, this.escrow); yalnızca bir dormant fallback —
+// env config null iken storage'dan okunur. Test, config'i runInDurableObject ile
+// buraya yazar; böylece config bir DO instance-recreation (modül reload) SONRASI
+// SAĞ KALIR (this.escrow instance ile silinir, storage silinmez).
+const ESCROW_CONFIG_KEY = "escrow-config";
 
 /** PendingPointerEvent, DO storage'da saklanan bekleyen pointer-event kaydı. */
 interface PendingPointerEvent {
@@ -106,11 +124,29 @@ export class ProjectWriterDO {
   private genesisSha: string;
   // AUDIT_LOG namespace — testte runInDurableObject ile "unavailable" enjekte edilebilir.
   private auditLog: DurableObjectNamespace;
+  // §6.8 escrow write-through config (null = B2 yapılandırılmamış → no-op).
+  // Testte runInDurableObject ile enjekte edilebilir (instance.escrow = cfg).
+  private escrow: EscrowConfig | null;
+  private discordUrl: string;
 
   constructor(private ctx: DurableObjectState, env: DOEnv) {
     this.bucket = env.SECRETS_BUCKET;
     this.genesisSha = (env.GENESIS_TRUST_SHA256 ?? "").trim();
     this.auditLog = env.AUDIT_LOG;
+    this.escrow = escrowConfig(env);
+    this.discordUrl = (env.DISCORD_WEBHOOK_URL ?? "").trim();
+  }
+
+  /** escrowAlert, drenaj sırasında A4 (§6.10) tetikler (best-effort, throw etmez). */
+  private escrowAlert = async (rule: string, summary: string, detail?: Record<string, unknown>): Promise<void> => {
+    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, rule as typeof ALERT.A4, summary, detail);
+  };
+
+  /** effectiveEscrow, etkin escrow config'i çözer: env config (üretim, this.escrow)
+   * yoksa DO storage'daki dormant fallback (test seam — instance-recreation'a dayanıklı). */
+  private async effectiveEscrow(): Promise<EscrowConfig | null> {
+    if (this.escrow) return this.escrow;
+    return (await this.ctx.storage.get<EscrowConfig>(ESCROW_CONFIG_KEY)) ?? null;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -399,6 +435,30 @@ export class ProjectWriterDO {
       await this.enqueuePendingPointerEvent(project, m.epoch, eventR2Key, eventBody);
     }
 
+    // 17b. Escrow write-through (§6.8 / §9.2): yeni manifest + yeni referanslanan
+    // blob'lar + immutable pointer event B2'ye PUSH edilir. FAIL-SOFT: yalnızca DO
+    // storage'a kuyruklanır (yerel, write path'te DEĞİL) + alarm — gerçek B2 push
+    // alarm()'da olur, hatası commit'i ASLA düşürmez. MUTABLE `current` ASLA
+    // push edilmez (F2 — yalnızca pointer EVENT). B2 yapılandırılmamışsa no-op.
+    const escrowPushCfg = await this.effectiveEscrow();
+    if (escrowPushCfg) {
+      const items: EscrowPushItem[] = [
+        { b2Key: manifestKey, r2Key: manifestKey, contentType: "application/json" },
+        { b2Key: eventR2Key, r2Key: eventR2Key, contentType: "application/json" },
+      ];
+      const seenBlobs = new Set<string>();
+      for (const e of m.entries) {
+        if (seenBlobs.has(e.blobHash)) continue;
+        seenBlobs.add(e.blobHash);
+        const bk = keyBlob(project, e.blobHash);
+        items.push({ b2Key: bk, r2Key: bk, contentType: "application/octet-stream" });
+      }
+      await enqueueEscrowPushes(this.ctx.storage, items).catch((err) => {
+        // Kuyruğa alma bile başarısız olsa kalıcı commit'i düşürme (yalnızca RPO gecikir).
+        console.error(`writer-do: escrow enqueue failed (project=${project} epoch=${m.epoch})`, err);
+      });
+    }
+
     // 18. Yanıt (freshness receipt G7'ye ertelendi).
     return jsonOK({ epoch: m.epoch, manifestSha256: newManifestSha });
   }
@@ -480,7 +540,12 @@ export class ProjectWriterDO {
         console.error(`writer-do: audit outcome retry still failing (${storageKey})`, err);
       }
     }
-    if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
+    // (3) Bekleyen escrow B2 push'ları (§6.8). Pointer-event'ler ÖNCE drene edildi
+    // (yukarıda) → escrow drenajı onları R2'den okuyabilir. 3 denemeden sonra A4.
+    const escrowCfg = await this.effectiveEscrow();
+    const escrowRemaining = await drainEscrowPushes(this.ctx.storage, escrowCfg, this.bucket, this.escrowAlert);
+    remaining += escrowRemaining;
+    if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + Math.min(POINTER_EVENT_RETRY_MS, escrowRetryMs));
   }
 }
 

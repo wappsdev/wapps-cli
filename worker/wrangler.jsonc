@@ -7,6 +7,10 @@
   "compatibility_date": "2025-06-01",
   "observability": { "enabled": true },
 
+  // Cron surface (§6.7 GC + §6.8 sweep). Haftalık `0 3 * * 0` UTC → GC cron.
+  // (nightly `0 2 * * *` sweep DEFERRED-light — bkayıtlı, scheduled() no-op.)
+  "triggers": { "crons": ["0 3 * * 0"] },
+
   // Durable Objects (§6 binding envanteri):
   //  - PROJECT_WRITER: proje başına yazma serileştiricisi (idFromName=project, §6.2).
   //  - AUDIT_LOG: TEK global audit-zinciri serileştiricisi (idFromName="__audit__",
@@ -48,6 +52,10 @@
   // Fail-closed config (§6 intro): eksik/parse edilemez → 503 SERVICE_MISCONFIGURED.
   // Gerçek AUD/team-domain/MINT_KEY/DISCORD değerleri deploy'da secret/var olarak set edilir.
   // MINT_KEY / MINT_KEY_PREV / DISCORD_WEBHOOK_URL / B2_* = Worker SECRET'ları (burada boş var).
+  //
+  // §6.8/§9.2 escrow write-through (B2_*) + §6.7/§9.3 witness (WITNESS_ORIGIN) +
+  // GC enablement (GC_ENABLED_AT): B2_KEY_ID/B2_APP_KEY = Worker SECRET'ları
+  // (append-only application key). Live B2 bucket + VM cron deploy DEFERRED (task).
   "vars": {
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD_READ": "",
@@ -55,6 +63,11 @@
     "GENESIS_TRUST_SHA256": "",
     "MINT_KEY": "",
     "MINT_KEY_PREV": "",
-    "DISCORD_WEBHOOK_URL": ""
+    "DISCORD_WEBHOOK_URL": "",
+    "B2_ENDPOINT": "",
+    "B2_REGION": "",
+    "B2_BUCKET": "",
+    "WITNESS_ORIGIN": "",
+    "GC_ENABLED_AT": ""
   }
 }

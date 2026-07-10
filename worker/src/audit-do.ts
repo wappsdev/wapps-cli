@@ -7,17 +7,37 @@
 // row_json = 12 alanın [seq,ts,principal,principal_type,project,key,verb,decision,
 // intent,ip,cf_ray,token_jti] boşluksuz JSON dizisi (null = eksik).
 
-import { sha256Hex, utf8 } from "./crypto/verify.js";
+import { sha256Hex, utf8, bytesToB64 } from "./crypto/verify.js";
 import { ensureSchema } from "./schema.js";
 import { AuditRow, GENESIS_HASH } from "./audit.js";
+import {
+  EscrowConfig,
+  EscrowEnv,
+  escrowConfig,
+  enqueueEscrowPushes,
+  drainEscrowPushes,
+  keyEscrowAuditSegment,
+  escrowRetryMs,
+  EscrowAlert,
+} from "./escrow.js";
 
-interface DOEnv {
+interface DOEnv extends EscrowEnv {
   AUDIT_DB: D1Database;
+  // §6.8: audit segment'leri de B2'ye write-through edilir (fail-soft).
+  DISCORD_WEBHOOK_URL?: string;
 }
 
 interface ChainHead {
   seq: number;
   hash: string;
+}
+
+/** insertedRow, insertRow'un ürettiği zincir+escrow-segment materyalidir. */
+interface insertedRow {
+  seq: number;
+  hash: string;
+  prevHash: string;
+  rowJson: string;
 }
 
 const HEAD_KEY = "head";
@@ -29,9 +49,45 @@ export class AuditLogDO {
   private db: D1Database;
   // Basit async-mutex: append'ler kesinlikle serileşir (head fork'u imkânsız).
   private lock: Promise<unknown> = Promise.resolve();
+  // §6.8 escrow write-through: audit segment'leri B2'ye push edilir (fail-soft).
+  private escrow: EscrowConfig | null;
+  private discordUrl: string;
 
   constructor(private ctx: DurableObjectState, env: DOEnv) {
     this.db = env.AUDIT_DB;
+    this.escrow = escrowConfig(env);
+    this.discordUrl = (env.DISCORD_WEBHOOK_URL ?? "").trim();
+  }
+
+  /** escrowAlert, audit-do escrow push başarısızlığında A4'ü doğrudan Discord'a
+   * gönderir (audit DO kendisi olduğu için alert.failed audit fallback'i yoktur). */
+  private escrowAlert: EscrowAlert = async (rule, summary, detail) => {
+    const url = this.discordUrl;
+    if (!url) return;
+    const content = `[secrets-gate ${rule}] ${summary}`;
+    const body = JSON.stringify({ content, embeds: detail ? [{ description: "```" + JSON.stringify(detail).slice(0, 1500) + "```" }] : undefined });
+    try {
+      await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body });
+    } catch {
+      /* alert = tespit; teslimat hatası operasyonu bloklamaz */
+    }
+  };
+
+  /** enqueueAuditSegment, tek bir audit satırını immutable escrow segment'i olarak
+   * kuyruklar (§6.8). Segment = zincir doğrulaması için gereken TAM materyal:
+   * {seq, prev_hash, row_json, hash}. B2 yapılandırılmamışsa no-op. */
+  private async enqueueAuditSegment(r: insertedRow): Promise<void> {
+    if (!this.escrow) return;
+    const segmentBody = JSON.stringify({ schema: "wapps.audit-segment.v1", seq: r.seq, prev_hash: r.prevHash, row_json: r.rowJson, hash: r.hash });
+    await enqueueEscrowPushes(this.ctx.storage, [
+      { b2Key: keyEscrowAuditSegment(r.seq), bodyB64: bytesToB64(utf8(segmentBody)), contentType: "application/json" },
+    ]).catch((err) => console.error(`audit-do: escrow enqueue failed (seq ${r.seq})`, err));
+  }
+
+  /** alarm, bekleyen audit-segment escrow push'larını drene eder (§6.8 fail-soft). */
+  async alarm(): Promise<void> {
+    const remaining = await drainEscrowPushes(this.ctx.storage, this.escrow, null, this.escrowAlert);
+    if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + escrowRetryMs);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -77,24 +133,30 @@ export class AuditLogDO {
     const inserted = await this.insertRow(head, row);
     await this.ctx.storage.put(HEAD_KEY, { seq: inserted.seq, hash: inserted.hash });
     if (idempotencyKey) await this.ctx.storage.put(IDEM_PREFIX + idempotencyKey, { seq: inserted.seq, hash: inserted.hash });
-    return inserted;
+    await this.enqueueAuditSegment(inserted); // §6.8 escrow write-through (fail-soft)
+    return { seq: inserted.seq, hash: inserted.hash };
   }
 
   private async appendBatch(rows: AuditRow[], batchCounter?: number): Promise<{ appended: number; seq: number; hash: string }> {
     await ensureSchema(this.db);
     let head = await this.head();
+    const inserted: insertedRow[] = [];
     for (const row of rows) {
-      head = await this.insertRow(head, row);
+      const ins = await this.insertRow(head, row);
+      head = { seq: ins.seq, hash: ins.hash };
+      inserted.push(ins);
     }
     await this.ctx.storage.put(HEAD_KEY, head);
+    for (const ins of inserted) await this.enqueueAuditSegment(ins); // §6.8 (fail-soft)
     // Ingest-liveness (A8 backlog/silence, §6.5): son batch zamanı + sayaç.
     await this.ctx.storage.put(INGEST_TS_KEY, new Date().toISOString());
     if (typeof batchCounter === "number") await this.ctx.storage.put(INGEST_COUNTER_KEY, batchCounter);
     return { appended: rows.length, seq: head.seq, hash: head.hash };
   }
 
-  /** insertRow, tek satırı hesaplar + D1'e yazar ve yeni head'i döner (storage GÜNCELLEMEZ). */
-  private async insertRow(head: ChainHead, row: AuditRow): Promise<ChainHead> {
+  /** insertRow, tek satırı hesaplar + D1'e yazar ve yeni head'i + escrow-segment
+   * materyalini (prev_hash + row_json) döner (storage GÜNCELLEMEZ). */
+  private async insertRow(head: ChainHead, row: AuditRow): Promise<insertedRow> {
     const seq = head.seq + 1;
     const ts = row.ts ?? new Date().toISOString();
     // Sıra KATİ (§6.5 chain rule): 12 alan, null = eksik.
@@ -121,7 +183,7 @@ export class AuditLogDO {
       )
       .bind(...values, head.hash, hash)
       .run();
-    return { seq, hash };
+    return { seq, hash, prevHash: head.hash, rowJson };
   }
 
   /** runExclusive, append'leri sıkı serileştirir — head okuma-yazma yarışını önler. */

@@ -31,6 +31,16 @@ export interface Env {
   MINT_KEY?: string;
   MINT_KEY_PREV?: string;
   DISCORD_WEBHOOK_URL?: string;
+  // §6.8/§9.2 escrow write-through — NON-Cloudflare, object-lock'lı B2 hedefi.
+  // Append-only application key (B2_APP_KEY) = yazar ama silemez. Worker secret'ları.
+  B2_ENDPOINT?: string;
+  B2_REGION?: string;
+  B2_BUCKET?: string;
+  B2_KEY_ID?: string;
+  B2_APP_KEY?: string;
+  // §6.7 GC + §9.3 witness cross-check — non-CF B2 witness origin + GC enablement.
+  WITNESS_ORIGIN?: string; // ör. https://<bucket>.s3.<region>.backblazeb2.com
+  GC_ENABLED_AT?: string; // ISO; ilk 30 gün DRY-RUN (§6.7)
 }
 
 export interface AccessConfig {

@@ -20,9 +20,12 @@ export interface RateDecision {
  * checkRateLimit, principal için sabit-pencere sayaç kontrolü yapar. Pencere
  * anahtarı = rl:<principal>:<windowStart>. Sınır aşılırsa allowed=false + Retry-After.
  * KV eventual-consistency: sayım yaklaşıktır (kabul edilen; §6.1 "KV or DO counter").
+ *
+ * now (epoch ms) ENJEKTE edilebilir (varsayılan Date.now) — test determinizmi için:
+ * sabit bir `now` ile N istek TEK pencerede kalır (dakika-sınırı straddle etmez).
+ * Gerçek istekler now geçmez → Date.now() → production davranışı DEĞİŞMEZ.
  */
-export async function checkRateLimit(env: RateEnv, principalId: string): Promise<RateDecision> {
-  const now = Date.now();
+export async function checkRateLimit(env: RateEnv, principalId: string, now: number = Date.now()): Promise<RateDecision> {
   const windowStart = Math.floor(now / WINDOW_MS) * WINDOW_MS;
   const key = `rl:${principalId}:${windowStart}`;
   const raw = await env.RATE.get(key);

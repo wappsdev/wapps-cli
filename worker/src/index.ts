@@ -37,6 +37,8 @@ import { issueReceipt } from "./receipt.js";
 import { fireAlert, ALERT } from "./alerts.js";
 import { ensureMirror } from "./grants-mirror.js";
 import { doStubFetch } from "./do-util.js";
+import { runGC, GCDeps, GCWitnessReport } from "./gc.js";
+import { escrowConfig, headObject } from "./escrow.js";
 
 export { ProjectWriterDO, AuditLogDO, AttestationDO };
 
@@ -178,7 +180,81 @@ export default {
       throw e;
     }
   },
+
+  // scheduled — cron surface (§6.7 GC + §6.8 nightly sweep). event.cron ile
+  // dispatch: haftalık `0 3 * * 0` → GC; nightly `0 2 * * *` sweep DEFERRED-light.
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (event.cron === "0 3 * * 0") {
+      ctx.waitUntil(runScheduledGC(env, ctx));
+    }
+  },
 };
+
+// --- GC cron wiring (§6.7) --------------------------------------------------
+
+/** runScheduledGC, haftalık GC cron'unu üretim bağımlılıklarıyla sürer (§6.7). */
+async function runScheduledGC(env: Env, ctx: ExecutionContext): Promise<void> {
+  const projects = await deriveProjects(env.SECRETS_BUCKET);
+  const cfg = escrowConfig(env);
+  const witnessOrigin = (env.WITNESS_ORIGIN ?? "").trim();
+  const enabledAt = env.GC_ENABLED_AT ? new Date(env.GC_ENABLED_AT) : null;
+
+  const deps: GCDeps = {
+    now: new Date(),
+    enabledAt: enabledAt && !Number.isNaN(enabledAt.getTime()) ? enabledAt : null,
+    // Witness raporu non-CF origin'den (§9.3). Origin yoksa → unreachable (skip + A6).
+    witness: () => fetchWitnessReport(witnessOrigin),
+    // (c) per-blob escrow teyidi: append-only key OKUYABİLİR (silemez). cfg yoksa
+    // GÜVENLİ TARAF: false (silme) — canlı B2 + VM cron deploy DEFERRED (task).
+    escrowHas: async (project, sha) => {
+      if (!cfg) return false;
+      try {
+        return await headObject(cfg, keyBlob(project, sha));
+      } catch {
+        return false; // teyit edilemedi → silme (güvenli)
+      }
+    },
+    auditDelete: async (project, sha) => {
+      const row: AuditRow = { principal: "worker", principal_type: "worker", project, key: null, verb: "gc.delete", decision: "allow", intent: `blob:${sha.slice(0, 12)}` };
+      await env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName("__audit__")).fetch("https://audit/append-batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rows: [row] }),
+      });
+    },
+    alert: (rule, summary, detail) => fireAlert(ctx, env, rule as typeof ALERT.A6, summary, detail),
+  };
+  await runGC(env.SECRETS_BUCKET, projects, deps);
+}
+
+/** fetchWitnessReport, VM verifier'ın son doğrulama raporunu non-CF origin'den çeker. */
+async function fetchWitnessReport(origin: string): Promise<GCWitnessReport> {
+  if (!origin) return { reachable: false, failing: false, ageMs: Infinity };
+  try {
+    const res = await fetch(`${origin}/verification/latest.json`, { method: "GET" });
+    if (!res.ok) return { reachable: false, failing: false, ageMs: Infinity };
+    const doc = (await res.json()) as { ok?: boolean; verified_at?: string };
+    const ageMs = doc.verified_at ? Date.now() - Date.parse(doc.verified_at) : Infinity;
+    return { reachable: true, failing: doc.ok === false, ageMs };
+  } catch {
+    return { reachable: false, failing: false, ageMs: Infinity };
+  }
+}
+
+/** deriveProjects, R2'deki `secrets/<project>/` öneklerinden proje adlarını çıkarır. */
+async function deriveProjects(bucket: R2Bucket): Promise<string[]> {
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const l = await bucket.list({ prefix: "secrets/", delimiter: "/", cursor });
+    for (const p of l.delimitedPrefixes ?? []) {
+      const m = p.match(/^secrets\/([^/]+)\/$/);
+      if (m) seen.add(m[1]);
+    }
+    cursor = l.truncated ? l.cursor : undefined;
+  } while (cursor);
+  return [...seen];
+}
 
 // --- Yardımcılar ------------------------------------------------------------
 
