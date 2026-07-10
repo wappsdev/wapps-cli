@@ -1,0 +1,36 @@
+{
+  // secrets-gate Worker — G6 core (SPEC §6). Prod binds wapps-secrets-prod;
+  // staging binds wapps-secrets-staging (ayrı env). Bindings normatif §6 envanteri.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "secrets-gate",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  "observability": { "enabled": true },
+
+  // Per-project write serializer (idFromName=project) — §6.2.
+  "durable_objects": {
+    "bindings": [
+      { "name": "PROJECT_WRITER", "class_name": "ProjectWriterDO" }
+    ]
+  },
+  // DO storage KULLANILMIYOR (serileştirme blockConcurrencyWhile + R2 CAS ile).
+  // new_classes (KV-backed) — new_sqlite_classes yerel isolated-storage pop'unu
+  // .sqlite-shm ile bozuyor (vitest-pool-workers known issue).
+  "migrations": [
+    { "tag": "v1", "new_classes": ["ProjectWriterDO"] }
+  ],
+
+  // R2: layout §5. Sadece Worker binding üzerinden erişilir (§5.1).
+  "r2_buckets": [
+    { "binding": "SECRETS_BUCKET", "bucket_name": "wapps-secrets-prod" }
+  ],
+
+  // Fail-closed config (§6 intro): eksik/parse edilemez → 503 SERVICE_MISCONFIGURED.
+  // Gerçek AUD/team-domain değerleri deploy'da secret/var olarak set edilir.
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD_READ": "",
+    "ACCESS_AUD_WRITE": "",
+    "GENESIS_TRUST_SHA256": ""
+  }
+}
