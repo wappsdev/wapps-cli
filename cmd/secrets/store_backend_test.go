@@ -73,9 +73,14 @@ func installFakeStore(t *testing.T) *fakeStore {
 
 // setupStoreProject, geçici bir cwd'de backend:store .wapps.yaml yazar (override YOK,
 // passphrase YOK — store yolu bunlara ihtiyaç duymaz). extraYAML, project satırından
-// sonra eklenir (ör. sources / targets blokları).
+// sonra eklenir (ör. sources / targets blokları). XDG'yi izole bir temp'e çeker ki
+// testler HERMETİK olsun: geliştiricinin gerçek ~/.config/wapps/identity.json'ı bu
+// testlere sızmasın (yoksa localDecryptIdentity onu yükler ve IDENTITY_MISSING beklentisi
+// bozulur). Out-of-band oturum token'ı da temizlenir (kalıntı env sızması olmasın).
 func setupStoreProject(t *testing.T, extraYAML string) string {
 	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WAPPS_SESSION_TOKEN", "")
 	tmp := t.TempDir()
 	t.Chdir(tmp)
 	SetConfigPath("")
@@ -200,6 +205,8 @@ func TestEnv_StoreBackend_RoutesToStore(t *testing.T) {
 
 func TestSet_StoreBackend_RoutesToCommit(t *testing.T) {
 	setupStoreProject(t, "")
+	// Commit imza için yerel bir writer kimliği gerektirir (§7.1) → enroll (software).
+	enrollForTest(t, "machine:ci-set", "machine", false)
 	f := installFakeStore(t)
 
 	// Değer --from-file ile yakalanır (TTY gerekmez).
@@ -241,6 +248,8 @@ func TestSync_StoreBackend_RoutesToCommit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".env.shared"), []byte("API_KEY=abc123\n"), 0600); err != nil {
 		t.Fatalf("seed file source: %v", err)
 	}
+	// Commit imza için yerel bir writer kimliği gerektirir (§7.1) → enroll (software).
+	enrollForTest(t, "machine:ci-sync", "machine", false)
 	f := installFakeStore(t)
 
 	err := runSync(context.Background(), os.Getenv)

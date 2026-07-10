@@ -103,6 +103,17 @@ func (k *Ed25519SigningKey) Sign(msg []byte) (Signature, error) {
 	return Signature{Schema: SigSchema, KeyID: k.KeyID(), Alg: AlgEd25519, Sig: sig}, nil
 }
 
+// PrivateSeed, Ed25519 anahtarının 32 baytlık seed'inin bir KOPYASINI döner —
+// YAZILIM (CI/test) kimliğinin 0600 kimlik deposuna kalıcılaştırılması için
+// (SPEC §8.1.1 software fallback). NewEd25519FromSeed ile geri kurulur. DİKKAT:
+// gizli materyal; loglanmamalı, yalnızca 0600 kimlik dosyasına yazılmalı.
+func (k *Ed25519SigningKey) PrivateSeed() []byte {
+	seed := k.priv.Seed()
+	out := make([]byte, len(seed))
+	copy(out, seed)
+	return out
+}
+
 // --- ECDSA P-256 imzalama anahtarı ---
 
 // ECDSAP256SigningKey, insan daily/admin donanım sınıfı (SE/YubiKey) için
@@ -129,6 +140,33 @@ func NewECDSAP256FromPriv(priv *ecdsa.PrivateKey) (*ECDSAP256SigningKey, error) 
 		return nil, fmt.Errorf("cryptoid.NewECDSAP256FromPriv: key must be P-256")
 	}
 	return &ECDSAP256SigningKey{priv: priv}, nil
+}
+
+// PrivateScalar, P-256 gizli skalarını 32 baytlık big-endian (sabit-uzunluk) döner
+// — YAZILIM (CI/test) kimliğinin 0600 kimlik deposuna kalıcılaştırılması için.
+// NewECDSAP256FromScalar ile geri kurulur. ecdsa.PrivateKey.Bytes() kullanır
+// (deprecated ham .D yerine, Go 1.25+). DİKKAT: gizli materyal.
+func (k *ECDSAP256SigningKey) PrivateScalar() []byte {
+	b, err := k.priv.Bytes()
+	if err != nil {
+		// Geçerli bir P-256 anahtarı için Bytes() her zaman başarılıdır; olmazsa bug.
+		panic("cryptoid: internal error: P-256 PrivateKey.Bytes() failed: " + err.Error())
+	}
+	return b
+}
+
+// NewECDSAP256FromScalar, 32 baytlık gizli skalardan bir P-256 imzalama anahtarını
+// yeniden kurar (kimlik deposundan yükleme). ecdsa.ParseRawPrivateKey skaları
+// aralık/geçerlilik açısından doğrular ve public noktayı türetir (Go 1.25+).
+func NewECDSAP256FromScalar(scalar []byte) (*ECDSAP256SigningKey, error) {
+	if len(scalar) != p256ScalarLen {
+		return nil, fmt.Errorf("cryptoid.NewECDSAP256FromScalar: scalar must be %d bytes", p256ScalarLen)
+	}
+	priv, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), scalar)
+	if err != nil {
+		return nil, fmt.Errorf("cryptoid.NewECDSAP256FromScalar: %w", err)
+	}
+	return NewECDSAP256FromPriv(priv)
 }
 
 func (k *ECDSAP256SigningKey) Alg() string { return AlgECDSAP256SHA256 }

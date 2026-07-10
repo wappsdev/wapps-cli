@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -143,28 +144,70 @@ func identityPresent() bool {
 	return err == nil
 }
 
-// readSession, oturum dosyasından (login stub yazar) geçerlilik + kalan saniye.
-// Yoksa/expired → (false, 0). (login = thin stub, canlı CF Access gerektirir.)
-func readSession() (bool, int64) {
+// sessionState, çözülmüş oturum durumudur: gate'e sunulacak bearer + (biliniyorsa)
+// son kullanma (unix). expiresAt==0 → expiry bilinmiyor (out-of-band env token) →
+// dolmaz sayılır. token=="" → dosya yalnızca expires_at taşıyor (login stub); gate
+// CF Access JWT'sini kenar katmanından görür, ayrı bir bearer sunulmaz.
+type sessionState struct {
+	token     string
+	expiresAt int64
+}
+
+// expired, oturumun (bilinen expiry'ye göre) süresinin dolup dolmadığını döner;
+// expiresAt==0 → asla dolmaz (out-of-band token).
+func (s sessionState) expired(now int64) bool {
+	return s.expiresAt != 0 && s.expiresAt-now <= 0
+}
+
+// loadSession, oturumu şu sırayla yükler (SPEC §6/§7.2):
+//  1. OUT-OF-BAND env: WAPPS_SESSION_TOKEN (+ opsiyonel WAPPS_SESSION_EXPIRES unix) —
+//     CI/test bir bearer'ı canlı tarayıcı login'i OLMADAN sağlar;
+//  2. session.json dosyası ({token?, expires_at}) — GERÇEK interaktif `wapps login`
+//     (cloudflared) bunu yazar (canlı CF Access hesabı gerektiren TEK insan adımı;
+//     bu build'de login bir stub'dır). ok=false → hiç oturum yok.
+func loadSession() (sessionState, bool) {
+	if tok := os.Getenv("WAPPS_SESSION_TOKEN"); tok != "" {
+		exp := int64(0)
+		if e := os.Getenv("WAPPS_SESSION_EXPIRES"); e != "" {
+			if n, perr := strconv.ParseInt(e, 10, 64); perr == nil {
+				exp = n
+			}
+		}
+		return sessionState{token: tok, expiresAt: exp}, true
+	}
 	dir, err := wappsHomeDir()
 	if err != nil {
-		return false, 0
+		return sessionState{}, false
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "session.json"))
 	if err != nil {
-		return false, 0
+		return sessionState{}, false
 	}
 	var s struct {
-		ExpiresAt int64 `json:"expires_at"`
+		Token     string `json:"token"`
+		ExpiresAt int64  `json:"expires_at"`
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
+		return sessionState{}, false
+	}
+	return sessionState{token: s.Token, expiresAt: s.ExpiresAt}, true
+}
+
+// readSession, oturum geçerliliği + kalan saniye (status için). Out-of-band env
+// token'ı expiry'siz de geçerlidir (kalan 0 raporlanır). Yoksa/expired → (false, 0).
+func readSession() (bool, int64) {
+	s, ok := loadSession()
+	if !ok {
 		return false, 0
 	}
-	rem := s.ExpiresAt - time.Now().Unix()
-	if rem <= 0 {
+	now := time.Now().Unix()
+	if s.expired(now) {
 		return false, 0
 	}
-	return true, rem
+	if s.expiresAt == 0 {
+		return true, 0
+	}
+	return true, s.expiresAt - now
 }
 
 // wappsHomeDir, ~/.config/wapps döner (XDG onurlandırılır).

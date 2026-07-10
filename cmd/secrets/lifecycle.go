@@ -23,11 +23,12 @@ import (
 // --- enroll (tam işlevsel; §8.1.1) ------------------------------------------
 
 var (
-	enrollID     string
-	enrollType   string
-	enrollDevice string
-	enrollAdmin  bool
-	enrollJSON   bool
+	enrollID       string
+	enrollType     string
+	enrollDevice   string
+	enrollAdmin    bool
+	enrollJSON     bool
+	enrollSoftware bool
 )
 
 var enrollCmd = &cobra.Command{
@@ -35,12 +36,19 @@ var enrollCmd = &cobra.Command{
 	Short: "Generate a new identity (X25519 enc + signing key + backup) — §8.1.1",
 	Long: `Generate a new principal identity on this machine (SPEC §8.1.1).
 
-Generates (SOFTWARE keys — CI/test; the hardware SE/YubiKey path is a documented
-interface out of scope for this build):
+Generates (SOFTWARE keys — the hardware SE/YubiKey path is a documented interface
+out of scope for this build):
   - an X25519 encryption identity (device),
   - a daily-writer signing key (no-presence),
   - a presence admin signing key (--admin),
   - a paper/steel BACKUP identity whose secret is printed ONCE and never written.
+
+A SOFTWARE identity is persisted to ~/.config/wapps/identity.json (0600) so the
+store path can decrypt (§7.1: the CLI decrypts) and sign commits. A software
+identity is meant for CI/testing; for HUMANS the hardware SE/YubiKey path is
+preferred (the private key never leaves the secure element). Pass --software to
+make the software path explicit; it is also the automatic path when no hardware
+keygen is available. The backup secret is NEVER written — transcribe it once.
 
 Prints the SHA-256 fingerprints of BOTH key families for a second-channel
 fingerprint ceremony (§8.1.2), then an admin vouches (wapps secrets vouch).
@@ -84,6 +92,20 @@ func runEnroll(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(out, "  signing pubkey fingerprints:")
 	for _, fp := range res.SigningFingerprints {
 		fmt.Fprintf(out, "    %s\n", fp)
+	}
+
+	// YAZILIM kimliğini yerel 0600 depoya yaz (CI/test; store yolu çözme+imza için
+	// bunu yükler). Donanım-resident enc kimliğinde (Identity()==nil) dosya YAZILMAZ —
+	// gizli materyal güvenli öğede kalır. Backup gizli yarısı ASLA yazılmaz.
+	if res.EncKey.Identity() != nil {
+		idPath, perr := saveEnrolledIdentity(res)
+		if perr != nil {
+			return perr
+		}
+		fmt.Fprintf(out, "\nSoftware identity persisted to %s (0600).\n", idPath)
+		fmt.Fprintln(out, "  This is a SOFTWARE identity for CI/testing; for humans the hardware SE/YubiKey path is preferred.")
+	} else {
+		fmt.Fprintln(out, "\nHardware identity — the private key stays in the secure element; no local identity file is written.")
 	}
 
 	if res.Backup != nil {
@@ -195,6 +217,8 @@ func init() {
 	enrollCmd.Flags().StringVar(&enrollDevice, "device-name", "", "device label")
 	enrollCmd.Flags().BoolVar(&enrollAdmin, "admin", false, "also generate a presence admin signing key")
 	enrollCmd.Flags().BoolVar(&enrollJSON, "json", false, "print the enrollment request JSON")
+	enrollCmd.Flags().BoolVar(&enrollSoftware, "software", false,
+		"generate a SOFTWARE identity persisted to ~/.config/wapps/identity.json (CI/testing; the hardware SE/YubiKey path is preferred for humans)")
 
 	vouchCmd.Flags().StringVar(&vouchRequest, "request", "", "path to the enrollment request JSON")
 

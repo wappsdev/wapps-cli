@@ -6,13 +6,17 @@ package secrets
 // verb'ler eski age-arşiv yolunda kalır (byte-for-byte değişmez) — yönlendirme
 // kararı her verb'ün başında storeBackendConfig() ile verilir.
 //
-// Bu build'de canlı bir CF Access oturumu / enrolled yerel kimlik YOK: store yolu
-// bu yüzden koşum-zamanında NET, EYLEMLİ bir clierr yüzeye çıkarır (oturum yoksa
-// AUTH_EXPIRED → "run wapps login"; yerel çözme/imzalama kimliği yoksa
-// IDENTITY_MISSING → "run wapps secrets enroll"). BU DOĞRUDUR: amaç, migration
-// SONRASI (backend: store) verb'lerin gerçekten never-trust-Worker store'unu
-// kullanması için YÖNLENDİRMENİN wire'lı + test edilmiş olmasıdır — ölü bir kod
-// yolu değil.
+// YAZILIM (CI/test) yolu artık uçtan uca round-trippable: `wapps secrets enroll`
+// yerel bir 0600 kimlik deposu (~/.config/wapps/identity.json) yazar; localDecrypt
+// Identity/localSigningKey bunu yükler ve store snapshot'ı YEREL X25519 kimlikle
+// çözülür (§7.1: CLI çözer, Worker DEĞİL). Oturum bearer'ı out-of-band da sağlanabilir
+// (WAPPS_SESSION_TOKEN veya session.json) — böylece bir test/CI, canlı tarayıcı
+// login'i OLMADAN gate'e bearer sunabilir. GERÇEK interaktif `wapps login` (cloudflared)
+// canlı CF Access hesabı gerektiren TEK insan adımıdır ve bir stub olarak kalır.
+//
+// Kimlik/oturum GERÇEKTEN yoksa store yolu NET, EYLEMLİ bir clierr yüzeye çıkarır
+// (oturum yoksa AUTH_EXPIRED → "run wapps login"; yerel kimlik yoksa IDENTITY_MISSING
+// → "run wapps secrets enroll"). DONANIM (SE/YubiKey) yolu arayüzlü kalır (kapsam dışı).
 
 import (
 	"context"
@@ -60,9 +64,9 @@ var openStore = openWorkerStore
 //     escrow-tanık çapraz kontrolü, §7.3.4/§9.3); origin yoksa nil → store deploy'da
 //     WITNESS_NOT_WIRED döner (ama oturum yoksa AUTH_EXPIRED önce ateşlenir).
 //
-// Yerel çözme/imzalama kimliği bu build'de yüklenemez (enroll henüz kalıcı bir
-// yüklenebilir kimlik yazmıyor, G8/G9): okuma yolu IDENTITY_MISSING, yazma yolu
-// WorkerStore.Commit'in nil-Writer kontrolünde IDENTITY_MISSING ile yüzeye çıkar.
+// Yerel çözme/imzalama kimliği enroll'ün yazdığı 0600 kimlik deposundan yüklenir
+// (localDecryptIdentity/localSigningKey); kimlik yoksa okuma IDENTITY_MISSING, yazma
+// da IDENTITY_MISSING ile yüzeye çıkar.
 func openWorkerStore(cfg *config.WappsYAML, in intent.Intent) (store.Store, error) {
 	var wit intent.Witness
 	if in == intent.Deploy {
@@ -78,27 +82,58 @@ func openWorkerStore(cfg *config.WappsYAML, in intent.Intent) (store.Store, erro
 	}), nil
 }
 
-// sessionAuth, her Worker isteğine oturum kimliğini iliştirir (SPEC §6/§7.2).
-// Geçerli bir CF Access oturumu yoksa AUTH_EXPIRED — do() bu hatayı yayar ve istek
-// ağ'a HİÇ çıkmaz (temiz, eylemli mesaj). Oturum dosyası bu build'de yalnızca
-// expires_at taşır (login = thin stub); gerçek Bearer token exchange G9 kapsamında.
+// sessionAuth, her Worker isteğine oturum kimliğini (bearer) iliştirir (SPEC §6/§7.2).
+// Geçerli bir oturum yoksa AUTH_EXPIRED — do() bu hatayı yayar ve istek ağ'a HİÇ
+// çıkmaz (temiz, eylemli mesaj). Oturum, GERÇEK `wapps login` (cloudflared) dosyasından
+// VEYA out-of-band (WAPPS_SESSION_TOKEN / session.json{token}) yüklenir — böylece
+// CI/test canlı tarayıcı login'i olmadan bir bearer sunabilir (loadSession, status.go).
 func sessionAuth(req *http.Request) error {
-	valid, _ := readSession()
-	if !valid {
+	s, ok := loadSession()
+	if !ok || s.expired(time.Now().Unix()) {
 		return clierr.New(clierr.AuthExpired, "no valid CF Access session for the secrets gate")
 	}
-	// Geçerli oturum: minted Bearer token exchange (G9) henüz yok → header eklenmez.
+	// Varsa bearer'ı sun (gate doğrular); token'sız (yalnızca expires_at) oturumlar
+	// header eklemez — gerçek gate CF Access JWT'sini kenar katmanından zaten görür.
+	if s.token != "" {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
 	return nil
 }
 
-// localDecryptIdentity, yerel enrolled X25519 çözme kimliğini döner (SPEC §7.1:
-// CLI çözer). enroll (G9) henüz yüklenebilir bir kimlik kalıcılaştırmıyor → nil
-// (okuma yolu bunu IDENTITY_MISSING'e çevirir).
-func localDecryptIdentity() *cryptoid.X25519Identity { return nil }
+// localDecryptIdentity, yerel enrolled X25519 çözme kimliğini kimlik deposundan
+// yükler (SPEC §7.1: CLI çözer). Kimlik GERÇEKTEN yoksa (nil, nil) — çağıran bunu
+// eylemli IDENTITY_MISSING'e çevirir; bozuk/gevşek-izinli dosya net bir clierr döner.
+func localDecryptIdentity() (*cryptoid.X25519Identity, error) {
+	pid, err := loadPersistedIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if pid == nil {
+		return nil, nil
+	}
+	id, perr := cryptoid.ParseX25519Identity(pid.EncSecret)
+	if perr != nil {
+		return nil, clierr.Wrapf(clierr.IdentityMissing, perr, "identity file encryption key is malformed")
+	}
+	return id, nil
+}
 
-// localSigningKey, yerel enrolled imzalama (hardware daily) anahtarını döner.
-// Henüz yüklenemiyor → nil (WorkerStore.Commit nil-Writer'da IDENTITY_MISSING).
-func localSigningKey() cryptoid.SigningKey { return nil }
+// localSigningKey, yerel enrolled writer (daily/automation) imzalama anahtarını
+// kimlik deposundan yükler (store commit imzası). Yoksa (nil, nil); bozuksa clierr.
+func localSigningKey() (cryptoid.SigningKey, error) {
+	pid, err := loadPersistedIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if pid == nil {
+		return nil, nil
+	}
+	sk, serr := pid.Writer.toSigningKey()
+	if serr != nil {
+		return nil, clierr.Wrapf(clierr.IdentityMissing, serr, "identity file writer key is malformed")
+	}
+	return sk, nil
+}
 
 // storeValues, backend:store'da verilen anahtarları (boşsa identity'nin granted
 // tüm kümesi) çeker + yerel kimlikle çözer. WorkerStore.Fetch okur (çevrimiçi-first
@@ -114,7 +149,10 @@ func storeValues(ctx context.Context, cfg *config.WappsYAML, in intent.Intent, k
 	if err != nil {
 		return nil, err
 	}
-	id := localDecryptIdentity()
+	id, err := localDecryptIdentity()
+	if err != nil {
+		return nil, err
+	}
 	if id == nil {
 		return nil, clierr.New(clierr.IdentityMissing,
 			"no local decryption identity; the fetched store snapshot cannot be decrypted")
@@ -129,13 +167,21 @@ func storeCommit(ctx context.Context, cfg *config.WappsYAML, in intent.Intent, s
 	if len(sets) == 0 {
 		return clierr.New(clierr.Internal, "store commit: no changes")
 	}
+	writer, err := localSigningKey()
+	if err != nil {
+		return err
+	}
+	if writer == nil {
+		return clierr.New(clierr.IdentityMissing,
+			"no local signing identity; the store commit cannot be signed")
+	}
 	st, err := openStore(cfg, in)
 	if err != nil {
 		return err
 	}
 	_, err = st.Commit(ctx, cfg.Project, store.ManifestDelta{
 		Sets:   sets,
-		Writer: localSigningKey(),
+		Writer: writer,
 		Intent: in,
 	})
 	return err
