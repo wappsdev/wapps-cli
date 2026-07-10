@@ -35,6 +35,14 @@ var agentPolicy = map[string]string{
 	"get": agentmode.PolicyRefuseAgent,
 	// TTY-only pin verb'ü.
 	"trust-repo": agentmode.PolicyTTY,
+	// Yaşam döngüsü (SPEC §8, G9). enroll TTY-only anahtar-üretim seremonisidir
+	// (§8.1.1: ajan AGENT_MODE_REFUSED). vouch/grant/revoke/offboard control-plane
+	// admin seremonileridir (§8.5: ajan CONTROL_PLANE_REQUIRED).
+	"enroll":   agentmode.PolicyTTY,
+	"vouch":    agentmode.PolicyControl,
+	"grant":    agentmode.PolicyControl,
+	"revoke":   agentmode.PolicyControl,
+	"offboard": agentmode.PolicyControl,
 }
 
 // bindingExempt, repo→proje bağlama kontrolünden muaf verb'ler: trust-repo
@@ -42,6 +50,14 @@ var agentPolicy = map[string]string{
 var bindingExempt = map[string]bool{
 	"trust-repo": true,
 	"status":     true,
+	// Yaşam döngüsü seremonileri bir repo→proje bağlamasına bağlı değildir: enroll
+	// yeni prensibin kendi makinesinde, vouch/offboard bir operatör workstation'ında
+	// çalışır; --project'i açıkça isimlendirirler (SPEC §8).
+	"enroll":   true,
+	"vouch":    true,
+	"grant":    true,
+	"revoke":   true,
+	"offboard": true,
 }
 
 func init() {
