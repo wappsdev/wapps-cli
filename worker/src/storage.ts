@@ -50,6 +50,32 @@ export function validSha256Hex(h: string): boolean {
   return SHA256_HEX_RE.test(h);
 }
 
+// --- Bounded-concurrency havuzu (R2 fan-out) ---------------------------------
+
+/** BLOB_POOL, bulk read/write'ta AYNI ANDA açık R2 op üst sınırı. Sıralı (wall-time
+ *  aşımı) ile sınırsız Promise.all (bellek + eşzamanlı-subrequest patlaması) arasında. */
+export const BLOB_POOL = 24;
+/** MAX_BULK_KEYS, tek bir bulk read/import isteğindeki anahtar üst sınırı (DoS bandı;
+ *  manifest boyutu zaten MANIFEST_TOO_LARGE ile sınırlı, bu ek/açık bir korkuluk). */
+export const MAX_BULK_KEYS = 1000;
+
+/** mapPool, öğeleri EN FAZLA `limit` eşzamanlı işler (sınırsız Promise.all yerine).
+ *  Sonuçlar giriş sırasında döner; bir fn reddederse başlamış işler iptal EDİLMEZ
+ *  (çağıran atomikliği başka katmanda sağlar). */
+export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, () => worker()));
+  return results;
+}
+
 // --- R2 read yardımcıları ----------------------------------------------------
 
 export interface FetchedObject {

@@ -22,6 +22,9 @@ import {
   validProject,
   validKeyName,
   deriveProjects,
+  mapPool,
+  BLOB_POOL,
+  MAX_BULK_KEYS,
 } from "./storage.js";
 import { parseCurrentPointer, parseManifest, manifestObjectHash, DataManifest, ManifestEntry } from "./manifest.js";
 import {
@@ -469,6 +472,7 @@ async function handleRead(
   if (!Array.isArray(body.keys) || body.keys.length === 0) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "keys required");
   const keys = [...new Set(body.keys.filter((k): k is string => typeof k === "string"))];
   if (keys.length !== body.keys.length) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "keys must be unique strings");
+  if (keys.length > MAX_BULK_KEYS) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `too many keys in one read (max ${MAX_BULK_KEYS})`);
   for (const k of keys) {
     if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
   }
@@ -498,9 +502,10 @@ async function handleRead(
   for (const k of keys) {
     if (!byName.get(k)) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "key not found", { key: k });
   }
-  // Blob'ları PARALEL getir (I/O wall-time sink): bulk read'de (ör. migration verify
-  // 156 key) sıralı R2 GET exceededWallTime'a yol açıyordu. Çözüm (CPU) sıralı kalır.
-  const blobs = await Promise.all(keys.map((k) => getObject(env.SECRETS_BUCKET, keyBlob(project, byName.get(k)!.blobHash))));
+  // Blob'ları SINIRLI-EŞZAMANLI getir (I/O wall-time sink): sıralı R2 GET bulk read'de
+  // (ör. migration verify 156 key) exceededWallTime'a yol açıyordu, sınırsız Promise.all
+  // ise eşzamanlı-op/bellek patlatır → mapPool (≤BLOB_POOL). Çözüm (CPU) sıralı kalır.
+  const blobs = await mapPool(keys, BLOB_POOL, (k) => getObject(env.SECRETS_BUCKET, keyBlob(project, byName.get(k)!.blobHash)));
 
   // Çöz: içerik-adres doğrula → KEK-unwrap DEK → XChaCha open (§2).
   const values: Record<string, string> = {};
@@ -641,6 +646,7 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
   const values = body.values as Record<string, unknown>;
   const names = Object.keys(values);
   if (names.length === 0) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "values empty");
+  if (names.length > MAX_BULK_KEYS) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `too many keys in one import (max ${MAX_BULK_KEYS})`);
   for (const k of names) {
     if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
     if (typeof values[k] !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `value for ${k} must be a string`);
