@@ -14,7 +14,6 @@ package store
 
 import (
 	"context"
-	"encoding/base64"
 	"net/http"
 	"time"
 
@@ -215,7 +214,7 @@ func dataWriterKeyring(m *trust.TrustManifest) manifest.WriterKeyring {
 			if sk.Status != registry.StatusActive {
 				continue
 			}
-			raw, err := base64.StdEncoding.DecodeString(sk.Pubkey)
+			raw, err := sk.DecodePubkey() // KATİ KANONİK base64 (Worker b64ToBytes paritesi)
 			if err != nil {
 				continue
 			}

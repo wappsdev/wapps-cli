@@ -113,6 +113,12 @@ func verifyResetInternal(
 	if err := validateRosterInvariants(cand); err != nil {
 		return nil, err
 	}
+	// Gömülü kayıt anlamsal denetimi (§4.3): reset epoch'u da bir VerifiedEpoch
+	// ürettiği ve token bastırdığı için makine-wildcard + key_id tutarlılığı burada
+	// da yaptırılır.
+	if err := validateEmbeddedRegistry(cand); err != nil {
+		return nil, err
+	}
 
 	view, err := cand.buildSignerView()
 	if err != nil {

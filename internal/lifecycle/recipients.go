@@ -1,8 +1,6 @@
 package lifecycle
 
 import (
-	"encoding/base64"
-
 	"github.com/wappsdev/wapps-cli/internal/cryptoid"
 	"github.com/wappsdev/wapps-cli/internal/manifest"
 	"github.com/wappsdev/wapps-cli/internal/registry"
@@ -122,7 +120,7 @@ func buildWriterKeyring(tm *trust.TrustManifest) manifest.WriterKeyring {
 			if sk.Status != registry.StatusActive {
 				continue
 			}
-			raw, err := base64.StdEncoding.DecodeString(sk.Pubkey)
+			raw, err := sk.DecodePubkey() // KATİ KANONİK base64 (Worker b64ToBytes paritesi)
 			if err != nil {
 				continue
 			}

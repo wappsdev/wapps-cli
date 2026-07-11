@@ -1,8 +1,10 @@
 // Blob PUT endpoint testleri (SPEC §6.2 blob upload): framing-length + hash +
 // write-grant + idempotent content-addressed write.
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
+import { env } from "cloudflare:test";
 import { seedTrust, ensureJwks, validClaims, authHeader, callGate, resetWorld } from "./helpers.js";
 import { sha256Hex } from "../src/crypto/verify.js";
+import { keyBlob } from "../src/storage.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
@@ -38,6 +40,20 @@ describe("blob PUT", () => {
     const res = await put(t.pin, "writer@wapps.dev", "0".repeat(64), validBlob());
     expect(res.status).toBe(400);
     expect(await errCode(res)).toBe("BLOB_HASH_MISMATCH");
+  });
+
+  it("content-addressing invariant (P1-B): a hash-mismatched body is REJECTED and NEVER stored under the path", async () => {
+    const t = await seedTrust();
+    const realBody = validBlob(3);
+    const sha = sha256Hex(realBody); // gerçek adres
+    const otherBody = validBlob(4); // aynı framing-uzunluğu ama FARKLI hash
+    // sha path'i + hash'i uyuşmayan gövde → PUT reddetmeli (sha256(body) !== path).
+    const res = await put(t.pin, "writer@wapps.dev", sha, otherBody);
+    expect(res.status).toBe(400);
+    expect(await errCode(res)).toBe("BLOB_HASH_MISMATCH");
+    // Değişmezlik: içerik-adresi uyuşmayan hiçbir gövde R2'ye YAZILAMAZ → commit-zamanı
+    // yeniden-hash gereksiz kalır (kanonik anahtardaki her blob zaten içerik-adreslidir).
+    expect(await env.SECRETS_BUCKET.head(keyBlob("vaulter", sha))).toBeNull();
   });
 
   it("length not a valid framing bucket → 400 PADDING_INVALID", async () => {

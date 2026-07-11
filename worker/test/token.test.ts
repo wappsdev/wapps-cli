@@ -1,5 +1,6 @@
 // Machine-token mint + exchange + scope + revoke/deny-list testleri (SPEC §6.4).
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
+import { env } from "cloudflare:test";
 import {
   seedTrust,
   ensureJwks,
@@ -13,6 +14,7 @@ import {
   putBlob,
   TrustContext,
 } from "./helpers.js";
+import { mirrorGrantsFor } from "../src/grants-mirror.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
@@ -64,6 +66,35 @@ describe("machine-token mint (§6.4)", () => {
     const res = await mint(t, { project: "vaulter", scope: { verbs: ["read"], keys: ["OTHER_KEY"] }, ttl_seconds: 600 });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toBe("TOKEN_SCOPE_EXCEEDED");
+  });
+
+  it("Fix #5: a machine WILDCARD grant in the mirror no longer authorizes an unlisted key (fallback removed)", async () => {
+    const t = await seedTrust();
+    // İlk mint → mirror'ı bu epoch için kurar (grants + mirror_state=epoch1, tablolar oluşur).
+    expect((await mint(t, { project: "vaulter", scope: { verbs: ["read"], keys: ["MACHINE_KEY"] }, ttl_seconds: 600 })).status).toBe(200);
+    // Mirror'a MAKİNE joker ("*") read grant'ı ENJEKTE et. mirror_state epoch=1 kaldığından
+    // sonraki mint ensureMirror'da REBUILD ETMEZ (manifest'ten gelmez) → satır hayatta kalır.
+    await env.AUDIT_DB.prepare(
+      "INSERT OR REPLACE INTO grants (trust_epoch, principal, principal_type, project, key_name, verb, rotate_by) VALUES (1, ?, 'machine', 'vaulter', '*', 'read', NULL)",
+    )
+      .bind(t.machineId)
+      .run();
+    // Açıkça listelenmemiş bir anahtar iste: ESKİ kod joker fallback ile mint ederdi;
+    // YENİ kod (fallback kaldırıldı) → 403 TOKEN_SCOPE_EXCEEDED.
+    const res = await mint(t, { project: "vaulter", scope: { verbs: ["read"], keys: ["OTHER_KEY"] }, ttl_seconds: 600 });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("TOKEN_SCOPE_EXCEEDED");
+  });
+
+  it("Fix #4: machine rotate_by flows from the signed manifest into the grants mirror", async () => {
+    const t = await seedTrust();
+    // İlk mint → ensureMirror grants tablosunu bu epoch için manifest'ten kurar.
+    expect((await mint(t, { project: "vaulter", scope: { verbs: ["read"], keys: ["MACHINE_KEY"] }, ttl_seconds: 600 })).status).toBe(200);
+    const rows = await mirrorGrantsFor(env, t.machineId, "vaulter");
+    expect(rows.length).toBeGreaterThan(0);
+    // seedTrust makine kimliği rotate_by = "2099-01-01T00:00:00Z" → modellenip mirror'a taşınır
+    // (eski davranış: parseTrustBody rotate_by'ı DROP ederdi → mirror NULL kaydederdi).
+    expect(rows.every((r) => r.rotateBy === "2099-01-01T00:00:00Z")).toBe(true);
   });
 
   it("CONFINEMENT: a human JWT may NOT mint → 403 MACHINE_TOKEN_REQUIRED", async () => {

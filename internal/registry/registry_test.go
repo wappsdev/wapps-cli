@@ -199,6 +199,51 @@ func TestValidate_Failures(t *testing.T) {
 	})
 }
 
+// TestValidateSignerSemantics, trust-zinciri token-mint alt kümesinin (makine-joker
+// + key_id tutarlılığı) uygulandığını VE bilerek DAR olduğunu (enrollment bütünlüğü
+// içermez) kanıtlar. Bu ayrım kasıtlıdır: tam Validate() Go'yu Worker'dan katı yapıp
+// yeni bir Go↔TS divergence yaratırdı.
+func TestValidateSignerSemantics(t *testing.T) {
+	human, _ := humanIdentity(t, "adnan@wapps.dev")
+
+	// Makine-joker grant → red.
+	m := machineIdentity(t, "tofu-sync")
+	sWild := &Snapshot{Schema: SchemaRegistry, Identities: []Identity{m}, Grants: []Grant{
+		{Principal: m.ID, Project: "vaulter", Verbs: []string{"get"}, Keys: []string{"*"}},
+	}}
+	assert.ErrorIs(t, sWild.ValidateSignerSemantics(), ErrRegistryInvalid)
+
+	// Makine-joker writer-allowlist → red.
+	sWildW := &Snapshot{Schema: SchemaRegistry, Identities: []Identity{m}, WriterAllowlists: []WriterAllow{
+		{Principal: m.ID, Project: "vaulter", Keys: []string{"*"}},
+	}}
+	assert.ErrorIs(t, sWildW.ValidateSignerSemantics(), ErrRegistryInvalid)
+
+	// signing key_id ↔ pubkey uyumsuzluğu → red.
+	hSig := human
+	hSig.SigningKeys = append([]SigningKey(nil), human.SigningKeys...)
+	hSig.SigningKeys[0].KeyID = "sha256:wrong"
+	assert.ErrorIs(t, (&Snapshot{Schema: SchemaRegistry, Identities: []Identity{hSig}}).ValidateSignerSemantics(), ErrKeyIDMismatch)
+
+	// enc key_id ↔ pubkey uyumsuzluğu → red.
+	hEnc := human
+	hEnc.EncKeys = append([]EncKey(nil), human.EncKeys...)
+	hEnc.EncKeys[0].KeyID = "sha256:wrong"
+	assert.ErrorIs(t, (&Snapshot{Schema: SchemaRegistry, Identities: []Identity{hEnc}}).ValidateSignerSemantics(), ErrKeyIDMismatch)
+
+	// DAR olduğunu kanıtla: enrollment-eksik bir makine (rotate_by/enc yok) ama AÇIK
+	// anahtar allowlist'i → ValidateSignerSemantics GEÇER; tam Validate() ise reddeder.
+	mLimited := Identity{
+		ID: "machine:limited", Type: TypeMachine, Status: StatusActive, EnrolledAt: testTime,
+		SigningKeys: []SigningKey{machineIdentity(t, "z").SigningKeys[0]}, // tutarlı key_id
+	}
+	sNarrow := &Snapshot{Schema: SchemaRegistry, Identities: []Identity{mLimited}, WriterAllowlists: []WriterAllow{
+		{Principal: mLimited.ID, Project: "vaulter", Keys: []string{"B"}},
+	}}
+	require.NoError(t, sNarrow.ValidateSignerSemantics())
+	require.ErrorIs(t, sNarrow.Validate(), ErrRegistryInvalid) // tam Validate rotate_by ister
+}
+
 // TestSnapshotSignVerify_Roundtrip, admin-imzalı kayıt anlık görüntüsünün
 // imzala/doğrula round-trip'ini + eşik + tamper + yabancı-anahtar yollarını test
 // eder.
@@ -212,7 +257,8 @@ func TestSnapshotSignVerify_Roundtrip(t *testing.T) {
 
 	obj, body, err := SignSnapshot(s, adminKey)
 	require.NoError(t, err)
-	assert.Equal(t, body, obj.Bytes)
+	// obj.Bytes artık cryptoid.B64Strict; imzalanan kanonik body ile bayt-bayt aynı.
+	assert.Equal(t, body, []byte(obj.Bytes))
 
 	ring := map[string]cryptoid.VerifierKey{}
 	vk, err := cryptoid.NewVerifierKey(adminKey.Alg(), adminKey.PublicKeyBytes())
@@ -288,4 +334,28 @@ func TestParseSnapshotBody_UnknownField(t *testing.T) {
 	assert.Error(t, err)
 	_, err = ParseSnapshotBody([]byte(`{"schema":"other/v1"}`))
 	assert.ErrorIs(t, err, ErrUnsupportedSchema)
+}
+
+// TestParseSnapshotBody_Strictness, COORD (c) parite: snapshot parser'ı da
+// ParseManifestBody/ParseTrustBody gibi trailing içeriği + kanonik-olmayan/
+// güvensiz tamsayıyı reddetmeli.
+func TestParseSnapshotBody_Strictness(t *testing.T) {
+	// Trailing içerik: tek JSON değerinden sonra çöp.
+	_, err := ParseSnapshotBody([]byte(`{"schema":"wapps-registry/v1"} {}`))
+	assert.ErrorIs(t, err, ErrTrailingContent)
+	_, err = ParseSnapshotBody([]byte(`{"schema":"wapps-registry/v1"}garbage`))
+	assert.ErrorIs(t, err, ErrTrailingContent)
+
+	// >2^53 çıplak tamsayı → güvenli aralık dışı → bütün-gövde taraması reddeder
+	// (decode-öncesi tarama olduğundan çıplak sayı nerede olursa olsun yakalanır).
+	_, err = ParseSnapshotBody([]byte(`{"schema":"wapps-registry/v1","n":9007199254740992}`))
+	assert.ErrorIs(t, err, cryptoid.ErrNonCanonicalJSONNumber)
+
+	// Negatif çıplak tamsayı → işaretsiz alan → reddedilir (COORD b).
+	_, err = ParseSnapshotBody([]byte(`{"schema":"wapps-registry/v1","n":-1}`))
+	assert.ErrorIs(t, err, cryptoid.ErrNonCanonicalJSONNumber)
+
+	// Temiz body geçmeli (çıplak tamsayı yok; tarih string alanları atlanır).
+	_, err = ParseSnapshotBody([]byte(`{"schema":"wapps-registry/v1"}`))
+	assert.NoError(t, err)
 }

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"time"
 
@@ -80,6 +81,9 @@ var (
 	// ErrKeyIDMismatch: bir anahtar girdisinin key_id'si, pubkey'inden türetilen
 	// parmak izine (§3.7) uymuyor. Tamper/typo koruması.
 	ErrKeyIDMismatch = errors.New("registry: KEY_ID_MISMATCH")
+	// ErrTrailingContent: imzalı body'de tek JSON değerinden SONRA fazladan içerik
+	// (token/çöp) var (COORD c). ParseManifestBody/ParseTrustBody ile aynı katılık.
+	ErrTrailingContent = errors.New("registry: TRAILING_CONTENT")
 )
 
 // EncKey, bir kimliğin age X25519 şifreleme alıcısıdır (SPEC §4.3). Pubkey,
@@ -146,12 +150,26 @@ type Snapshot struct {
 
 // --- Parmak izi türetme (cryptoid §3.7 yeniden kullanımı) ---
 
-// Fingerprint, bir imzalama anahtarının §3.7 parmak izini ham pubkey
-// baytlarından hesaplar (base64 çöz → cryptoid.Fingerprint).
-func (k SigningKey) Fingerprint() (string, error) {
-	raw, err := base64.StdEncoding.DecodeString(k.Pubkey)
+// DecodePubkey, imzalama anahtarının base64 pubkey'ini KATİ KANONİK (RFC4648 std,
+// padding'li) ham baytlara çözer — Worker crypto/verify.ts b64ToBytes ile parite.
+// SigningKey.Pubkey imza için byte-exact string olarak saklanır; her yorumlama
+// (fingerprint + verifier-key kurulumu) bu tek KATİ çözücüden geçmeli ki gevşek
+// bir decode (encoding/json / base64.StdEncoding NON-strict) Go-kabul/Worker-red
+// bölünmesi yaratmasın (COORD a/d).
+func (k SigningKey) DecodePubkey() ([]byte, error) {
+	raw, err := cryptoid.DecodeStrictBase64(k.Pubkey)
 	if err != nil {
-		return "", fmt.Errorf("registry.SigningKey.Fingerprint: decode pubkey: %w", err)
+		return nil, fmt.Errorf("registry.SigningKey.DecodePubkey: %w", err)
+	}
+	return raw, nil
+}
+
+// Fingerprint, bir imzalama anahtarının §3.7 parmak izini ham pubkey
+// baytlarından hesaplar (KATİ KANONİK base64 çöz → cryptoid.Fingerprint).
+func (k SigningKey) Fingerprint() (string, error) {
+	raw, err := k.DecodePubkey()
+	if err != nil {
+		return "", fmt.Errorf("registry.SigningKey.Fingerprint: %w", err)
 	}
 	return cryptoid.Fingerprint(raw), nil
 }
@@ -301,25 +319,69 @@ func (s *Snapshot) Validate() error {
 		// yetkisi AÇIK, tam-anahtar allowlist'i olmalı (blast-radius sınırlama, §4.3/§6).
 		// Bir tofu-sync makinesinin "*" grant'ı, tek bir sızmış otomasyon anahtarını
 		// projedeki HER değere erişim/yazıma çevirirdi.
-		if principal.Type == TypeMachine && containsStr(g.Keys, KeyWildcard) {
+		if s.isMachineWildcard(g.Principal, g.Keys) {
 			return fmt.Errorf("registry.Validate: machine grant %q must use an explicit key allowlist, not %q: %w", g.Principal, KeyWildcard, ErrRegistryInvalid)
 		}
 	}
 	for _, w := range s.WriterAllowlists {
-		principal, ok := s.IdentityByID(w.Principal)
-		if !ok {
+		if _, ok := s.IdentityByID(w.Principal); !ok {
 			return fmt.Errorf("registry.Validate: writer allowlist names unknown principal %q: %w", w.Principal, ErrIdentityNotEnrolled)
 		}
 		// P3-a: makine yazar-allowlist'i de joker taşıyamaz (aynı gerekçe).
-		if principal.Type == TypeMachine && containsStr(w.Keys, KeyWildcard) {
+		if s.isMachineWildcard(w.Principal, w.Keys) {
 			return fmt.Errorf("registry.Validate: machine writer allowlist %q must use an explicit key allowlist, not %q: %w", w.Principal, KeyWildcard, ErrRegistryInvalid)
 		}
 	}
 	return nil
 }
 
-func validateIdentity(id *Identity) error {
-	// Anahtar girdilerinin key_id ↔ pubkey tutarlılığı (tamper/typo koruması).
+// ValidateSignerSemantics, kaydın TRUST-ZİNCİRİ (token-mint) açısından KRİTİK
+// anlamsal alt kümesini — ve YALNIZCA onu — denetler:
+//
+//  1. Her anahtar (enc + signing) girdisinin declared key_id'si (boş değilse)
+//     pubkey parmak izine (§3.7) UYMALI (COORD b).
+//  2. MAKİNE prensiplerinin joker ("*") grant/writer-allowlist'i YASAK (§4.3/§6).
+//
+// Trust doğrulaması bunu HER verified epoch için çağırır (chain.go): imzalı ama
+// bu alt kümeyi ihlal eden bir kayıt, Worker'da yanlış-anahtar/wildcard bir token'a
+// çevrilirdi. Kimlik-KAYIT bütünlüğünün TAMAMI (rotate_by, insan device/backup,
+// escrow şekli, enrolled-principal) için Validate() kullanılır; burası Go ve Worker'ın
+// ÜZERİNDE HEMFİKİR olduğu consensus alt kümesidir — Go'nun Worker'dan KATI olmaması
+// (yeni bir divergence yaratmaması) için kasıtlı olarak dar tutulur.
+func (s *Snapshot) ValidateSignerSemantics() error {
+	for i := range s.Identities {
+		if err := keyIDConsistency(&s.Identities[i]); err != nil {
+			return err
+		}
+	}
+	for _, g := range s.Grants {
+		if s.isMachineWildcard(g.Principal, g.Keys) {
+			return fmt.Errorf("registry.ValidateSignerSemantics: machine grant %q must use an explicit key allowlist, not %q: %w", g.Principal, KeyWildcard, ErrRegistryInvalid)
+		}
+	}
+	for _, w := range s.WriterAllowlists {
+		if s.isMachineWildcard(w.Principal, w.Keys) {
+			return fmt.Errorf("registry.ValidateSignerSemantics: machine writer allowlist %q must use an explicit key allowlist, not %q: %w", w.Principal, KeyWildcard, ErrRegistryInvalid)
+		}
+	}
+	return nil
+}
+
+// isMachineWildcard, principal KAYITLI bir MAKİNE ise ve keys joker ("*") içeriyorsa
+// true döner. Prensip kayıtta yoksa (tip çözülemez) false — bilinmeyen prensip için
+// makine-joker kuralı uygulanmaz (Validate ayrıca enrolled-principal denetler).
+func (s *Snapshot) isMachineWildcard(principal string, keys []string) bool {
+	id, ok := s.IdentityByID(principal)
+	if !ok || id.Type != TypeMachine {
+		return false
+	}
+	return containsStr(keys, KeyWildcard)
+}
+
+// keyIDConsistency, bir kimliğin enc + signing anahtar girdilerinin declared
+// key_id'sinin (boş değilse) pubkey parmak izine (§3.7) uyduğunu doğrular — tamper/
+// typo koruması (COORD b). Boş pubkey'li bir enc girdisi yapısal olarak geçersizdir.
+func keyIDConsistency(id *Identity) error {
 	for _, ek := range id.EncKeys {
 		if ek.Pubkey == "" {
 			return fmt.Errorf("registry.Validate: identity %q enc key empty pubkey: %w", id.ID, ErrRegistryInvalid)
@@ -336,6 +398,14 @@ func validateIdentity(id *Identity) error {
 		if sk.KeyID != "" && sk.KeyID != fp {
 			return fmt.Errorf("registry.Validate: identity %q signing key_id mismatch: %w", id.ID, ErrKeyIDMismatch)
 		}
+	}
+	return nil
+}
+
+func validateIdentity(id *Identity) error {
+	// Anahtar girdilerinin key_id ↔ pubkey tutarlılığı (tamper/typo koruması).
+	if err := keyIDConsistency(id); err != nil {
+		return err
 	}
 
 	switch id.Type {
@@ -444,11 +514,36 @@ func (s *Snapshot) MarshalCanonical() ([]byte, error) {
 // ParseSnapshotBody, ham body baytlarını Snapshot'a ayrıştırır. YALNIZCA imza
 // doğrulandıktan SONRA çağrılmalıdır (SPEC §3.6.3 doğrulama sırası).
 func ParseSnapshotBody(body []byte) (*Snapshot, error) {
+	// COORD (c): imzalı body'deki HER tamsayı token'ı kanonik İŞARETSİZ biçim +
+	// [0, 2^53-1] güvenli aralık paylaşmalı (Worker assertCanonicalIntegerJSON tüm
+	// body'yi LEKSİK tarar). ParseManifestBody/ParseTrustBody ile parite. NOT:
+	// Snapshot şemasında tipli tamsayı alanı VE json.RawMessage passthrough YOKTUR
+	// (trust manifest'teki rotation/jwk gibi), dolayısıyla decode-sonrası bir tarama
+	// güvensiz tamsayıya HİÇ ULAŞMAZDI; bu yüzden tarama decode'dan ÖNCE ham body
+	// üzerinde bir bütün-gövde koruması olarak çalışır (yalnızca reddi genişletir,
+	// geçerli gövdelerde no-op — tarih alanları string olduğu için atlanır).
+	if err := cryptoid.AssertCanonicalIntegerJSON(body); err != nil {
+		return nil, fmt.Errorf("registry.ParseSnapshotBody: %w", err)
+	}
+	// KATİ ŞEKİL (strict-shape): tipli decode'dan ÖNCE her string/dizi/uint alanının
+	// doğru JSON tipinde + VAR olduğunu denetle (Go encoding/json null/yokluğu ""/nil'e
+	// sessizce çözerdi). Snapshot bir consensus yüzeyi DEĞİLDİR (Worker'da parser'ı yok),
+	// ama trust manifest'iyle paylaşılan aynı element-şekil denetimleri savunma amaçlı uygulanır.
+	if err := validateSnapshotShape(body); err != nil {
+		return nil, fmt.Errorf("registry.ParseSnapshotBody: %w", err)
+	}
 	var s Snapshot
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&s); err != nil {
 		return nil, fmt.Errorf("registry.ParseSnapshotBody: %w", err)
+	}
+	// COORD (c): tek JSON değerinden SONRA fazladan içerik (token/çöp) reddedilir —
+	// ParseManifestBody/ParseTrustBody ile aynı katılık. İkinci bir Decode io.EOF
+	// döndürmeli; başka her şey trailing içeriktir. Worker'ın JSON.parse'ı da
+	// böyle bir gövdeyi reddeder.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("registry.ParseSnapshotBody: %w", ErrTrailingContent)
 	}
 	if s.Schema != SchemaRegistry {
 		return nil, fmt.Errorf("registry.ParseSnapshotBody: %q: %w", s.Schema, ErrUnsupportedSchema)

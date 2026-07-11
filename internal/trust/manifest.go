@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"time"
 
@@ -35,6 +37,12 @@ const statusActive = "active"
 // GenesisEpoch, güven zincirinin ilk epoch numarasıdır.
 const GenesisEpoch uint64 = 1
 
+// maxSafeInteger, JS Number güvenli-tamsayı üst sınırıdır (2^53 - 1). admin_epoch
+// bu değeri AŞAMAZ (COORD a): Worker JSON sayılarını double olarak okur ve
+// MAX_SAFE_INTEGER üstünü reddeder; Go uint64 daha fazlasını tutabildiği için
+// burada açıkça reddedilmeli — böylece iki taraf aynı [0, 2^53-1] alanını paylaşır.
+const maxSafeInteger uint64 = 1<<53 - 1
+
 // Quorum, roster M-of-N eşiğidir (SPEC §4.2.2). Bugün pinli: {M:2, N:3}.
 type Quorum struct {
 	M int `json:"m"`
@@ -42,14 +50,16 @@ type Quorum struct {
 }
 
 // RootKey, offline Ed25519 admin kök imzalama anahtarının kayıt girdisidir
-// (SPEC §4.2.2). Pubkey, ham 32B Ed25519 public key (JSON'da base64).
+// (SPEC §4.2.2). Pubkey, ham 32B Ed25519 public key (JSON'da base64). KATİ
+// KANONİK (B64Strict): Worker buildSignerView de kök pubkey'i b64ToBytes ile KATİ
+// çözer; non-canonical bir spelling iki tarafta ayrışmamalı (COORD a/d).
 type RootKey struct {
-	KeyID  string `json:"key_id"` // §3.7 parmak izi
-	Alg    string `json:"alg"`    // "ed25519"
-	Pubkey []byte `json:"pubkey"` // base64; ham 32B
-	Media  string `json:"media"`  // yubikey-piv | ... (distinct media)
-	Holder string `json:"holder"` // "human:<email>" — custody sahibi
-	Status string `json:"status"` // active | retired
+	KeyID  string             `json:"key_id"` // §3.7 parmak izi
+	Alg    string             `json:"alg"`    // "ed25519"
+	Pubkey cryptoid.B64Strict `json:"pubkey"` // base64 (KATİ KANONİK); ham 32B
+	Media  string             `json:"media"`  // yubikey-piv | ... (distinct media)
+	Holder string             `json:"holder"` // "human:<email>" — custody sahibi
+	Status string             `json:"status"` // active | retired
 }
 
 // ReceiptKey, Worker'ın ES256 liveness-receipt / token-mint public anahtarının
@@ -179,14 +189,39 @@ func (m *TrustManifest) MarshalCanonical() ([]byte, error) {
 // doğrular. YALNIZCA imza kümesi TAM baytlar üzerinde geçtikten SONRA
 // otoritatif kabul edilir (SPEC §3.6.3). Bilinmeyen alanlar reddedilir.
 func ParseTrustBody(body []byte) (*TrustManifest, error) {
+	// KATİ ŞEKİL (strict-shape): tipli decode'dan ÖNCE HER imzalı alanın doğru JSON
+	// tipinde + VAR olduğunu denetle (TS parseTrustBody paritesi). encoding/json
+	// null/yokluğu string→"" / bool→false / struct→zero / slice→nil'e sessizce
+	// çözerdi → Worker str/bool/obj/strArr reddiyle consensus split. Decoder tek
+	// değer okuduğundan trailing içerik AŞAĞIDAKİ özel EOF kontrolüne bırakılır.
+	if err := validateTrustShape(body); err != nil {
+		return nil, fmt.Errorf("trust.ParseTrustBody: %w", err)
+	}
 	var m TrustManifest
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("trust.ParseTrustBody: %w", err)
 	}
+	// COORD (c): tek JSON değerinden SONRA fazladan içerik (token/çöp) reddedilir.
+	// İkinci bir Decode io.EOF döndürmeli; başka her şey trailing içeriktir. Worker'ın
+	// JSON.parse'ı da böyle bir gövdeyi reddeder.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("trust.ParseTrustBody: %w", ErrTrailingContent)
+	}
 	if m.Schema != SchemaTrust {
 		return nil, fmt.Errorf("trust.ParseTrustBody: %q: %w", m.Schema, ErrUnsupportedSchema)
+	}
+	// COORD (a): admin_epoch JS güvenli-tamsayı alanını [0, 2^53-1] aşamaz.
+	if m.AdminEpoch > maxSafeInteger {
+		return nil, fmt.Errorf("trust.ParseTrustBody: admin_epoch %d exceeds max safe integer: %w", m.AdminEpoch, ErrEpochOutOfRange)
+	}
+	// COORD (a): admin_epoch dışındaki HER imzalı tamsayı da (enc_keys[].added_at,
+	// quorum.m/n, epoch_reset.prior_chain.last_admin_epoch ve rotation/jwk passthrough
+	// içindeki sayılar) aynı [0, 2^53-1] alanı + kanonik tamsayı biçimi paylaşmalı.
+	// Worker assertCanonicalIntegerJSON tüm body'yi tarar → parite için ham body taranır.
+	if err := cryptoid.AssertCanonicalIntegerJSON(body); err != nil {
+		return nil, fmt.Errorf("trust.ParseTrustBody: %w", err)
 	}
 	return &m, nil
 }
