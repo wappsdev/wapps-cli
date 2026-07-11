@@ -116,6 +116,23 @@ describe("write → read plaintext round-trip (§2.7/§7.4)", () => {
     expect(del2.status).toBe(404);
   });
 
+  it("KEY_CASE_COLLISION: farklı-case bir varyant reddedilir (§4.1 case-insensitive kimlik)", async () => {
+    expect((await putKey("Api_Token", "v1")).status).toBe(200);
+    // Farklı-case varyant (API_TOKEN) → 409: adlar case-insensitive tekil kimliktir.
+    const collide = await putKey("API_TOKEN", "v2");
+    expect(collide.status).toBe(409);
+    expect(((await collide.json()) as { error: string }).error).toBe("KEY_CASE_COLLISION");
+    // Aynı-case tekrar → normal güncelleme (çakışma değil).
+    expect((await putKey("Api_Token", "v3")).status).toBe(200);
+    // Bulk import içinde iki case-varyant → yine 409.
+    const batch = await callGate("/v1/projects/vaulter/import", {
+      method: "POST",
+      headers: authHeader(await writerJwt()),
+      body: JSON.stringify({ values: { foo_key: "1", FOO_KEY: "2" } }),
+    });
+    expect(batch.status).toBe(409);
+  });
+
   it("VALUE_TOO_LARGE: >61436B plaintext refused pre-upload (§2.1)", async () => {
     const res = await putKey("BIG_KEY", "x".repeat(61437));
     expect(res.status).toBe(413);

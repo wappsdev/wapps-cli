@@ -177,3 +177,28 @@ func TestLintProdCaseInsensitive(t *testing.T) {
 		t.Error("lint(b): a lowercase !*_prod_* deny must silence the warning")
 	}
 }
+
+func TestKeyGlobMatchCaseInsensitive(t *testing.T) {
+	// GlobMatch §4.2 pinli case-SENSITIVE kalır; keyGlobMatch (anahtar-adı) case-insensitive.
+	if !GlobMatch("DB_*", "DB_URL") || GlobMatch("DB_*", "db_url") {
+		t.Fatal("GlobMatch must stay case-sensitive (§4.2 pinned)")
+	}
+	if !keyGlobMatch("DB_*", "db_url") || !keyGlobMatch("db_*", "DB_URL") || !keyGlobMatch("*_PROD_*", "x_prod_y") {
+		t.Error("keyGlobMatch must fold case (key names are case-insensitive identifiers)")
+	}
+	if keyGlobMatch("DB_*", "MYDB_URL") {
+		t.Error("keyGlobMatch must still anchor (full-string) — case-fold only, not substring")
+	}
+}
+
+func TestLintOverriddenDenyCaseInsensitive(t *testing.T) {
+	// (a) küçük-harf deny, başka kuralda karışık-harf allow'la override ediliyor →
+	// enforcement case-insensitive olduğundan lint(a) da yakalamalı (codex P3).
+	a := validDoc(
+		store.Rule{Group: "dev@wapps.co", Projects: []string{"*"}, Keys: []string{"*", "!secret_*"}, Verbs: []string{"read"}},
+		store.Rule{Group: "dev@wapps.co", Projects: []string{"*"}, Keys: []string{"SECRET_API"}, Verbs: []string{"read"}},
+	)
+	if !hasWarn(Lint(a), "a") {
+		t.Error("lint(a): a case-distinct override of a deny glob must still warn")
+	}
+}

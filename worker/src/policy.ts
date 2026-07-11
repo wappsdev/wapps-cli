@@ -80,6 +80,17 @@ export function globMatch(glob: string, s: string): boolean {
   return gi === glob.length;
 }
 
+/**
+ * keyGlobMatch, anahtar-ADI eşleşmesidir (§4.3) ve globMatch'i CASE-INSENSITIVE
+ * uygular. Anahtar adları POSIX env-var olabildiğinden case-insensitive KİMLİKtir
+ * (FOO ≡ foo — writer-DO farklı-case varyantı reddeder). Böylece bir `!*_PROD_*`
+ * deny'i `*_prod_*` varyantını da yakalar VE allow tarafı simetrik kalır (asimetri
+ * yok, over-match yok). globMatch'in kendisi §4.2 pinli case-SENSITIVE kalır.
+ */
+export function keyGlobMatch(glob: string, key: string): boolean {
+  return globMatch(glob.toLowerCase(), key.toLowerCase());
+}
+
 // --- Verb genişletmesi (§4.2) --------------------------------------------------
 
 /** expandVerbs, rule.verbs'i efektif verb kümesine açar: "*" = dördü; rotate ⊃ write. */
@@ -152,13 +163,12 @@ export function authorize(
     furthest = Math.max(furthest, 3);
     // 4. key (null → proje-metadata op'u; adım atlanır)
     if (key !== null) {
-      // deny-glob KENDİ kuralı içinde kazanır (§4.3 pinli semantik 2). Deny
-      // CASE-INSENSITIVE eşleşir (savunma): anahtar adları POSIX env-var (karışık
-      // harf) olabildiğinden `!*_PROD_*` gibi bir deny, `*_prod_*` varyantını da
-      // yakalamalı — yoksa küçük-harf bir ad deny'i sessizce atlatır. Allow ise
-      // case-SENSITIVE kalır (precise: FOO ≠ foo farklı sırlardır → over-grant yok).
-      if (rule.keys.some((g) => g.startsWith("!") && globMatch(g.slice(1).toLowerCase(), key.toLowerCase()))) continue;
-      if (!rule.keys.some((g) => !g.startsWith("!") && globMatch(g, key))) continue;
+      // deny-glob KENDİ kuralı içinde kazanır (§4.3 pinli semantik 2). Anahtar-adı
+      // eşleşmesi allow VE deny için keyGlobMatch (CASE-INSENSITIVE) üstünden yapılır:
+      // adlar case-insensitive kimlik olduğundan `!*_PROD_*` her case'i yakalar ve
+      // allow simetrik kalır (asimetri/over-match yok).
+      if (rule.keys.some((g) => g.startsWith("!") && keyGlobMatch(g.slice(1), key))) continue;
+      if (!rule.keys.some((g) => !g.startsWith("!") && keyGlobMatch(g, key))) continue;
     }
     return { allowed: true };
   }

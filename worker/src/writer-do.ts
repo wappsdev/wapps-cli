@@ -211,12 +211,23 @@ export class ProjectWriterDO {
 
     // 3. Mutasyonu uygula → yeni entry kümesi + yazılacak blob'lar.
     const byName = new Map(prevEntries.map((e) => [e.keyName, e]));
+    // Anahtar adları CASE-INSENSITIVE kimlik (policy eşleşmesi keyGlobMatch üstünden
+    // case-insensitive): FOO ve foo'nun aynı anda yaşaması conflation üretir → yeni
+    // bir ad, var olan FARKLI-case bir adla çakışırsa reddet (namespace tekilliği).
+    const lowerIndex = new Map<string, string>(); // lowercased ad → kanonik (depolanan) ad
+    for (const e of prevEntries) lowerIndex.set(e.keyName.toLowerCase(), e.keyName);
     const newBlobs: { hash: string; bytes: Uint8Array }[] = [];
     const touched: string[] = [];
     let rewrapped = 0;
 
     const putValue = (keyName: string, value: string): void => {
       if (!validKeyName(keyName)) throw new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: "invalid keyName", key: keyName });
+      const lower = keyName.toLowerCase();
+      const canon = lowerIndex.get(lower);
+      if (canon !== undefined && canon !== keyName) {
+        throw new CommitError(HTTP.CONFLICT, "KEY_CASE_COLLISION", { key: keyName, existing: canon });
+      }
+      lowerIndex.set(lower, keyName);
       const prev = byName.get(keyName);
       // keyVersion HER değer değişiminde artar (AAD benzersizliği, §2.1).
       const keyVersion = (prev?.keyVersion ?? 0) + 1;
@@ -253,6 +264,7 @@ export class ProjectWriterDO {
         const key = op.key ?? "";
         if (!byName.has(key)) throw new CommitError(HTTP.NOT_FOUND, "NOT_FOUND", { key });
         byName.delete(key); // silme = yokluk (§2.6)
+        lowerIndex.delete(key.toLowerCase()); // stale kalmasın (sonraki farklı-case add serbest)
         touched.push(key);
         break;
       }
