@@ -17,6 +17,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,9 +31,17 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/store"
 )
 
+// loginTimeout, interaktif SSO akışının üst sınırı (asılı kalmayı önler).
+var loginTimeout = 5 * time.Minute
+
 // cloudflaredLogin, CF Access SSO'yu cloudflared'e delege eder ve app token'ını
 // (JWT) döner (test seam'i). cloudflared kurulu değilse NOT_AVAILABLE. Interaktif
 // çıktı (SSO URL'i vb.) kullanıcının KENDİ terminaline gider — chat/transcript'e DEĞİL.
+//
+// Token'ın TEK kalıcı kopyası session.Save'in yazdığıdır (§7.2): cloudflared, İZOLE
+// bir HOME'da çalıştırılır (token cache'i wapps yaşam döngüsü dışına sızmaz) ve iş
+// bitince silinir. Tarayıcı org-session reuse'u çerez-tabanlı olduğu için bundan
+// etkilenmez — sadece diskteki app-token kopyası engellenir.
 var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
 	cfPath, lerr := exec.LookPath("cloudflared")
 	if lerr != nil {
@@ -41,17 +50,37 @@ var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
 				"  install: brew install cloudflared\n"+
 				"  then re-run: wapps login")
 	}
-	// 1) Interaktif SSO: tarayıcı + org-session reuse + token cache.
-	login := exec.Command(cfPath, "access", "login", gate)
+	// İzole HOME → cloudflared token cache'ini burada tutar, defer ile siliyoruz.
+	tmpHome, herr := os.MkdirTemp("", "wapps-cf-")
+	if herr != nil {
+		return "", clierr.Wrapf(clierr.Internal, herr, "isolate cloudflared home")
+	}
+	defer os.RemoveAll(tmpHome)
+	isolated := append(os.Environ(), "HOME="+tmpHome)
+
+	// Sınırsız asılı kalmayı önle: 5 dk timeout + CommandContext (iki alt-process de).
+	ctx, cancel := context.WithTimeout(cmdContext(cmd), loginTimeout)
+	defer cancel()
+
+	// 1) Interaktif SSO: tarayıcı + (çerez-tabanlı) org-session reuse.
+	login := exec.CommandContext(ctx, cfPath, "access", "login", gate)
+	login.Env = isolated
 	login.Stdout, login.Stderr, login.Stdin = cmd.OutOrStdout(), cmd.ErrOrStderr(), os.Stdin
 	if rerr := login.Run(); rerr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", clierr.New(clierr.SessionExpired, "browser SSO not completed in time; re-run wapps login")
+		}
 		return "", clierr.Wrapf(clierr.Internal, rerr, "cloudflared access login")
 	}
-	// 2) Cache'lenmiş app token'ını al — yalnızca stdout (temiz JWT).
+	// 2) İzole cache'ten app token'ını al — yalnızca stdout (temiz JWT).
 	var out, errb bytes.Buffer
-	tok := exec.Command(cfPath, "access", "token", "-app="+gate)
+	tok := exec.CommandContext(ctx, cfPath, "access", "token", "-app="+gate)
+	tok.Env = isolated
 	tok.Stdout, tok.Stderr = &out, &errb
 	if rerr := tok.Run(); rerr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", clierr.New(clierr.SessionExpired, "cloudflared token fetch timed out; re-run wapps login")
+		}
 		return "", clierr.Wrapf(clierr.Internal, rerr, "cloudflared access token: %s", strings.TrimSpace(errb.String()))
 	}
 	return strings.TrimSpace(out.String()), nil
@@ -120,32 +149,50 @@ func runLogin(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// Formu doğrula (tek satır + üç base64url segment) VE claim'leri gerçekten çözebil —
+	// dekore/kırık bir stdout'un geçerli-görünüp sonradan bozuk header üretmesini engeller.
 	if !looksLikeJWT(token) {
 		return clierr.New(clierr.Internal, "cloudflared returned no usable token; re-run wapps login")
 	}
-	exp := int64(0)
-	if c, cerr := session.ParseClaims(token); cerr == nil && c.Exp > 0 {
-		exp = c.Exp
+	claims, cerr := session.ParseClaims(token)
+	if cerr != nil {
+		return clierr.Wrapf(clierr.Internal, cerr, "cloudflared token did not parse as a JWT; re-run wapps login")
 	}
-	if err := session.Save(host, session.State{Token: token, ExpiresAt: exp}); err != nil {
+	if err := session.Save(host, session.State{Token: token, ExpiresAt: claims.Exp}); err != nil {
 		return clierr.Wrapf(clierr.Internal, err, "cache session token")
 	}
 	subject := ""
-	if c, cerr := session.ParseClaims(token); cerr == nil && c.Email != "" {
-		subject = " as " + c.Email
+	if claims.Email != "" {
+		subject = " as " + claims.Email
 	}
-	if exp > 0 {
-		fmt.Fprintf(w, "✓ logged in%s (session expires in %s)\n", subject, time.Until(time.Unix(exp, 0)).Round(time.Second))
+	if claims.Exp > 0 {
+		fmt.Fprintf(w, "✓ logged in%s (session expires in %s)\n", subject, time.Until(time.Unix(claims.Exp, 0)).Round(time.Second))
 	} else {
 		fmt.Fprintf(w, "✓ logged in%s\n", subject)
 	}
 	return nil
 }
 
-// looksLikeJWT, kabaca üç boş-olmayan base64url segment (header.payload.sig) doğrular.
+// looksLikeJWT, token'ın TEK temiz satır + üç boş-olmayan base64url-decode edilebilir
+// segment (header.payload.sig) olduğunu doğrular. İç boşluk/satır = helper dekorasyonu
+// → reddet (P3: nokta-sayımı tek başına yetmez).
 func looksLikeJWT(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
 	p := strings.Split(s, ".")
-	return len(p) == 3 && p[0] != "" && p[1] != "" && p[2] != ""
+	if len(p) != 3 {
+		return false
+	}
+	for _, seg := range p {
+		if seg == "" {
+			return false
+		}
+		if _, derr := base64.RawURLEncoding.DecodeString(seg); derr != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // --- whoami -------------------------------------------------------------------
