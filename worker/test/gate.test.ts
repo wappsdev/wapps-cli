@@ -116,14 +116,6 @@ describe("write → read plaintext round-trip (§2.7/§7.4)", () => {
     expect(del2.status).toBe(404);
   });
 
-  it("manifest entry plaintext boyutunu taşır (read-cap muhasebesi)", async () => {
-    await putKey("SIZED_KEY", "hello world"); // 11 bayt
-    const man = JSON.parse(await (await env.SECRETS_BUCKET.get(keyManifest("vaulter", 1)))!.text()) as {
-      entries: { keyName: string; size: number }[];
-    };
-    expect(man.entries.find((x) => x.keyName === "SIZED_KEY")?.size).toBe(11);
-  });
-
   it("mixed-case anahtar adları (POSIX env-var) yazılıp okunur — farklı-case = farklı kimlik", async () => {
     // Storage case-sensitive kimlik: TF_VAR_* (tofu) gibi karışık-harf adlar yazılabilir;
     // farklı-case varyantlar (Api_Token vs API_TOKEN) AYRI anahtarlardır.

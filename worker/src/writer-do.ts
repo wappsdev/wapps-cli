@@ -26,7 +26,7 @@ import {
   SCHEMA_CURRENT_POINTER,
   SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
-import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL, RESPONSE_MAX } from "./storage.js";
+import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL } from "./storage.js";
 import { auditAppendSync, auditAppendBatch, AuditRow, PrincipalType } from "./audit.js";
 import { sha256Hex } from "./crypto/encoding.js";
 import {
@@ -232,7 +232,7 @@ export class ProjectWriterDO {
       const wrap = wrapDEK(this.masters![0], project, keyName, keyVersion, dek);
       dek.fill(0); // best-effort bellek temizliği
       newBlobs.push({ hash, bytes: blobBytes });
-      byName.set(keyName, { keyName, keyVersion, blobHash: hash, size: utf8(value).length, wrap, rotation: prev?.rotation });
+      byName.set(keyName, { keyName, keyVersion, blobHash: hash, wrap, rotation: prev?.rotation });
       touched.push(keyName);
     };
 
@@ -283,18 +283,6 @@ export class ProjectWriterDO {
       }
       default:
         throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "unknown op" });
-    }
-
-    // Proje toplam-plaintext bandı (RESPONSE_MAX ile TUTARLI): yalnız BÜYÜMEDE reddet —
-    // delete/rewrap gibi non-increasing mutasyonlar aşırı-büyük bir projede bile geçer,
-    // böylece proje tek tek boşaltılabilir (codex P2). Bu, YENİ projeler için hızlı-fail;
-    // GERÇEK garanti handleRead'deki RESPONSE_MAX sert backstop'udur (tüm projeler; legacy
-    // size=0 entries burada undercount etse de read yolu 413'ler — eskiden OOM olan yol
-    // artık temiz hata, kesin iyileşme).
-    const prevTotal = prevEntries.reduce((s, e) => s + (e.size ?? 0), 0);
-    const totalSize = [...byName.values()].reduce((s, e) => s + (e.size ?? 0), 0);
-    if (totalSize > RESPONSE_MAX && totalSize > prevTotal) {
-      throw new CommitError(HTTP.PAYLOAD_TOO_LARGE, "PROJECT_TOO_LARGE", { reason: "project plaintext total exceeds the readable cap", totalSize, cap: RESPONSE_MAX });
     }
 
     // 4. Yeni manifest'i kur (epoch+1, zincir, §2.6).

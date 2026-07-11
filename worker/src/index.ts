@@ -533,10 +533,12 @@ async function handleRead(
         throw e;
       }
       try {
-        const plain = openValue(dek, project, k, entry.keyVersion, blob.bytes);
-        totalBytes += plain.length;
+        const decoded = new TextDecoder().decode(openValue(dek, project, k, entry.keyVersion, blob.bytes));
+        // SERİLEŞTİRİLMİŞ boyutu say (plaintext bayt DEĞİL): JSON.stringify kaçışları
+        // (ör. NUL →   = 6 bayt) + anahtar adı gerçek yanıt/bellek maliyetidir (codex P3).
+        totalBytes += JSON.stringify(decoded).length + k.length + 4; // +4 ≈ "":, çerçeve
         if (totalBytes > RESPONSE_MAX) return jsonError(HTTP.PAYLOAD_TOO_LARGE, "RESPONSE_TOO_LARGE", "read response exceeds the size cap; request fewer keys");
-        values[k] = new TextDecoder().decode(plain);
+        values[k] = decoded;
       } catch (e) {
         if (e instanceof BlobError) {
           fireAlert(ctx, env, ALERT.A8, "blob open failed (tamper)", { project, key: k });
