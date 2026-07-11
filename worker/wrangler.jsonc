@@ -25,11 +25,12 @@
   },
   // DO storage: ProjectWriterDO serileştirmeyi blockConcurrencyWhile + R2 CAS ile
   // yapar; AuditLogDO zincir head'ini + idempotency marker'larını, AttestationDO
-  // non-extractable özel anahtarı DO storage'da tutar. new_classes (KV-backed) —
-  // new_sqlite_classes yerel isolated-storage pop'unu bozuyor (vitest-pool-workers).
+  // non-extractable özel anahtarı DO storage'da tutar. new_sqlite_classes (SQLite-backed):
+  // CF Workers FREE plan new_classes (KV-backed) DO'ları reddeder (code 10097); SQLite-backed
+  // DO aynı state.storage API'sini sunar (DO kod değişikliği yok) + modern default. 312 test geçer.
   "migrations": [
-    { "tag": "v1", "new_classes": ["ProjectWriterDO"] },
-    { "tag": "v2", "new_classes": ["AuditLogDO", "AttestationDO"] }
+    { "tag": "v1", "new_sqlite_classes": ["ProjectWriterDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["AuditLogDO", "AttestationDO"] }
   ],
 
   // R2: layout §5. Sadece Worker binding üzerinden erişilir (§5.1).
