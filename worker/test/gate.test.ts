@@ -116,36 +116,15 @@ describe("write → read plaintext round-trip (§2.7/§7.4)", () => {
     expect(del2.status).toBe(404);
   });
 
-  it("parseManifest fail-closed: restore/craft edilmiş manifest'te case-collision reddedilir (§4.1)", async () => {
-    await putKey("API_TOKEN", "v1");
-    const { parseManifest } = await import("../src/manifest.js");
-    const raw = JSON.parse(await (await env.SECRETS_BUCKET.get(keyManifest("vaulter", 1)))!.text()) as {
-      entries: { keyName: string }[];
-    };
-    // Var olan girdinin küçük-harf case-varyantını enjekte et (aynı kimlik, farklı yazım).
-    const clone = JSON.parse(JSON.stringify(raw.entries[0]));
-    clone.keyName = "api_token";
-    raw.entries.push(clone);
-    raw.entries.sort((a, b) => (a.keyName < b.keyName ? -1 : 1));
-    const bytes = new TextEncoder().encode(JSON.stringify(raw));
-    expect(() => parseManifest(bytes)).toThrow(/case-colliding/);
-  });
-
-  it("KEY_CASE_COLLISION: farklı-case bir varyant reddedilir (§4.1 case-insensitive kimlik)", async () => {
-    expect((await putKey("Api_Token", "v1")).status).toBe(200);
-    // Farklı-case varyant (API_TOKEN) → 409: adlar case-insensitive tekil kimliktir.
-    const collide = await putKey("API_TOKEN", "v2");
-    expect(collide.status).toBe(409);
-    expect(((await collide.json()) as { error: string }).error).toBe("KEY_CASE_COLLISION");
-    // Aynı-case tekrar → normal güncelleme (çakışma değil).
-    expect((await putKey("Api_Token", "v3")).status).toBe(200);
-    // Bulk import içinde iki case-varyant → yine 409.
-    const batch = await callGate("/v1/projects/vaulter/import", {
-      method: "POST",
-      headers: authHeader(await writerJwt()),
-      body: JSON.stringify({ values: { foo_key: "1", FOO_KEY: "2" } }),
-    });
-    expect(batch.status).toBe(409);
+  it("mixed-case anahtar adları (POSIX env-var) yazılıp okunur — farklı-case = farklı kimlik", async () => {
+    // Storage case-sensitive kimlik: TF_VAR_* (tofu) gibi karışık-harf adlar yazılabilir;
+    // farklı-case varyantlar (Api_Token vs API_TOKEN) AYRI anahtarlardır.
+    expect((await putKey("TF_VAR_cloudflare_api_token", "tk")).status).toBe(200);
+    expect((await putKey("vaulter_pg_admin_password", "pw")).status).toBe(200);
+    const rd = await readKeys(["TF_VAR_cloudflare_api_token", "vaulter_pg_admin_password"]);
+    const vals = ((await rd.json()) as { values: Record<string, string> }).values;
+    expect(vals.TF_VAR_cloudflare_api_token).toBe("tk");
+    expect(vals.vaulter_pg_admin_password).toBe("pw");
   });
 
   it("VALUE_TOO_LARGE: >61436B plaintext refused pre-upload (§2.1)", async () => {

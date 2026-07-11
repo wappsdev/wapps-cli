@@ -102,17 +102,16 @@ describe("authorize (§4.3 normatif)", () => {
     expect(authorize(BASE, impostor, "vaulter", "K", "read").allowed).toBe(false);
   });
 
-  it("anahtar eşleşmesi CASE-INSENSITIVE (simetrik) — deny her case'i yakalar, allow da", () => {
-    // Anahtar adları POSIX env-var (karışık harf) = case-insensitive kimlik. Deny
-    // savunma amaçlı: `!*_PROD_*` her case'i yakalar; allow da simetrik (asimetri yok).
+  it("DENY case-insensitive (fail-safe) / ALLOW case-sensitive (storage kimliği)", () => {
+    // Deny fail-safe hardening: `!*_PROD_*` her case'i yakalar (fazladan eşleşme güvenli).
     expect(authorize(BASE, dev, "vaulter", "DB_PROD_URL", "read").allowed).toBe(false); // upper
-    expect(authorize(BASE, dev, "vaulter", "db_prod_url", "read").allowed).toBe(false); // lower
-    expect(authorize(BASE, dev, "vaulter", "Db_Prod_Url", "read").allowed).toBe(false); // karışık
-    // prod içermeyen ad erişilebilir (deny takmaz).
-    expect(authorize(BASE, dev, "vaulter", "database_url", "read").allowed).toBe(true);
-    // Allow da CASE-INSENSITIVE: svc DEPLOY_* grant'ı deploy_key'i de kapsar (simetri).
+    expect(authorize(BASE, dev, "vaulter", "db_prod_url", "read").allowed).toBe(false); // lower (fold)
+    expect(authorize(BASE, dev, "vaulter", "Db_Prod_Url", "read").allowed).toBe(false); // karışık (fold)
+    expect(authorize(BASE, dev, "vaulter", "database_url", "read").allowed).toBe(true); // prod yok → erişilebilir
+    // Allow CASE-SENSITIVE: svc DEPLOY_* yalnız uppercase DEPLOY_ anahtarlarını kapsar
+    // (adlar storage'da case-sensitive kimlik — over-grant yok).
     expect(authorize(BASE, svc, "vaulter", "DEPLOY_KEY", "read").allowed).toBe(true);
-    expect(authorize(BASE, svc, "vaulter", "deploy_key", "read").allowed).toBe(true);
+    expect(authorize(BASE, svc, "vaulter", "deploy_key", "read").allowed).toBe(false); // farklı kimlik
     expect(authorize(BASE, svc, "vaulter", "API_KEY", "read").allowed).toBe(false); // allow glob yok
   });
 });

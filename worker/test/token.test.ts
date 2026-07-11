@@ -43,12 +43,11 @@ async function seedValues(): Promise<void> {
   });
 }
 
-describe("scopeAllowsKey — case-insensitive anahtar kimliği (§5.3, policy ile tutarlı)", () => {
-  it("case-fold: DEPLOY_TOKEN scope'u deploy_token'ı da kapsar; '*' tümünü", () => {
+describe("scopeAllowsKey — case-SENSITIVE anahtar kimliği (§5.3, allow ile tutarlı)", () => {
+  it("tam eşleşme: DEPLOY_TOKEN scope'u deploy_token'ı KAPSAMAZ; '*' tümünü kapsar", () => {
     const scope = { project: "vaulter", keys: ["DEPLOY_TOKEN"], verbs: ["read"] } as never;
     expect(scopeAllowsKey(scope, "DEPLOY_TOKEN")).toBe(true);
-    expect(scopeAllowsKey(scope, "deploy_token")).toBe(true);
-    expect(scopeAllowsKey(scope, "Deploy_Token")).toBe(true);
+    expect(scopeAllowsKey(scope, "deploy_token")).toBe(false); // farklı kimlik (case-sensitive)
     expect(scopeAllowsKey(scope, "OTHER_KEY")).toBe(false);
     expect(scopeAllowsKey({ project: "vaulter", keys: ["*"], verbs: ["read"] } as never, "anything")).toBe(true);
   });

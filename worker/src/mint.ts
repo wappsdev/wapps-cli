@@ -181,9 +181,7 @@ export function scopeAllowsVerb(scope: TokenScope, verb: string): boolean {
 }
 
 /** scopeAllowsKey, token scope'unun bir anahtarı kapsayıp kapsamadığı ("*" = tümü).
- *  Anahtar adları case-insensitive KİMLİK olduğundan (policy keyGlobMatch ile tutarlı;
- *  writer-DO farklı-case varyantı reddeder), eşleşme CASE-INSENSITIVE'dir. */
+ *  Anahtar adları case-sensitive kimliktir (allow tarafıyla tutarlı) → tam eşleşme. */
 export function scopeAllowsKey(scope: TokenScope, key: string): boolean {
-  const lk = key.toLowerCase();
-  return scope.keys.some((k) => k === "*" || k.toLowerCase() === lk);
+  return scope.keys.some((k) => k === "*" || k === key);
 }

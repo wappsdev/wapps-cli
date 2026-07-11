@@ -326,28 +326,16 @@ func ruleSubsumes(a, b store.Rule) bool {
 			return false
 		}
 	}
-	// fold=true → anahtar-adı kapsaması CASE-INSENSITIVE (enforcement/keyGlobMatch ile
-	// tutarlı, §4.1); projeler case-sensitive kalır (yalnız-küçük harf zaten).
-	covers := func(aGlobs, bGlobs []string, fold bool) bool {
-		eq := func(x, y string) bool {
-			if fold {
-				return strings.EqualFold(x, y)
-			}
-			return x == y
-		}
-		m := func(g, s string) bool {
-			if fold {
-				return keyGlobMatch(g, s)
-			}
-			return GlobMatch(g, s)
-		}
+	// Kapsam CASE-SENSITIVE'dir (allow tarafıyla tutarlı: anahtar adları case-sensitive
+	// kimlik; yalnız DENY case-insensitive'dir, kapsam allow gölgelemesidir).
+	covers := func(aGlobs, bGlobs []string) bool {
 		for _, bg := range bGlobs {
 			if strings.HasPrefix(bg, "!") {
 				continue
 			}
 			ok := false
 			for _, ag := range aGlobs {
-				if ag == "*" || eq(ag, bg) || m(ag, concretize(bg)) {
+				if ag == "*" || ag == bg || GlobMatch(ag, concretize(bg)) {
 					ok = true
 					break
 				}
@@ -358,5 +346,5 @@ func ruleSubsumes(a, b store.Rule) bool {
 		}
 		return true
 	}
-	return covers(a.Projects, b.Projects, false) && covers(a.Keys, b.Keys, true)
+	return covers(a.Projects, b.Projects) && covers(a.Keys, b.Keys)
 }

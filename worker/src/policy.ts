@@ -39,11 +39,11 @@ export type Topology = "primary" | "fallback";
 // `*` = herhangi bir karakter dizisi (boş dahil), `?` = tek karakter, gerisi
 // literal, TAM-string eşleşme. Karakter sınıfı / `**` YOK.
 //
-// KATMAN AYRIMI: globMatch primitivi case-SENSITIVE'dir (aşağıdaki testler pinler);
-// ANCAK anahtar-ADI yetkilendirmesi keyGlobMatch üstünden CASE-INSENSITIVE yapılır —
-// anahtar adları case-insensitive KİMLİKtir (POSIX env-var; writer-DO farklı-case
-// varyantı 409 KEY_CASE_COLLISION ile reddeder, token scope'u da aynı). Böylece hiçbir
-// katman (policy/token/storage) diğerinden farklı case-semantiği taşımaz.
+// CASE SEMANTİĞİ: globMatch primitivi case-SENSITIVE'dir (aşağıdaki testler pinler)
+// ve anahtar adları storage'da case-sensitive kimliktir (keyName AEAD AAD'ye bağlı) —
+// allow/token/lookup HEP case-sensitive. TEK istisna DENY'dir: keyGlobMatch üstünden
+// CASE-INSENSITIVE eşleşir (fail-safe hardening: bir `!*_PROD_*` deny'i `*_prod_*`
+// varyantını da yakalasın; deny fazladan eşleşmesi güvenli yöndür).
 //
 // GÜVENLİK (ReDoS): regex TABANLI DEĞİL. Greedy `[\s\S]*` çevirisi, policy
 // admin'inin PUT edebildiği `*A*A*...*B` şekilli bir pattern'de katastrofik
@@ -169,12 +169,14 @@ export function authorize(
     furthest = Math.max(furthest, 3);
     // 4. key (null → proje-metadata op'u; adım atlanır)
     if (key !== null) {
-      // deny-glob KENDİ kuralı içinde kazanır (§4.3 pinli semantik 2). Anahtar-adı
-      // eşleşmesi allow VE deny için keyGlobMatch (CASE-INSENSITIVE) üstünden yapılır:
-      // adlar case-insensitive kimlik olduğundan `!*_PROD_*` her case'i yakalar ve
-      // allow simetrik kalır (asimetri/over-match yok).
+      // deny-glob KENDİ kuralı içinde kazanır (§4.3 pinli semantik 2).
+      //  • DENY: keyGlobMatch (CASE-INSENSITIVE) — fail-safe hardening. `!*_PROD_*`
+      //    `*_prod_*` varyantını da yakalar; deny fazladan eşleşmesi GÜVENLİ yöndür.
+      //  • ALLOW: globMatch (case-SENSITIVE, §4.2 pinli) — anahtar adları storage'da
+      //    case-sensitive kimliktir (keyName AEAD AAD'ye bağlı), allow bir case-
+      //    varyantını istemeden GRANT'lamaz (over-grant yok, storage ile tutarlı).
       if (rule.keys.some((g) => g.startsWith("!") && keyGlobMatch(g.slice(1), key))) continue;
-      if (!rule.keys.some((g) => !g.startsWith("!") && keyGlobMatch(g, key))) continue;
+      if (!rule.keys.some((g) => !g.startsWith("!") && globMatch(g, key))) continue;
     }
     return { allowed: true };
   }
