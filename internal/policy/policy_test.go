@@ -202,3 +202,15 @@ func TestLintOverriddenDenyCaseInsensitive(t *testing.T) {
 		t.Error("lint(a): a case-distinct override of a deny glob must still warn")
 	}
 }
+
+func TestLintShadowCaseInsensitive(t *testing.T) {
+	// (c) enforcement case-insensitive olduğundan, karışık-harf bir key-coverage
+	// gölgelemesi lint(c) tarafından da yakalanmalı (ruleSubsumes keyGlobMatch, codex P3).
+	c := validDoc(
+		store.Rule{Group: "dev@wapps.co", Projects: []string{"*"}, Keys: []string{"SECRET_*"}, Verbs: []string{"read", "write"}},
+		store.Rule{Group: "dev@wapps.co", Projects: []string{"*"}, Keys: []string{"secret_api"}, Verbs: []string{"read"}},
+	)
+	if !hasWarn(Lint(c), "c") {
+		t.Error("lint(c): a case-distinct shadowed rule must warn")
+	}
+}

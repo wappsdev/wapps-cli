@@ -88,6 +88,7 @@ export function parseManifest(bytes: Uint8Array): DataManifest {
   if (!Array.isArray(o.entries)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "entries not an array");
 
   let prevName = "";
+  const seenLower = new Set<string>();
   const entries: ManifestEntry[] = o.entries.map((raw, i) => {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}] not an object`);
     const e = raw as Record<string, unknown>;
@@ -95,6 +96,11 @@ export function parseManifest(bytes: Uint8Array): DataManifest {
     if (!validKeyName(keyName)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}]: invalid keyName`);
     // Artan sıra + benzersizlik (§2.6): önceki addan kesin büyük olmalı.
     if (keyName <= prevName) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}]: entries not strictly sorted by keyName`);
+    // Case-insensitive KİMLİK (§4.1): authz FOO ≡ foo sayar; bir manifest İKİSİNİ birden
+    // taşıyamaz (restore/craft edilmiş manifest'e karşı fail-closed — writer-DO ikinci hat).
+    const lower = keyName.toLowerCase();
+    if (seenLower.has(lower)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}]: case-colliding keyName`);
+    seenLower.add(lower);
     prevName = keyName;
     const w = e.wrap;
     if (typeof w !== "object" || w === null || Array.isArray(w)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wrap not an object`);

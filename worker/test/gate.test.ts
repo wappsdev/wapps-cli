@@ -116,6 +116,21 @@ describe("write → read plaintext round-trip (§2.7/§7.4)", () => {
     expect(del2.status).toBe(404);
   });
 
+  it("parseManifest fail-closed: restore/craft edilmiş manifest'te case-collision reddedilir (§4.1)", async () => {
+    await putKey("API_TOKEN", "v1");
+    const { parseManifest } = await import("../src/manifest.js");
+    const raw = JSON.parse(await (await env.SECRETS_BUCKET.get(keyManifest("vaulter", 1)))!.text()) as {
+      entries: { keyName: string }[];
+    };
+    // Var olan girdinin küçük-harf case-varyantını enjekte et (aynı kimlik, farklı yazım).
+    const clone = JSON.parse(JSON.stringify(raw.entries[0]));
+    clone.keyName = "api_token";
+    raw.entries.push(clone);
+    raw.entries.sort((a, b) => (a.keyName < b.keyName ? -1 : 1));
+    const bytes = new TextEncoder().encode(JSON.stringify(raw));
+    expect(() => parseManifest(bytes)).toThrow(/case-colliding/);
+  });
+
   it("KEY_CASE_COLLISION: farklı-case bir varyant reddedilir (§4.1 case-insensitive kimlik)", async () => {
     expect((await putKey("Api_Token", "v1")).status).toBe(200);
     // Farklı-case varyant (API_TOKEN) → 409: adlar case-insensitive tekil kimliktir.
