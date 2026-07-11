@@ -69,7 +69,9 @@ export async function handleTokenMint(
     return jsonError(HTTP.FORBIDDEN, "TOKEN_SCOPE_EXCEEDED", "requested scope exceeds policy rows", { offending });
   }
 
-  // ttl clamp ≤600 + mint.
+  // ttl clamp ≤600 + mint. sub = MINT EDEN principal (CF Access common_name'den) —
+  // data-plane'de principal binding bu alana karşı doğrulanır (auth.ts): minted
+  // token yalnızca kendi ihraççısının scope'unu daraltabilir, başkasını taşıyamaz.
   const scope: TokenScope = { verbs, keys };
   const minted = await mintToken(env, { sub: principalId, project, scope, ttlSeconds: ttlReq });
 

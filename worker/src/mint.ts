@@ -19,7 +19,11 @@ export interface TokenScope {
 
 export interface MintedClaims {
   iss: string;
-  sub: string; // machine:<identity-id>
+  // sub = mint EDEN principal'ın id'si ("service:<common_name>") — token.ts mint
+  // anında dış CF-Access-doğrulanmış principal'dan yazar. resolveMachinePrincipal
+  // bu alanı dış principal'a EŞİTLİK için doğrular (principal binding); minted
+  // token kendi ihraççısından başka bir kimliğe ASLA adapte edilemez.
+  sub: string;
   aud: string;
   project: string;
   scope: TokenScope;

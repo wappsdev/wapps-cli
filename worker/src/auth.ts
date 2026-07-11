@@ -284,8 +284,15 @@ export function stripForgeableHeaders(request: Request): Request {
  * Bearer <token>. Token ES256 doğrulanır (kid + iss/aud/exp), sonra jti KV deny-list'te
  * DEĞİL kontrol edilir (≤60s lag). Principal minted token'ın sub/scope/project'inden
  * türetilir — ASLA seed'den. Eksik token → MACHINE_TOKEN_REQUIRED; revoke → TOKEN_REVOKED.
+ *
+ * PRINCIPAL BINDING (privilege-escalation guard): minted token'ın sub'ı, DIŞ
+ * katmanda CF Access ile doğrulanmış service principal'ın id'sine (service:<cn>)
+ * EŞİT olmak ZORUNDA. Mint anında sub = mint eden principal yazılır (token.ts);
+ * dolayısıyla bir minted token yalnızca KENDİ ihraççısının scope'unu daraltabilir.
+ * Başka bir principal'a mint'lenmiş (ör. çalınmış/yakalanmış) token sunan bir
+ * service token → TOKEN_PRINCIPAL_MISMATCH (asla başka principal'a yükselme yok).
  */
-export async function resolveMachinePrincipal(request: Request, env: Env): Promise<Principal> {
+export async function resolveMachinePrincipal(request: Request, env: Env, expectedSub: string): Promise<Principal> {
   const authz = request.headers.get("authorization") ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(authz.trim());
   if (!m) throw new AuthFail(HTTP.FORBIDDEN, "MACHINE_TOKEN_REQUIRED", "service token needs a minted machine token");
@@ -294,6 +301,10 @@ export async function resolveMachinePrincipal(request: Request, env: Env): Promi
   if (!v.ok) {
     if (v.error === "TOKEN_EXPIRED") throw new AuthFail(HTTP.FORBIDDEN, "TOKEN_EXPIRED", "minted token expired");
     throw new AuthFail(HTTP.FORBIDDEN, "MACHINE_TOKEN_REQUIRED", `minted token invalid: ${v.error}`);
+  }
+  // Principal binding: minted sub ≠ dış doğrulanmış principal → red (yukarıdaki blok).
+  if (v.claims.sub !== expectedSub) {
+    throw new AuthFail(HTTP.FORBIDDEN, "TOKEN_PRINCIPAL_MISMATCH", "minted token was not issued to this service principal");
   }
   // jti deny-list (§6.1 step 9): HER istekte kontrol; KV propagation ≤60s pinned lag.
   const denied = await env.JTI_DENYLIST.get(v.claims.jti);

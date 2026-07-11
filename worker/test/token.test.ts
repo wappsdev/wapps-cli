@@ -175,6 +175,46 @@ describe("minted token on the data plane — INTERSECTS the policy row (§5.3)",
   });
 });
 
+describe("minted token PRINCIPAL BINDING — cross-principal use rejected", () => {
+  it("svc-ci'ye mint'lenmiş token'ı başka bir service principal sunarsa → TOKEN_PRINCIPAL_MISMATCH + deny audit", async () => {
+    await seedValues();
+    // svc-ci kendi policy satırı içinde mint'ler (meşru).
+    const mint = await callGate("/v1/token", {
+      method: "POST",
+      headers: authHeader(await svcJwt()),
+      body: JSON.stringify({ project: "vaulter", scope: { verbs: ["read"], keys: ["DEPLOY_TOKEN"] } }),
+    });
+    expect(mint.status).toBe(200);
+    const { token } = (await mint.json()) as { token: string };
+
+    // svc-other, KENDİ geçerli CF Access JWT'si + YAKALANMIŞ minted Bearer ile
+    // gelir: policy svc-ci'nin sub'ı üzerinden DEĞERLENDİRİLMEMELİ → 403.
+    const stolen = await callGate("/v1/projects/vaulter/read", {
+      method: "POST",
+      headers: authHeader(await signer.makeJWT(serviceTokenClaims("svc-other")), { Authorization: `Bearer ${token}` }),
+      body: JSON.stringify({ keys: ["DEPLOY_TOKEN"] }),
+    });
+    expect(stolen.status).toBe(403);
+    expect(((await stolen.json()) as { error: string }).error).toBe("TOKEN_PRINCIPAL_MISMATCH");
+
+    // Deny, DIŞ (gerçek) principal adına audit'lendi.
+    const rows = await allAuditRows();
+    expect(
+      rows.some(
+        (r) => r.verb === "token.use" && r.decision === "deny" && r.principal === "service:svc-other" && r.intent === "TOKEN_PRINCIPAL_MISMATCH",
+      ),
+    ).toBe(true);
+
+    // Kontrast: aynı token'ı KENDİ ihraççısı (svc-ci) sunarsa çalışmaya devam eder.
+    const legit = await callGate("/v1/projects/vaulter/read", {
+      method: "POST",
+      headers: authHeader(await svcJwt(), { Authorization: `Bearer ${token}` }),
+      body: JSON.stringify({ keys: ["DEPLOY_TOKEN"] }),
+    });
+    expect(legit.status).toBe(200);
+  });
+});
+
 describe("minted token on ADMIN routes — rejected (§5.3 scope-escalation guard)", () => {
   it("minted token is DENIED admin even when the parent service row grants admin; bare service token passes", async () => {
     await seedPolicy([

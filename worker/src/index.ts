@@ -106,8 +106,20 @@ export default {
 
       // OPSİYONEL mint katmanı (§5.3): service principal Bearer minted-token
       // sunarsa scope-pinli machine principal'a daralır (asla genişlemez).
+      // PRINCIPAL BINDING: minted sub, DIŞ CF-Access-doğrulanmış principal'a
+      // eşit olmalı — başka principal'a mint'lenmiş token = privilege escalation
+      // → TOKEN_PRINCIPAL_MISMATCH + deny audit (dış principal adına).
       if (principal.kind === "service" && (request.headers.get("authorization") ?? "").trim() !== "") {
-        principal = await resolveMachinePrincipal(request, env);
+        const outerId = principal.id;
+        try {
+          principal = await resolveMachinePrincipal(request, env, outerId);
+        } catch (e) {
+          if (e instanceof AuthFail && e.code === "TOKEN_PRINCIPAL_MISMATCH") {
+            auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, outerId, "machine", "token.use", null, null, "TOKEN_PRINCIPAL_MISMATCH"));
+            await countDenyBurst(ctx, env, outerId);
+          }
+          throw e;
+        }
       }
 
       // Grup çözümü (§3.2): yalnızca human. Hata → 503 IDENTITY_UNAVAILABLE (fail-closed).

@@ -42,6 +42,25 @@ describe("glob (pinned §4.2)", () => {
     expect(globMatch("A.B", "AxB")).toBe(false); // '.' literal
     expect(globMatch("*_PROD_*", "DB_PROD_URL")).toBe(true);
   });
+
+  it("çok yıldızlı pattern'ler doğru eşleşir (iki-işaretçili algoritma)", () => {
+    expect(globMatch("*A*B*C*", "xxAyyBzzCww")).toBe(true);
+    expect(globMatch("*A*B*C*", "xxAyyCzzBww")).toBe(false); // sıra korunur
+    expect(globMatch("a*a*a", "aaa")).toBe(true); // '*' boş eşleşebilir
+    expect(globMatch("a**b", "ab")).toBe(true); // ardışık '*' tek '*' gibi
+    expect(globMatch("*?", "")).toBe(false); // '?' en az bir karakter ister
+  });
+
+  it("ReDoS-şekilli pattern (GLOB_MAX_LEN içinde) 128-char anahtarda HIZLI ve doğru döner", () => {
+    // Eski regex çevirisinde ( [\s\S]* greedy ) bu pattern katastrofik
+    // backtracking'le pratikte sonsuza asılırdı; lineer eşleştiricide µs sürer.
+    const evil = "*a".repeat(120) + "*b"; // 242 char ≤ 256 (policy PUT kabul ederdi)
+    const key = "a".repeat(128); // 'b' yok → eşleşmemeli
+    const t0 = Date.now();
+    expect(globMatch(evil, key)).toBe(false);
+    expect(globMatch(evil, "a".repeat(127) + "b")).toBe(true); // pozitif kontrol
+    expect(Date.now() - t0).toBeLessThan(500); // backtracking olsa saatler sürerdi
+  });
 });
 
 describe("expandVerbs (§4.2)", () => {

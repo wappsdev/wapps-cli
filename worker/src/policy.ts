@@ -38,28 +38,46 @@ export type Topology = "primary" | "fallback";
 // --- Glob (pinli sözdizimi, §4.2) --------------------------------------------
 // `*` = herhangi bir karakter dizisi (boş dahil), `?` = tek karakter, gerisi
 // literal, case-sensitive, TAM-string eşleşme. Karakter sınıfı / `**` YOK.
+//
+// GÜVENLİK (ReDoS): regex TABANLI DEĞİL. Greedy `[\s\S]*` çevirisi, policy
+// admin'inin PUT edebildiği `*A*A*...*B` şekilli bir pattern'de katastrofik
+// backtracking'e (üstel süre) açıktı — authorize()/filterReadableKeys() üstünden
+// tüm list/read/write/manifest yolları DoS edilebilirdi. Aşağıdaki eşleştirici
+// klasik iki-işaretçili '*' geri-alma algoritmasıdır: backtracking regex YOK,
+// en kötü durum O(|glob| × |s|) — 256×128 sınırlarıyla mikro-saniyeler.
 
-const globCache = new Map<string, RegExp>();
-
-/** globToRegExp, pinli glob'u anchored RegExp'e çevirir (izolat-içi cache). */
-function globToRegExp(glob: string): RegExp {
-  const hit = globCache.get(glob);
-  if (hit) return hit;
-  let re = "^";
-  for (const ch of glob) {
-    if (ch === "*") re += "[\\s\\S]*";
-    else if (ch === "?") re += "[\\s\\S]";
-    else re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-  re += "$";
-  const rx = new RegExp(re);
-  globCache.set(glob, rx);
-  return rx;
-}
-
-/** globMatch, pinli glob semantiğiyle tam-string eşleşme (§4.2). */
+/**
+ * globMatch, pinli glob semantiğiyle tam-string eşleşme (§4.2). Lineer-zamanlı
+ * iki-işaretçili algoritma: son görülen '*' konumu (star) + o yıldızın s'de
+ * denenen başlangıcı (mark) tutulur; uyumsuzlukta yıldız bir karakter daha
+ * "yutar" (mark++). '?' tek karakter (UTF-16 code unit — eski `[\s\S]`
+ * semantiğiyle birebir), baştaki '!' deny formu ÇAĞIRANDA ele alınır.
+ */
 export function globMatch(glob: string, s: string): boolean {
-  return globToRegExp(glob).test(s);
+  let gi = 0; // glob işaretçisi
+  let si = 0; // s işaretçisi
+  let star = -1; // son '*' index'i (yoksa -1)
+  let mark = 0; // son '*' için s'de denenen eşleşme başlangıcı
+  while (si < s.length) {
+    if (gi < glob.length && (glob[gi] === "?" || glob[gi] === s[si])) {
+      gi++;
+      si++;
+    } else if (gi < glob.length && glob[gi] === "*") {
+      star = gi;
+      gi++;
+      mark = si; // '*' önce BOŞ eşleşmeyi dener
+    } else if (star !== -1) {
+      // Uyumsuzluk: son '*' bir karakter daha yutsun, kaldığı yerden devam.
+      gi = star + 1;
+      mark++;
+      si = mark;
+    } else {
+      return false;
+    }
+  }
+  // s tükendi: glob'un kalanı yalnızca '*' ise eşleşme tamdır.
+  while (gi < glob.length && glob[gi] === "*") gi++;
+  return gi === glob.length;
 }
 
 // --- Verb genişletmesi (§4.2) --------------------------------------------------
