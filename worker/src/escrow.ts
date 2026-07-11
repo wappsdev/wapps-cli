@@ -14,7 +14,7 @@
 // F2 (§9.2.3): MUTABLE `current` pointer B2'ye ASLA yazılmaz (object-lock altında
 // mutable key yeniden yazılamaz) — yalnızca immutable pointer EVENT'leri.
 
-import { utf8, b64ToBytes, sha256, bytesToHex } from "./crypto/verify.js";
+import { utf8, b64ToBytes, sha256, bytesToHex } from "./crypto/encoding.js";
 
 // --- B2 / S3 config -------------------------------------------------------
 
@@ -165,6 +165,11 @@ export async function headObject(cfg: EscrowConfig, key: string, now: Date = new
 /** keyEscrowAuditSegment, tek bir audit satırının immutable escrow segment anahtarı. */
 export function keyEscrowAuditSegment(seq: number): string {
   return `audit/segments/${seq}.json`;
+}
+
+/** keyEscrowAuditAnchor, NIGHTLY audit-head çapasının append-only B2 anahtarı (§8.3). */
+export function keyEscrowAuditAnchor(isoDate: string): string {
+  return `audit/anchors/${isoDate}.json`;
 }
 
 // --- Pending-escrow kuyruğu (DO storage) + fail-soft drenajı ---------------

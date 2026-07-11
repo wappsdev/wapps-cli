@@ -17,30 +17,32 @@ import { TokenScope, verifyMintedToken } from "./mint.js";
 export interface Env {
   SECRETS_BUCKET: R2Bucket;
   PROJECT_WRITER: DurableObjectNamespace;
-  // G7 binding envanteri (§6): audit DO + D1, attestation DO, deny-list/rate KV.
   AUDIT_LOG: DurableObjectNamespace;
-  ATTESTATION: DurableObjectNamespace;
   AUDIT_DB: D1Database;
   JTI_DENYLIST: KVNamespace;
   RATE: KVNamespace;
+  // §3.2 adım 3: get-identity sonuç cache'i (yalnızca GECİKME optimizasyonu —
+  // grup-tazeliği sınırı DEĞİL; pinli: kendi namespace'i, §8.5).
+  IDENTITY_CACHE: KVNamespace;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD_READ?: string;
   ACCESS_AUD_WRITE?: string;
-  GENESIS_TRUST_SHA256?: string;
-  // Worker secret'ları (§6.4 mint, §6.10 alert).
+  // §2.2 MASTER_KEK (64-hex Worker secret'ı) + rotasyon penceresi PREV (§2.5).
+  MASTER_KEK?: string;
+  MASTER_KEK_PREV?: string;
+  // §4.5 kök admin çapası (virgülle ayrılmış e-postalar; first-boot + lockout kurtarma).
+  ADMIN_EMAILS?: string;
+  // Worker secret'ları (§5.3 opsiyonel mint katmanı, alert webhook'u).
   MINT_KEY?: string;
   MINT_KEY_PREV?: string;
   DISCORD_WEBHOOK_URL?: string;
-  // §6.8/§9.2 escrow write-through — NON-Cloudflare, object-lock'lı B2 hedefi.
-  // Append-only application key (B2_APP_KEY) = yazar ama silemez. Worker secret'ları.
+  // §8.3 escrow write-through — NON-Cloudflare B2 replika hedefi (append-only key).
   B2_ENDPOINT?: string;
   B2_REGION?: string;
   B2_BUCKET?: string;
   B2_KEY_ID?: string;
   B2_APP_KEY?: string;
-  // §6.7 GC + §9.3 witness cross-check — non-CF B2 witness origin + GC enablement.
-  WITNESS_ORIGIN?: string; // ör. https://<bucket>.s3.<region>.backblazeb2.com
-  GC_ENABLED_AT?: string; // ISO; ilk 30 gün DRY-RUN (§6.7)
+  GC_ENABLED_AT?: string; // ISO; ilk 30 gün DRY-RUN (GC cron)
 }
 
 export interface AccessConfig {
@@ -73,10 +75,12 @@ export function loadAccessConfig(env: Env): AccessConfig | null {
 
 export type Principal =
   | { kind: "human"; id: string; email: string }
-  | { kind: "seed"; id: string; commonName: string }
-  // machine: seed'in POST /v1/token'da exchange ettiği minted token'dan TÜRETİLİR
-  // (§6.1 step 8-9). Kimlik seed'den DEĞİL, minted token sub'ından gelir; scope +
-  // project token'a pinlenmiştir (per-key confinement, §6.3/§6.4).
+  // service: CF Access service-token (client-id/secret → edge JWT, common_name).
+  // v2'de DOĞRUDAN data-plane'e kabul edilir (§5.1) — mint zorunluluğu YOK.
+  | { kind: "service"; id: string; commonName: string }
+  // machine: service token'ın POST /v1/token'da exchange ettiği OPSİYONEL minted
+  // token'dan türetilir (§5.3). Scope + project token'a pinlenmiştir; policy satırı
+  // ile KESİŞİR (asla genişletmez).
   | { kind: "machine"; id: string; scope: TokenScope; project: string; jti: string };
 
 // --- base64url --------------------------------------------------------------
@@ -259,7 +263,7 @@ export async function authenticate(request: Request, cfg: AccessConfig, routeAud
   const email = typeof claims.email === "string" ? claims.email.trim() : "";
   if (email) return { kind: "human", id: `human:${email}`, email };
   const cn = typeof claims.common_name === "string" ? claims.common_name.trim() : "";
-  if (cn) return { kind: "seed", id: `seed:${cn}`, commonName: cn };
+  if (cn) return { kind: "service", id: `service:${cn}`, commonName: cn };
   throw new AuthFail(HTTP.UNAUTHORIZED, "AUTH_INVALID", "no identity claim");
 }
 

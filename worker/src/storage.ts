@@ -1,7 +1,8 @@
-// R2 obje namespace'i + read-path yardımcıları (SPEC §5.2/§5.5). Okuma yolu
-// DO-free'dir (§5.5 rule 5): manifest/blob/pointer doğrudan Worker'dan R2'ye.
+// R2 obje namespace'i + read-path yardımcıları (SPEC §2.6/§4.1). Okuma yolu
+// DO-free'dir; manifest/blob/pointer doğrudan Worker'dan R2'ye. v2 delta: trust/*
+// anahtarları SİLİNDİ (§0.2); policy/* anahtarları EKLENDİ (§4.1).
 
-// --- Anahtar düzeni (§5.2) -------------------------------------------------
+// --- Anahtar düzeni ----------------------------------------------------------
 
 export function keyBlob(project: string, sha256: string): string {
   return `secrets/${project}/blobs/${sha256}`;
@@ -13,17 +14,17 @@ export function keyCurrent(project: string): string {
   return `secrets/${project}/current`;
 }
 export function keyPointerEvent(project: string, epoch: number): string {
-  // Escrow tarafı append-only pointer-event akışı (§9.2.3 / F2).
+  // Escrow tarafı append-only pointer-event akışı (§8.3).
   return `pointer-events/${project}/${epoch}.json`;
 }
-export function keyTrustManifest(epoch: number): string {
-  return `trust/manifests/${epoch}.json`;
+export function keyPolicyCurrent(): string {
+  return `policy/current`;
 }
-export function keyTrustCurrent(): string {
-  return `trust/current`;
+export function keyPolicyVersion(n: number): string {
+  return `policy/versions/${n}.json`;
 }
 
-// --- Proje / anahtar-adı doğrulama (§5.2 rule 1, §5.4.3 rule 1) -------------
+// --- Proje / anahtar-adı doğrulama -------------------------------------------
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const KEYNAME_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
@@ -39,7 +40,7 @@ export function validSha256Hex(h: string): boolean {
   return SHA256_HEX_RE.test(h);
 }
 
-// --- R2 read yardımcıları --------------------------------------------------
+// --- R2 read yardımcıları ----------------------------------------------------
 
 export interface FetchedObject {
   bytes: Uint8Array;
@@ -58,4 +59,19 @@ export async function getObject(bucket: R2Bucket, key: string): Promise<FetchedO
 export async function headEtag(bucket: R2Bucket, key: string): Promise<string | null> {
   const h = await bucket.head(key);
   return h ? h.etag : null;
+}
+
+/** deriveProjects, R2'deki `secrets/<project>/` öneklerinden proje adlarını çıkarır. */
+export async function deriveProjects(bucket: R2Bucket): Promise<string[]> {
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const l = await bucket.list({ prefix: "secrets/", delimiter: "/", cursor });
+    for (const p of l.delimitedPrefixes ?? []) {
+      const m = p.match(/^secrets\/([^/]+)\/$/);
+      if (m) seen.add(m[1]);
+    }
+    cursor = l.truncated ? l.cursor : undefined;
+  } while (cursor);
+  return [...seen];
 }

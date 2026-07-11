@@ -1,21 +1,39 @@
 {
+  // secrets-gate STAGING — SERVER-DECRYPT v2. §8.2 adım 2: staging bucket/D1/KV
+  // ZK-format test verisiyle birlikte WIPE edilip yeniden yaratılır (Path A yok).
   "name": "secrets-gate-staging",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
+  "triggers": { "crons": ["0 2 * * *", "0 3 * * 0"] },
   "durable_objects": { "bindings": [
     { "name": "PROJECT_WRITER", "class_name": "ProjectWriterDO" },
-    { "name": "AUDIT_LOG", "class_name": "AuditLogDO" },
-    { "name": "ATTESTATION", "class_name": "AttestationDO" }
+    { "name": "AUDIT_LOG", "class_name": "AuditLogDO" }
   ]},
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ProjectWriterDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["AuditLogDO", "AttestationDO"] }
+    { "tag": "v2", "new_sqlite_classes": ["AuditLogDO", "AttestationDO"] },
+    { "tag": "v3", "deleted_classes": ["AttestationDO"] }
   ],
   "r2_buckets": [ { "binding": "SECRETS_BUCKET", "bucket_name": "wapps-secrets-staging" } ],
   "d1_databases": [ { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit-staging", "database_id": "fb357598-42ce-490e-bd82-935ee7843ff4" } ],
   "kv_namespaces": [
     { "binding": "JTI_DENYLIST", "id": "d6df403f89234bdcbc641e86180868d6" },
-    { "binding": "RATE", "id": "70c9197964f245f285959d35d62776a6" }
+    { "binding": "RATE", "id": "70c9197964f245f285959d35d62776a6" },
+    { "binding": "IDENTITY_CACHE", "id": "identity_cache_staging" }
   ],
-  "vars": { "ACCESS_TEAM_DOMAIN": "wapps-dev.cloudflareaccess.com", "ACCESS_AUD_READ": "ac318093752e2119d46838b91ba59fcfc26e2f28d7c567b0303fa19878779e22", "ACCESS_AUD_WRITE": "", "GENESIS_TRUST_SHA256": "", "MINT_KEY": "", "MINT_KEY_PREV": "", "DISCORD_WEBHOOK_URL": "", "B2_ENDPOINT": "", "B2_REGION": "", "B2_BUCKET": "", "WITNESS_ORIGIN": "", "GC_ENABLED_AT": "" }
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "wapps-dev.cloudflareaccess.com",
+    "ACCESS_AUD_READ": "ac318093752e2119d46838b91ba59fcfc26e2f28d7c567b0303fa19878779e22",
+    "ACCESS_AUD_WRITE": "",
+    "ADMIN_EMAILS": "",
+    "MASTER_KEK": "",
+    "MASTER_KEK_PREV": "",
+    "MINT_KEY": "",
+    "MINT_KEY_PREV": "",
+    "DISCORD_WEBHOOK_URL": "",
+    "B2_ENDPOINT": "",
+    "B2_REGION": "",
+    "B2_BUCKET": "",
+    "GC_ENABLED_AT": ""
+  }
 }

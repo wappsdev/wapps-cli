@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "wapps-secrets secrets-gate Worker (G6 core) — verify-only crypto + per-project write serializer",
+  "description": "wapps-secrets secrets-gate Worker (server-decrypt v2) — CF Access + Google-group policy authz, MASTER_KEK envelope crypto, per-project write serializer",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -11,7 +11,7 @@
     "gen-vectors": "cd .. && go run ./worker/testdata-gen/main.go"
   },
   "dependencies": {
-    "@noble/curves": "^1.9.6",
+    "@noble/ciphers": "2.0.1",
     "@noble/hashes": "^1.8.0"
   },
   "devDependencies": {

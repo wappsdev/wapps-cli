@@ -1,34 +1,25 @@
-// Data manifest doğrulama + epoch zinciri + semantik diff (SPEC §5.4/§5.5/§6.2).
+// Data manifest v2 (SPEC §2.6) — İMZASIZ, Worker-yazarlı düz JSON. ZK tasarımın
+// imza sarmalayıcısı/semantik-diff makinesi SİLİNDİ (§0.2): Worker tek R2
+// yazarıdır; out-of-band mutasyona karşı bütünlük, epoch hash zinciri + CLI epoch
+// pin'i + B2 replikasıyla tamper-EVIDENT'tır (tamper-proof değil; kabul, §2.6).
 //
-// KATİ KURAL (§3.6.3/§5.4.1): imza, depolanan TAM baytların SHA-256'sı üzerine.
-// Doğrulayıcı ham baytları hash'ler ve imzayı body'yi PARSE ETMEDEN doğrular.
-// Yeniden-serileştirme YOK. Body ancak imza geçtikten SONRA (strict) parse edilir.
-//
-// prevManifestSha256 / CurrentPointer.manifestSha256 = depolanan İMZALI
-// SARMALAYICI baytlarının hex SHA-256'sıdır (body değil, TAM obje) — trust
-// manifest'in payload-hash'inden FARKLI (§5.4.2 vs §4.2.2; trust.ts'e bakın).
+// Kurallar: proje+epoch başına TAM anahtar kümesi (delta değil); entries keyName'e
+// göre ARTAN sıralı + benzersiz (KEYNAME_RE); silme = yokluk; her girdi tam olarak
+// BİR wrap taşır (recipient kapalı kümesi = worker-kek:v1, §2.4); rotation metadata
+// opak taşınır. prevManifestSha256 = önceki manifest OBJE baytlarının hex SHA-256'sı.
 
-import {
-  SignedObject,
-  VerifierKey,
-  assertCanonicalIntegerJSON,
-  b64ToBytes,
-  isRFC3339,
-  sha256Hex,
-  verifySignatureEnvelope,
-} from "./crypto/verify.js";
-import { findMemberValueSpan, scanJsonValue, skipJsonWs } from "./json-span.js";
+import { sha256Hex, utf8, b64ToBytes } from "./crypto/encoding.js";
+import { DekWrap, WRAP_RECIPIENT, WRAP_TOTAL_LEN } from "./crypto/kek.js";
+import { validKeyName } from "./storage.js";
 
-export const SCHEMA_DATA_MANIFEST = "wapps-secrets/data-manifest/v1";
+export const SCHEMA_DATA_MANIFEST = "wapps-secrets/data-manifest/v2";
 export const SCHEMA_CURRENT_POINTER = "wapps-secrets/current/v1";
+export const MANIFEST_CAP = 1_048_576; // 1 MB (§2.6 MANIFEST_TOO_LARGE)
 
-// Manifest-seviyesi hata kodları (§5.7 / §6 error contract).
 export type ManifestError =
-  | "BAD_SIGNATURE_COUNT"
-  | "WRITER_UNKNOWN"
-  | "SIG_INVALID"
   | "UNSUPPORTED_SCHEMA"
-  | "MANIFEST_MALFORMED";
+  | "MANIFEST_MALFORMED"
+  | "ALG_UNSUPPORTED";
 
 export class ManifestVerifyError extends Error {
   constructor(public code: ManifestError, msg?: string) {
@@ -37,34 +28,23 @@ export class ManifestVerifyError extends Error {
   }
 }
 
-export interface DEKWrap {
-  recipient: string; // şifreleme-pubkey parmak izi (§3.7)
-  wrapB64: string; // DEK'in X25519 seal'i (Worker YORUMLAMAZ; sadece taşır)
-}
-
-export interface KeyEntry {
+export interface ManifestEntry {
   keyName: string;
   keyVersion: number;
-  blobHash: string; // çıplak-hex SHA-256 (§5.3)
-  wraps: DEKWrap[];
-  rotation?: unknown; // §8.6.2 opsiyonel passthrough; Worker ASLA yorumlamaz
-  hasRotation: boolean;
-  // rotationRaw: rotation değerinin İMZALI body'deki TAM ham alt-dizesi (iç boşluk
-  // dahil), yok/null ise undefined (COORD c). Go, rotation'ı json.RawMessage olarak
-  // BYTE-EXACT saklar ve entriesEqual'ı bytes.Equal ile karşılaştırır; TS de aynı
-  // ham baytları saklamalı — JSON.stringify re-serialize'ı boşluk/format farkını
-  // yutar ve yetkisiz bir anahtardaki boşluk-mutasyonunu "değişmemiş" sayardı.
-  rotationRaw?: string;
+  blobHash: string; // çıplak-hex SHA-256 içerik adresi
+  wrap: DekWrap; // tam olarak BİR wrap (§2.4)
+  rotation?: unknown; // opak taşınır (ZK §8.6.2 şekli); Worker yorumlamaz
 }
 
 export interface DataManifest {
   schema: string;
   project: string;
   epoch: number;
-  prevManifestSha256: string;
-  trustEpoch: number;
-  createdAt: string;
-  entries: KeyEntry[];
+  prevManifestSha256: string; // "" iff epoch==1
+  policyVersion: number;
+  writer: string; // bilgilendirici (audit çapraz-referansı); AUTHZ GİRDİSİ DEĞİL (§2.6)
+  createdAt: string; // RFC3339
+  entries: ManifestEntry[];
 }
 
 export interface CurrentPointer {
@@ -74,22 +54,12 @@ export interface CurrentPointer {
   manifestSha256: string;
 }
 
-/** manifestObjectHash, depolanan imzalı-sarmalayıcı baytlarının çıplak-hex SHA-256'sı (§5.4.2/§5.5). */
-export function manifestObjectHash(storedWrapperBytes: Uint8Array): string {
-  return sha256Hex(storedWrapperBytes);
-}
-
-// --- Strict body parse (Go dec.DisallowUnknownFields eşdeğeri) --------------
-
-function requireExactKeys(obj: Record<string, unknown>, allowed: readonly string[], ctx: string): void {
-  for (const k of Object.keys(obj)) {
-    if (!allowed.includes(k)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `${ctx}: unknown field ${k}`);
-  }
+/** manifestObjectHash, depolanan manifest baytlarının çıplak-hex SHA-256'sı (§2.6 zincir). */
+export function manifestObjectHash(storedBytes: Uint8Array): string {
+  return sha256Hex(storedBytes);
 }
 
 function asUint(v: unknown, ctx: string): number {
-  // isSafeInteger: tam sayı VE |v| ≤ 2^53-1 (Go uint64 >2^53'ü tam taşır; JS
-  // yuvarlar → parite için >2^53 reddedilir). v<0 negatifleri eler.
   if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new ManifestVerifyError("MANIFEST_MALFORMED", `${ctx}: not a uint`);
   return v;
 }
@@ -98,124 +68,56 @@ function asString(v: unknown, ctx: string): string {
   return v;
 }
 
-const WRAP_KEYS = ["recipient", "wrap"] as const;
-const ENTRY_KEYS = ["keyName", "keyVersion", "blobHash", "wraps", "rotation"] as const;
-const MANIFEST_KEYS = ["schema", "project", "epoch", "prevManifestSha256", "trustEpoch", "createdAt", "entries"] as const;
-
-// --- Ham rotation baytları çıkarımı (byte-exact, COORD c) -------------------
-//
-// Go, her entry'nin `rotation` değerini json.RawMessage olarak body'de göründüğü
-// TAM baytlarla (iç boşluk dahil, çevre boşluk hariç) saklar ve entryChanged'i
-// bytes.Equal(a.Raw(), b.Raw()) ile byte-exact karşılaştırır. JSON.parse ham
-// baytları normalize ettiğinden (boşluk/format kaybolur), TS imzalı body metninden
-// her rotation değerinin ham alt-dizesini elle tarayıp saklamalı — aksi halde
-// SADECE-boşluk farklı bir rotation, Worker'da "değişmemiş" görünüp yetkisiz bir
-// yazarın authz'ini ATLARDI (Go bunu touched sayıp GRANT_DENIED verirken).
-// Tarayıcılar YALNIZCA JSON.parse'tan GEÇMİŞ (geçerli) body üzerinde çalışır.
-
 /**
- * extractRotationRaws, body metnindeki entries[*].rotation değerlerinin ham
- * alt-dizelerini entry SIRASIYLA döner (undefined = yok veya null). JSON.parse ile
- * aynı dizi sırasını izler → rotationRaws[i] ↔ entries[i] hizalı.
+ * parseManifest, depolanan v2 manifest baytlarını doğrulayarak çözer. Worker tek
+ * yazar olsa da parse fail-closed'dur: şema uyuşmazlığı, tekrarlanan/sırasız
+ * keyName, kapalı-küme dışı wrap recipient'i (ALG_UNSUPPORTED, §2.4) reddedilir.
  */
-function extractRotationRaws(text: string): (string | undefined)[] {
-  const out: (string | undefined)[] = [];
-  const rootStart = skipJsonWs(text, 0);
-  if (text[rootStart] !== "{") return out;
-  const entriesSpan = findMemberValueSpan(text, rootStart, "entries");
-  if (!entriesSpan) return out;
-  let i = skipJsonWs(text, entriesSpan.start);
-  if (text[i] !== "[") return out;
-  i = skipJsonWs(text, i + 1);
-  while (i < text.length && text[i] !== "]") {
-    i = skipJsonWs(text, i);
-    const entrySpan = scanJsonValue(text, i);
-    if (text[entrySpan.start] === "{") {
-      const rot = findMemberValueSpan(text, entrySpan.start, "rotation");
-      const raw = rot ? text.slice(rot.start, rot.end) : undefined;
-      out.push(raw === "null" ? undefined : raw); // null → rotation yok (Go: nil pointer)
-    } else {
-      out.push(undefined); // entry obje değil (geçerli JSON'da olmaz)
-    }
-    i = skipJsonWs(text, entrySpan.end);
-    if (text[i] === ",") {
-      i++;
-      continue;
-    }
-    break;
-  }
-  return out;
-}
-
-/**
- * parseManifestBody, ham body baytlarını DataManifest'e STRICT ayrıştırır
- * (bilinmeyen alan → red, tip kontrolü). YALNIZCA imza doğrulandıktan SONRA
- * çağrılmalıdır (§3.6.3). Şema yanlışsa UNSUPPORTED_SCHEMA.
- */
-export function parseManifestBody(body: Uint8Array): DataManifest {
-  const text = new TextDecoder().decode(body);
+export function parseManifest(bytes: Uint8Array): DataManifest {
+  if (bytes.length > MANIFEST_CAP) throw new ManifestVerifyError("MANIFEST_MALFORMED", "manifest exceeds 1 MB");
   let doc: unknown;
   try {
-    doc = JSON.parse(text);
+    doc = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
-    throw new ManifestVerifyError("MANIFEST_MALFORMED", "body not valid JSON");
+    throw new ManifestVerifyError("MANIFEST_MALFORMED", "manifest not valid JSON");
   }
-  // Sayı literalleri: `1e3`/`1.0`/>2^53 reddi (Go integer-decode paritesi).
-  try {
-    assertCanonicalIntegerJSON(text);
-  } catch (e) {
-    throw new ManifestVerifyError("MANIFEST_MALFORMED", (e as Error).message);
-  }
-  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "body not an object");
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "manifest not an object");
   const o = doc as Record<string, unknown>;
-  requireExactKeys(o, MANIFEST_KEYS, "manifest");
-
   const schema = asString(o.schema, "schema");
   if (schema !== SCHEMA_DATA_MANIFEST) throw new ManifestVerifyError("UNSUPPORTED_SCHEMA", schema);
-
-  const createdAt = asString(o.createdAt, "createdAt");
-  // KATİ RFC3339 (Go time.Time) — Date.parse GEVŞEK'tir, imzalı alanda ayrışır.
-  if (!isRFC3339(createdAt)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "createdAt not RFC3339");
-
   if (!Array.isArray(o.entries)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "entries not an array");
-  // COORD (c): rotation değerlerinin ham (byte-exact) alt-dizelerini body metninden
-  // çıkar; hizalama bozulursa (tarayıcı ↔ JSON.parse sayı farkı — geçerli JSON'da
-  // olmaz) fail-closed reddet (sessiz misalignment authz-bypass'ı olurdu).
-  const rotationRaws = extractRotationRaws(text);
-  if (rotationRaws.length !== o.entries.length) {
-    throw new ManifestVerifyError("MANIFEST_MALFORMED", "rotation raw extraction misaligned");
-  }
-  const entries: KeyEntry[] = o.entries.map((raw, i) => {
+
+  let prevName = "";
+  const entries: ManifestEntry[] = o.entries.map((raw, i) => {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}] not an object`);
     const e = raw as Record<string, unknown>;
-    requireExactKeys(e, ENTRY_KEYS, `entry[${i}]`);
-    if (!Array.isArray(e.wraps)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wraps not an array`);
-    const wraps: DEKWrap[] = e.wraps.map((wr, j) => {
-      if (typeof wr !== "object" || wr === null || Array.isArray(wr)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `wrap[${j}] not an object`);
-      const w = wr as Record<string, unknown>;
-      requireExactKeys(w, WRAP_KEYS, `entry[${i}].wrap[${j}]`);
-      const wrapB64 = asString(w.wrap, `entry[${i}].wrap[${j}].wrap`);
-      // COORD (a): `wrap`, Go'da `Wrap []byte` (base64) olarak çözülür → STRICT
-      // KANONİK olmalı (Go base64.StdEncoding.Strict + roundtrip paritesi). Non-base64
-      // bir wrap Go'da unmarshal HATASI verir; Worker da REDDETMELİ — aksi halde
-      // Worker kabul edip Go reddederdi (commit/read desync). Byte değeri Worker'ca
-      // yorumlanmaz; yalnızca kanonikliği doğrulanır (string olarak taşınır).
-      try {
-        b64ToBytes(wrapB64);
-      } catch {
-        throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wrap[${j}].wrap not canonical base64`);
-      }
-      return { recipient: asString(w.recipient, "recipient"), wrapB64 };
-    });
-    const hasRotation = Object.prototype.hasOwnProperty.call(e, "rotation") && e.rotation !== null;
+    const keyName = asString(e.keyName, `entry[${i}].keyName`);
+    if (!validKeyName(keyName)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}]: invalid keyName`);
+    // Artan sıra + benzersizlik (§2.6): önceki addan kesin büyük olmalı.
+    if (keyName <= prevName) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}]: entries not strictly sorted by keyName`);
+    prevName = keyName;
+    const w = e.wrap;
+    if (typeof w !== "object" || w === null || Array.isArray(w)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wrap not an object`);
+    const wo = w as Record<string, unknown>;
+    const recipient = asString(wo.recipient, `entry[${i}].wrap.recipient`);
+    // Kapalı küme (§2.4): v2 manifest'te worker-kek:v1 dışındaki her recipient reddedilir.
+    if (recipient !== WRAP_RECIPIENT) throw new ManifestVerifyError("ALG_UNSUPPORTED", `entry[${i}].wrap.recipient: ${recipient}`);
+    const kid = asString(wo.kid, `entry[${i}].wrap.kid`);
+    if (!/^[0-9a-f]{16}$/.test(kid)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wrap.kid not 16-hex`);
+    const wrapB64 = asString(wo.wrap, `entry[${i}].wrap.wrap`);
+    let wrapBytes: Uint8Array;
+    try {
+      wrapBytes = b64ToBytes(wrapB64);
+    } catch {
+      throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wrap.wrap not canonical base64`);
+    }
+    if (wrapBytes.length !== WRAP_TOTAL_LEN) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wrap.wrap not 76 bytes`);
     return {
-      keyName: asString(e.keyName, `entry[${i}].keyName`),
+      keyName,
       keyVersion: asUint(e.keyVersion, `entry[${i}].keyVersion`),
       blobHash: asString(e.blobHash, `entry[${i}].blobHash`),
-      wraps,
+      wrap: { recipient, kid, wrap: wrapB64 },
       rotation: e.rotation,
-      hasRotation,
-      rotationRaw: rotationRaws[i],
     };
   });
 
@@ -224,27 +126,38 @@ export function parseManifestBody(body: Uint8Array): DataManifest {
     project: asString(o.project, "project"),
     epoch: asUint(o.epoch, "epoch"),
     prevManifestSha256: asString(o.prevManifestSha256, "prevManifestSha256"),
-    trustEpoch: asUint(o.trustEpoch, "trustEpoch"),
-    createdAt,
+    policyVersion: asUint(o.policyVersion, "policyVersion"),
+    writer: asString(o.writer, "writer"),
+    createdAt: asString(o.createdAt, "createdAt"),
     entries,
   };
 }
 
 /**
- * verifyDataManifest, imzalı bir data manifest sarmalayıcısını doğrular ve
- * body'yi ayrıştırır. SIRA KATİDİR (§3.6.3):
- *   1. Tam olarak 1 imza (yoksa BAD_SIGNATURE_COUNT).
- *   2. key_id ring'de çözülmeli (yoksa WRITER_UNKNOWN).
- *   3. SHA-256(bytes) üzerinde imza — body PARSE EDİLMEDEN (yoksa SIG_INVALID).
- *   4. Ancak O ZAMAN body strict parse edilir.
+ * serializeManifest, bir DataManifest'i depolanacak baytlara çevirir. entries
+ * keyName'e göre SIRALANIR (§2.6); rotation undefined ise alan atlanır.
  */
-export function verifyDataManifest(obj: SignedObject, ring: Map<string, VerifierKey>): DataManifest {
-  if (obj.sigs.length !== 1) throw new ManifestVerifyError("BAD_SIGNATURE_COUNT", `sigs=${obj.sigs.length}`);
-  const sig = obj.sigs[0];
-  const vk = ring.get(sig.key_id);
-  if (!vk) throw new ManifestVerifyError("WRITER_UNKNOWN", sig.key_id);
-  if (!verifySignatureEnvelope(obj.bytes, sig, vk)) throw new ManifestVerifyError("SIG_INVALID");
-  return parseManifestBody(obj.bytes);
+export function serializeManifest(m: DataManifest): Uint8Array {
+  const entries = [...m.entries].sort((a, b) => (a.keyName < b.keyName ? -1 : a.keyName > b.keyName ? 1 : 0));
+  const doc = {
+    schema: SCHEMA_DATA_MANIFEST,
+    project: m.project,
+    epoch: m.epoch,
+    prevManifestSha256: m.prevManifestSha256,
+    policyVersion: m.policyVersion,
+    writer: m.writer,
+    createdAt: m.createdAt,
+    entries: entries.map((e) => ({
+      keyName: e.keyName,
+      keyVersion: e.keyVersion,
+      blobHash: e.blobHash,
+      wrap: e.wrap,
+      ...(e.rotation !== undefined ? { rotation: e.rotation } : {}),
+    })),
+  };
+  const bytes = utf8(JSON.stringify(doc));
+  if (bytes.length > MANIFEST_CAP) throw new ManifestVerifyError("MANIFEST_MALFORMED", "manifest exceeds 1 MB");
+  return bytes;
 }
 
 /** parseCurrentPointer, current pointer baytlarını (şema doğrulamalı) çözer. */
@@ -258,54 +171,4 @@ export function parseCurrentPointer(raw: Uint8Array): CurrentPointer {
     epoch: asUint(doc.epoch, "current.epoch"),
     manifestSha256: asString(doc.manifestSha256, "current.manifestSha256"),
   };
-}
-
-// --- Semantik diff (§6.2 step 8-10 için saf, test edilebilir çekirdek) -------
-
-export interface EntryDiff {
-  added: KeyEntry[];
-  removed: KeyEntry[];
-  changed: { old: KeyEntry; cur: KeyEntry }[];
-}
-
-/** recipientSet, bir girdinin wrap-set'inin recipient parmak izleri kümesi. */
-export function recipientSet(e: KeyEntry): Set<string> {
-  return new Set(e.wraps.map((w) => w.recipient));
-}
-
-function entriesEqual(a: KeyEntry, b: KeyEntry): boolean {
-  if (a.keyVersion !== b.keyVersion || a.blobHash !== b.blobHash) return false;
-  // Wrap-set: recipient kümesi + wrap baytları (byte-identical carry-forward, §5.6).
-  if (a.wraps.length !== b.wraps.length) return false;
-  const bw = new Map(b.wraps.map((w) => [w.recipient, w.wrapB64]));
-  for (const w of a.wraps) {
-    if (bw.get(w.recipient) !== w.wrapB64) return false;
-  }
-  // rotation BYTE-EXACT (COORD c): Go bytes.Equal(a.Raw(), b.Raw()); TS imzalı
-  // body'den alınan ham alt-dizeyi karşılaştırır. İkisi de undefined (yok/null) →
-  // eşit; biri undefined → farklı; iki string → byte-bayt (boşluk dahil) eşitlik.
-  if (a.rotationRaw !== b.rotationRaw) return false;
-  return true;
-}
-
-/**
- * diffEntries, eski→yeni manifest girdileri arasındaki semantik diff'i hesaplar
- * (§6.2 step 8): eklenen / kaldırılan / değişen anahtarlar. "changed" bir girdinin
- * HERHANGİ bir alanının (keyVersion/blobHash/wrap-set/rotation) farkı demektir.
- */
-export function diffEntries(oldEntries: KeyEntry[], newEntries: KeyEntry[]): EntryDiff {
-  const oldMap = new Map(oldEntries.map((e) => [e.keyName, e]));
-  const newMap = new Map(newEntries.map((e) => [e.keyName, e]));
-  const added: KeyEntry[] = [];
-  const removed: KeyEntry[] = [];
-  const changed: { old: KeyEntry; cur: KeyEntry }[] = [];
-  for (const [name, cur] of newMap) {
-    const prev = oldMap.get(name);
-    if (!prev) added.push(cur);
-    else if (!entriesEqual(prev, cur)) changed.push({ old: prev, cur });
-  }
-  for (const [name, prev] of oldMap) {
-    if (!newMap.has(name)) removed.push(prev);
-  }
-  return { added, removed, changed };
 }

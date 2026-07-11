@@ -1,54 +1,34 @@
-// Per-project Durable Object write serializer (SPEC §6.2). idFromName=project →
-// proje başına TEK linearize edilebilir yazar. Tüm commit transaction'ı
+// Per-project Durable Object write serializer (SPEC §0.1 KEPT / §7.6 write path).
+// idFromName=project → proje başına TEK linearize edilebilir yazar; tüm mutasyon
 // blockConcurrencyWhile içinde çalışır: aynı projeye iki eşzamanlı yazımdan TAM
-// OLARAK biri commit olur, diğeri 412 alır (CAS).
+// olarak biri commit olur (epoch+1 + prevManifestSha256 zinciri + R2 onlyIf-absent
+// manifest PUT + pointer If-Match CAS).
 //
-// KAPSAM (G6): imza + yazar-allowlist + M-of-N trust + epoch/prev zinciri +
-// SEMANTİK DİFF authz (per-key grant, wrap-set eşitliği, shrink→re-key) + blob
-// varlığı + manifest onlyIf-absent + pointer If-Match CAS + append-only pointer
-// event. ERTELENDİ (G7): D1 audit DO (attempt/outcome satırları), freshness
-// receipt, B2 escrow write-through, GC.
+// v2 PIVOT DELTASI: trust-manifest / imza / wrap-set-eşitliği kontrolleri SİLİNDİ
+// (§0.2). İstemci artık imzalı manifest DEĞİL, tipli bir MUTASYON gönderir
+// (set/import/delete/rewrap); zarf kriptosu (DEK üret + WSB1 seal + WKW1 KEK-wrap)
+// BURADA, serializer içinde çalışır — keyVersion ataması yarışsızdır (§2.7).
+// Policy authz Worker'da (index.ts) yapılır ve internal header'larla taşınır;
+// audit attempt→outcome sıralaması + crash-recovery durumları (a)–(d) KORUNDU.
 
 import { HTTP, jsonError, jsonOK } from "./errors.js";
-import { parseSignedObject, utf8 } from "./crypto/verify.js";
+import { utf8 } from "./crypto/encoding.js";
+import { MasterKey, loadMasterKeys, wrapDEK, unwrapDEK, WrapError } from "./crypto/kek.js";
+import { sealValue, BlobError } from "./crypto/blob.js";
 import {
   DataManifest,
-  KeyEntry,
+  ManifestEntry,
   ManifestVerifyError,
-  diffEntries,
   manifestObjectHash,
   parseCurrentPointer,
-  parseManifestBody,
-  recipientSet,
-  verifyDataManifest,
+  parseManifest,
+  serializeManifest,
   SCHEMA_CURRENT_POINTER,
+  SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
-import {
-  activeEscrowRecipients,
-  findWriterSigningIdentity,
-  requiredRecipients,
-  verbKeyAllowed,
-  writerKeyAllowed,
-  TrustError,
-  VerifiedEpoch,
-  SIGN_CLASS_ADMIN,
-  SIGN_CLASS_DAILY,
-  TYPE_HUMAN,
-  TYPE_MACHINE,
-} from "./trust.js";
-import { dataWriterKeyring, loadTrustHead } from "./trust-loader.js";
-import {
-  keyCurrent,
-  keyManifest,
-  keyBlob,
-  keyPointerEvent,
-  validKeyName,
-  validSha256Hex,
-  getObject,
-  headEtag,
-} from "./storage.js";
-import { auditAppendSync, AuditRow, PrincipalType } from "./audit.js";
-import { TokenScope, scopeAllowsVerb, scopeAllowsKey } from "./mint.js";
+import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag } from "./storage.js";
+import { auditAppendSync, auditAppendBatch, AuditRow, PrincipalType } from "./audit.js";
+import { sha256Hex } from "./crypto/encoding.js";
 import {
   EscrowConfig,
   EscrowEnv,
@@ -62,31 +42,39 @@ import { deliverAlert, ALERT } from "./alerts.js";
 
 interface DOEnv extends EscrowEnv {
   SECRETS_BUCKET: R2Bucket;
-  GENESIS_TRUST_SHA256?: string;
-  // AUDIT_LOG: TEK global audit DO (§6.5). Commit attempt/outcome satırları BURADAN
-  // SENKRON geçer — erişilemezse commit fail-closed (503 AUDIT_UNAVAILABLE).
   AUDIT_LOG: DurableObjectNamespace;
-  // AUDIT_DB: last-verified trust pin aynası (§4.4). loadTrustHead downgrade tavanını
-  // buradan yaptırır + doğrulanmış head'i monotonik kalıcılaştırır.
   AUDIT_DB: D1Database;
-  // §6.8 escrow write-through: B2 hedefi + alert kanalı (fail-soft push).
+  MASTER_KEK?: string;
+  MASTER_KEK_PREV?: string;
   DISCORD_WEBHOOK_URL?: string;
 }
 
-/** ReqMeta, bir commit isteğinin principal/audit metadatası (Worker header'larından). */
+/** WriteOp, Worker'dan DO'ya taşınan tipli mutasyon (§7.4 write API'lerinin iç şekli). */
+export interface WriteOp {
+  op: "set" | "import" | "delete" | "rewrap";
+  // set/import: plaintext değerler (TLS + internal DO fetch; C2 gereği ASLA loglanmaz).
+  values?: Record<string, string>;
+  // delete: silinecek anahtar.
+  key?: string;
+  // Opsiyonel optimistic-concurrency: mevcut epoch bununla uyuşmazsa 412 (§7.4).
+  ifEpoch?: number;
+}
+
+/** ReqMeta, bir mutasyonun principal/audit metadatası (Worker internal header'ları). */
 interface ReqMeta {
   principalId: string;
   principalType: PrincipalType;
   tokenJti: string | null;
-  // tokenScope: minted machine-token'ın scope'u (Worker'ın x-token-scope header'ından).
-  // İnsan principal'larında null (CF-Access JWT scope taşımaz). §6.3 grants ∩ token scope.
-  tokenScope: TokenScope | null;
   intent: string | null;
+  // auditVerb: outcome satırlarının verb'ü (key.set | key.import | key.sync |
+  // key.delete | rotate.step | admin.rewrap_kek) — Worker türetir (§6.4).
+  auditVerb: string;
+  policyVersion: number;
   ip: string | null;
   cfRay: string | null;
 }
 
-/** CommitError, transaction içi tipli abort (ilk hata iptal eder, §6.2). */
+/** CommitError, transaction içi tipli abort (ilk hata iptal eder). */
 class CommitError extends Error {
   constructor(public status: number, public code: string, public detail?: Record<string, unknown>) {
     super(code);
@@ -96,61 +84,45 @@ class CommitError extends Error {
   }
 }
 
-const AUTHZ_WRITE_VERB = "write"; // §6.3 verb kümesi (read|write|rotate)
-
-// Pending pointer-event retry (§6.2 step-17 fail-soft). Pointer-event R2 yazımı
-// başarısız olursa commit DÜŞMEZ; event DO storage'a "pending" işaretlenir ve alarm
-// ile drene edilir. Marker key = <prefix><project>:<epoch>, value = {r2Key, body}.
+// Crash-recovery marker'ları (KORUNAN desen): pointer-event + audit outcome,
+// commit kalıcılaştıktan SONRA patlarsa DO storage'a pending yazılır + alarm drene eder.
 const PENDING_POINTER_EVENT_PREFIX = "pending-pointer-event:";
 const PENDING_OUTCOME_PREFIX = "pending-audit-outcome:";
 const POINTER_EVENT_RETRY_MS = 30_000;
-// ESCROW_CONFIG_KEY: escrow config'in DO storage'a persist edildiği anahtar. ÜRETİMDE
-// KULLANILMAZ (config env'den gelir, this.escrow); yalnızca bir dormant fallback —
-// env config null iken storage'dan okunur. Test, config'i runInDurableObject ile
-// buraya yazar; böylece config bir DO instance-recreation (modül reload) SONRASI
-// SAĞ KALIR (this.escrow instance ile silinir, storage silinmez).
-const ESCROW_CONFIG_KEY = "escrow-config";
+const ESCROW_CONFIG_KEY = "escrow-config"; // test seam (dormant fallback)
 
-/** PendingPointerEvent, DO storage'da saklanan bekleyen pointer-event kaydı. */
 interface PendingPointerEvent {
   r2Key: string;
-  body: string; // orijinal JSON body — retry byte-bayt aynı immutable objeyi yazar.
+  body: string;
 }
 
-/** PendingOutcome, CAS sonrası yazılamayan audit outcome satırı (§6.2 case c recovery). */
+/** PendingOutcome, CAS sonrası yazılamayan per-key outcome batch'i (case c recovery). */
 interface PendingOutcome {
-  row: AuditRow;
-  idempotencyKey: string; // `${project}:${epoch}` — DO append idempotent dedup marker
+  rows: AuditRow[];
+  idempotencyKey: string; // `${project}:${epoch}` — batch dedup marker
 }
 
 export class ProjectWriterDO {
   private bucket: R2Bucket;
-  private genesisSha: string;
-  // AUDIT_DB: last-verified trust pin aynası (§4.4) — loadTrustHead'e geçilir.
-  private auditDb: D1Database;
-  // AUDIT_LOG namespace — testte runInDurableObject ile "unavailable" enjekte edilebilir.
   private auditLog: DurableObjectNamespace;
-  // §6.8 escrow write-through config (null = B2 yapılandırılmamış → no-op).
-  // Testte runInDurableObject ile enjekte edilebilir (instance.escrow = cfg).
+  private masters: MasterKey[] | null;
   private escrow: EscrowConfig | null;
   private discordUrl: string;
 
   constructor(private ctx: DurableObjectState, env: DOEnv) {
     this.bucket = env.SECRETS_BUCKET;
-    this.genesisSha = (env.GENESIS_TRUST_SHA256 ?? "").trim();
-    this.auditDb = env.AUDIT_DB;
     this.auditLog = env.AUDIT_LOG;
+    this.masters = loadMasterKeys(env);
     this.escrow = escrowConfig(env);
     this.discordUrl = (env.DISCORD_WEBHOOK_URL ?? "").trim();
   }
 
-  /** escrowAlert, drenaj sırasında A4 (§6.10) tetikler (best-effort, throw etmez). */
+  /** escrowAlert, drenaj sırasında A4 tetikler (best-effort, throw etmez). */
   private escrowAlert = async (rule: string, summary: string, detail?: Record<string, unknown>): Promise<void> => {
     await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, rule as typeof ALERT.A4, summary, detail);
   };
 
-  /** effectiveEscrow, etkin escrow config'i çözer: env config (üretim, this.escrow)
-   * yoksa DO storage'daki dormant fallback (test seam — instance-recreation'a dayanıklı). */
+  /** effectiveEscrow, etkin escrow config'i çözer (env → yoksa DO-storage fallback, test seam). */
   private async effectiveEscrow(): Promise<EscrowConfig | null> {
     if (this.escrow) return this.escrow;
     return (await this.ctx.storage.get<EscrowConfig>(ESCROW_CONFIG_KEY)) ?? null;
@@ -166,239 +138,205 @@ export class ProjectWriterDO {
       principalId: request.headers.get("x-principal-id") ?? "",
       principalType: (request.headers.get("x-principal-type") as PrincipalType) || "human",
       tokenJti: emptyToNull(request.headers.get("x-token-jti")),
-      tokenScope: parseTokenScope(request.headers.get("x-token-scope")),
       intent: emptyToNull(request.headers.get("x-intent")),
+      auditVerb: request.headers.get("x-audit-verb") ?? "key.set",
+      policyVersion: Number(request.headers.get("x-policy-version") ?? "0") || 0,
       ip: emptyToNull(request.headers.get("x-cf-ip")),
       cfRay: emptyToNull(request.headers.get("x-cf-ray")),
     };
-    // Genesis pin Worker-config'inden internal header ile gelir (fallback: DO env).
-    const genesisPin = (request.headers.get("x-genesis-pin") ?? this.genesisSha).trim();
-    const rawWrapper = await request.text();
+    let op: WriteOp;
+    try {
+      op = (await request.json()) as WriteOp;
+    } catch {
+      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+    }
 
-    // Tüm transaction tek gate içinde → proje başına linearize (§6.2).
+    // Tüm mutasyon tek gate içinde → proje başına linearize.
     return this.ctx.blockConcurrencyWhile(async () => {
       try {
-        return await this.commit(project, meta, rawWrapper, genesisPin);
+        return await this.commit(project, meta, op);
       } catch (e) {
         if (e instanceof CommitError) {
-          // Red → deny satırı ekle (§6.2/§6.5 — denials her zaman kaydedilir).
-          // İSTİSNA: AUDIT_UNAVAILABLE'ın kendisi (audit down → deny de yazılamaz).
+          // Red → deny satırı (denials her zaman kaydedilir). İSTİSNA:
+          // AUDIT_UNAVAILABLE'ın kendisi (audit down → deny de yazılamaz).
           if (e.code !== "AUDIT_UNAVAILABLE") {
             await this.appendDeny(project, meta, e).catch(() => {});
           }
           return e.toResponse();
-        }
-        if (e instanceof TrustError) {
-          // Doğrulanamayan trust → asla ilerleme (§6.2 step 3).
-          return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", e.message);
         }
         throw e;
       }
     });
   }
 
-  private async commit(project: string, meta: ReqMeta, rawWrapper: string, genesisPin: string): Promise<Response> {
-    const principalId = meta.principalId;
-    const rawBytes = utf8(rawWrapper);
+  private async commit(project: string, meta: ReqMeta, op: WriteOp): Promise<Response> {
+    if (!this.masters) throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "MASTER_KEK missing" });
 
-    // 1. Boyut (§6.2 step 1).
-    if (rawBytes.length > 1_048_576) throw new CommitError(HTTP.PAYLOAD_TOO_LARGE, "MANIFEST_TOO_LARGE");
-
-    // Sarmalayıcıyı çöz (imzalı BODY hâlâ ham; parse ETMEDEN doğrulanacak).
-    let obj;
-    try {
-      obj = parseSignedObject(JSON.parse(rawWrapper));
-    } catch {
-      throw new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: "bad signed wrapper" });
-    }
-
-    // 3. CURRENT trust state'i yükle + M-of-N doğrula (§6.2 step 3).
-    const head: VerifiedEpoch = await loadTrustHead(this.bucket, genesisPin, this.auditDb);
-    const ring = dataWriterKeyring(head.manifest);
-
-    // 2/4. İmza TAM baytlar üzerinde + writer resolve (§6.2 step 2, verify-before-parse).
-    let m: DataManifest;
-    try {
-      m = verifyDataManifest(obj, ring);
-    } catch (e) {
-      throw mapManifestError(e);
-    }
-
-    // Proje eşleşmesi (§5.2 rule 1).
-    if (m.project !== project) throw new CommitError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", { path: project, body: m.project });
-
-    // keyName regex (§5.4.3 rule 1) + benzersizlik.
-    const seenNames = new Set<string>();
-    for (const e of m.entries) {
-      if (!validKeyName(e.keyName)) throw new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: "invalid keyName", key: e.keyName });
-      if (seenNames.has(e.keyName)) throw new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: "duplicate keyName", key: e.keyName });
-      seenNames.add(e.keyName);
-    }
-
-    // 4. Writer allowlist: key_id enrolled + sınıfı data-write'a izin vermeli (§6.2 step 4).
-    const writerKeyID = obj.sigs[0].key_id;
-    const writer = findWriterSigningIdentity(head.manifest, writerKeyID);
-    if (!writer) throw new CommitError(HTTP.FORBIDDEN, "WRITER_NOT_ALLOWED", { key_id: writerKeyID });
-    const isHumanWriter = writer.cls === SIGN_CLASS_DAILY || writer.cls === SIGN_CLASS_ADMIN;
-    const isAutomationWriter = writer.cls === "automation";
-    if (!isHumanWriter && !isAutomationWriter) {
-      // root/daily-on-trust vs. → data manifest yazamaz (§3.4 / §4.5).
-      throw new CommitError(HTTP.FORBIDDEN, "WRITER_NOT_ALLOWED", { key_id: writerKeyID, class: writer.cls });
-    }
-    if (isHumanWriter && writer.identity.type !== TYPE_HUMAN) throw new CommitError(HTTP.FORBIDDEN, "WRITER_NOT_ALLOWED", { key_id: writerKeyID });
-    if (isAutomationWriter && writer.identity.type !== TYPE_MACHINE) throw new CommitError(HTTP.FORBIDDEN, "WRITER_NOT_ALLOWED", { key_id: writerKeyID });
-
-    // 5. Principal↔key binding (§6.2 step 5): oturum principal'ı key_id sahibi olmalı.
-    if (principalId !== writer.identity.id) {
-      throw new CommitError(HTTP.FORBIDDEN, "PRINCIPAL_KEY_MISMATCH", { principal: principalId, owner: writer.identity.id });
-    }
-
-    // 6. Epoch zinciri (§6.2 step 6): current pointer + current manifest.
+    // 1. Mevcut durum: current pointer + manifest (zincir bütünlüğü fail-closed).
     const curObj = await getObject(this.bucket, keyCurrent(project));
-    let prevEntries: KeyEntry[] = [];
+    let prevEntries: ManifestEntry[] = [];
+    let prevEpoch = 0;
+    let prevSha = "";
     let prevCurrentEtag: string | null = null;
-    if (!curObj) {
-      // Genesis.
-      if (m.epoch !== 1 || m.prevManifestSha256 !== "") {
-        throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: 0, current_manifest_sha256: "" });
-      }
-    } else {
+    if (curObj) {
       prevCurrentEtag = curObj.etag;
-      const ptr = parseCurrentPointer(curObj.bytes);
+      let ptr;
+      try {
+        ptr = parseCurrentPointer(curObj.bytes);
+      } catch {
+        throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "current pointer malformed" });
+      }
       const curManifest = await getObject(this.bucket, keyManifest(project, ptr.epoch));
       if (!curManifest) throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "current manifest missing" });
-      const curHash = manifestObjectHash(curManifest.bytes);
-      if (curHash !== ptr.manifestSha256) throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "pointer/manifest hash mismatch" });
-      if (m.epoch !== ptr.epoch + 1 || m.prevManifestSha256 !== curHash) {
-        throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: ptr.epoch, current_manifest_sha256: curHash });
+      if (manifestObjectHash(curManifest.bytes) !== ptr.manifestSha256) {
+        throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "pointer/manifest hash mismatch" });
       }
-      // Önceki girdiler için sarmalayıcıyı AÇ, sonra body'yi parse et (bytes =
-      // stored wrapper). Zincir-bağı prevManifestSha256 == curHash zaten baytları
-      // bağladığı için burada imza yeniden doğrulanmaz.
-      const curSigned = parseSignedObject(JSON.parse(new TextDecoder().decode(curManifest.bytes)));
-      prevEntries = parseManifestBody(curSigned.bytes).entries;
-    }
-
-    // 7. Trust freshness (§6.2 step 7): trustEpoch, trust/current epoch'undan eski olamaz.
-    if (m.trustEpoch < head.manifest.admin_epoch) {
-      throw new CommitError(HTTP.CONFLICT, "TRUST_EPOCH_STALE", { manifest_trust_epoch: m.trustEpoch, current_trust_epoch: head.manifest.admin_epoch });
-    }
-
-    // 8. Semantik diff — per-key grant (§6.2 step 8).
-    const diff = diffEntries(prevEntries, m.entries);
-    const touched = new Set<string>();
-    for (const e of diff.added) touched.add(e.keyName);
-    for (const c of diff.changed) touched.add(c.cur.keyName);
-    for (const e of diff.removed) touched.add(e.keyName);
-
-    // 8b. Makine principal'ları: efektif izin = grants ∩ token scope (§6.3 / §6.2 step 8).
-    // Kimlik write-allowlist'i GENİŞ olsa bile, token DAR mint edilmişse (ör. verbs:["read"]
-    // veya keys:["A"]) commit REDDEDİLİR — least-privilege enforcement point. Makine için
-    // scope ZORUNLUDUR (Worker minted token'dan türetir); eksik/geçersizse fail-closed.
-    // İnsan principal'larının (CF-Access JWT) token scope'u yoktur → etkilenmez.
-    if (meta.principalType === "machine") {
-      const scope = meta.tokenScope;
-      if (!scope || !scopeAllowsVerb(scope, AUTHZ_WRITE_VERB)) {
-        throw new CommitError(HTTP.FORBIDDEN, "TOKEN_SCOPE_EXCEEDED", { reason: "token scope lacks write verb" });
+      let m: DataManifest;
+      try {
+        m = parseManifest(curManifest.bytes);
+      } catch (e) {
+        if (e instanceof ManifestVerifyError) throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: e.message });
+        throw e;
       }
-      for (const key of touched) {
-        if (!scopeAllowsKey(scope, key)) throw new CommitError(HTTP.FORBIDDEN, "TOKEN_SCOPE_EXCEEDED", { key });
+      if (m.project !== project) throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "manifest project mismatch" });
+      prevEntries = m.entries;
+      prevEpoch = ptr.epoch;
+      prevSha = ptr.manifestSha256;
+    }
+
+    // 2. Optimistic-concurrency (§7.4 ifEpoch): istemci beklediği epoch'u pinlediyse.
+    if (op.ifEpoch !== undefined && op.ifEpoch !== prevEpoch) {
+      throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, expected: op.ifEpoch });
+    }
+
+    // 3. Mutasyonu uygula → yeni entry kümesi + yazılacak blob'lar.
+    const byName = new Map(prevEntries.map((e) => [e.keyName, e]));
+    const newBlobs: { hash: string; bytes: Uint8Array }[] = [];
+    const touched: string[] = [];
+    let rewrapped = 0;
+
+    const putValue = (keyName: string, value: string): void => {
+      if (!validKeyName(keyName)) throw new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: "invalid keyName", key: keyName });
+      const prev = byName.get(keyName);
+      // keyVersion HER değer değişiminde artar (AAD benzersizliği, §2.1).
+      const keyVersion = (prev?.keyVersion ?? 0) + 1;
+      const dek = crypto.getRandomValues(new Uint8Array(32)); // taze DEK, asla yeniden kullanılmaz (§2.1)
+      let blobBytes: Uint8Array;
+      try {
+        blobBytes = sealValue(dek, project, keyName, keyVersion, utf8(value));
+      } catch (e) {
+        if (e instanceof BlobError && e.code === "VALUE_TOO_LARGE") throw new CommitError(HTTP.PAYLOAD_TOO_LARGE, "VALUE_TOO_LARGE", { key: keyName });
+        throw e;
       }
-    }
+      const hash = sha256Hex(blobBytes);
+      const wrap = wrapDEK(this.masters![0], project, keyName, keyVersion, dek);
+      dek.fill(0); // best-effort bellek temizliği
+      newBlobs.push({ hash, bytes: blobBytes });
+      byName.set(keyName, { keyName, keyVersion, blobHash: hash, wrap, rotation: prev?.rotation });
+      touched.push(keyName);
+    };
 
-    for (const key of touched) {
-      const allowed = isAutomationWriter
-        ? writerKeyAllowed(head.manifest, principalId, project, key)
-        : verbKeyAllowed(head.manifest, principalId, project, AUTHZ_WRITE_VERB, key);
-      if (!allowed) throw new CommitError(HTTP.FORBIDDEN, "GRANT_DENIED", { key });
-    }
-
-    // 9. Semantik diff — gerekli wrap-set eşitliği (§6.2 step 9).
-    const escrow = activeEscrowRecipients(head.manifest);
-    for (const e of m.entries) {
-      const req = requiredRecipients(head.manifest, project, e.keyName);
-      const have = recipientSet(e);
-      const missing = [...req].filter((r) => !have.has(r));
-      const extra = [...have].filter((r) => !req.has(r));
-      const missingEscrow = missing.find((r) => escrow.has(r));
-      if (missingEscrow) throw new CommitError(HTTP.UNPROCESSABLE, "ESCROW_WRAP_MISSING", { key: e.keyName, recipient: missingEscrow });
-      if (missing.length > 0) throw new CommitError(HTTP.FORBIDDEN, "WRAPSET_VIOLATION", { key: e.keyName, recipient: missing[0], reason: "missing" });
-      if (extra.length > 0) throw new CommitError(HTTP.FORBIDDEN, "WRAPSET_VIOLATION", { key: e.keyName, recipient: extra[0], reason: "unauthorized" });
-    }
-
-    // 10. Semantik diff — shrink re-key'i zorlar (§6.2 step 10).
-    for (const c of diff.changed) {
-      const oldSet = recipientSet(c.old);
-      const newSet = recipientSet(c.cur);
-      const removed = [...oldSet].filter((r) => !newSet.has(r));
-      if (removed.length > 0) {
-        // Re-key: keyVersion tam +1 (§5.4.3 rule 2) VE blob hash değişti (§6.2 step 10).
-        const reKeyed = c.cur.keyVersion === c.old.keyVersion + 1 && c.cur.blobHash !== c.old.blobHash;
-        if (!reKeyed) throw new CommitError(HTTP.FORBIDDEN, "WRAPSET_VIOLATION", { key: c.cur.keyName, reason: "wrap-shrink without re-key" });
+    switch (op.op) {
+      case "set": {
+        const entries = Object.entries(op.values ?? {});
+        if (entries.length !== 1) throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "set requires exactly one value" });
+        putValue(entries[0][0], entries[0][1]);
+        break;
       }
+      case "import": {
+        const entries = Object.entries(op.values ?? {});
+        if (entries.length === 0) throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "import requires values" });
+        for (const [k, v] of entries.sort(([a], [b]) => (a < b ? -1 : 1))) putValue(k, v);
+        break;
+      }
+      case "delete": {
+        const key = op.key ?? "";
+        if (!byName.has(key)) throw new CommitError(HTTP.NOT_FOUND, "NOT_FOUND", { key });
+        byName.delete(key); // silme = yokluk (§2.6)
+        touched.push(key);
+        break;
+      }
+      case "rewrap": {
+        // §2.5: her DEK'i kid'e uyan anahtarla aç, YENİ (current) KEK altında yeniden sar.
+        // Blob'lara dokunulmaz (aynı DEK, aynı baytlar, keyVersion değişmez — wrap
+        // metadatası AAD slot'unun parçası değildir).
+        const currentKid = this.masters[0].kid;
+        for (const e of byName.values()) {
+          if (e.wrap.kid === currentKid) continue;
+          let dek: Uint8Array;
+          try {
+            dek = unwrapDEK(this.masters, project, e.keyName, e.keyVersion, e.wrap);
+          } catch (err) {
+            if (err instanceof WrapError) throw new CommitError(HTTP.MISCONFIGURED, "WRAP_INVALID", { key: e.keyName });
+            throw err;
+          }
+          const wrap = wrapDEK(this.masters[0], project, e.keyName, e.keyVersion, dek);
+          dek.fill(0);
+          byName.set(e.keyName, { ...e, wrap });
+          rewrapped++;
+        }
+        if (rewrapped === 0) {
+          // Hiçbir wrap eski kid'de değil → yeni epoch üretme (idempotent no-op).
+          return jsonOK({ project, epoch: prevEpoch, rewrapped: 0, noop: true });
+        }
+        break;
+      }
+      default:
+        throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "unknown op" });
     }
 
-    // 11. Blob bağları (§6.2 step 11): her blobHash KANONİK küçük-harf 64-hex olmalı
-    // + R2'de var olmalı (içerik-adresli).
-    //
-    // İÇERİK-ADRESİ değişmezliği: blob PUT (index.ts handleBlobPut) hem path'i
-    // validSha256Hex ile (küçük-harf 64-hex) hem sha256(body)===path ile yaptırır →
-    // R2'de saklanan HER blob küçük-harf-hex anahtar altında + içerik-adreslidir. Bu
-    // yüzden commit-zamanı YENİDEN-HASH GEREKSİZDİR: kanonik bir blobHash'e karşılık
-    // gelen mevcut bir R2 objesi zaten byte'larıyla o hash'e çözülür → Go okuyucunun
-    // read.go re-hash'i (VerifyBlobHash) geçer. Non-kanonik (büyük-harf/kısa) bir
-    // blobHash'i REDDET: Go okuyucu blob'u Worker'ın küçük-harf-only GET'inden
-    // (validSha256Hex) HİÇ çekemez → ilerletilmiş `current` OKUNAMAZ manifest'e işaret
-    // ederdi (accept/read split). Go ParseManifestBody blobHash biçimini denetlemez, ama
-    // accept-gate'i olan Worker, kendi GET'inin reddedeceği bir referansı kabul etmemeli.
-    const missingBlobs: string[] = [];
-    const checkedBlobs = new Set<string>();
-    for (const e of m.entries) {
-      if (!validSha256Hex(e.blobHash)) throw new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: "blobHash not lowercase 64-hex", key: e.keyName });
-      if (checkedBlobs.has(e.blobHash)) continue;
-      checkedBlobs.add(e.blobHash);
-      const et = await headEtag(this.bucket, keyBlob(project, e.blobHash));
-      if (!et) missingBlobs.push(e.blobHash);
-    }
-    if (missingBlobs.length > 0) throw new CommitError(HTTP.UNPROCESSABLE, "BLOB_MISSING", { hashes: missingBlobs });
+    // 4. Yeni manifest'i kur (epoch+1, zincir, §2.6).
+    const epoch = prevEpoch + 1;
+    const manifest: DataManifest = {
+      schema: SCHEMA_DATA_MANIFEST,
+      project,
+      epoch,
+      prevManifestSha256: prevSha,
+      policyVersion: meta.policyVersion,
+      writer: meta.principalId, // bilgilendirici; authz girdisi DEĞİL (§2.6)
+      createdAt: new Date().toISOString(),
+      entries: [...byName.values()],
+    };
+    const manifestBytes = serializeManifest(manifest); // MANIFEST_TOO_LARGE burada fırlar
+    const newManifestSha = manifestObjectHash(manifestBytes);
 
-    // 12. Audit ATTEMPT (SENKRON, §6.2 step 12): manifest yazımından ÖNCE global
-    // audit DO'ya `commit.attempt` satırı. Audit DO erişilemezse commit BURADA
-    // fail-close olur (503 AUDIT_UNAVAILABLE) — henüz HİÇBİR ŞEY yazılmadı (F7).
-    const changedKeys = [...touched];
+    // 5. Audit ATTEMPT (SENKRON, manifest yazımından ÖNCE): audit DO erişilemezse
+    // fail-closed 503 AUDIT_UNAVAILABLE — henüz HİÇBİR store durumu değişmedi.
+    // Bulk'ta attempt AGGREGATE kalabilir (keys:N intent, §6.4).
     try {
       await auditAppendSync(this.auditLog, {
-        principal: principalId,
+        principal: meta.principalId,
         principal_type: meta.principalType,
         project,
-        key: changedKeys.length === 1 ? changedKeys[0] : null,
+        key: touched.length === 1 ? touched[0] : null,
         verb: "commit.attempt",
         decision: "allow",
-        intent: meta.intent ?? (changedKeys.length > 1 ? `keys:${changedKeys.length}` : null),
+        intent: meta.intent ?? (touched.length > 1 ? `keys:${touched.length}` : op.op === "rewrap" ? `rewrap:${rewrapped}` : null),
         ip: meta.ip,
         cf_ray: meta.cfRay,
         token_jti: meta.tokenJti,
       });
     } catch {
-      // Fail closed: hiçbir store durumu değişmedi.
       throw new CommitError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", { reason: "audit DO unavailable at attempt" });
     }
 
-    // 13. Manifest yaz (§6.2 step 13): onlyIf-absent (gate içinde HEAD + put).
-    const newManifestSha = manifestObjectHash(rawBytes);
-    const manifestKey = keyManifest(project, m.epoch);
-    if (await headEtag(this.bucket, manifestKey)) {
-      throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: m.epoch - 1, reason: "manifest already exists" });
+    // 6. Yeni blob'ları yaz (içerik-adresli, immutable, onlyIf-absent).
+    for (const b of newBlobs) {
+      const existing = await this.bucket.head(keyBlob(project, b.hash));
+      if (!existing) await this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } });
     }
-    const wrote = await this.bucket.put(manifestKey, rawBytes, { onlyIf: { etagDoesNotMatch: "*" } });
-    if (wrote === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: m.epoch - 1, reason: "manifest already exists" });
 
-    // 14. Pointer CAS (§6.2 step 14): If-Match prev etag (genesis'te onlyIf-absent).
-    const pointerBody = utf8(
-      JSON.stringify({ schema: SCHEMA_CURRENT_POINTER, project, epoch: m.epoch, manifestSha256: newManifestSha }),
-    );
+    // 7. Manifest yaz: onlyIf-absent (epoch slot'unu ilk yazan kazanır).
+    const manifestKey = keyManifest(project, epoch);
+    if (await headEtag(this.bucket, manifestKey)) {
+      throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, reason: "manifest already exists" });
+    }
+    const wrote = await this.bucket.put(manifestKey, manifestBytes, { onlyIf: { etagDoesNotMatch: "*" } });
+    if (wrote === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, reason: "manifest already exists" });
+
+    // 8. Pointer CAS: If-Match prev etag (genesis'te onlyIf-absent).
+    const pointerBody = utf8(JSON.stringify({ schema: SCHEMA_CURRENT_POINTER, project, epoch, manifestSha256: newManifestSha }));
     if (prevCurrentEtag === null) {
-      // Genesis: current henüz yok.
       const created = await this.bucket.put(keyCurrent(project), pointerBody, { onlyIf: { etagDoesNotMatch: "*" } });
       if (created === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: 0, reason: "current already created" });
     } else {
@@ -406,88 +344,89 @@ export class ProjectWriterDO {
       if (updated === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { reason: "pointer CAS lost (out-of-band mutation)" });
     }
 
-    // 15. Audit OUTCOME (SENKRON, YALNIZCA pointer CAS başarılı olduktan SONRA,
-    // §6.2 step 15): `commit` allow satırı, idempotency-key `${project}:${epoch}`.
-    // OUTCOME satırı — attempt DEĞİL — başarılı yazımın ledger kaydıdır (F7): current
-    // gerçekten ilerlemeden allow-outcome var olamaz. Outcome append'i CAS SONRASI
-    // patlarsa commit ZATEN kalıcı → pending-outcome marker + alarm retry (case c).
-    const outcomeRow: AuditRow = {
-      principal: principalId,
+    // 9. Audit OUTCOME (SENKRON, YALNIZCA pointer CAS başarısından SONRA): bulk
+    // op'lar için BİR SATIR / ANAHTAR, tek /append-batch ack'i (§6.4 — aggregate
+    // keys:N outcome YASAK; ledger offboard rotate oracle'ıdır). Idempotency-key
+    // `${project}:${epoch}` → post-CAS crash retry'ı çift satır üretmez (case c).
+    const outcomeRows: AuditRow[] = touched.map((k) => ({
+      principal: meta.principalId,
       principal_type: meta.principalType,
       project,
-      key: changedKeys.length === 1 ? changedKeys[0] : null,
-      verb: "commit",
+      key: k,
+      verb: op.op === "rewrap" ? "admin.rewrap_kek" : meta.auditVerb,
       decision: "allow",
       intent: meta.intent,
       ip: meta.ip,
       cf_ray: meta.cfRay,
       token_jti: meta.tokenJti,
-    };
-    const idemKey = `${project}:${m.epoch}`;
+    }));
+    if (op.op === "rewrap") {
+      // Rewrap anahtar-değerlerini DEĞİŞTİRMEZ (aynı DEK/blob) → tek proje satırı yeter.
+      outcomeRows.length = 0;
+      outcomeRows.push({
+        principal: meta.principalId,
+        principal_type: meta.principalType,
+        project,
+        key: null,
+        verb: "admin.rewrap_kek",
+        decision: "allow",
+        intent: `rewrapped:${rewrapped}`,
+        ip: meta.ip,
+        cf_ray: meta.cfRay,
+        token_jti: meta.tokenJti,
+      });
+    }
+    const idemKey = `${project}:${epoch}`;
     try {
-      await auditAppendSync(this.auditLog, outcomeRow, idemKey);
+      await auditAppendBatch(this.auditLog, outcomeRows, { idempotencyKey: idemKey });
     } catch (err) {
       console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
-      await this.enqueuePendingOutcome(project, m.epoch, outcomeRow, idemKey);
+      await this.enqueuePendingOutcome(project, epoch, outcomeRows, idemKey);
     }
 
-    // 17. Escrow write-through: B2 push ERTELENDİ (G10), ama append-only pointer
-    // event R2'ye yazılır (§9.2.3 / F2) — immutable, onlyIf-absent.
-    //
-    // §6.2(d)/step-17: pointer-event/escrow-push HATASI commit'i DÜŞÜREMEZ. Commit
-    // bu noktada pointer CAS ile ZATEN kalıcı; transient bir R2 hatası buradan 5xx'e
-    // dönüşürse çağıran commit'in başarısız olduğunu sanır (yanlış — ledger çift
-    // yazımı vb. tetikler). Best-effort: hata → DO storage'a "pending" marker + alarm
-    // retry + alert, ama kalıcı commit için YİNE 200 dön.
-    const eventR2Key = keyPointerEvent(project, m.epoch);
+    // 10. Append-only pointer event (fail-soft; commit ZATEN kalıcı — retry marker).
+    const eventR2Key = keyPointerEvent(project, epoch);
     const eventBody = JSON.stringify({
       schema: "wapps.pointer-event.v1",
       project,
-      epoch: m.epoch,
+      epoch,
       manifestSha256: newManifestSha,
       committed_at: new Date().toISOString(),
     });
     try {
       await this.bucket.put(eventR2Key, utf8(eventBody), { onlyIf: { etagDoesNotMatch: "*" } });
     } catch (err) {
-      // Kalıcı commit'i düşürme: retry kuyruğuna al + alert, ama 200 dön.
-      console.error(`writer-do: pointer-event write failed, queued for retry (project=${project} epoch=${m.epoch})`, err);
-      await this.enqueuePendingPointerEvent(project, m.epoch, eventR2Key, eventBody);
+      console.error(`writer-do: pointer-event write failed, queued for retry (project=${project} epoch=${epoch})`, err);
+      await this.enqueuePendingPointerEvent(project, epoch, eventR2Key, eventBody);
     }
 
-    // 17b. Escrow write-through (§6.8 / §9.2): yeni manifest + yeni referanslanan
-    // blob'lar + immutable pointer event B2'ye PUSH edilir. FAIL-SOFT: yalnızca DO
-    // storage'a kuyruklanır (yerel, write path'te DEĞİL) + alarm — gerçek B2 push
-    // alarm()'da olur, hatası commit'i ASLA düşürmez. MUTABLE `current` ASLA
-    // push edilmez (F2 — yalnızca pointer EVENT). B2 yapılandırılmamışsa no-op.
+    // 11. Escrow write-through (§8.3): manifest + yeni blob'lar + pointer event
+    // B2'ye kuyruklanır (FAIL-SOFT — gerçek push alarm()'da, write path DIŞINDA).
     const escrowPushCfg = await this.effectiveEscrow();
     if (escrowPushCfg) {
       const items: EscrowPushItem[] = [
         { b2Key: manifestKey, r2Key: manifestKey, contentType: "application/json" },
         { b2Key: eventR2Key, r2Key: eventR2Key, contentType: "application/json" },
       ];
-      const seenBlobs = new Set<string>();
-      for (const e of m.entries) {
-        if (seenBlobs.has(e.blobHash)) continue;
-        seenBlobs.add(e.blobHash);
-        const bk = keyBlob(project, e.blobHash);
+      for (const b of newBlobs) {
+        const bk = keyBlob(project, b.hash);
         items.push({ b2Key: bk, r2Key: bk, contentType: "application/octet-stream" });
       }
       await enqueueEscrowPushes(this.ctx.storage, items).catch((err) => {
-        // Kuyruğa alma bile başarısız olsa kalıcı commit'i düşürme (yalnızca RPO gecikir).
-        console.error(`writer-do: escrow enqueue failed (project=${project} epoch=${m.epoch})`, err);
+        console.error(`writer-do: escrow enqueue failed (project=${project} epoch=${epoch})`, err);
       });
     }
 
-    // 18. Yanıt (freshness receipt G7'ye ertelendi).
-    return jsonOK({ epoch: m.epoch, manifestSha256: newManifestSha });
+    // 12. Yanıt: yeni epoch + manifest hash (+ set/import için yeni keyVersion'lar).
+    const keyVersions: Record<string, number> = {};
+    for (const k of touched) {
+      const e = byName.get(k);
+      if (e) keyVersions[k] = e.keyVersion;
+    }
+    return jsonOK({ project, epoch, manifestSha256: newManifestSha, keyVersions, ...(op.op === "rewrap" ? { rewrapped } : {}) });
   }
 
-  /**
-   * appendDeny, reddedilen bir commit için `commit` deny satırı ekler (§6.5 —
-   * denials her zaman kaydedilir). Best-effort: audit DO down ise çağıran yutar
-   * (birincil red — GRANT_DENIED vb. — yine döner; deny logging kritik yol değil).
-   */
+  /** appendDeny, reddedilen bir mutasyon için deny satırı ekler (best-effort). */
   private async appendDeny(project: string, meta: ReqMeta, e: CommitError): Promise<void> {
     const key = e.detail && typeof e.detail.key === "string" ? e.detail.key : null;
     await auditAppendSync(this.auditLog, {
@@ -495,73 +434,58 @@ export class ProjectWriterDO {
       principal_type: meta.principalType,
       project,
       key,
-      verb: "commit",
+      verb: meta.auditVerb,
       decision: "deny",
-      intent: e.code, // başarısız check'in adı (§6.2)
+      intent: e.code, // başarısız check'in adı
       ip: meta.ip,
       cf_ray: meta.cfRay,
       token_jti: meta.tokenJti,
     });
   }
 
-  /**
-   * enqueuePendingOutcome, CAS sonrası yazılamayan audit outcome satırını DO storage'a
-   * kaydeder + alarm zamanlar (§6.2 case c recovery). Retry idempotency-key ile
-   * append eder → audit DO zaten yazılmışsa dedup eder (çift outcome yok).
-   */
-  private async enqueuePendingOutcome(project: string, epoch: number, row: AuditRow, idempotencyKey: string): Promise<void> {
-    const rec: PendingOutcome = { row, idempotencyKey };
+  /** enqueuePendingOutcome, CAS sonrası yazılamayan outcome batch'ini kalıcılaştırır (case c). */
+  private async enqueuePendingOutcome(project: string, epoch: number, rows: AuditRow[], idempotencyKey: string): Promise<void> {
+    const rec: PendingOutcome = { rows, idempotencyKey };
     await this.ctx.storage.put(`${PENDING_OUTCOME_PREFIX}${project}:${epoch}`, rec);
     await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
   }
 
-  /**
-   * enqueuePendingPointerEvent, R2'ye yazılamayan bir pointer-event'i DO storage'a
-   * "pending" olarak kaydeder ve drenaj için bir alarm zamanlar (§6.2 step-17
-   * fail-soft). Body AYNEN saklanır ki retry byte-bayt aynı immutable objeyi yazsın.
-   */
+  /** enqueuePendingPointerEvent, yazılamayan pointer-event'i pending işaretler + alarm kurar. */
   private async enqueuePendingPointerEvent(project: string, epoch: number, r2Key: string, body: string): Promise<void> {
     const rec: PendingPointerEvent = { r2Key, body };
     await this.ctx.storage.put(`${PENDING_POINTER_EVENT_PREFIX}${project}:${epoch}`, rec);
-    // Tek alarm tüm bekleyenleri drene eder; mevcut alarmı ezmek zararsız (en erken
-    // zamanı korumak yerine sabit gecikme — basit ve yeterli).
     await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
   }
 
   /**
-   * alarm, DO storage'daki bekleyen pointer-event'leri drene eder (§6.2 step-17).
-   * Her yazım idempotent onlyIf-absent'tir: obje zaten varsa put null döner (hata
-   * DEĞİL) → marker temizlenir. Transient hata → marker kalır + alarm yeniden
-   * zamanlanır (sonsuz-döngü değil; başarı her kaydı tek tek düşürür).
+   * alarm, bekleyen pointer-event / audit-outcome / escrow-push kayıtlarını drene
+   * eder (crash-recovery). Her yazım idempotenttir (onlyIf-absent / idempotencyKey).
    */
   async alarm(): Promise<void> {
     let remaining = 0;
-    // (1) Bekleyen pointer-event'ler (§6.2 step-17 fail-soft).
+    // (1) Bekleyen pointer-event'ler.
     const pendingEvents = await this.ctx.storage.list<PendingPointerEvent>({ prefix: PENDING_POINTER_EVENT_PREFIX });
     for (const [storageKey, rec] of pendingEvents) {
       try {
-        // onlyIf-absent: zaten yazılmışsa null döner (idempotent) → yine temizle.
         await this.bucket.put(rec.r2Key, utf8(rec.body), { onlyIf: { etagDoesNotMatch: "*" } });
         await this.ctx.storage.delete(storageKey);
       } catch (err) {
-        remaining++; // hâlâ transient → bırak, bir sonraki alarm tekrar dener.
+        remaining++;
         console.error(`writer-do: pointer-event retry still failing (${storageKey})`, err);
       }
     }
-    // (2) Bekleyen audit outcome'ları (§6.2 case c). Idempotency-key ile retry →
-    // audit DO zaten yazdıysa dedup, çift outcome yok.
+    // (2) Bekleyen outcome batch'leri (idempotency-key dedup — çift satır yok).
     const pendingOutcomes = await this.ctx.storage.list<PendingOutcome>({ prefix: PENDING_OUTCOME_PREFIX });
     for (const [storageKey, rec] of pendingOutcomes) {
       try {
-        await auditAppendSync(this.auditLog, rec.row, rec.idempotencyKey);
+        await auditAppendBatch(this.auditLog, rec.rows, { idempotencyKey: rec.idempotencyKey });
         await this.ctx.storage.delete(storageKey);
       } catch (err) {
         remaining++;
         console.error(`writer-do: audit outcome retry still failing (${storageKey})`, err);
       }
     }
-    // (3) Bekleyen escrow B2 push'ları (§6.8). Pointer-event'ler ÖNCE drene edildi
-    // (yukarıda) → escrow drenajı onları R2'den okuyabilir. 3 denemeden sonra A4.
+    // (3) Bekleyen escrow B2 push'ları (pointer-event'ler ÖNCE drene edildi).
     const escrowCfg = await this.effectiveEscrow();
     const escrowRemaining = await drainEscrowPushes(this.ctx.storage, escrowCfg, this.bucket, this.escrowAlert);
     remaining += escrowRemaining;
@@ -572,42 +496,4 @@ export class ProjectWriterDO {
 /** emptyToNull, boş/absent header string'ini null'a çevirir (audit alanları). */
 function emptyToNull(v: string | null): string | null {
   return v && v.trim() !== "" ? v : null;
-}
-
-/**
- * parseTokenScope, Worker'ın forward ettiği x-token-scope header'ını (JSON) çözer.
- * Boş/parse-edilemez/şekilsiz → null (makine yolunda fail-closed: scope yoksa commit reddedilir).
- */
-function parseTokenScope(raw: string | null): TokenScope | null {
-  if (!raw || raw.trim() === "") return null;
-  try {
-    const p = JSON.parse(raw) as { verbs?: unknown; keys?: unknown };
-    if (!Array.isArray(p.verbs) || !Array.isArray(p.keys)) return null;
-    return {
-      verbs: p.verbs.filter((v): v is string => typeof v === "string"),
-      keys: p.keys.filter((k): k is string => typeof k === "string"),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** mapManifestError, verifyDataManifest hatalarını §6.2 error contract'ına eşler. */
-function mapManifestError(e: unknown): CommitError {
-  if (e instanceof ManifestVerifyError) {
-    const me = e;
-    switch (me.code) {
-      case "BAD_SIGNATURE_COUNT":
-        return new CommitError(HTTP.UNPROCESSABLE, "BAD_SIGNATURE_COUNT");
-      case "WRITER_UNKNOWN":
-        return new CommitError(HTTP.FORBIDDEN, "WRITER_NOT_ALLOWED", { key_id: me.message });
-      case "SIG_INVALID":
-        return new CommitError(HTTP.FORBIDDEN, "SIG_INVALID");
-      case "UNSUPPORTED_SCHEMA":
-        return new CommitError(HTTP.UNPROCESSABLE, "UNSUPPORTED_SCHEMA", { schema: me.message });
-      default:
-        return new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: me.message });
-    }
-  }
-  return new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED");
 }

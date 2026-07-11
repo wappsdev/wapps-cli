@@ -166,9 +166,14 @@ export async function verifyMintedToken(env: MintEnv, token: string): Promise<{ 
 
 // --- Scope yardımcıları (per-key confinement, §6.3/§6.4) --------------------
 
-/** scopeAllowsVerb, token scope'unun bir verb'i kapsayıp kapsamadığı. */
+/** scopeAllowsVerb, token scope'unun bir verb'i kapsayıp kapsamadığı. §4.2 pinli
+ * rotate⊃write genişletmesi BURADA DA uygulanır: rotasyon, değer yazımlarını normal
+ * data-plane write rotalarından yürütür; rotate-scoped bir minted token bu yazmaları
+ * da kapsamalıdır (policy expandVerbs ile tutarlı — daha dar semantik server-side
+ * uygulanamaz). */
 export function scopeAllowsVerb(scope: TokenScope, verb: string): boolean {
-  return scope.verbs.includes(verb);
+  if (scope.verbs.includes(verb)) return true;
+  return verb === "write" && scope.verbs.includes("rotate");
 }
 
 /** scopeAllowsKey, token scope'unun bir anahtarı kapsayıp kapsamadığı ("*" = tümü). */

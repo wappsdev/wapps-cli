@@ -1,107 +1,124 @@
-// CF Access auth middleware testleri (SPEC §6.1): accept + reject (bad aud/iss,
-// missing assertion, forged email header, expired, bad alg, service-token).
+// CF Access auth middleware testleri (SPEC §3.1 — KEPT davranışlar): accept +
+// reject (bad aud/iss, missing assertion, forged email header, expired, bad alg),
+// service-token şekli (v2: data-plane'e DOĞRUDAN kabul, §5.1).
+
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
-import { seedTrust, ensureJwks, validClaims, authHeader, callGate, resetWorld, ISSUER, AUD_READ } from "./helpers.js";
+import {
+  ensureJwks,
+  resetWorld,
+  validClaims,
+  serviceTokenClaims,
+  authHeader,
+  callGate,
+  seedPolicy,
+  defaultRules,
+  groupsByEmail,
+  ISSUER,
+  AUD_READ,
+} from "./helpers.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
-
 beforeAll(async () => {
   signer = await ensureJwks();
 });
-beforeEach(resetWorld);
+beforeEach(async () => {
+  await resetWorld();
+  await seedPolicy(defaultRules());
+  groupsByEmail.set("writer@wapps.dev", ["developers@wapps.co"]);
+});
 
 async function body(res: Response): Promise<{ error?: string }> {
   return (await res.json()) as { error?: string };
 }
 
-describe("auth middleware", () => {
-  it("ACCEPT: valid enrolled human JWT → 200", async () => {
-    const t = await seedTrust();
+describe("auth middleware (§3.1)", () => {
+  it("ACCEPT: valid human JWT → 200 on /v1/whoami", async () => {
     const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
-    const res = await callGate("/v1/trust/current", { headers: authHeader(jwt) }, t.pin);
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(200);
   });
 
   it("REJECT: missing Cf-Access-Jwt-Assertion → 401 AUTH_REQUIRED", async () => {
-    const t = await seedTrust();
-    const res = await callGate("/v1/trust/current", { headers: {} }, t.pin);
+    const res = await callGate("/v1/whoami", { headers: {} });
     expect(res.status).toBe(401);
     expect((await body(res)).error).toBe("AUTH_REQUIRED");
   });
 
   it("REJECT: wrong audience → 403 AUD_MISMATCH", async () => {
-    const t = await seedTrust();
     const jwt = await signer.makeJWT(validClaims("writer@wapps.dev", { aud: ["wrong-audience"] }));
-    const res = await callGate("/v1/trust/current", { headers: authHeader(jwt) }, t.pin);
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(403);
     expect((await body(res)).error).toBe("AUD_MISMATCH");
   });
 
-  it("REJECT: wrong issuer → 401 ISSUER_MISMATCH (delta vs cfaccess.go)", async () => {
-    const t = await seedTrust();
+  it("REJECT: wrong issuer → 401 ISSUER_MISMATCH (issuer pinning)", async () => {
     const jwt = await signer.makeJWT(validClaims("writer@wapps.dev", { iss: "https://evil-team.cloudflareaccess.com" }));
-    const res = await callGate("/v1/trust/current", { headers: authHeader(jwt) }, t.pin);
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(401);
     expect((await body(res)).error).toBe("ISSUER_MISMATCH");
   });
 
   it("REJECT: expired token (beyond leeway) → 401 AUTH_EXPIRED", async () => {
-    const t = await seedTrust();
     const now = Math.floor(Date.now() / 1000);
     const jwt = await signer.makeJWT({ iss: ISSUER, aud: [AUD_READ], email: "writer@wapps.dev", nbf: now - 4000, exp: now - 3600 });
-    const res = await callGate("/v1/trust/current", { headers: authHeader(jwt) }, t.pin);
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(401);
     expect((await body(res)).error).toBe("AUTH_EXPIRED");
   });
 
-  it("REJECT: token with NO exp claim → 401 AUTH_INVALID (exp zorunlu, §6.1 step 4)", async () => {
-    const t = await seedTrust();
+  it("REJECT: token with NO exp claim → 401 AUTH_INVALID (exp zorunlu)", async () => {
     const now = Math.floor(Date.now() / 1000);
-    // exp KASITLI olarak yok → süresiz token; imza geçerli olsa da reddedilmeli.
     const jwt = await signer.makeJWT({ iss: ISSUER, aud: [AUD_READ], email: "writer@wapps.dev", nbf: now - 10 });
-    const res = await callGate("/v1/trust/current", { headers: authHeader(jwt) }, t.pin);
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(401);
     expect((await body(res)).error).toBe("AUTH_INVALID");
   });
 
   it("REJECT: unexpected alg (none) → 401 AUTH_INVALID", async () => {
-    const t = await seedTrust();
     const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"), { alg: "none" });
-    const res = await callGate("/v1/trust/current", { headers: authHeader(jwt) }, t.pin);
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(401);
     expect((await body(res)).error).toBe("AUTH_INVALID");
   });
 
   it("STRIP: forged Cf-Access-Authenticated-User-Email alone (no JWT) → 401 AUTH_REQUIRED", async () => {
-    const t = await seedTrust();
-    const res = await callGate(
-      "/v1/trust/current",
-      { headers: { "Cf-Access-Authenticated-User-Email": "attacker@evil.com" } },
-      t.pin,
-    );
+    const res = await callGate("/v1/whoami", { headers: { "Cf-Access-Authenticated-User-Email": "attacker@evil.com" } });
     expect(res.status).toBe(401);
     expect((await body(res)).error).toBe("AUTH_REQUIRED");
   });
 
   it("STRIP: forged email header is IGNORED — identity comes from the signed JWT", async () => {
-    const t = await seedTrust();
-    // JWT email = enrolled writer; forged header = unenrolled attacker.
     const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
-    const res = await callGate(
-      "/v1/trust/current",
-      { headers: authHeader(jwt, { "Cf-Access-Authenticated-User-Email": "attacker@evil.com" }) },
-      t.pin,
-    );
-    // 200 = principal resolved to the JWT's writer (enrolled), NOT the forged attacker (would 403).
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt, { "Cf-Access-Authenticated-User-Email": "attacker@evil.com" }) });
     expect(res.status).toBe(200);
+    const b = (await res.json()) as { principal: string };
+    expect(b.principal).toBe("human:writer@wapps.dev"); // header DEĞİL, JWT kimliği
   });
 
-  it("REJECT: service-token identity on a data route → 403 MACHINE_TOKEN_REQUIRED (minted token = G7)", async () => {
-    const t = await seedTrust();
+  it("SERVICE: common_name JWT resolves to service:<cn> and skips group resolution (§3.2)", async () => {
+    const jwt = await signer.makeJWT(serviceTokenClaims("svc-woodpecker"));
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as { principal: string; kind: string; groups: string[] };
+    expect(b.principal).toBe("service:svc-woodpecker");
+    expect(b.kind).toBe("service");
+    expect(b.groups).toEqual([]);
+  });
+
+  it("REJECT: JWT with neither email nor common_name → 401 AUTH_INVALID", async () => {
     const now = Math.floor(Date.now() / 1000);
-    const jwt = await signer.makeJWT({ iss: ISSUER, aud: [AUD_READ], common_name: "tofu-sync-vaulter", nbf: now - 10, exp: now + 3600 });
-    const res = await callGate("/v1/trust/current", { headers: authHeader(jwt) }, t.pin);
-    expect(res.status).toBe(403);
-    expect((await body(res)).error).toBe("MACHINE_TOKEN_REQUIRED");
+    const jwt = await signer.makeJWT({ iss: ISSUER, aud: [AUD_READ], nbf: now - 10, exp: now + 3600 });
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
+    expect(res.status).toBe(401);
+    expect((await body(res)).error).toBe("AUTH_INVALID");
+  });
+
+  it("FAIL-CLOSED CONFIG: missing MASTER_KEK / ADMIN_EMAILS → 503 on every route (§3.1)", async () => {
+    const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
+    for (const override of [{ MASTER_KEK: "" }, { ADMIN_EMAILS: "" }, { ACCESS_TEAM_DOMAIN: "" }]) {
+      const res = await callGate("/v1/whoami", { headers: authHeader(jwt) }, override);
+      expect(res.status).toBe(503);
+      expect((await body(res)).error).toBe("SERVICE_MISCONFIGURED");
+    }
   });
 });
