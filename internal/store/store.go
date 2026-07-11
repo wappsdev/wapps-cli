@@ -114,7 +114,7 @@ type RotatePlanResult struct {
 // Config, bir WorkerStore'un bağımlılıklarıdır. Dış kenarlar (HTTP, saat, pin
 // yolu) enjekte edilebilir — store tam test-edilebilir.
 type Config struct {
-	// BaseURL, secrets-gate Worker kökü (örn. https://secrets.meapps.dev).
+	// BaseURL, secrets-gate Worker kökü (örn. https://gw.meapps.dev).
 	BaseURL string
 	// Doer, HTTP taşıması; nil ise http.DefaultClient.
 	Doer httpDoer

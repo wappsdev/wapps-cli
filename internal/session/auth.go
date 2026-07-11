@@ -23,7 +23,7 @@ import (
 )
 
 // DefaultGateURL, OD-4 varsayılan gate hostname'idir.
-const DefaultGateURL = "https://secrets.meapps.dev"
+const DefaultGateURL = "https://gw.meapps.dev"
 
 // GateURL, secrets-gate kökünü döner: WAPPS_SECRETS_GATE env veya varsayılan.
 func GateURL() string {
@@ -37,7 +37,7 @@ func GateURL() string {
 func GateHost() string {
 	u, err := url.Parse(GateURL())
 	if err != nil || u.Host == "" {
-		return "secrets.meapps.dev"
+		return "gw.meapps.dev"
 	}
 	return u.Host
 }

@@ -35,7 +35,7 @@ func TestReadSession_ValidAndExpired(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("WAPPS_SESSION_TOKEN", "")
-	t.Setenv("WAPPS_SECRETS_GATE", "https://secrets.meapps.dev")
+	t.Setenv("WAPPS_SECRETS_GATE", "https://gw.meapps.dev")
 	dir := filepath.Join(tmp, "wapps", "session")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestReadSession_ValidAndExpired(t *testing.T) {
 
 	write := func(exp int64) {
 		b, _ := json.Marshal(map[string]any{"token": "tok-bytes", "expires_at": exp})
-		if err := os.WriteFile(filepath.Join(dir, "secrets.meapps.dev.json"), b, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "gw.meapps.dev.json"), b, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

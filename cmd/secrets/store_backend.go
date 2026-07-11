@@ -48,7 +48,7 @@ func storeBackendConfig() (*config.WappsYAML, error) {
 var openStore = openWorkerStore
 
 // openWorkerStore, gerçek üretim istemcisini kurar (SPEC §7.4):
-//   - BaseURL = WAPPS_SECRETS_GATE (yoksa OD-4 varsayılanı secrets.meapps.dev);
+//   - BaseURL = WAPPS_SECRETS_GATE (yoksa OD-4 varsayılanı gw.meapps.dev);
 //   - Auth = session.Auth() → CI service-token env'i veya `wapps login` oturumu;
 //     geçerli kimlik yoksa SESSION_EXPIRED (istek ağ'a çıkmadan).
 func openWorkerStore(cfg *config.WappsYAML) (store.Store, error) {
