@@ -54,6 +54,7 @@ func offboardSoloWorld(t *testing.T) (*Engine, *MemStore, tHuman, tHuman, tEscro
 func driveToEscrow(t *testing.T, e *Engine, a, eve tHuman, head *trust.VerifiedEpoch, recID string, escrowHolder bool) (*trust.VerifiedEpoch, *Step3Output, *Step4Output) {
 	t.Helper()
 	_, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
 		EscrowShareHolder: escrowHolder, OpenedBy: a.id, Signer: a.admin, RecordID: recID,
 	})
@@ -90,6 +91,7 @@ func TestOffboard_EndToEnd(t *testing.T) {
 
 	// --- OPEN ---
 	rec, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
 		EscrowShareHolder: true, OpenedBy: a.id, Signer: a.admin, RecordID: "ob_e2e",
 	})
@@ -273,12 +275,46 @@ func TestOffboard_EscrowRotatesAllProjects(t *testing.T) {
 // AÇILAMAYACAĞINI kanıtlar (§8.5, ≥2 admin — hiçbir adım tek çalıştırıcısı ayrılan
 // olamaz).
 func TestOffboard_CannotBeRunByDeparting(t *testing.T) {
-	e, _, _, eve, _, _ := offboardSoloWorld(t)
+	mem := NewMemStore()
+	e := newEngine(mem)
+	a := newTHuman(t, "adnan@wapps.dev")
+	eve := newTHuman(t, "eve@wapps.dev") // ayrılan AMA hâlâ aktif admin
+	esc := newTEscrow(t)
+	r0, r1, r2 := edFromSeed(t, 1), edFromSeed(t, 2), edFromSeed(t, 3)
+	head, _ := buildGenesis(t, genesisSpec{
+		identities: []registry.Identity{a.identity(), eve.identity(), esc.id},
+		adminIDs:   []string{a.id, eve.id}, // EVE de admin
+		grants:     []registry.Grant{readWriteGrant(a.id, rwProject), readOnlyGrant(eve.id, rwProject)},
+		roots:      []*cryptoid.Ed25519SigningKey{r0, r1, r2},
+		holders:    []string{a.id, eve.id, "human:carol@wapps.dev"},
+		m:          2, solo: false,
+	})
+	// EVE ayrılan prensip AMA hâlâ aktif admin: kendi anahtarıyla KENDİ offboard'ını
+	// AÇAMAZ — açan kimlik DOĞRULANMIŞ imzadan gelir (req.OpenedBy string'i değil) ve
+	// ayrılana eşitse reddedilir (§8.5 "cannot open", codex round-9 M).
 	_, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
 		OpenedBy: eve.id, Signer: eve.admin,
 	})
 	require.ErrorIs(t, err, ErrDepartingRunner)
+
+	// EVE spoof: OpenedBy=a.id İDDİA eder ama KENDİ anahtarıyla imzalar → açan imzadan
+	// çözülür (eve) → ayrılan → yine reddedilir (poisoned-record açamaz).
+	_, err = e.OffboardStart(OffboardStartRequest{
+		Head:      head,
+		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
+		OpenedBy: a.id, Signer: eve.admin,
+	})
+	require.ErrorIs(t, err, ErrDepartingRunner)
+
+	// Non-admin imzalayan (a.daily admin-sınıfı değil) açamaz → attestation ring'de düşer.
+	_, err = e.OffboardStart(OffboardStartRequest{
+		Head:      head,
+		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
+		OpenedBy: a.id, Signer: a.daily,
+	})
+	require.ErrorIs(t, err, ErrRunnerIdentityMismatch)
 }
 
 // TestOffboard_NonAdminCannotRunStep, offboard adımlarının aktif bir admin OLMAYAN
@@ -288,6 +324,7 @@ func TestOffboard_CannotBeRunByDeparting(t *testing.T) {
 func TestOffboard_NonAdminCannotRunStep(t *testing.T) {
 	e, _, a, eve, _, head := offboardSoloWorld(t)
 	_, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
 		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_guard",
 	})
@@ -319,6 +356,7 @@ func TestOffboard_DepartingAdminCannotRunStep(t *testing.T) {
 	seedData(t, mem, head, rwProject, a.daily, map[string][]byte{"K": []byte("v")})
 
 	_, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "compromise", Projects: []string{rwProject},
 		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_dep_admin",
 	})
@@ -344,6 +382,7 @@ func TestOffboard_DepartingAdminCannotRunStep(t *testing.T) {
 func TestOffboard_DeviceScopedRejected(t *testing.T) {
 	e, _, a, eve, _, head := offboardSoloWorld(t)
 	_, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "device_loss", Projects: []string{rwProject},
 		Devices:  []string{"dev:eve-laptop"}, // tek cihaz kapsamı
 		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_dev",
@@ -391,6 +430,7 @@ func TestOffboard_ResumeByAnotherAdmin(t *testing.T) {
 
 	// A açar + kill + rewrap (revoke 2-admin co-sign — prod tier, N_h=2).
 	_, err := engA.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
 		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_resume",
 	})
@@ -429,4 +469,153 @@ func TestOffboard_ResumeByAnotherAdmin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RecordClosed, closed.Status, "another admin closed the resumed offboard")
 	_ = esc
+}
+
+// spoofSigner, KeyID()'de BAŞKA bir anahtarın parmak izini raporlayan ama gerçekte
+// KENDİ (real) anahtarıyla imzalayan kötücül bir SigningKey'dir (codex round-9 H).
+// PublicKeyBytes/Alg gerçeğe delege edilir (attacker adminA'nın anahtarına sahip
+// değildir); Sign() gerçek anahtarla imzalar ama Signature.KeyID'yi de spoofla'r.
+type spoofSigner struct {
+	real      cryptoid.SigningKey
+	fakeKeyID string
+}
+
+func (s spoofSigner) KeyID() string          { return s.fakeKeyID }
+func (s spoofSigner) Alg() string            { return s.real.Alg() }
+func (s spoofSigner) PublicKeyBytes() []byte { return s.real.PublicKeyBytes() }
+func (s spoofSigner) Sign(msg []byte) (cryptoid.Signature, error) {
+	sig, err := s.real.Sign(msg) // GERÇEK (ayrılan) anahtarla imzala
+	if err != nil {
+		return sig, err
+	}
+	sig.KeyID = s.fakeKeyID // ...ama başka admin'in key_id'sini İDDİA et
+	return sig, nil
+}
+
+// TestOffboard_SpoofedSignerKeyIDRejected (codex round-9 H): SigningKey bir interface
+// olduğundan kötücül bir signer KeyID()'de başka bir aktif admin'i raporlayıp Sign()'da
+// kendi (ayrılan) anahtarıyla imzalayabilir. assertRunner artık runner'ı signer.KeyID()
+// self-report'undan DEĞİL, DOĞRULANMIŞ bir attestation imzasından çözer → spoof
+// reddedilir: imza yalnızca GERÇEK imzalayan anahtarın pubkey'ine karşı doğrulanır,
+// başka admin'in pubkey'ine karşı DÜŞER. Böylece step side-effect'leri hiç çalışmaz.
+func TestOffboard_SpoofedSignerKeyIDRejected(t *testing.T) {
+	mem := NewMemStore()
+	e := newEngine(mem)
+	a := newTHuman(t, "adnan@wapps.dev")
+	eve := newTHuman(t, "eve@wapps.dev") // ayrılan, hâlâ aktif admin
+	esc := newTEscrow(t)
+	r0, r1, r2 := edFromSeed(t, 1), edFromSeed(t, 2), edFromSeed(t, 3)
+	head, _ := buildGenesis(t, genesisSpec{
+		identities: []registry.Identity{a.identity(), eve.identity(), esc.id},
+		adminIDs:   []string{a.id, eve.id},
+		grants:     []registry.Grant{readWriteGrant(a.id, rwProject), readOnlyGrant(eve.id, rwProject)},
+		roots:      []*cryptoid.Ed25519SigningKey{r0, r1, r2},
+		holders:    []string{a.id, eve.id, "human:carol@wapps.dev"},
+		m:          2, solo: false,
+	})
+	seedData(t, mem, head, rwProject, a.daily, map[string][]byte{"K": []byte("v")})
+
+	// A meşru olarak açar.
+	_, err := e.OffboardStart(OffboardStartRequest{
+		Head: head, Principal: eve.id, Reason: "compromise", Projects: []string{rwProject},
+		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_spoof",
+	})
+	require.NoError(t, err)
+
+	// EVE spoof: a.admin'in key_id'sini raporlar ama KENDİ anahtarıyla imzalar.
+	spoof := spoofSigner{real: eve.admin, fakeKeyID: a.admin.KeyID()}
+	rec0, err := e.LoadOffboard("ob_spoof", head)
+	require.NoError(t, err)
+	require.Equal(t, StepPending, rec0.Steps.Kill.Status, "kill henüz çalışmadı")
+
+	_, err = e.OffboardStep1Kill("ob_spoof", head, a.id, spoof)
+	require.Error(t, err, "spoofed KeyID başka admin'e attribute EDİLMEMELİ (imza doğrulaması düşer)")
+
+	// Side-effect ÇALIŞMAMALI: kill hâlâ pending.
+	rec1, err := e.LoadOffboard("ob_spoof", head)
+	require.NoError(t, err)
+	assert.Equal(t, StepPending, rec1.Steps.Kill.Status, "reddedilen spoof adım side-effect ÜRETMEMELİ")
+}
+
+// replaySigner, HANGİ challenge verilirse verilsin admin A'nın YAKALANMIŞ (stale) bir
+// attestation imzasını döner (codex round-10 replay senaryosu).
+type replaySigner struct{ captured cryptoid.Signature }
+
+func (s replaySigner) KeyID() string          { return s.captured.KeyID }
+func (s replaySigner) Alg() string            { return s.captured.Alg }
+func (s replaySigner) PublicKeyBytes() []byte { return nil }
+func (s replaySigner) Sign(msg []byte) (cryptoid.Signature, error) {
+	return s.captured, nil // challenge'ı YOK SAY → replay
+}
+
+// TestOffboard_ReplayedAttestationRejected (codex round-10 H): attestation challenge'ı
+// artık kaydın MEVCUT durumuna bağlı olduğundan (sha256(marshal(rec))), admin A'nın
+// başka bir durum üzerindeki YAKALANMIŞ imzasını replay etmek bir adımı yetkilendiremez —
+// yakalanmış imza taze challenge'a karşı doğrulanmaz. Side-effect çalışmaz.
+func TestOffboard_ReplayedAttestationRejected(t *testing.T) {
+	mem := NewMemStore()
+	e := newEngine(mem)
+	a := newTHuman(t, "adnan@wapps.dev")
+	eve := newTHuman(t, "eve@wapps.dev")
+	esc := newTEscrow(t)
+	r0, r1, r2 := edFromSeed(t, 1), edFromSeed(t, 2), edFromSeed(t, 3)
+	head, _ := buildGenesis(t, genesisSpec{
+		identities: []registry.Identity{a.identity(), eve.identity(), esc.id},
+		adminIDs:   []string{a.id, eve.id},
+		grants:     []registry.Grant{readWriteGrant(a.id, rwProject), readOnlyGrant(eve.id, rwProject)},
+		roots:      []*cryptoid.Ed25519SigningKey{r0, r1, r2},
+		holders:    []string{a.id, eve.id, "human:carol@wapps.dev"},
+		m:          2, solo: false,
+	})
+	seedData(t, mem, head, rwProject, a.daily, map[string][]byte{"K": []byte("v")})
+	_, err := e.OffboardStart(OffboardStartRequest{
+		Head: head, Principal: eve.id, Reason: "compromise", Projects: []string{rwProject},
+		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_replay",
+	})
+	require.NoError(t, err)
+
+	// A'nın STALE bir durum üzerindeki geçerli attestation imzasını yakala.
+	staleSig, err := a.admin.Sign(runnerAttestChallenge("ob_replay", []byte("stale-state")))
+	require.NoError(t, err)
+
+	// Kötücül signer bu yakalanmış A-imzasını her challenge için döner.
+	_, err = e.OffboardStep1Kill("ob_replay", head, a.id, replaySigner{captured: staleSig})
+	require.Error(t, err, "replayed stale attestation must not authorize a step")
+
+	rec, err := e.LoadOffboard("ob_replay", head)
+	require.NoError(t, err)
+	assert.Equal(t, StepPending, rec.Steps.Kill.Status, "no kill side effect on replayed attestation")
+}
+
+// TestOffboard_AntiRollback (codex round-11 H1): mutable offboard kayıtları monotonik
+// seq + CAS ile yazılır. Eski geçerli-imzalı bir envelope'un sonraki bir kaydın üzerine
+// yazılması iki katmanda engellenir: (1) dürüst düşük newSeq → PutRecordCAS ErrRecordRollback;
+// (2) yalan yüksek newSeq CAS'ı geçse bile LoadOffboard'daki seq çapraz-kontrolü (gövde
+// seq'i != izlenen seq) rollback'i yakalar.
+func TestOffboard_AntiRollback(t *testing.T) {
+	e, mem, a, eve, _, head := offboardSoloWorld(t)
+	_, err := e.OffboardStart(OffboardStartRequest{
+		Head: head, Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
+		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_roll",
+	})
+	require.NoError(t, err)
+
+	// seq=1 open envelope'unu yakala (rollback hedefi).
+	oldEnvelope, ok, err := mem.GetRecord(recordKey("ob_roll"))
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Adım 1 → seq=2.
+	_, err = e.OffboardStep1Kill("ob_roll", head, a.id, a.admin)
+	require.NoError(t, err)
+
+	// (1) Dürüst düşük newSeq → CAS monotonik-değil reddi.
+	err = mem.PutRecordCAS(recordKey("ob_roll"), oldEnvelope, 2, 1)
+	require.ErrorIs(t, err, ErrRecordRollback, "honest low newSeq must be rejected")
+
+	// (2) Yalan yüksek newSeq → store kabul eder AMA LoadOffboard seq çapraz-kontrolü yakalar.
+	err = mem.PutRecordCAS(recordKey("ob_roll"), oldEnvelope, 2, 3)
+	require.NoError(t, err, "store accepts a lying newSeq at the API layer")
+	_, err = e.LoadOffboard("ob_roll", head)
+	require.ErrorIs(t, err, ErrRecordRollback, "seq cross-check must detect the rolled-back body")
 }

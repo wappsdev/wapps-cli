@@ -3,6 +3,7 @@ package trust
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -256,6 +257,65 @@ func TestRosterEpoch_AdminKeyRejected(t *testing.T) {
 	assert.ErrorIs(t, err, ErrTrustQuorumUnmet)
 }
 
+// TestRosterChain_MachineWildcardGrantRejected, gömülü kayıtta bir MAKİNE
+// prensibine verilmiş joker ("*") grant taşıyan bir epoch'un — quorum + zincir
+// kuralları geçse bile — VerifyRosterChain tarafından reddedildiğini kanıtlar
+// (fix 3). registry.Validate() artık zincir yolunda çağrılıyor; aksi halde Worker
+// bu imzalı ama geçersiz kayıttan bir wildcard token basardı.
+func TestRosterChain_MachineWildcardGrantRejected(t *testing.T) {
+	a := newAdminHuman(t, "adnan@wapps.dev")
+	_, gObj, gPin, gm := genesis3of(t, a.id, a)
+
+	// Kayıtlı, GEÇERLİ bir makine kimliği (rotate_by + aktif device enc anahtarı).
+	dev, err := cryptoid.GenerateX25519Identity()
+	require.NoError(t, err)
+	rotateBy := testTime.Add(90 * 24 * time.Hour)
+	machine := registry.Identity{
+		ID:         "machine:tofu-sync",
+		Type:       registry.TypeMachine,
+		Status:     registry.StatusActive,
+		EnrolledAt: testTime,
+		RotateBy:   &rotateBy,
+		EncKeys: []registry.EncKey{
+			registry.NewEncKeyEntry(dev.Recipient(), registry.EncClassDevice, "software", 1),
+		},
+	}
+
+	// Grant epoch: makineyi kaydeder VE ona "*" (tüm anahtarlar) grant'ı verir.
+	e2 := childOf(gm, gObj)
+	e2.ChangeClass = ChangeGrant
+	e2.Identities = append(append([]registry.Identity(nil), gm.Identities...), machine)
+	e2.Grants = []registry.Grant{{Principal: machine.ID, Project: "vaulter", Verbs: []string{"get"}, Keys: []string{"*"}}}
+	obj := signAdmins(t, e2, a.admin) // solo prod grant → 1 admin yeter
+
+	_, err = VerifyRosterChain(gPin, gPin, gObj, obj)
+	assert.ErrorIs(t, err, registry.ErrRegistryInvalid)
+}
+
+// TestRosterChain_SigningKeyIDMismatchRejected, gömülü kayıttaki bir signing_keys
+// girdisinin declared key_id'si pubkey parmak izine (§3.7) UYMUYORSA epoch'un
+// reddedildiğini kanıtlar (fix 4 / COORD b). Bu, kök + admin anahtarlarının ayrı
+// kontrolünün ÖTESİNDE, admin-dışı/daily anahtarları da kapsar — Worker'ın türetme-
+// ve-reddet kuralıyla eşleşir.
+func TestRosterChain_SigningKeyIDMismatchRejected(t *testing.T) {
+	a := newAdminHuman(t, "adnan@wapps.dev")
+	_, gObj, gPin, gm := genesis3of(t, a.id, a)
+
+	// Yeni bir (admin OLMAYAN) insan kimliği; signing key'in declared key_id'si bozuk.
+	b := newAdminHuman(t, "bob@wapps.dev")
+	bID := b.identity()
+	require.NotEmpty(t, bID.SigningKeys)
+	bID.SigningKeys[0].KeyID = "sha256:deadbeef" // boş değil ve parmak izine uymaz
+
+	e2 := childOf(gm, gObj)
+	e2.ChangeClass = ChangeRegistry
+	e2.Identities = append(append([]registry.Identity(nil), gm.Identities...), bID)
+	obj := signAdmins(t, e2, a.admin) // registry epoch → 1 admin
+
+	_, err := VerifyRosterChain(gPin, gPin, gObj, obj)
+	assert.ErrorIs(t, err, registry.ErrKeyIDMismatch)
+}
+
 // TestVerifyRosterChain_EmptyAndNoPin, dejenere girdileri test eder.
 func TestVerifyRosterChain_EmptyAndNoPin(t *testing.T) {
 	a := newAdminHuman(t, "adnan@wapps.dev")
@@ -266,4 +326,33 @@ func TestVerifyRosterChain_EmptyAndNoPin(t *testing.T) {
 
 	_, err = VerifyRosterChain(Pin{}, gPin, gObj)
 	assert.ErrorIs(t, err, ErrTrustPinMissing)
+}
+
+// TestCompareUnchanged_NilEmptyArrayEquivalence, COORD (a): non-roster bir epoch'un
+// array-şekilli KİLİTLİ alanları (admins / worker_mint_pubkeys / roots) için
+// null/yokluk/[] EŞDEĞER sayılmalı — Worker null→[] indirger; Go da nil/[] ayrımı
+// yapmamalı (reflect.DeepEqual'in nil!=[] tuzağı) yoksa null<->[] değişimi Go'da
+// reddedilir ama Worker'da kabul edilir → desync.
+func TestCompareUnchanged_NilEmptyArrayEquivalence(t *testing.T) {
+	// parent: nil diziler; cur: boş diziler. Diğer kilitli alanlar aynı.
+	parent := &TrustManifest{
+		Admins:         nil,
+		WorkerMintPubs: nil,
+		Roots:          nil,
+	}
+	cur := &TrustManifest{
+		Admins:         []string{},
+		WorkerMintPubs: []ReceiptKey{},
+		Roots:          []RootKey{},
+	}
+	assert.NoError(t, compareUnchanged(parent, cur), "null->[] on admins/worker_mint_pubkeys/roots must be UNCHANGED")
+	assert.NoError(t, compareUnchanged(cur, parent), "[]->null must be symmetric")
+
+	// GERÇEK değişiklik hâlâ reddedilir: admins içerik değişimi.
+	changedAdmins := &TrustManifest{Admins: []string{"human:a@x"}}
+	assert.ErrorIs(t, compareUnchanged(parent, changedAdmins), ErrTrustChainBroken, "admins content change must be rejected")
+
+	// GERÇEK değişiklik: worker_mint_pubkeys içerik değişimi.
+	changedMints := &TrustManifest{WorkerMintPubs: []ReceiptKey{{Kid: "k1", Alg: "ES256"}}}
+	assert.ErrorIs(t, compareUnchanged(parent, changedMints), ErrTrustChainBroken, "worker_mint_pubkeys content change must be rejected")
 }

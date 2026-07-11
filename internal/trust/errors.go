@@ -46,4 +46,13 @@ var (
 
 	// ErrUnknownChangeClass: kapalı-küme dışı change_class.
 	ErrUnknownChangeClass = errors.New("trust: UNKNOWN_CHANGE_CLASS")
+
+	// ErrTrailingContent: imzalı body'de tek JSON değerinden SONRA fazladan içerik
+	// var (COORD c). Worker'ın JSON.parse'ı böyle bir gövdeyi reddeder; Go
+	// json.Decoder ise io.EOF kontrol edilmedikçe sessizce kabul ederdi.
+	ErrTrailingContent = errors.New("trust: TRAILING_CONTENT")
+
+	// ErrEpochOutOfRange: admin_epoch JS güvenli-tamsayı alanını [0, 2^53-1] aşıyor
+	// (COORD a). İki taraf aynı tamsayı alanını paylaşsın diye Go da reddeder.
+	ErrEpochOutOfRange = errors.New("trust: ADMIN_EPOCH_OUT_OF_RANGE")
 )

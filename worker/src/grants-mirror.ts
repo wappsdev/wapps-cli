@@ -29,10 +29,13 @@ function principalTypeOf(principal: string): "human" | "machine" | null {
   return null; // escrow vb. grant öznesi olamaz
 }
 
-/** rotateByOf, bir makine kimliğinin rotate_by'ını manifest'ten çıkarır (varsa). */
+/**
+ * rotateByOf, bir makine kimliğinin rotate_by'ını doğrulanmış manifest'ten çıkarır
+ * (varsa). Identity.rotate_by artık parseTrustBody'de MODELLENİR + RFC3339 doğrulanır
+ * (COORD e) — eski `as unknown as` cast'ı (drop edilen alanı okumaya çalışan) kaldırıldı.
+ */
 function rotateByOf(m: TrustManifest, principal: string): string | null {
-  const id = m.identities.find((i) => i.id === principal) as unknown as { rotate_by?: unknown } | undefined;
-  return id && typeof id.rotate_by === "string" ? id.rotate_by : null;
+  return m.identities.find((i) => i.id === principal)?.rotate_by ?? null;
 }
 
 /**

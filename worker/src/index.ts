@@ -21,9 +21,9 @@ import {
   validProject,
   validSha256Hex,
 } from "./storage.js";
-import { parseCurrentPointer, parseManifestBody } from "./manifest.js";
+import { parseCurrentPointer, manifestObjectHash, verifyDataManifest, ManifestVerifyError } from "./manifest.js";
 import { parseSignedObject } from "./crypto/verify.js";
-import { loadTrustHead } from "./trust-loader.js";
+import { loadTrustHead, dataWriterKeyring } from "./trust-loader.js";
 import { hasVerbGrant, verbKeyAllowed, identityByID, TrustError, VerifiedEpoch } from "./trust.js";
 import { ProjectWriterDO } from "./writer-do.js";
 import { AuditLogDO } from "./audit-do.js";
@@ -348,7 +348,17 @@ async function handleBlobRead(request: Request, env: Env, ctx: ExecutionContext,
   const head = await trustHeadOr503(env);
   // Per-key authz (§6.3 blob read): blob hash → current manifest'teki anahtar(lar)a
   // eşle; principal en az birinde 'read' tutmalı (makine: grants ∩ token scope).
-  const keyNames = await blobKeyNames(env, project, sha);
+  // FIX (§5.4 tamper): current manifest'i authz'de KULLANMADAN ÖNCE pointer-hash +
+  // yazar imzası doğrulanır (blobKeyNames içinde). Doğrulama başarısızsa (storage
+  // tamper) fail-closed 503 — aksi halde saldırgan manifest'i yeniden yazıp bir
+  // blob'u okunabilir bir anahtar altında GÖSTEREBİLİRDİ.
+  let keyNames: string[];
+  try {
+    keyNames = await blobKeyNames(env, project, sha, head);
+  } catch {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "blob.get", project, null));
+    return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "current manifest failed integrity verification");
+  }
   let okKey: string | null = null;
   if (keyNames.length > 0) {
     const found = keyNames.find((k) => canKey(head, principal, project, "read", k));
@@ -384,15 +394,35 @@ async function handleBlobRead(request: Request, env: Env, ctx: ExecutionContext,
   return res;
 }
 
-/** blobKeyNames, current manifest'te bu blob hash'ini referanslayan anahtar adları. */
-async function blobKeyNames(env: Env, project: string, sha: string): Promise<string[]> {
+/**
+ * blobKeyNames, current manifest'te bu blob hash'ini referanslayan anahtar adları.
+ *
+ * TAMPER GUARD (§5.4.2 / §6.2): entries'i authz'de kullanmadan ÖNCE current
+ * manifest'in bütünlüğü DOĞRULANIR — aksi halde R2'ye yazabilen bir saldırgan,
+ * manifest'i bir blob'u OKUNABİLİR bir anahtar altında gösterecek şekilde yeniden
+ * yazabilirdi (imza/pointer kontrolü olmadan). Sıra:
+ *   1) manifestObjectHash(man.bytes) === ptr.manifestSha256 (pointer↔obje bağı),
+ *   2) parseSignedObject + verifyDataManifest(dataWriterKeyring(head)) (yazar imzası,
+ *      verify-before-parse — doğrulanmış trust head'in yazar ring'ine karşı),
+ *   3) body.project === path project.
+ * Herhangi biri tutmazsa fırlatır → çağıran fail-closed davranır. Manifest HİÇ
+ * yoksa (orphan/historical blob) [] döner (tamper değil; çağıran o yolu ayrı ele alır).
+ */
+async function blobKeyNames(env: Env, project: string, sha: string, head: VerifiedEpoch): Promise<string[]> {
   const cur = await getObject(env.SECRETS_BUCKET, keyCurrent(project));
   if (!cur) return [];
   const ptr = parseCurrentPointer(cur.bytes);
   const man = await getObject(env.SECRETS_BUCKET, keyManifest(project, ptr.epoch));
   if (!man) return [];
+  // 1) pointer-hash: obje, current pointer'ın işaret ettiği içerik-adresine bağlanmalı.
+  if (manifestObjectHash(man.bytes) !== ptr.manifestSha256) {
+    throw new ManifestVerifyError("MANIFEST_MALFORMED", "current manifest object hash != pointer");
+  }
+  // 2) yazar imzası: verify-before-parse (doğrulanmış head'in yazar ring'i, §5.4.1).
   const signed = parseSignedObject(JSON.parse(new TextDecoder().decode(man.bytes)));
-  const body = parseManifestBody(signed.bytes);
+  const body = verifyDataManifest(signed, dataWriterKeyring(head.manifest));
+  // 3) proje eşleşmesi (§5.2 rule 1).
+  if (body.project !== project) throw new ManifestVerifyError("MANIFEST_MALFORMED", "manifest project mismatch");
   return body.entries.filter((e) => e.blobHash === sha).map((e) => e.keyName);
 }
 

@@ -43,6 +43,7 @@ import {
   keyBlob,
   keyPointerEvent,
   validKeyName,
+  validSha256Hex,
   getObject,
   headEtag,
 } from "./storage.js";
@@ -337,10 +338,23 @@ export class ProjectWriterDO {
       }
     }
 
-    // 11. Blob bağları (§6.2 step 11): her blobHash R2'de var olmalı (içerik-adresli).
+    // 11. Blob bağları (§6.2 step 11): her blobHash KANONİK küçük-harf 64-hex olmalı
+    // + R2'de var olmalı (içerik-adresli).
+    //
+    // İÇERİK-ADRESİ değişmezliği: blob PUT (index.ts handleBlobPut) hem path'i
+    // validSha256Hex ile (küçük-harf 64-hex) hem sha256(body)===path ile yaptırır →
+    // R2'de saklanan HER blob küçük-harf-hex anahtar altında + içerik-adreslidir. Bu
+    // yüzden commit-zamanı YENİDEN-HASH GEREKSİZDİR: kanonik bir blobHash'e karşılık
+    // gelen mevcut bir R2 objesi zaten byte'larıyla o hash'e çözülür → Go okuyucunun
+    // read.go re-hash'i (VerifyBlobHash) geçer. Non-kanonik (büyük-harf/kısa) bir
+    // blobHash'i REDDET: Go okuyucu blob'u Worker'ın küçük-harf-only GET'inden
+    // (validSha256Hex) HİÇ çekemez → ilerletilmiş `current` OKUNAMAZ manifest'e işaret
+    // ederdi (accept/read split). Go ParseManifestBody blobHash biçimini denetlemez, ama
+    // accept-gate'i olan Worker, kendi GET'inin reddedeceği bir referansı kabul etmemeli.
     const missingBlobs: string[] = [];
     const checkedBlobs = new Set<string>();
     for (const e of m.entries) {
+      if (!validSha256Hex(e.blobHash)) throw new CommitError(HTTP.UNPROCESSABLE, "MANIFEST_MALFORMED", { reason: "blobHash not lowercase 64-hex", key: e.keyName });
       if (checkedBlobs.has(e.blobHash)) continue;
       checkedBlobs.add(e.blobHash);
       const et = await headEtag(this.bucket, keyBlob(project, e.blobHash));

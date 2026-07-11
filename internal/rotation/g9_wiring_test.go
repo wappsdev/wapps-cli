@@ -59,6 +59,7 @@ func TestG9_OffboardClosesOnlyWhenLedgerTerminal(t *testing.T) {
 
 	// --- Offboard adım 1-4 (non-escrow-holder → tek step-3 run) ---
 	_, err := life.OffboardStart(lifecycle.OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{testProject},
 		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_g9",
 	})
@@ -145,6 +146,7 @@ func TestG9_LedgerBlocksCloseOnTriage(t *testing.T) {
 	seedDataMeta(t, mem, head, testProject, a.daily, map[string][]byte{"NO_META": []byte("x")}, nil)
 
 	_, err := life.OffboardStart(lifecycle.OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{testProject},
 		OpenedBy: a.id, Signer: a.admin, RecordID: "ob_triage",
 	})

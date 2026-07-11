@@ -23,6 +23,7 @@ import {
   sha256Hex,
   verifySignatureEnvelope,
 } from "./crypto/verify.js";
+import { findMemberValueSpan, scanJsonValue, skipJsonWs } from "./json-span.js";
 
 export const SCHEMA_TRUST = "wapps-trust/v1";
 // Epoch-reset kaydı şeması (§4.8) — trust manifest şemasından AYRIDIR.
@@ -89,6 +90,10 @@ export interface Identity {
   enc_keys: EncKey[];
   signing_keys: SigningKeyEntry[];
   status: string;
+  // COORD (e): Go Identity'nin TAM şekli modellenir + doğrulanır (drop edilmez).
+  enrolled_at: string; // RFC3339 (Go time.Time); yok/null → "" (zero time)
+  vouched_by: string[]; // kefil admin ID'leri (Go []string); yok/null → []
+  rotate_by: string | null; // makine: RFC3339 (Go *time.Time); yok/null → null
 }
 export interface Grant {
   principal: string;
@@ -121,6 +126,22 @@ export interface EpochResetRecord {
   snapshot_ref: string;
 }
 
+/**
+ * ReceiptKeyCmp, bir ReceiptKey'in ({kid,alg,jwk}) BYTE-EXACT karşılaştırma temsilidir
+ * (§4.5 compareUnchanged, COORD c-jwk). Go `ReceiptKey{Kid string, Alg string,
+ * JWK json.RawMessage}` şeklini AYNALAR: kid/alg parse edilmiş string (normalize),
+ * jwkRaw ise imzalı body metnindeki jwk değerinin TAM ham alt-dizesi (iç boşluk +
+ * anahtar sırası dahil). Go `reflect.DeepEqual` kid/alg'yi normalize, jwk'yı byte-exact
+ * karşılaştırır → burada da aynı: kid/alg === , jwkRaw ===. jwk yok/absent → undefined
+ * (Go nil RawMessage). Sadece jwk byte-exact'tir çünkü SADECE o passthrough (RawMessage);
+ * kid/alg tam-tipli string alanlardır (sıra/çevre-boşluk Go'da önemsiz).
+ */
+export interface ReceiptKeyCmp {
+  kid: string;
+  alg: string;
+  jwkRaw: string | undefined;
+}
+
 export interface TrustManifest {
   schema: string;
   admin_epoch: number;
@@ -134,8 +155,18 @@ export interface TrustManifest {
   identities: Identity[];
   grants: Grant[];
   writer_allowlists: WriterAllow[];
-  worker_receipt_pubkey: unknown; // deep-equal için ham korunur (şekli parse'ta doğrulanır)
+  worker_receipt_pubkey: unknown; // ham pinlenmiş anahtar materyali (şekli parse'ta doğrulanır)
   worker_mint_pubkeys: unknown;
+  // compareUnchanged (§4.5) için BYTE-EXACT karşılaştırma temsilleri (COORD c-jwk):
+  // Go, jwk'yı json.RawMessage byte-exact saklar → non-roster bir epoch'un jwk'sındaki
+  // SADECE-boşluk değişikliği Go'da "değişti" (reddedilir) ama JSON.stringify(re-parse)
+  // Worker'da "değişmedi" görünürdü → consensus split. Bu temsiller imzalı body
+  // metninden alınan ham jwk aralığını taşır. receiptPubCmp DAİMA doludur (absent/null
+  // → Go zero ReceiptKey). mintPubsCmp null = alan absent/null; [] = boş dizi. COORD
+  // round-5 (a): compareUnchanged bu locked-array için null ve []'i EŞDEĞER sayar
+  // (mintCmpEqual ikisini de []'e normalize; Go tarafı da nil-vs-[] ayrımını bırakır).
+  receiptPubCmp: ReceiptKeyCmp;
+  mintPubsCmp: ReceiptKeyCmp[] | null;
   epoch_reset: EpochResetRecord | null; // §4.8; reset dışı epoch'larda null
 }
 
@@ -164,6 +195,18 @@ function str(v: unknown, ctx: string): string {
   if (typeof v !== "string") throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not a string`);
   return v;
 }
+/**
+ * strKeyID, bir anahtar-kimliğini (roots/enc_keys/signing_keys key_id) STRICT
+ * doğrular (matrix §F3.1): strict-string VE boş-OLMAYAN. Boş key_id, offboard
+ * authz açığının parse-zamanı kapısıdır — declared "" bir imzalayanı yanlış
+ * kimliğe/kendine mal ettirebilirdi. Go tarafı da "" reddeder → bu red trivially
+ * consensus-safe (iki taraf da AYNI şekilde reddeder, kabul-farkı olmaz).
+ */
+function strKeyID(v: unknown, ctx: string): string {
+  const s = str(v, ctx);
+  if (s === "") throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: key_id must be non-empty`);
+  return s;
+}
 function uint(v: unknown, ctx: string): number {
   // isSafeInteger: tam sayı VE ≤2^53-1 (Go uint64 >2^53'ü tam taşır; JS yuvarlar).
   if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not a uint`);
@@ -177,9 +220,34 @@ function strArr(v: unknown, ctx: string): string[] {
   if (!Array.isArray(v)) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not an array`);
   return v.map((x, i) => str(x, `${ctx}[${i}]`));
 }
+/**
+ * idTime, bir Go time.Time / *time.Time JSON alanını çözer (COORD e): yok/null →
+ * null (time.Time null'ı yoksayar → zero; *time.Time → nil); string ise KATİ
+ * RFC3339 olmalı (Go time.Time parse; Date.parse GEVŞEKtir → imzalı alanda ayrışır);
+ * non-string (non-null) değer reddedilir (Go: "input is not a JSON string").
+ */
+function idTime(v: unknown, ctx: string): string | null {
+  if (v === undefined || v === null) return null;
+  const s = str(v, ctx);
+  if (!isRFC3339(s)) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not RFC3339`);
+  return s;
+}
 function obj(v: unknown, ctx: string): Record<string, unknown> {
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not an object`);
   return v as Record<string, unknown>;
+}
+/**
+ * arr, imzalı bir dizi-alanının Go json decode paritesini yaptırır (COORD d):
+ * SADECE yok/null (→ boş dizi) veya GERÇEK bir dizi kabul edilir. Somut ama
+ * dizi-olmayan bir değer (ör. `{}`, `"x"`, `1`) REDDEDİLİR. Eski
+ * `Array.isArray(x)?x:[]` kalıbı yanlış-tipli girdiyi SESSİZCE boş sayardı →
+ * Go (yanlış JSON tipini reddeder) ile ayrışırdı: imzalı alan Worker'da boş,
+ * Go'da hata → grant/roster/writer-set desync.
+ */
+function arr(v: unknown, ctx: string): unknown[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not an array`);
+  return v;
 }
 
 const ROOT_KEYS = ["key_id", "alg", "pubkey", "media", "holder", "status"] as const;
@@ -222,6 +290,100 @@ function validateMintField(v: unknown, ctx: string): void {
   if (v === undefined || v === null) return;
   if (!Array.isArray(v)) throw new TrustError("TRUST_CHAIN_BROKEN", `${ctx}: not an array`);
   v.forEach((e, i) => validateReceiptKey(e, `${ctx}[${i}]`));
+}
+
+// --- ReceiptKey byte-exact karşılaştırma temsili (COORD c-jwk) --------------
+//
+// Go, worker_receipt_pubkey/worker_mint_pubkeys içindeki `jwk`'yı json.RawMessage
+// olarak body'de göründüğü TAM baytlarla saklar; compareUnchanged bunu reflect.DeepEqual
+// ile byte-exact karşılaştırır. TS, jwk'nın ham alt-dizesini imzalı body METNİNDEN
+// tarayıp saklamalı (rotationRaw ile aynı desen) — aksi halde bir non-roster epoch'un
+// jwk'sındaki SADECE-boşluk değişikliği Worker'da (JSON.stringify normalize) "değişmedi"
+// görünüp Go'da "değişti" reddine düşerek consensus split yaratırdı.
+
+/**
+ * receiptCmpFrom, parse edilmiş ReceiptKey (kid/alg) + body'den taranmış ham jwk
+ * aralığını ReceiptKeyCmp'e birleştirir. parsed absent/null → Go zero ReceiptKey
+ * {kid:"",alg:"",jwk:nil} paritesi. kid/alg validateReceiptKey'te zaten string-if-present
+ * yaptırıldığından burada güvenle okunur; yoksa "" (Go zero string).
+ */
+function receiptCmpFrom(parsed: unknown, jwkRaw: string | undefined): ReceiptKeyCmp {
+  if (parsed === undefined || parsed === null) return { kid: "", alg: "", jwkRaw: undefined };
+  const o = parsed as Record<string, unknown>;
+  return {
+    kid: typeof o.kid === "string" ? o.kid : "",
+    alg: typeof o.alg === "string" ? o.alg : "",
+    jwkRaw,
+  };
+}
+
+/**
+ * jwkRawOfObject, s[objStart]==='{' olan bir ReceiptKey objesinin `jwk` üyesinin
+ * TAM ham alt-dizesini döner (yok → undefined; present-null → "null" — Go nil-vs-null
+ * RawMessage ayrımı korunur). Yalnızca JSON.parse'tan geçmiş metin üzerinde çalışır.
+ */
+function jwkRawOfObject(text: string, objStart: number): string | undefined {
+  const jwk = findMemberValueSpan(text, objStart, "jwk");
+  return jwk ? text.slice(jwk.start, jwk.end) : undefined;
+}
+
+/** extractReceiptJwkRaw, worker_receipt_pubkey'in ham jwk aralığı (obje değilse undefined). */
+function extractReceiptJwkRaw(text: string): string | undefined {
+  const rootStart = skipJsonWs(text, 0);
+  if (text[rootStart] !== "{") return undefined;
+  const span = findMemberValueSpan(text, rootStart, "worker_receipt_pubkey");
+  if (!span || text[span.start] !== "{") return undefined; // null/absent/non-object → jwk yok
+  return jwkRawOfObject(text, span.start);
+}
+
+/**
+ * extractMintJwkRaws, worker_mint_pubkeys[*] ham jwk aralıklarını dizi SIRASIYLA döner
+ * (null = alan absent/null → Go nil dilim; [] = boş dizi). JSON.parse ile aynı sırayı
+ * izler → jwkRaws[i] ↔ worker_mint_pubkeys[i] hizalı (parse'ta uzunluk teyidi yapılır).
+ */
+function extractMintJwkRaws(text: string): (string | undefined)[] | null {
+  const rootStart = skipJsonWs(text, 0);
+  if (text[rootStart] !== "{") return null;
+  const span = findMemberValueSpan(text, rootStart, "worker_mint_pubkeys");
+  if (!span) return null;
+  let i = skipJsonWs(text, span.start);
+  if (text[i] !== "[") return null; // null/absent/non-array → Go nil dilim
+  const out: (string | undefined)[] = [];
+  i = skipJsonWs(text, i + 1);
+  while (i < text.length && text[i] !== "]") {
+    i = skipJsonWs(text, i);
+    const elem = scanJsonValue(text, i);
+    out.push(text[elem.start] === "{" ? jwkRawOfObject(text, elem.start) : undefined);
+    i = skipJsonWs(text, elem.end);
+    if (text[i] === ",") {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return out;
+}
+
+/** buildReceiptCmps, parse edilmiş receipt/mint alanlarını body METNİYLE eşleyip
+ * BYTE-EXACT karşılaştırma temsillerine dönüştürür (§4.5 compareUnchanged girdisi). */
+function buildReceiptCmps(
+  text: string,
+  receiptParsed: unknown,
+  mintParsed: unknown,
+): { receiptPubCmp: ReceiptKeyCmp; mintPubsCmp: ReceiptKeyCmp[] | null } {
+  const receiptPubCmp = receiptCmpFrom(receiptParsed, extractReceiptJwkRaw(text));
+
+  let mintPubsCmp: ReceiptKeyCmp[] | null = null;
+  if (Array.isArray(mintParsed)) {
+    const jwkRaws = extractMintJwkRaws(text);
+    // Hizalama teyidi (rotationRaw paritesi): tarayıcı ↔ JSON.parse sayı farkı geçerli
+    // JSON'da olmaz; olursa fail-closed reddet (sessiz misalignment consensus-split'i olurdu).
+    if (jwkRaws === null || jwkRaws.length !== mintParsed.length) {
+      throw new TrustError("TRUST_CHAIN_BROKEN", "worker_mint_pubkeys jwk raw extraction misaligned");
+    }
+    mintPubsCmp = mintParsed.map((e, i) => receiptCmpFrom(e, jwkRaws[i]));
+  }
+  return { receiptPubCmp, mintPubsCmp };
 }
 
 /**
@@ -276,11 +438,11 @@ export function parseTrustBody(body: Uint8Array): TrustManifest {
   const q = obj(o.quorum, "quorum");
   exactKeys(q, QUORUM_KEYS, "quorum");
 
-  const roots: RootKey[] = (Array.isArray(o.roots) ? o.roots : []).map((r, i) => {
+  const roots: RootKey[] = arr(o.roots, "roots").map((r, i) => {
     const ro = obj(r, `roots[${i}]`);
     exactKeys(ro, ROOT_KEYS, `roots[${i}]`);
     return {
-      key_id: str(ro.key_id, "root.key_id"),
+      key_id: strKeyID(ro.key_id, "root.key_id"),
       alg: str(ro.alg, "root.alg"),
       pubkeyB64: str(ro.pubkey, "root.pubkey"),
       media: str(ro.media, "root.media"),
@@ -289,39 +451,56 @@ export function parseTrustBody(body: Uint8Array): TrustManifest {
     };
   });
 
-  const identities: Identity[] = (Array.isArray(o.identities) ? o.identities : []).map((idv, i) => {
+  const identities: Identity[] = arr(o.identities, "identities").map((idv, i) => {
     const io = obj(idv, `identities[${i}]`);
     exactKeys(io, ID_KEYS, `identities[${i}]`);
-    const enc: EncKey[] = (Array.isArray(io.enc_keys) ? io.enc_keys : []).map((ek, j) => {
+    const enc: EncKey[] = arr(io.enc_keys, `identities[${i}].enc_keys`).map((ek, j) => {
       const eo = obj(ek, `enc_keys[${j}]`);
       exactKeys(eo, ENC_KEYS, `enc_keys[${j}]`);
       return {
-        key_id: str(eo.key_id, "enc.key_id"), class: str(eo.class, "enc.class"), pubkey: str(eo.pubkey, "enc.pubkey"),
+        key_id: strKeyID(eo.key_id, "enc.key_id"), class: str(eo.class, "enc.class"), pubkey: str(eo.pubkey, "enc.pubkey"),
         media: str(eo.media, "enc.media"), added_at: uint(eo.added_at, "enc.added_at"), status: str(eo.status, "enc.status"),
       };
     });
-    const sig: SigningKeyEntry[] = (Array.isArray(io.signing_keys) ? io.signing_keys : []).map((sk, j) => {
+    const sig: SigningKeyEntry[] = arr(io.signing_keys, `identities[${i}].signing_keys`).map((sk, j) => {
       const so = obj(sk, `signing_keys[${j}]`);
       exactKeys(so, SIGN_KEYS, `signing_keys[${j}]`);
       return {
-        key_id: str(so.key_id, "sk.key_id"), class: str(so.class, "sk.class"), alg: str(so.alg, "sk.alg"),
+        key_id: strKeyID(so.key_id, "sk.key_id"), class: str(so.class, "sk.class"), alg: str(so.alg, "sk.alg"),
         pubkey: str(so.pubkey, "sk.pubkey"), media: str(so.media, "sk.media"), status: str(so.status, "sk.status"),
       };
     });
-    return { id: str(io.id, "id.id"), type: str(io.type, "id.type"), enc_keys: enc, signing_keys: sig, status: str(io.status, "id.status") };
+    // COORD (e): enrolled_at/vouched_by/rotate_by MODELLENİR + Go tip paritesiyle
+    // doğrulanır (drop EDİLMEZ; grants-mirror rotate_by'ı buradan besler).
+    //   enrolled_at: Go time.Time — string ise KATİ RFC3339 (Date.parse gevşek);
+    //     yok/null → "" (time.Time null'ı yoksayar → zero). Non-string (non-null) → red.
+    //   vouched_by: Go []string — yok/null → []; dizi-dışı veya string-dışı eleman → red.
+    //   rotate_by: Go *time.Time — string ise KATİ RFC3339; yok/null → null. Non-string → red.
+    const enrolledAt = idTime(io.enrolled_at, `identities[${i}].enrolled_at`) ?? "";
+    const vouchedBy = io.vouched_by == null ? [] : strArr(io.vouched_by, `identities[${i}].vouched_by`);
+    const rotateBy = idTime(io.rotate_by, `identities[${i}].rotate_by`);
+    return {
+      id: str(io.id, "id.id"), type: str(io.type, "id.type"), enc_keys: enc, signing_keys: sig, status: str(io.status, "id.status"),
+      enrolled_at: enrolledAt, vouched_by: vouchedBy, rotate_by: rotateBy,
+    };
   });
 
-  const grants: Grant[] = (Array.isArray(o.grants) ? o.grants : []).map((g, i) => {
+  const grants: Grant[] = arr(o.grants, "grants").map((g, i) => {
     const go = obj(g, `grants[${i}]`);
     exactKeys(go, GRANT_KEYS, `grants[${i}]`);
     return { principal: str(go.principal, "g.principal"), project: str(go.project, "g.project"), verbs: strArr(go.verbs, "g.verbs"), keys: strArr(go.keys, "g.keys") };
   });
 
-  const writerAllow: WriterAllow[] = (Array.isArray(o.writer_allowlists) ? o.writer_allowlists : []).map((w, i) => {
+  const writerAllow: WriterAllow[] = arr(o.writer_allowlists, "writer_allowlists").map((w, i) => {
     const wo = obj(w, `writer_allowlists[${i}]`);
     exactKeys(wo, WALLOW_KEYS, `writer_allowlists[${i}]`);
     return { principal: str(wo.principal, "w.principal"), project: str(wo.project, "w.project"), keys: strArr(wo.keys, "w.keys") };
   });
+
+  // COORD (c-jwk): worker_receipt_pubkey/worker_mint_pubkeys için BYTE-EXACT
+  // karşılaştırma temsilleri — jwk ham aralığı imzalı body METNİNDEN taranır
+  // (Go json.RawMessage paritesi; compareUnchanged §4.5 bunları kullanır).
+  const { receiptPubCmp, mintPubsCmp } = buildReceiptCmps(text, o.worker_receipt_pubkey, o.worker_mint_pubkeys);
 
   return {
     schema,
@@ -338,6 +517,8 @@ export function parseTrustBody(body: Uint8Array): TrustManifest {
     writer_allowlists: writerAllow,
     worker_receipt_pubkey: o.worker_receipt_pubkey ?? null,
     worker_mint_pubkeys: o.worker_mint_pubkeys ?? null,
+    receiptPubCmp,
+    mintPubsCmp,
     epoch_reset: parseEpochReset(o.epoch_reset),
   };
 }
@@ -470,8 +651,79 @@ function validateRosterInvariants(m: TrustManifest): void {
   if (m.bootstrap_solo !== wantSolo) throw new TrustError("TRUST_CHAIN_BROKEN", `bootstrap_solo=${m.bootstrap_solo} but invariant requires ${wantSolo}`);
 }
 
+/**
+ * validateRegistrySemantics, imzalı bir güven epoch'unun kayıt (registry) anlamsal
+ * değişmezlerini yaptırır (Go registry.Snapshot.Validate paritesi, §4.3). Kural
+ * P3-a (COORD): bir MAKİNE prensibi joker ("*") anahtar grant'ı VEYA writer-
+ * allowlist'i TAŞIYAMAZ — makine yetkisi AÇIK, tam-anahtar allowlist'i olmalı
+ * (blast-radius sınırlama). Tek sızmış otomasyon anahtarı "*" ile projedeki HER
+ * değere erişebilirdi. Doğrulanmış HER epoch'ta çalışır → Go ile eşleşir; aksi
+ * halde Worker, Go'nun reddettiği bir epoch'u kabul edip token/writer yetkisini
+ * genişletirdi. İnsan prensipleri için "*" MEŞRUDUR (proje-seviyesi, §6.3).
+ *
+ * COORD (d): AYRICA HER kimliğin HER enc + signing anahtarının declared key_id'si
+ * (boş değilse) pubkey'den TÜRETİLEN parmak izine UYMALI (Go keyIDConsistency /
+ * ValidateSignerSemantics paritesi, registry.go). Sadece yazar/admin değil, HERKES.
+ * Aksi halde mismatched bir enc_keys[].key_id, Worker'da requiredRecipients/escrow
+ * kümesine (declared key_id'yle) girerdi ama Go bu epoch'u REDDEDERDİ → wrap-set/
+ * escrow desync. Boş enc pubkey yapısal geçersizdir (Go da reddeder).
+ */
+function validateRegistrySemantics(m: TrustManifest): void {
+  const isMachine = (principal: string): boolean => identityByID(m, principal)?.type === TYPE_MACHINE;
+  // COORD (d): key_id ↔ fingerprint(pubkey) tutarlılığı, HER kimliğin HER anahtarı.
+  for (const id of m.identities) {
+    for (const ek of id.enc_keys) {
+      if (ek.pubkey === "") throw new TrustError("TRUST_CHAIN_BROKEN", `identity ${id.id} enc key empty pubkey`);
+      if (ek.key_id !== "" && ek.key_id !== fingerprintRecipient(ek.pubkey)) {
+        throw new TrustError("TRUST_CHAIN_BROKEN", `identity ${id.id} enc key_id mismatch: declared != fingerprint(pubkey)`);
+      }
+    }
+    for (const sk of id.signing_keys) {
+      let derived: string;
+      try {
+        derived = fingerprint(b64ToBytes(sk.pubkey));
+      } catch {
+        // Go SigningKey.Fingerprint decode hatası → registry invalid (bu epoch reddedilir).
+        throw new TrustError("TRUST_CHAIN_BROKEN", `identity ${id.id} signing key invalid pubkey`);
+      }
+      if (sk.key_id !== "" && sk.key_id !== derived) {
+        throw new TrustError("TRUST_CHAIN_BROKEN", `identity ${id.id} signing key_id mismatch: declared != fingerprint(pubkey)`);
+      }
+    }
+  }
+  for (const g of m.grants) {
+    if (isMachine(g.principal) && g.keys.includes(KEY_WILDCARD)) {
+      throw new TrustError("TRUST_CHAIN_BROKEN", `machine grant ${g.principal} must use an explicit key allowlist, not "${KEY_WILDCARD}"`);
+    }
+  }
+  for (const w of m.writer_allowlists) {
+    if (isMachine(w.principal) && w.keys.includes(KEY_WILDCARD)) {
+      throw new TrustError("TRUST_CHAIN_BROKEN", `machine writer allowlist ${w.principal} must use an explicit key allowlist, not "${KEY_WILDCARD}"`);
+    }
+  }
+}
+
 function deepEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** receiptCmpEqual, iki ReceiptKeyCmp'in Go reflect.DeepEqual(ReceiptKey) paritesi:
+ * kid/alg === (normalize string), jwkRaw === (byte-exact ham aralık; undefined=nil). */
+function receiptCmpEqual(a: ReceiptKeyCmp, b: ReceiptKeyCmp): boolean {
+  return a.kid === b.kid && a.alg === b.alg && a.jwkRaw === b.jwkRaw;
+}
+
+/** mintCmpEqual, iki mint-cmp dizisinin (locked array) EŞitlik testi (COORD round-5 a):
+ * null(absent/nil dilim) ve [] (boş dizi) İKİSİ DE "girdi yok" → EŞDEĞER kabul edilir
+ * (ikisi de []'e normalize). Go tarafı da bu alanda reflect.DeepEqual(nil,[]) ayrımını
+ * BIRAKIR → null<->[] değişimi HER İKİ tarafta da "değişmedi" sayılır (consensus parity).
+ * Gerçek eleman farkı (uzunluk / kid/alg/jwkRaw) hâlâ yakalanır. */
+function mintCmpEqual(a: ReceiptKeyCmp[] | null, b: ReceiptKeyCmp[] | null): boolean {
+  const aa = a ?? [];
+  const bb = b ?? [];
+  if (aa.length !== bb.length) return false;
+  for (let i = 0; i < aa.length; i++) if (!receiptCmpEqual(aa[i], bb[i])) return false;
+  return true;
 }
 
 function compareUnchanged(parent: TrustManifest, cur: TrustManifest): void {
@@ -479,8 +731,11 @@ function compareUnchanged(parent: TrustManifest, cur: TrustManifest): void {
   if (!deepEqual(parent.quorum, cur.quorum)) throw new TrustError("TRUST_CHAIN_BROKEN", "non-roster epoch modifies quorum");
   if (!deepEqual(parent.admins, cur.admins)) throw new TrustError("TRUST_CHAIN_BROKEN", "non-roster epoch modifies admins");
   if (parent.bootstrap_solo !== cur.bootstrap_solo) throw new TrustError("TRUST_CHAIN_BROKEN", "non-roster epoch modifies bootstrap_solo");
-  if (!deepEqual(parent.worker_receipt_pubkey, cur.worker_receipt_pubkey)) throw new TrustError("TRUST_CHAIN_BROKEN", "non-roster epoch modifies worker_receipt_pubkey");
-  if (!deepEqual(parent.worker_mint_pubkeys, cur.worker_mint_pubkeys)) throw new TrustError("TRUST_CHAIN_BROKEN", "non-roster epoch modifies worker_mint_pubkeys");
+  // worker_receipt_pubkey/worker_mint_pubkeys: jwk BYTE-EXACT (Go json.RawMessage +
+  // reflect.DeepEqual paritesi) — JSON.stringify(re-parse) DEĞİL. Boşluk-only jwk
+  // mutasyonu Go'da reddedilir; Worker da reddetmeli (COORD c-jwk consensus split).
+  if (!receiptCmpEqual(parent.receiptPubCmp, cur.receiptPubCmp)) throw new TrustError("TRUST_CHAIN_BROKEN", "non-roster epoch modifies worker_receipt_pubkey");
+  if (!mintCmpEqual(parent.mintPubsCmp, cur.mintPubsCmp)) throw new TrustError("TRUST_CHAIN_BROKEN", "non-roster epoch modifies worker_mint_pubkeys");
 }
 
 function grantTargetClass(parent: TrustManifest, cur: TrustManifest, classifier: ProjectClassifier | null): ProjectClass {
@@ -552,8 +807,9 @@ function verifyResetInternal(
   // İmza: reset ÖNCESİ epoch'un ≥M KÖK-class anahtarı (parent'ın görünümüne karşı).
   verifyQuorum(o.bytes, o.sigs, { cls: "root", threshold: priorView.m, distinctHuman: false }, priorView);
 
-  // Reset epoch'u geçerli bir roster taşır.
+  // Reset epoch'u geçerli bir roster + kayıt anlamsal değişmezleri taşır.
   validateRosterInvariants(cand);
+  validateRegistrySemantics(cand);
   const view = buildSignerView(cand);
   return { manifest: cand, bytesSHA256: hash, view };
 }
@@ -592,6 +848,7 @@ export function verifyGenesis(pinnedGenesis: Pin, o: SignedObject): VerifiedEpoc
   if (cand.prev_trust_sha256 !== "") throw new TrustError("TRUST_CHAIN_BROKEN", "genesis prev must be empty");
   if (cand.change_class !== CHANGE_ROSTER) throw new TrustError("TRUST_CHAIN_BROKEN", "genesis must be roster");
   validateRosterInvariants(cand);
+  validateRegistrySemantics(cand);
   const view = buildSignerView(cand);
   verifyQuorum(o.bytes, o.sigs, { cls: "root", threshold: cand.quorum.m, distinctHuman: false }, view);
   return { manifest: cand, bytesSHA256: hash, view };
@@ -619,6 +876,7 @@ export function verifyNext(parent: VerifiedEpoch, o: SignedObject, classifier: P
   const req = requiredSigners(cand.change_class, projClass, parent.view.m, parent.view.nAdminHumans);
   verifyQuorum(o.bytes, o.sigs, req, parent.view);
   validateRosterInvariants(cand);
+  validateRegistrySemantics(cand);
   if (cand.change_class !== CHANGE_ROSTER) compareUnchanged(parent.manifest, cand);
   const view = buildSignerView(cand);
   return { manifest: cand, bytesSHA256: hash, view };
@@ -688,7 +946,10 @@ export function activeEscrowRecipients(m: TrustManifest): Set<string> {
   for (const id of m.identities) {
     if (id.type !== TYPE_ESCROW || id.status === STATUS_REVOKED) continue;
     for (const ek of id.enc_keys) {
-      if (ek.status === STATUS_ACTIVE) out.add(ek.key_id !== "" ? ek.key_id : fingerprintRecipient(ek.pubkey));
+      // COORD (d): recipient id'yi DAİMA pubkey'den TÜRET (declared key_id'ye güvenme);
+      // key_id ↔ fingerprint tutarlılığı validateRegistrySemantics'te zaten yaptırıldı,
+      // bu türetim Go wrap-set fingerprint'iyle (EncKey.Fingerprint) birebir eşleşir.
+      if (ek.status === STATUS_ACTIVE) out.add(fingerprintRecipient(ek.pubkey));
     }
   }
   return out;
@@ -711,7 +972,8 @@ export function requiredRecipients(m: TrustManifest, project: string, keyName: s
       if (ek.status !== STATUS_ACTIVE) continue;
       if (id.type === TYPE_HUMAN && ek.class !== ENC_CLASS_DEVICE && ek.class !== ENC_CLASS_BACKUP) continue;
       if (id.type === TYPE_MACHINE && ek.class !== ENC_CLASS_DEVICE) continue;
-      req.add(ek.key_id !== "" ? ek.key_id : fingerprintRecipient(ek.pubkey));
+      // COORD (d): recipient id DAİMA pubkey'den türetilir (declared key_id'ye güvenilmez).
+      req.add(fingerprintRecipient(ek.pubkey));
     }
   }
   for (const e of activeEscrowRecipients(m)) req.add(e);
@@ -719,16 +981,43 @@ export function requiredRecipients(m: TrustManifest, project: string, keyName: s
 }
 
 /**
- * findWriterSigningIdentity, verilen imzalama key_id'sinin sahibi kimliği ve
- * sınıfını çözer (§6.2 step 4-5). daily/admin (insan) veya automation (makine)
- * aktif imzalama anahtarı olmalı; revoked → yok. Bulamazsa undefined.
+ * findWriterSigningIdentity, verilen imzalama key_id'sinin (§3.7 parmak izi)
+ * sahibi kimliği ve sınıfını çözer (§6.2 step 4-5). daily/admin (insan) veya
+ * automation (makine) aktif imzalama anahtarı olmalı; revoked → yok.
+ *
+ * COORD (b) — self-declared `key_id`'ye ASLA güvenilmez: eşleşme HER ZAMAN
+ * pubkey'den TÜRETİLEN parmak izi (fingerprint(pubkey)) üzerinden yapılır
+ * (Go internal/store resolveWriterPrincipal ile birebir). Ayrıca, declared
+ * key_id BOŞ DEĞİLSE ve türetilenle EŞLEŞMİYORSA o giriş REDDEDİLİR
+ * (Go registry.validateIdentity ErrKeyIDMismatch paritesi) — aksi halde:
+ *   • boş/yanlış key_id → Go (türetilenden çözer) yazar'ı KABUL, Worker (declared
+ *     eşleştirir) REDDEDER; ya da
+ *   • bir kimlik BAŞKASININ gerçek parmak izini declared key_id olarak koyup
+ *     imzayı YANLIŞ kimliğe mal ettirir (misattribution).
+ * Çözülemeyen pubkey (strict base64 fail / kapalı-küme dışı) sayılmaz (skip) —
+ * dataWriterKeyring de böyle davranır, imza zaten doğrulanmaz (fail-closed).
+ * Bulamazsa undefined.
  */
 export function findWriterSigningIdentity(m: TrustManifest, keyID: string): { identity: Identity; cls: string } | undefined {
+  // Go resolveWriterPrincipal ile aynı sıra: her girişte önce tutarlılık (COORD b),
+  // sonra türetilmiş-fp eşleşmesi; İLK eşleşmede döner (full-pass DEĞİL — aksi halde
+  // eşleşmeden SONRAKİ tutarsız bir giriş için Go'nun kabul ettiği bir yazar'ı Worker
+  // reddedip commit-yolu desync yaratabilirdi).
   for (const id of m.identities) {
     if (id.status === STATUS_REVOKED) continue;
     for (const sk of id.signing_keys) {
       if (sk.status !== STATUS_ACTIVE) continue;
-      if (sk.key_id === keyID) return { identity: id, cls: sk.class };
+      let derived: string;
+      try {
+        derived = fingerprint(b64ToBytes(sk.pubkey));
+      } catch {
+        continue; // çözülemeyen pubkey → sayılmaz (ring'e de girmez)
+      }
+      // COORD (b): declared key_id tutarsızsa (boş değil ve != türetilen) → red.
+      if (sk.key_id !== "" && sk.key_id !== derived) {
+        throw new TrustError("TRUST_CHAIN_BROKEN", "signing key_id mismatch: declared != fingerprint(pubkey)");
+      }
+      if (derived === keyID) return { identity: id, cls: sk.class };
     }
   }
   return undefined;

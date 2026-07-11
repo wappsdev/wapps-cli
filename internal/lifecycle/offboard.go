@@ -2,7 +2,7 @@ package lifecycle
 
 import (
 	"crypto/rand"
-	"encoding/base64"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -64,6 +64,7 @@ type OffboardSteps struct {
 // §8.5.1). R2'de (RecordStore) yaşar → herhangi bir admin --resume edebilir.
 type OffboardRecord struct {
 	Schema    string        `json:"schema"`
+	Seq       uint64        `json:"seq"` // monotonik sürüm (§8.5.1 anti-rollback CAS); ilk kayıt = 1
 	RecordID  string        `json:"record_id"`
 	Principal string        `json:"principal"`
 	Reason    string        `json:"reason"`
@@ -88,9 +89,19 @@ func newRecordID() string {
 // --- İmzalı kayıt kalıcılığı (detached-sig envelope §3.6.1) ------------------
 
 // signAndStore, kaydı admin anahtarıyla imzalar ve RecordStore'a yazar. Her adım
-// geçişi kaydı YENİ imzalı bir sürüm olarak yeniden yazar (§8.5.1).
-func (e *Engine) signAndStore(rec *OffboardRecord, signer cryptoid.SigningKey) error {
-	body, err := json.Marshal(rec)
+// geçişi kaydı YENİ imzalı bir sürüm olarak yeniden yazar (§8.5.1). expectKeyID =
+// bu geçişi yetkilendiren DOĞRULANMIŞ çalıştırıcı/açan anahtarı (assertRunner /
+// OffboardStart'tan); depolanan envelope AYNI anahtarla imzalanmalı.
+func (e *Engine) signAndStore(rec *OffboardRecord, signer cryptoid.SigningKey, head *trust.VerifiedEpoch, expectKeyID string) error {
+	// ANTI-ROLLBACK (codex round-11 H1): her geçiş seq'i +1'ler ve MONOTONİK CAS ile
+	// yazılır. Seq İMZALI gövdenin parçasıdır → eski (düşük seq'li) geçerli bir envelope
+	// yeni kaydın üzerine yazılamaz (PutRecordCAS reddeder). rec.Seq YALNIZCA yazım
+	// başarılıysa ilerler (kopya üzerinde marshal → kısmi-hata seq'i bozmaz).
+	expectedSeq := rec.Seq
+	newSeq := expectedSeq + 1
+	toStore := *rec
+	toStore.Seq = newSeq
+	body, err := json.Marshal(&toStore)
 	if err != nil {
 		return fmt.Errorf("lifecycle.offboard: marshal record: %w", err)
 	}
@@ -99,11 +110,27 @@ func (e *Engine) signAndStore(rec *OffboardRecord, signer cryptoid.SigningKey) e
 		return fmt.Errorf("lifecycle.offboard: sign record: %w", err)
 	}
 	obj := cryptoid.SignedObject{Bytes: body, Sigs: []cryptoid.Signature{sig}}
+	// SAME-KEY BINDING (codex round-10): depolanan kayıt, bu geçişi yetkilendiren
+	// DOĞRULANMIŞ anahtarla imzalanmalı. verifySignedByAdmin imzayı raporlanan key'in
+	// pubkey'ine karşı doğrular → provenKeyID GERÇEKTEN imzalayan anahtardır. Bu,
+	// attribution-split'i (By/OpenedBy=attested key ama envelope=başka/ayrılan anahtar)
+	// engeller: kötücül bir signer attestation'ı bir anahtarla, kaydı başkasıyla imzalayamaz.
+	provenKeyID, err := verifySignedByAdmin(obj, adminVerifierRing(head.Manifest))
+	if err != nil {
+		return fmt.Errorf("lifecycle.offboard: record signature not by a known admin: %w", err)
+	}
+	if provenKeyID != expectKeyID {
+		return fmt.Errorf("lifecycle.offboard: record signer != attested runner: %w", ErrRunnerIdentityMismatch)
+	}
 	raw, err := json.Marshal(obj)
 	if err != nil {
 		return fmt.Errorf("lifecycle.offboard: marshal envelope: %w", err)
 	}
-	return e.cfg.Records.PutRecord(recordKey(rec.RecordID), raw)
+	if err := e.cfg.Records.PutRecordCAS(recordKey(rec.RecordID), raw, expectedSeq, newSeq); err != nil {
+		return fmt.Errorf("lifecycle.offboard: record CAS write: %w", err)
+	}
+	rec.Seq = newSeq // yalnızca başarıda ilerlet
+	return nil
 }
 
 // adminVerifierRing, doğrulanmış trust head'inin admins[] kimliklerindeki aktif
@@ -135,7 +162,7 @@ func adminVerifierRing(head *trust.TrustManifest) map[string]cryptoid.VerifierKe
 
 // verifierKeyFromEntry, bir registry imzalama girdisinden VerifierKey türetir.
 func verifierKeyFromEntry(sk registry.SigningKey) (cryptoid.VerifierKey, error) {
-	raw, err := base64.StdEncoding.DecodeString(sk.Pubkey)
+	raw, err := sk.DecodePubkey() // KATİ KANONİK base64 (Worker b64ToBytes paritesi)
 	if err != nil {
 		return cryptoid.VerifierKey{}, err
 	}
@@ -170,10 +197,29 @@ func (e *Engine) LoadOffboard(recordID string, head *trust.VerifiedEpoch) (*Offb
 	if rec.Schema != OffboardSchema {
 		return nil, fmt.Errorf("lifecycle.LoadOffboard: unexpected schema %q", rec.Schema)
 	}
+	// ANTI-ROLLBACK çapraz-kontrolü (codex round-11 H1): İMZALI gövdenin seq'i store'un
+	// izlediği monotonik seq ile EŞLEŞMELİ. Bir saldırgan eski geçerli-imzalı bir
+	// envelope'u yalan bir newSeq ile CAS'tan geçirse bile (bytes.Seq=eski, tracked=yeni)
+	// bu çapraz-kontrol uyuşmazlığı yakalar → rollback reddedilir. (Üretimde monotoniklik
+	// ayrıca Worker admin API'sinde sunucu-tarafı zorlanır.)
+	trackedSeq, err := e.cfg.Records.RecordSeq(recordKey(recordID))
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle.LoadOffboard: record seq: %w", err)
+	}
+	if rec.Seq != trackedSeq {
+		return nil, fmt.Errorf("lifecycle.LoadOffboard: record seq %d != tracked %d: %w", rec.Seq, trackedSeq, ErrRecordRollback)
+	}
 	// Defense-in-depth (P3-a §8.5): imzalayan BİR admin olsa yetmez — imzalayan
 	// AYRILAN prensip OLMAMALI. adminVerifierRing hâlâ aktif olan ayrılan bir
 	// admin'i (step-2 retire ÖNCESİ) içerir; kaydı kendisi imzalayıp süremesin.
-	if signerID, ok := adminIdentityForSigningKey(head.Manifest, signerKeyID); ok && signerID == rec.Principal {
+	// codex round-8 P1-1: imza admin-ring'de doğrulandı ama attribution BELİRSİZ/
+	// çözülemez (ok=false) ise "departing değil" varsaymak YANLIŞ — ayrılan admin
+	// duplicate/ambiguous bir anahtarla kaydı yükletebilirdi. Unresolved → fail-closed.
+	signerID, ok := adminIdentityForSigningKey(head.Manifest, signerKeyID)
+	if !ok {
+		return nil, fmt.Errorf("lifecycle.LoadOffboard: signer identity unresolved (ambiguous key ownership): %w", ErrRunnerIdentityMismatch)
+	}
+	if signerID == rec.Principal {
 		return nil, ErrDepartingRunner
 	}
 	return &rec, nil
@@ -200,41 +246,116 @@ func verifySignedByAdmin(obj cryptoid.SignedObject, ring map[string]cryptoid.Ver
 // AKTİF admin kimliğinin ID'sini döner (admins[] üyesi + identity active + admin-
 // sınıfı anahtar active). Bulunamazsa ok=false. Bu, bir imzayı somut bir çalıştırıcı
 // kimliğine bağlamanın (P3-a) tek gerçek kaynağıdır.
+//
+// F3 (codex round-6 authz-deliği): eşleşme, girdinin BEYAN ETTİĞİ `sk.KeyID`'siyle
+// DEĞİL, pubkey'den TÜRETİLEN parmak izi (sk.Fingerprint()) ile yapılır — Worker
+// findWriterSigningIdentity/adminVerifierRing ile birebir. `keyID` daima doğrulanmış
+// imzanın envelope key_id'sidir ve adminVerifierRing türetilmiş fp ile anahtarlanır
+// (verifierKeyFromEntry → KeyID() türetilmiş). Beyan edilen sk.KeyID'ye güvenmek,
+// mismatched/boş bir declared key_id ile ayrılan bir admin'in offboard'ı kendi kendine
+// yetkilendirmesine yol açardı; türetilmiş fp eşleşmesi o deliği kapatır.
 func adminIdentityForSigningKey(tm *trust.TrustManifest, keyID string) (string, bool) {
 	if keyID == "" {
 		return "", false
 	}
+	// ATTRIBUTION (sınıf-agnostik, codex round-8 P1-2): bu TÜRETİLMİŞ parmak izini
+	// taşıyan TÜM kimlikleri bul — HER signing-key sınıfı (admin VE daily) ve tüm
+	// statüler. Yalnızca admin-sınıfı anahtarlara bakmak, çapraz-sınıf yeniden-kullanımı
+	// (ayrılan admin'in DAILY key'i = başka aktif admin'in ADMIN key'i, AYNI pubkey)
+	// kaçırırdı: attribution o durumda diğer admin'e giderdi ve departing-runner kontrolü
+	// atlanırdı. Kimlik-bazlı sayım bunu yakalar; >1 farklı kimlik → belirsiz → fail-closed.
+	holders := map[string]bool{}
+	for i := range tm.Identities {
+		for _, sk := range tm.Identities[i].SigningKeys {
+			fp, err := sk.Fingerprint() // TÜRETİLMİŞ (beyan edilen key_id DEĞİL)
+			if err != nil {
+				continue // çözülemeyen pubkey → sayılmaz
+			}
+			if fp == keyID {
+				holders[tm.Identities[i].ID] = true
+			}
+		}
+	}
+	if len(holders) != 1 {
+		return "", false // 0 → bilinmiyor; >1 → belirsiz → fail-closed
+	}
+	// AUTHORIZATION: tek sahip AKTİF bir admin olmalı (admins[] üyesi + identity active)
+	// ve bu fp için AKTİF admin-sınıfı bir anahtarı bulunmalı (adminVerifierRing paritesi).
 	adminSet := map[string]bool{}
 	for _, a := range tm.Admins {
 		adminSet[a] = true
 	}
-	for _, id := range tm.Identities {
-		if !adminSet[id.ID] || id.Status != registry.StatusActive {
+	for i := range tm.Identities {
+		id := tm.Identities[i]
+		if !holders[id.ID] {
 			continue
+		}
+		if !adminSet[id.ID] || id.Status != registry.StatusActive {
+			return "", false // sahip aktif admin değil
 		}
 		for _, sk := range id.SigningKeys {
 			if sk.Class != registry.SignClassAdmin || sk.Status != registry.StatusActive {
 				continue
 			}
-			if sk.KeyID == keyID {
+			if fp, err := sk.Fingerprint(); err == nil && fp == keyID {
 				return id.ID, true
 			}
 		}
+		return "", false // sahip admin ama bu fp aktif admin-sınıfı bir anahtar değil (daily-only)
 	}
 	return "", false
+}
+
+// runnerAttestChallenge, offboard çalıştırıcı/açan attestation'ı için domain-ayrık,
+// kayda- VE OPERASYON+DURUM-bağlı challenge üretir (codex round-10): stateBind, bu
+// geçişin bağlandığı baytlardır (adım kayıtları için mevcut kayıt durumu; open için
+// "open|<recordID>|<principal>"). Bu, attestation'ı YENİDEN-OYNATILAMAZ kılar: bir
+// adım çalıştıktan sonra kayıt durumu değişir → eski challenge'ın imzası geçersiz
+// olur; başka bir admin'in başka bir durum/operasyon için ürettiği imza da eşleşmez.
+func runnerAttestChallenge(recordID string, stateBind []byte) []byte {
+	h := sha256.Sum256(stateBind)
+	return []byte("wapps-secrets/offboard-runner-attest/v2|" + recordID + "|" + hex.EncodeToString(h[:]))
+}
+
+// verifyRunnerAttestation, signer'a operasyon+durum-bağlı challenge'ı imzalatır ve
+// imzayı admin verifier ring'e karşı DOĞRULAR; dönen key_id KRİPTOGRAFİK olarak
+// kanıtlanmıştır (codex round-9 H): cryptoid.SigningKey bir INTERFACE olduğundan
+// kötücül/hatalı bir signer KeyID()'de başka bir aktif admin'i raporlayıp Sign()'da
+// kendi anahtarıyla imzalayabilir. verifySignedByAdmin imzayı raporlanan key'in
+// PUBKEY'ine karşı doğruladığı için yalnızca GERÇEKTEN imzalayan private anahtarın
+// key_id'si döner — self-report'a asla güvenilmez. stateBind sayesinde bir başka
+// admin'in yakalanmış bir imzası (codex round-10 replay) burada eşleşmez.
+func verifyRunnerAttestation(head *trust.VerifiedEpoch, recordID string, stateBind []byte, signer cryptoid.SigningKey) (string, error) {
+	if signer == nil {
+		return "", fmt.Errorf("lifecycle.offboard: nil attestation signer")
+	}
+	challenge := runnerAttestChallenge(recordID, stateBind)
+	sig, err := signer.Sign(challenge)
+	if err != nil {
+		return "", fmt.Errorf("lifecycle.offboard: attestation sign: %w", err)
+	}
+	obj := cryptoid.SignedObject{Bytes: challenge, Sigs: []cryptoid.Signature{sig}}
+	return verifySignedByAdmin(obj, adminVerifierRing(head.Manifest))
+}
+
+// openStateBind, OffboardStart açma attestation'ının bağlandığı baytları üretir
+// (kayıt henüz yok → operasyon "open" + recordID + ayrılan prensip).
+func openStateBind(recordID, principal string) []byte {
+	return []byte("open|" + recordID + "|" + principal)
 }
 
 // --- OffboardStart ----------------------------------------------------------
 
 // OffboardStartRequest, bir offboard kaydı açan kontrol-düzlemi işleminin girdisi.
 type OffboardStartRequest struct {
+	Head                   *trust.VerifiedEpoch // açan kimliğin DOĞRULANMASI için gerekli
 	Principal              string
 	Reason                 string // departure | compromise | device_loss | decommission
 	Projects               []string
 	Devices                []string
 	EscrowShareHolder      bool
 	LegacyPassphraseHolder bool
-	OpenedBy               string // çalıştıran admin id — AYRILAN prensip OLAMAZ (§8.5)
+	OpenedBy               string // İDDİA edilen açan; imza sahibiyle DOĞRULANIR (§8.5, ayrılan OLAMAZ)
 	Signer                 cryptoid.SigningKey
 	RecordID               string // opsiyonel; boşsa üretilir
 }
@@ -246,15 +367,34 @@ func (e *Engine) OffboardStart(req OffboardStartRequest) (*OffboardRecord, error
 	if req.Principal == "" {
 		return nil, fmt.Errorf("lifecycle.OffboardStart: empty principal")
 	}
-	if req.OpenedBy == "" || req.Signer == nil {
-		return nil, fmt.Errorf("lifecycle.OffboardStart: opening admin + signer required")
+	if req.Signer == nil {
+		return nil, fmt.Errorf("lifecycle.OffboardStart: opening signer required")
 	}
-	if req.OpenedBy == req.Principal {
-		return nil, ErrDepartingRunner
+	if req.Head == nil {
+		return nil, fmt.Errorf("lifecycle.OffboardStart: verified head required")
 	}
 	recID := req.RecordID
 	if recID == "" {
 		recID = newRecordID()
+	}
+	// AÇAN kimlik DOĞRULANMIŞ imzadan türetilir (codex round-9 M): req.OpenedBy bir
+	// İDDİADIR — signer kayda-bağlı bir attestation imzalar, admin-ring'e karşı doğrulanır,
+	// açan kimlik oradan çözülür. Ayrılan prensip KRİPTOGRAFİK olarak açan olamaz (§8.5).
+	// Aksi halde hâlâ aktif olan ayrılan bir admin, OpenedBy'yi başka admin gösterip kendi
+	// anahtarıyla imzalayarak dayanıklı (last-writer-wins) bir "poisoned" kayıt açabilirdi.
+	openerKeyID, err := verifyRunnerAttestation(req.Head, recID, openStateBind(recID, req.Principal), req.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle.OffboardStart: opener not an active admin: %w", ErrRunnerIdentityMismatch)
+	}
+	opener, ok := adminIdentityForSigningKey(req.Head.Manifest, openerKeyID)
+	if !ok {
+		return nil, fmt.Errorf("lifecycle.OffboardStart: opener identity unresolved: %w", ErrRunnerIdentityMismatch)
+	}
+	if opener == req.Principal {
+		return nil, ErrDepartingRunner
+	}
+	if req.OpenedBy != "" && req.OpenedBy != opener {
+		return nil, ErrRunnerIdentityMismatch // iddia edilen açan, imza sahibiyle uyuşmalı
 	}
 	rec := &OffboardRecord{
 		Schema:    OffboardSchema,
@@ -262,7 +402,7 @@ func (e *Engine) OffboardStart(req OffboardStartRequest) (*OffboardRecord, error
 		Principal: req.Principal,
 		Reason:    req.Reason,
 		OpenedAt:  e.now(),
-		OpenedBy:  req.OpenedBy,
+		OpenedBy:  opener, // DOĞRULANMIŞ kimlik (req.OpenedBy string'i değil)
 		Status:    RecordOpen,
 		Scope: OffboardScope{
 			Projects:               append([]string(nil), req.Projects...),
@@ -278,7 +418,7 @@ func (e *Engine) OffboardStart(req OffboardStartRequest) (*OffboardRecord, error
 			Close:  StepState{Status: StepPending},
 		},
 	}
-	if err := e.signAndStore(rec, req.Signer); err != nil {
+	if err := e.signAndStore(rec, req.Signer, req.Head, openerKeyID); err != nil {
 		return nil, err
 	}
 	return rec, nil
@@ -289,43 +429,64 @@ func (e *Engine) OffboardStart(req OffboardStartRequest) (*OffboardRecord, error
 // (caller-supplied) runnerID bu doğrulanmış kimlikle EŞLEŞMELİ ve ayrılan prensip
 // OLAMAZ. Böylece hâlâ aktif olan ayrılan bir admin, spoofed bir runnerID ile
 // adımları tek başına süremez. Doğrulanmış çalıştırıcı kimliğini (güvenilir audit
-// "by") döner.
-func assertRunner(head *trust.VerifiedEpoch, rec *OffboardRecord, claimedRunner string, signer cryptoid.SigningKey) (string, error) {
+// "by") ve bu geçişi yetkilendiren DOĞRULANMIŞ anahtar id'sini (signAndStore same-key
+// binding için) döner.
+func assertRunner(head *trust.VerifiedEpoch, rec *OffboardRecord, claimedRunner string, signer cryptoid.SigningKey) (string, string, error) {
 	if signer == nil {
-		return "", fmt.Errorf("lifecycle.offboard: nil runner signer")
+		return "", "", fmt.Errorf("lifecycle.offboard: nil runner signer")
 	}
-	runner, ok := adminIdentityForSigningKey(head.Manifest, signer.KeyID())
+	// DOĞRULANMIŞ attribution (codex round-9 H): signer.KeyID() interface self-report'una
+	// GÜVENME — signer OPERASYON+DURUM-bağlı challenge'ı imzalar, imza admin-ring'e karşı
+	// doğrulanır ve KANITLANMIŞ key_id alınır. stateBind = kaydın MEVCUT (geçiş-öncesi)
+	// durumu → attestation YENİDEN-OYNATILAMAZ (codex round-10): bir adım çalışıp durum
+	// değişince eski challenge geçersiz olur; yakalanmış başka bir imza da eşleşmez.
+	stateBind, err := json.Marshal(rec)
+	if err != nil {
+		return "", "", fmt.Errorf("lifecycle.offboard: marshal state bind: %w", err)
+	}
+	verifiedKeyID, err := verifyRunnerAttestation(head, rec.RecordID, stateBind, signer)
+	if err != nil {
+		return "", "", fmt.Errorf("lifecycle.offboard: runner key not owned by an active admin: %w", ErrRunnerIdentityMismatch)
+	}
+	runner, ok := adminIdentityForSigningKey(head.Manifest, verifiedKeyID)
 	if !ok {
-		// İmzalama anahtarı aktif bir admin'e ait değil → çalıştırıcı yetkisiz.
-		return "", fmt.Errorf("lifecycle.offboard: runner key not owned by an active admin: %w", ErrRunnerIdentityMismatch)
+		return "", "", fmt.Errorf("lifecycle.offboard: runner identity unresolved: %w", ErrRunnerIdentityMismatch)
 	}
 	// ÖNCE ayrılan kontrolü (asıl güvenlik değişmezi, §8.5).
 	if runner == rec.Principal {
-		return "", ErrDepartingRunner
+		return "", "", ErrDepartingRunner
 	}
 	// İddia edilen runnerID, imza sahibiyle uyuşmalı (spoofed audit trail'i reddet).
 	if claimedRunner != "" && claimedRunner != runner {
-		return "", ErrRunnerIdentityMismatch
+		return "", "", ErrRunnerIdentityMismatch
 	}
-	return runner, nil
+	return runner, verifiedKeyID, nil
 }
 
 // loadForStep, kaydı yükler, KAPALI olmadığını doğrular ve çalıştırıcıyı imzalama
 // anahtarına kriptografik olarak bağlar (assertRunner). Adım fonksiyonlarının ortak
-// giriş kapısı; doğrulanmış runner kimliğini (audit "by") döner.
-func (e *Engine) loadForStep(recordID string, head *trust.VerifiedEpoch, claimedRunner string, signer cryptoid.SigningKey) (*OffboardRecord, string, error) {
+// giriş kapısı; doğrulanmış runner kimliğini (audit "by") + attested key'i döner.
+//
+// YETKİLENDİRME SIRASI (codex round-11 H2): assertRunner'ın DOĞRULANMIŞ, operasyon+durum
+// bağlı attestation'ı HER adım side-effect'inden (kill/revoke/retire/rewrap) ÖNCE burada
+// çalışır — yani hiçbir geri-alınamaz side-effect, çalıştırıcının aktif-admin-ve-ayrılan-
+// değil olduğu KANITLANMADAN yürümez. signAndStore'daki same-key + monotonik-CAS ise
+// depolanan kaydın attested key ile imzalandığını + rollback edilmediğini garanti eder
+// (audit-bütünlüğü + anti-rollback). Side-effect'ler idempotenttir → kısmi-hata resume ile
+// güvenle tamamlanır; başarısız CAS seq'i ilerletmez.
+func (e *Engine) loadForStep(recordID string, head *trust.VerifiedEpoch, claimedRunner string, signer cryptoid.SigningKey) (*OffboardRecord, string, string, error) {
 	rec, err := e.LoadOffboard(recordID, head)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if rec.Status == RecordClosed {
-		return nil, "", ErrRecordClosed
+		return nil, "", "", ErrRecordClosed
 	}
-	runner, err := assertRunner(head, rec, claimedRunner, signer)
+	runner, verifiedKeyID, err := assertRunner(head, rec, claimedRunner, signer)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
-	return rec, runner, nil
+	return rec, runner, verifiedKeyID, nil
 }
 
 // --- Step 1: KILL -----------------------------------------------------------
@@ -335,7 +496,7 @@ func (e *Engine) loadForStep(recordID string, head *trust.VerifiedEpoch, claimed
 // kill-flag. Tek bir admin tarafından UNILATERAL çalıştırılabilir, kriptografiye
 // DOKUNMAZ. Kanıt kayda yazılır. İdempotent (done ise no-op).
 func (e *Engine) OffboardStep1Kill(recordID string, head *trust.VerifiedEpoch, runnerID string, signer cryptoid.SigningKey) (*OffboardRecord, error) {
-	rec, runner, err := e.loadForStep(recordID, head, runnerID, signer)
+	rec, runner, verifiedKeyID, err := e.loadForStep(recordID, head, runnerID, signer)
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +512,7 @@ func (e *Engine) OffboardStep1Kill(recordID string, head *trust.VerifiedEpoch, r
 		note, _ := json.Marshal(map[string]any{"revoke_error": true})
 		rec.Steps.Kill.Evidence = note
 	}
-	if err := e.signAndStore(rec, signer); err != nil {
+	if err := e.signAndStore(rec, signer, head, verifiedKeyID); err != nil {
 		return nil, err
 	}
 	return rec, nil
@@ -401,7 +562,7 @@ type Step2Output struct {
 // (Rewrap motoru current'tan kalan işi türetir). Adım yalnızca TÜM projeler %100
 // rotate olduğunda done olur; aksi halde in_progress ("alarming until 100%").
 func (e *Engine) OffboardStep2Rewrap(recordID string, in Step2Input) (*Step2Output, error) {
-	rec, runner, err := e.loadForStep(recordID, in.Head, in.RunnerID, in.RecordSigner)
+	rec, runner, verifiedKeyID, err := e.loadForStep(recordID, in.Head, in.RunnerID, in.RecordSigner)
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +631,7 @@ func (e *Engine) OffboardStep2Rewrap(recordID string, in Step2Input) (*Step2Outp
 		if rerr != nil {
 			// Kalıcılaştır (kısmi ilerleme) ve hatayı yay — resume kalanı tamamlar.
 			rec.Steps.Rewrap = StepState{Status: StepInProgress, At: e.now(), By: runner, LedgerRef: ledgerRef}
-			_ = e.signAndStore(rec, in.RecordSigner)
+			_ = e.signAndStore(rec, in.RecordSigner, in.Head, verifiedKeyID)
 			out.Record = rec
 			return out, fmt.Errorf("lifecycle.offboard: rewrap %q: %w", project, rerr)
 		}
@@ -497,7 +658,7 @@ func (e *Engine) OffboardStep2Rewrap(recordID string, in Step2Input) (*Step2Outp
 		LedgerRef:    ledgerRef,
 		Attestations: attestations,
 	}
-	if err := e.signAndStore(rec, in.RecordSigner); err != nil {
+	if err := e.signAndStore(rec, in.RecordSigner, in.Head, verifiedKeyID); err != nil {
 		return nil, err
 	}
 	out.Record = rec
@@ -517,7 +678,7 @@ type Step3Output struct {
 // ÜRETİR (en yüksek blast-radius önce). Bu VERİDİR — recipe'ler burada
 // ÇALIŞTIRILMAZ (G11 tüketir). departure/compromise/device_loss için zorunludur.
 func (e *Engine) OffboardStep3Rotate(recordID string, head *trust.VerifiedEpoch, runnerID string, signer cryptoid.SigningKey) (*Step3Output, error) {
-	rec, runner, err := e.loadForStep(recordID, head, runnerID, signer)
+	rec, runner, verifiedKeyID, err := e.loadForStep(recordID, head, runnerID, signer)
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +707,7 @@ func (e *Engine) OffboardStep3Rotate(recordID string, head *trust.VerifiedEpoch,
 		WorklistRuns: []string{runID},
 		Evidence:     ev,
 	}
-	if err := e.signAndStore(rec, signer); err != nil {
+	if err := e.signAndStore(rec, signer, head, verifiedKeyID); err != nil {
 		return nil, err
 	}
 	return &Step3Output{Worklist: wl, Record: rec}, nil
@@ -589,7 +750,7 @@ type Step4Output struct {
 // (yeni escrow'u tüm projelerde Rewrap ile) caller'ın takibidir ve değer-rotasyon
 // worklist'ini besler (§8.5.4 step 3: eski snapshot'lar "burned").
 func (e *Engine) OffboardStep4Escrow(recordID string, head *trust.VerifiedEpoch, runnerID string, signer cryptoid.SigningKey) (*Step4Output, error) {
-	rec, runner, err := e.loadForStep(recordID, head, runnerID, signer)
+	rec, runner, verifiedKeyID, err := e.loadForStep(recordID, head, runnerID, signer)
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +763,7 @@ func (e *Engine) OffboardStep4Escrow(recordID string, head *trust.VerifiedEpoch,
 	if !rec.Scope.EscrowShareHolder {
 		ev, _ := json.Marshal(map[string]any{"escrow_rekey": "not_applicable"})
 		rec.Steps.Escrow = StepState{Status: StepDone, At: e.now(), By: runner, Evidence: ev}
-		if err := e.signAndStore(rec, signer); err != nil {
+		if err := e.signAndStore(rec, signer, head, verifiedKeyID); err != nil {
 			return nil, err
 		}
 		out.Record = rec
@@ -653,7 +814,7 @@ func (e *Engine) OffboardStep4Escrow(recordID string, head *trust.VerifiedEpoch,
 		Evidence:     ev,
 		WorklistRuns: []string{escrowRunID},
 	}
-	if err := e.signAndStore(rec, signer); err != nil {
+	if err := e.signAndStore(rec, signer, head, verifiedKeyID); err != nil {
 		return nil, err
 	}
 	out.Record = rec
@@ -673,7 +834,7 @@ func (e *Engine) OffboardStep4Escrow(recordID string, head *trust.VerifiedEpoch,
 // giriş varken (§8.5.5.1) ErrRotationTriageRequired; escrow gerekli ama yapılmadıysa
 // ErrEscrowRekeyRequired; başka bir adım eksikse ErrStepOutOfOrder.
 func (e *Engine) OffboardStep5Close(recordID string, head *trust.VerifiedEpoch, runnerID string, signer cryptoid.SigningKey) (*OffboardRecord, error) {
-	rec, runner, err := e.loadForStep(recordID, head, runnerID, signer)
+	rec, runner, verifiedKeyID, err := e.loadForStep(recordID, head, runnerID, signer)
 	if err != nil {
 		return nil, err
 	}
@@ -726,7 +887,7 @@ func (e *Engine) OffboardStep5Close(recordID string, head *trust.VerifiedEpoch, 
 	})
 	rec.Steps.Close = StepState{Status: StepDone, At: e.now(), By: runner, Evidence: final}
 	rec.Status = RecordClosed
-	if err := e.signAndStore(rec, signer); err != nil {
+	if err := e.signAndStore(rec, signer, head, verifiedKeyID); err != nil {
 		return nil, err
 	}
 	return rec, nil

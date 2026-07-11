@@ -48,7 +48,9 @@ func TestSignVerify_Roundtrip(t *testing.T) {
 			obj, body, err := SignManifest(sampleManifest(), key)
 			require.NoError(t, err)
 			require.Len(t, obj.Sigs, 1)
-			assert.Equal(t, body, obj.Bytes)
+			// obj.Bytes artık cryptoid.B64Strict (KATİ KANONİK base64); imzalanan
+			// kanonik body ile bayt-bayt aynı olmalı ([]byte'a çevirerek karşılaştır).
+			assert.Equal(t, body, []byte(obj.Bytes))
 
 			got, err := VerifyDataManifest(obj, ringFor(t, key))
 			require.NoError(t, err)
@@ -225,6 +227,63 @@ func TestRotationMeta_Passthrough(t *testing.T) {
 	}
 	require.NotNil(t, rot)
 	assert.JSONEq(t, string(raw), string(rot.Raw()))
+}
+
+// TestParseManifestBody_TrailingContent, imzalı body'den SONRA fazladan içerik
+// (geçerli JSON VEYA çöp) reddedildiğini doğrular (COORD c). Go json.Decoder
+// io.EOF kontrol edilmeden bu içeriği sessizce kabul ederdi; Worker JSON.parse ise
+// reddeder — bu kontrol iki tarafı hizalar.
+func TestParseManifestBody_TrailingContent(t *testing.T) {
+	body, err := sampleManifest().MarshalCanonical()
+	require.NoError(t, err)
+
+	// Temiz body parse edilmeli.
+	_, err = ParseManifestBody(body)
+	require.NoError(t, err)
+
+	// Sonda geçerli bir JSON değeri → red.
+	trailingJSON := append(append([]byte(nil), body...), []byte("\n{}")...)
+	_, err = ParseManifestBody(trailingJSON)
+	assert.ErrorIs(t, err, ErrTrailingContent)
+
+	// Sonda çöp → red.
+	trailingGarbage := append(append([]byte(nil), body...), []byte(" not-json")...)
+	_, err = ParseManifestBody(trailingGarbage)
+	assert.ErrorIs(t, err, ErrTrailingContent)
+}
+
+// TestParseManifestBody_IntegerDomain, epoch/trustEpoch/keyVersion alanlarının
+// JS güvenli-tamsayı alanıyla [0, 2^53-1] sınırlı olduğunu doğrular (COORD a):
+// 2^53-1 kabul, 2^53 red.
+func TestParseManifestBody_IntegerDomain(t *testing.T) {
+	const maxSafe = uint64(1<<53 - 1)
+
+	// Sınır değeri (2^53-1) her üç alanda da kabul edilmeli.
+	ok := sampleManifest()
+	ok.Epoch = maxSafe
+	ok.TrustEpoch = maxSafe
+	ok.Entries[0].KeyVersion = maxSafe
+	okBody, err := ok.MarshalCanonical()
+	require.NoError(t, err)
+	_, err = ParseManifestBody(okBody)
+	require.NoError(t, err)
+
+	// 2^53 her alan için ayrı ayrı reddedilmeli.
+	over := map[string]func(m *DataManifest){
+		"epoch":      func(m *DataManifest) { m.Epoch = 1 << 53 },
+		"trustEpoch": func(m *DataManifest) { m.TrustEpoch = 1 << 53 },
+		"keyVersion": func(m *DataManifest) { m.Entries[0].KeyVersion = 1 << 53 },
+	}
+	for name, mutate := range over {
+		t.Run(name, func(t *testing.T) {
+			m := sampleManifest()
+			mutate(m)
+			body, err := m.MarshalCanonical()
+			require.NoError(t, err)
+			_, err = ParseManifestBody(body)
+			assert.ErrorIs(t, err, ErrIntegerOutOfRange)
+		})
+	}
 }
 
 // TestCurrentPointer, current pointer round-trip + bütünlük kontrolünü test eder.

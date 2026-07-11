@@ -44,6 +44,7 @@ func TestOffboardStep2_ScopeMustCoverGrantBearingProjects(t *testing.T) {
 	recID := "ob_scope_1"
 	// Scope KASITLI olarak eksik: yalnızca rwProject; otherProject atlanmış.
 	_, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
 		OpenedBy: a.id, Signer: a.admin, RecordID: recID,
 	})
@@ -73,6 +74,7 @@ func TestOffboardStep2_ScopeCoversAllGrants_Proceeds(t *testing.T) {
 	e, _, a, eve, _, head := offboardSoloWorld(t)
 	recID := "ob_scope_ok"
 	_, err := e.OffboardStart(OffboardStartRequest{
+		Head:      head,
 		Principal: eve.id, Reason: "departure", Projects: []string{rwProject},
 		OpenedBy: a.id, Signer: a.admin, RecordID: recID,
 	})

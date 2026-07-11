@@ -12,10 +12,12 @@ import {
   SignedObject,
   VerifierKey,
   assertCanonicalIntegerJSON,
+  b64ToBytes,
   isRFC3339,
   sha256Hex,
   verifySignatureEnvelope,
 } from "./crypto/verify.js";
+import { findMemberValueSpan, scanJsonValue, skipJsonWs } from "./json-span.js";
 
 export const SCHEMA_DATA_MANIFEST = "wapps-secrets/data-manifest/v1";
 export const SCHEMA_CURRENT_POINTER = "wapps-secrets/current/v1";
@@ -47,6 +49,12 @@ export interface KeyEntry {
   wraps: DEKWrap[];
   rotation?: unknown; // §8.6.2 opsiyonel passthrough; Worker ASLA yorumlamaz
   hasRotation: boolean;
+  // rotationRaw: rotation değerinin İMZALI body'deki TAM ham alt-dizesi (iç boşluk
+  // dahil), yok/null ise undefined (COORD c). Go, rotation'ı json.RawMessage olarak
+  // BYTE-EXACT saklar ve entriesEqual'ı bytes.Equal ile karşılaştırır; TS de aynı
+  // ham baytları saklamalı — JSON.stringify re-serialize'ı boşluk/format farkını
+  // yutar ve yetkisiz bir anahtardaki boşluk-mutasyonunu "değişmemiş" sayardı.
+  rotationRaw?: string;
 }
 
 export interface DataManifest {
@@ -94,6 +102,51 @@ const WRAP_KEYS = ["recipient", "wrap"] as const;
 const ENTRY_KEYS = ["keyName", "keyVersion", "blobHash", "wraps", "rotation"] as const;
 const MANIFEST_KEYS = ["schema", "project", "epoch", "prevManifestSha256", "trustEpoch", "createdAt", "entries"] as const;
 
+// --- Ham rotation baytları çıkarımı (byte-exact, COORD c) -------------------
+//
+// Go, her entry'nin `rotation` değerini json.RawMessage olarak body'de göründüğü
+// TAM baytlarla (iç boşluk dahil, çevre boşluk hariç) saklar ve entryChanged'i
+// bytes.Equal(a.Raw(), b.Raw()) ile byte-exact karşılaştırır. JSON.parse ham
+// baytları normalize ettiğinden (boşluk/format kaybolur), TS imzalı body metninden
+// her rotation değerinin ham alt-dizesini elle tarayıp saklamalı — aksi halde
+// SADECE-boşluk farklı bir rotation, Worker'da "değişmemiş" görünüp yetkisiz bir
+// yazarın authz'ini ATLARDI (Go bunu touched sayıp GRANT_DENIED verirken).
+// Tarayıcılar YALNIZCA JSON.parse'tan GEÇMİŞ (geçerli) body üzerinde çalışır.
+
+/**
+ * extractRotationRaws, body metnindeki entries[*].rotation değerlerinin ham
+ * alt-dizelerini entry SIRASIYLA döner (undefined = yok veya null). JSON.parse ile
+ * aynı dizi sırasını izler → rotationRaws[i] ↔ entries[i] hizalı.
+ */
+function extractRotationRaws(text: string): (string | undefined)[] {
+  const out: (string | undefined)[] = [];
+  const rootStart = skipJsonWs(text, 0);
+  if (text[rootStart] !== "{") return out;
+  const entriesSpan = findMemberValueSpan(text, rootStart, "entries");
+  if (!entriesSpan) return out;
+  let i = skipJsonWs(text, entriesSpan.start);
+  if (text[i] !== "[") return out;
+  i = skipJsonWs(text, i + 1);
+  while (i < text.length && text[i] !== "]") {
+    i = skipJsonWs(text, i);
+    const entrySpan = scanJsonValue(text, i);
+    if (text[entrySpan.start] === "{") {
+      const rot = findMemberValueSpan(text, entrySpan.start, "rotation");
+      const raw = rot ? text.slice(rot.start, rot.end) : undefined;
+      out.push(raw === "null" ? undefined : raw); // null → rotation yok (Go: nil pointer)
+    } else {
+      out.push(undefined); // entry obje değil (geçerli JSON'da olmaz)
+    }
+    i = skipJsonWs(text, entrySpan.end);
+    if (text[i] === ",") {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return out;
+}
+
 /**
  * parseManifestBody, ham body baytlarını DataManifest'e STRICT ayrıştırır
  * (bilinmeyen alan → red, tip kontrolü). YALNIZCA imza doğrulandıktan SONRA
@@ -125,6 +178,13 @@ export function parseManifestBody(body: Uint8Array): DataManifest {
   if (!isRFC3339(createdAt)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "createdAt not RFC3339");
 
   if (!Array.isArray(o.entries)) throw new ManifestVerifyError("MANIFEST_MALFORMED", "entries not an array");
+  // COORD (c): rotation değerlerinin ham (byte-exact) alt-dizelerini body metninden
+  // çıkar; hizalama bozulursa (tarayıcı ↔ JSON.parse sayı farkı — geçerli JSON'da
+  // olmaz) fail-closed reddet (sessiz misalignment authz-bypass'ı olurdu).
+  const rotationRaws = extractRotationRaws(text);
+  if (rotationRaws.length !== o.entries.length) {
+    throw new ManifestVerifyError("MANIFEST_MALFORMED", "rotation raw extraction misaligned");
+  }
   const entries: KeyEntry[] = o.entries.map((raw, i) => {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}] not an object`);
     const e = raw as Record<string, unknown>;
@@ -134,7 +194,18 @@ export function parseManifestBody(body: Uint8Array): DataManifest {
       if (typeof wr !== "object" || wr === null || Array.isArray(wr)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `wrap[${j}] not an object`);
       const w = wr as Record<string, unknown>;
       requireExactKeys(w, WRAP_KEYS, `entry[${i}].wrap[${j}]`);
-      return { recipient: asString(w.recipient, "recipient"), wrapB64: asString(w.wrap, "wrap") };
+      const wrapB64 = asString(w.wrap, `entry[${i}].wrap[${j}].wrap`);
+      // COORD (a): `wrap`, Go'da `Wrap []byte` (base64) olarak çözülür → STRICT
+      // KANONİK olmalı (Go base64.StdEncoding.Strict + roundtrip paritesi). Non-base64
+      // bir wrap Go'da unmarshal HATASI verir; Worker da REDDETMELİ — aksi halde
+      // Worker kabul edip Go reddederdi (commit/read desync). Byte değeri Worker'ca
+      // yorumlanmaz; yalnızca kanonikliği doğrulanır (string olarak taşınır).
+      try {
+        b64ToBytes(wrapB64);
+      } catch {
+        throw new ManifestVerifyError("MANIFEST_MALFORMED", `entry[${i}].wrap[${j}].wrap not canonical base64`);
+      }
+      return { recipient: asString(w.recipient, "recipient"), wrapB64 };
     });
     const hasRotation = Object.prototype.hasOwnProperty.call(e, "rotation") && e.rotation !== null;
     return {
@@ -144,6 +215,7 @@ export function parseManifestBody(body: Uint8Array): DataManifest {
       wraps,
       rotation: e.rotation,
       hasRotation,
+      rotationRaw: rotationRaws[i],
     };
   });
 
@@ -209,8 +281,10 @@ function entriesEqual(a: KeyEntry, b: KeyEntry): boolean {
   for (const w of a.wraps) {
     if (bw.get(w.recipient) !== w.wrapB64) return false;
   }
-  // rotation passthrough baytları (JSON-eşdeğer) değişmemeli.
-  if (JSON.stringify(a.rotation ?? null) !== JSON.stringify(b.rotation ?? null)) return false;
+  // rotation BYTE-EXACT (COORD c): Go bytes.Equal(a.Raw(), b.Raw()); TS imzalı
+  // body'den alınan ham alt-dizeyi karşılaştırır. İkisi de undefined (yok/null) →
+  // eşit; biri undefined → farklı; iki string → byte-bayt (boşluk dahil) eşitlik.
+  if (a.rotationRaw !== b.rotationRaw) return false;
   return true;
 }
 

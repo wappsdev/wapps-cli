@@ -39,6 +39,11 @@ var (
 	// ErrCASConflict: bir data-manifest CAS yazımı yarışı kaybetti (epoch conflict).
 	ErrCASConflict = errors.New("lifecycle: CAS_CONFLICT")
 
+	// ErrRecordRollback: bir offboard kaydı CAS yazımı MONOTONİK olmayan bir seq ile
+	// reddedildi (§8.5.1 anti-rollback): yeni seq mevcut store seq'ini geçmiyor —
+	// eski geçerli-imzalı bir envelope'un yeni bir kaydın üzerine yazılması engellenir.
+	ErrRecordRollback = errors.New("lifecycle: OFFBOARD_RECORD_ROLLBACK")
+
 	// ErrEscrowRekeyRequired: ayrılan bir escrow-share sahibiydi; escrow re-key
 	// (§8.5.4) çalıştırılmadan offboard kapatılamaz.
 	ErrEscrowRekeyRequired = errors.New("lifecycle: ESCROW_REKEY_REQUIRED")

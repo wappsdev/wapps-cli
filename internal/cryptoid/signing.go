@@ -27,19 +27,23 @@ const (
 const p256ScalarLen = 32
 
 // Signature, tek bir ayrık (detached) imzanın depolanan formudur (SPEC §3.6.1).
-// Sig alanı Go JSON'da base64 (RFC 4648 std, padding'li) olarak kodlanır.
+// Sig alanı Go JSON'da base64 (RFC 4648 std, padding'li) olarak kodlanır — KATİ
+// KANONİK (B64Strict): sarmalayıcı imzalı olmadığından bir saldırgan sig base64'ünü
+// non-canonical spelling'e re-encode edip Go-kabul/Worker-red bölünmesi yaratamaz.
 type Signature struct {
-	Schema string `json:"schema"` // "wapps-secrets/sig/v1"
-	KeyID  string `json:"key_id"` // imza-anahtarı parmak izi (§3.7)
-	Alg    string `json:"alg"`    // "ed25519" | "ecdsa-p256-sha256"
-	Sig    []byte `json:"sig"`    // base64; SHA-256(Bytes) üzerinde ayrık imza
+	Schema string    `json:"schema"` // "wapps-secrets/sig/v1"
+	KeyID  string    `json:"key_id"` // imza-anahtarı parmak izi (§3.7)
+	Alg    string    `json:"alg"`    // "ed25519" | "ecdsa-p256-sha256"
+	Sig    B64Strict `json:"sig"`    // base64 (KATİ KANONİK); SHA-256(Bytes) üzerinde ayrık imza
 }
 
 // SignedObject, her imzalı manifest (data ve trust) için depolanan sarmalayıcı
 // formdur (SPEC §3.6.1, §5.4.4). Bytes alanı Go JSON'da base64 olarak kodlanır
-// ve TAM imzalanmış baytlardır — parse ETMEDEN önce hash ile doğrulanır.
+// ve TAM imzalanmış baytlardır — parse ETMEDEN önce hash ile doğrulanır. KATİ
+// KANONİK (B64Strict): imzasız sarmalayıcının bytes'ı re-encode edilerek
+// imzalanan payload hiç bozulmadan Go/Worker ayrışması yaratılamaz (COORD a).
 type SignedObject struct {
-	Bytes []byte      `json:"bytes"`
+	Bytes B64Strict   `json:"bytes"`
 	Sigs  []Signature `json:"sigs"`
 }
 

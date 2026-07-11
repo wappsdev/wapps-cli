@@ -18,6 +18,7 @@ import {
   TrustContext,
 } from "./helpers.js";
 import { keyCurrent, keyPointerEvent } from "../src/storage.js";
+import { bytesToB64, bytesToHex, sha256, utf8 } from "../src/crypto/verify.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
@@ -43,6 +44,25 @@ function fullWraps(t: TrustContext): { recipient: string; wrap: string }[] {
 
 async function setup(): Promise<TrustContext> {
   return seedTrust();
+}
+
+/**
+ * signRawManifest, HAM bir manifest body string'ini (boşluk dahil TAM baytlarla)
+ * imzalar — signDataManifest'in aksine rotation'ı iç boşluğuyla birebir korumak için
+ * (byte-exact rotation testi, Fix #3). helpers.signWrapper ile aynı sarmalayıcı şekli.
+ */
+function signRawManifest(
+  bodyStr: string,
+  key: { keyID: string; alg: string; sign(m: Uint8Array): Uint8Array },
+): { wrapperStr: string; wrapperBytes: Uint8Array; objectSha256: string } {
+  const bodyBytes = utf8(bodyStr);
+  const wrapper = {
+    bytes: bytesToB64(bodyBytes),
+    sigs: [{ schema: "wapps-secrets/sig/v1", key_id: key.keyID, alg: key.alg, sig: bytesToB64(key.sign(bodyBytes)) }],
+  };
+  const wrapperStr = JSON.stringify(wrapper);
+  const wrapperBytes = utf8(wrapperStr);
+  return { wrapperStr, wrapperBytes, objectSha256: bytesToHex(sha256(wrapperBytes)) };
 }
 
 /**
@@ -135,6 +155,28 @@ describe("commit — semantic-diff authz + CAS", () => {
     expect(await errCode(res)).toBe("GRANT_DENIED");
   });
 
+  it("Fix #3: rotation whitespace-only change on a key the signer cannot write → touched → 403 GRANT_DENIED (byte-exact, Go parity)", async () => {
+    const t = await setup();
+    // SHARED_KEY entry'si; SADECE rotation'ın iç boşluğu değişecek. wrap kanonik base64.
+    const entry = (rotation: string): string =>
+      `{"keyName":"SHARED_KEY","keyVersion":1,"blobHash":"aa","wraps":[{"recipient":${JSON.stringify(t.readerDevice)},"wrap":"YQ=="}],"rotation":${rotation}}`;
+    const body = (epoch: number, prev: string, rotation: string): string =>
+      `{"schema":"wapps-secrets/data-manifest/v1","project":"vaulter","epoch":${epoch},"prevManifestSha256":${JSON.stringify(prev)},"trustEpoch":1,"createdAt":"2026-07-10T12:30:00Z","entries":[${entry(rotation)}]}`;
+
+    // epoch-1: rotation KANONİK {"a":1} (writer imzalar; doğrudan seed → commit validasyonu atlanır).
+    const w1 = signRawManifest(body(1, "", '{"a":1}'), t.writer);
+    await seedManifestObject("vaulter", 1, w1);
+
+    // epoch-2: rotation'da SADECE boşluk farkı {"a": 1}; keyVersion/blobHash/wrap-set AYNI.
+    // reader imzalar; reader'ın SHARED_KEY'de yalnızca read grant'ı var (write YOK).
+    // Go byte-exact rotation → SHARED_KEY touched → GRANT_DENIED. Eski TS (JSON.stringify
+    // normalize) boşluk farkını yutup "değişmemiş" sayardı → authz ATLANIRDI (Fix #3).
+    const w2 = signRawManifest(body(2, w1.objectSha256, '{"a": 1}'), t.reader);
+    const res = await doCommit(t.pin, "reader@wapps.dev", w2.wrapperStr);
+    expect(res.status).toBe(403);
+    expect(await errCode(res)).toBe("GRANT_DENIED");
+  });
+
   it("REJECT: wrap-set shrink without re-key → 403 WRAPSET_VIOLATION", async () => {
     const t = await setup();
     const blobHash = await putBlob("vaulter", new Uint8Array([3, 3, 3]));
@@ -205,6 +247,25 @@ describe("commit — semantic-diff authz + CAS", () => {
     const res = await doCommit(t.pin, "writer@wapps.dev", w.wrapperStr);
     expect(res.status).toBe(422);
     expect(await errCode(res)).toBe("BLOB_MISSING");
+  });
+
+  it("REJECT: non-lowercase-64-hex blobHash → 422 MANIFEST_MALFORMED, current NOT advanced (P1-B content-addressing/read parity)", async () => {
+    const t = await setup();
+    // Writer'ın DATABASE_URL'de tam yetkisi + doğru wrap-set'i var → commit step 8/9/10
+    // GEÇER ve blob-bağı adımına (step 11) ULAŞIR. blobHash büyük-harf (Go okuyucu
+    // Worker'ın küçük-harf-only GET'inden çekemez) → REDDEDİLMELİ, aksi halde `current`
+    // OKUNAMAZ bir manifest'e ilerlerdi (accept/read split).
+    for (const bad of ["A".repeat(64), "aa", "g".repeat(64)]) {
+      const w = signDataManifest(
+        { project: "vaulter", epoch: 1, prev: "", trustEpoch: 1, entries: [{ keyName: "DATABASE_URL", keyVersion: 1, blobHash: bad, wraps: fullWraps(t) }] },
+        t.writer,
+      );
+      const res = await doCommit(t.pin, "writer@wapps.dev", w.wrapperStr);
+      expect(res.status).toBe(422);
+      expect(await errCode(res)).toBe("MANIFEST_MALFORMED");
+      // current ASLA yazılmadı → Go okuyucular bozuk bir head görmez.
+      expect(await env.SECRETS_BUCKET.get(keyCurrent("vaulter"))).toBeNull();
+    }
   });
 
   it("REJECT: missing escrow wrap → 422 ESCROW_WRAP_MISSING", async () => {

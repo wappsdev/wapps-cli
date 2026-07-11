@@ -35,14 +35,38 @@ export function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
+// Kanonik standart base64 alfabesi + isteğe bağlı 1-2 padding '=' (yalnızca sonda).
+// Boşluk, b64url ('-'/'_') ve fazla/eksik padding bu regex'te ELENİR.
+const STRICT_B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
 /**
- * b64ToBytes, standart RFC 4648 base64'ü (padding'li — Go'nun []byte JSON
- * kodlaması) ham baytlara çözer. workerd atob binary-string döner.
+ * b64ToBytes, standart RFC 4648 base64'ü (padding'li — Go base64.StdEncoding
+ * paritesi) ham baytlara çözer. KATİ KANONİK: bu decoder yalnızca imzalı
+ * sarmalayıcı/sig ve trust anahtar pubkey'lerini çözmek için kullanılır ve
+ * bunlar için kanoniklik GÜVENLİK-KRİTİKTİR — dış sarmalayıcının KENDİSİ
+ * imzalanmadığından, gevşek bir decoder (workerd atob unpadded/whitespace/
+ * non-canonical son-bayt bitlerini KABUL eder) bir saldırganın `bytes`/`sig`
+ * base64'ünü İMZALANAN payload'ı hiç bozmadan yeniden-kodlamasına izin verirdi
+ * → Worker DOĞRULAR ama Go REDDEDER (veya tersi) → read/trust DESYNC. Bu yüzden:
+ *   1) uzunluk %4==0 (padding'li),
+ *   2) yalnızca kanonik alfabe + sondaki '=' (boşluk/b64url/iç padding red),
+ *   3) roundtrip: bytesToB64(decoded)===input (non-canonical son-bayt bitleri
+ *      dahil TEK kanonik kodlamayı zorlar — Go base64.StdEncoding.Strict paritesi).
+ * Herhangi biri tutmazsa hata (fail-closed).
  */
 export function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
+  if (b64.length % 4 !== 0) throw new Error("b64ToBytes: length not a multiple of 4 (unpadded/non-canonical)");
+  if (!STRICT_B64_RE.test(b64)) throw new Error("b64ToBytes: non-canonical base64 (illegal char/whitespace/misplaced padding)");
+  let bin: string;
+  try {
+    bin = atob(b64);
+  } catch {
+    throw new Error("b64ToBytes: invalid base64");
+  }
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  // Kanoniklik kilidi: kodlama TEK olmalı; aksi halde yeniden-kodlama saldırısı açık kalır.
+  if (bytesToB64(out) !== b64) throw new Error("b64ToBytes: non-canonical base64 (roundtrip mismatch)");
   return out;
 }
 
@@ -73,18 +97,64 @@ export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 // içinde ayrıştırılması için ortak katılık yardımcılarıdır. trust.ts + manifest.ts
 // ikisi de burayı import eder (çift import merkezi).
 
-const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+// RFC3339 alanlarını AYRI yakala: yıl, ay, gün, saat, dakika, saniye, (ops. kesir),
+// ve zaman-dilimi ya "Z" ya da ±hh:mm (işaret + zone-saat + zone-dakika).
+const RFC3339_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+/** isLeapYear, Gregoryen artık-yıl kuralı (Go time paketiyle aynı). */
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/** daysInMonth, ay (1-12) + yıl için takvim-gerçek gün sayısı (Şubat artık-yıl duyarlı). */
+function daysInMonth(year: number, month: number): number {
+  const table = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month === 2 && isLeapYear(year)) return 29;
+  return table[month - 1];
+}
 
 /**
- * isRFC3339, Go `time.Time` JSON decode'unun kabul ettiği KATİ RFC3339 biçimini
- * doğrular (T ayracı + saniye + Z/offset zorunlu; opsiyonel kesirli saniye).
- * `Date.parse` GEVŞEK'tir ("2026-07-10", "July 10 2026" vb. kabul eder) →
- * imzalı bir createdAt için Go ile ayrışır. Regex + gerçek-tarih (Date.parse
- * NaN değil) kontrolü ikisi birden yapılır; katı taraf fail-closed'dur.
+ * isRFC3339, Go `time.Time` JSON decode'unun (time.Parse(time.RFC3339, ...))
+ * kabul ettiği KATİ RFC3339 biçimini doğrular (T ayracı + saniye + Z/offset
+ * zorunlu; opsiyonel kesirli saniye).
+ *
+ * KRİTİK: `Date.parse` yalnızca GEVŞEK değil, aynı zamanda TAKVİM-NORMALLEŞTİRİCİ'dir:
+ * "2026-02-31T00:00:00Z" → 3 Mart, "2026-01-01T24:00:00Z" → ertesi gün 00:00 gibi
+ * İMKANSIZ tarihleri sessizce geçerli bir Date'e taşır. Go `time.Time` bunları
+ * REDDEDER → imzalı bir createdAt/created_at/enrolled_at/rotate_by için
+ * Go-reddet / Worker-kabul AYRIŞMASI (read/trust brick). Bu yüzden `Date.parse`
+ * KULLANILMAZ; her alan regex ile SABİT-GENİŞLİKTE ayrıştırılır ve takvim
+ * aralıklarıyla (normalleştirme YOK) doğrulanır — Go time.Parse paritesi:
+ *   ay 1-12, gün 1-<aydaki-gün> (Şubat artık-yıl duyarlı),
+ *   saat 0-23 (24:00 Go'da YASAK), dakika/saniye 0-59,
+ *   zaman-dilimi offset saati 0-24, offset dakikası 0-60 (Go zone aralığı).
+ * Sabit-genişlik alan + aralık kontrolü, bileşenlerin normalleştirilmeden
+ * round-trip ettiğini garanti eder. Herhangi biri tutmazsa false (fail-closed).
  */
 export function isRFC3339(s: string): boolean {
-  if (!RFC3339_RE.test(s)) return false;
-  return !Number.isNaN(Date.parse(s));
+  const m = RFC3339_RE.exec(s);
+  if (m === null) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const hour = Number(m[4]);
+  const minute = Number(m[5]);
+  const second = Number(m[6]);
+  // Takvim aralıkları (regex 2-basamağı 00-99 kısıtlar; üst sınırları BURADA zorla).
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+  if (hour > 23) return false; // Go 24:00'ı REDDEDER
+  if (minute > 59) return false;
+  if (second > 59) return false; // Go artık-saniye 60'ı REDDEDER
+  // Zaman-dilimi offset'i "Z" değilse (±hh:mm), Go zone aralığı: saat ≤24, dakika ≤60.
+  if (m[7] !== undefined) {
+    const zoneHour = Number(m[8]);
+    const zoneMinute = Number(m[9]);
+    if (zoneHour > 24) return false;
+    if (zoneMinute > 60) return false;
+  }
+  return true;
 }
 
 /**
@@ -94,8 +164,13 @@ export function isRFC3339(s: string): boolean {
  * alanına `1e3` / `1.0` gibi literalleri REDDEDER ve >2^53 değerleri TAM taşır.
  * JS `JSON.parse` ise `1e3`'ü sessizce 1000'e çevirir (literal ayrımı kaybolur)
  * ve >2^53'ü yuvarlar. Parite için: string DIŞINDAKİ her sayı token'ı kanonik
- * tam-sayı biçiminde (`-?(0|[1-9][0-9]*)`) ve güvenli aralıkta (≤2^53-1) olmalı;
+ * tam-sayı biçiminde (`(0|[1-9][0-9]*)`) ve güvenli aralıkta (≤2^53-1) olmalı;
  * değilse hata (fail-closed). String literalleri (base64/hex içerik) atlanır.
+ *
+ * COORD round-5 (b): imzalı tam-sayı alanları İŞARETSİZ 0..2^53-1 tanım kümesindedir;
+ * `-` ile başlayan HER sayı token'ı (negatif VE `-0`) REDDEDİLİR — Go
+ * cryptoid.AssertCanonicalIntegerJSON ile TAM parite (aksi halde bir taraf `-0`/negatifi
+ * kabul edip diğeri reddederek consensus split doğardı).
  */
 export function assertCanonicalIntegerJSON(text: string): void {
   const n = text.length;
@@ -118,7 +193,9 @@ export function assertCanonicalIntegerJSON(text: string): void {
       continue;
     }
     // String dışında bir sayı ancak value pozisyonunda görünür (JSON anahtarları
-    // daima string'tir) → '-' veya rakamla başlayan maksimal token'ı yakala.
+    // daima string'tir) → '-' veya rakamla başlayan maksimal token'ı yakala. '-'
+    // ile başlayan token'ı da YAKALARIZ ki (skip edip pozitif kısmı kabul etmek
+    // yerine) aşağıdaki regex onu bütün olarak REDDETSİN (COORD b: işaretsiz küme).
     if (c === "-" || (c >= "0" && c <= "9")) {
       let j = i;
       while (j < n) {
@@ -127,7 +204,8 @@ export function assertCanonicalIntegerJSON(text: string): void {
         else break;
       }
       const tok = text.slice(i, j);
-      if (!/^-?(0|[1-9][0-9]*)$/.test(tok)) {
+      // COORD (b): işaretsiz kanonik tam sayı — lider '-' YOK (negatif ve `-0` red).
+      if (!/^(0|[1-9][0-9]*)$/.test(tok)) {
         throw new Error(`JSON_STRICT: non-integer number literal ${JSON.stringify(tok)}`);
       }
       if (!Number.isSafeInteger(Number(tok))) {

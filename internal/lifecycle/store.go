@@ -42,10 +42,23 @@ type DataStore interface {
 // laptop'unda DEĞİL) yaşar → laptop kaybından sağ çıkar, herhangi bir admin
 // --resume edebilir (§8.5.1). Üretimde bu Worker admin API + R2'dir.
 type RecordStore interface {
-	// PutRecord, bir kaydı (son-yazan-kazanır) yazar.
+	// PutRecord, bir kaydı (son-yazan-kazanır) yazar. YALNIZCA write-once / append-only
+	// olmayan kayıtlar için (ör. worklist run planı). Mutable, durum-geçişli offboard
+	// kayıtları PutRecordCAS kullanmalı (anti-rollback).
 	PutRecord(key string, data []byte) error
+	// PutRecordCAS, MONOTONİK CAS yazımı yapar (§8.5.1 anti-rollback): mevcut store
+	// seq'i expectedSeq ile eşleşMEZse ErrCASConflict; newSeq mevcut seq'i GEÇMEZse
+	// ErrRecordRollback. Böylece eski geçerli-imzalı bir offboard envelope'u sonraki
+	// (daha yüksek seq'li) bir kaydın üzerine yazılamaz. İlk yazım: expectedSeq=0.
+	// ÜRETİM: bu, Worker admin API'sinde SUNUCU-TARAFI zorlanır (client'a güvenilmez).
+	PutRecordCAS(key string, data []byte, expectedSeq, newSeq uint64) error
 	// GetRecord, bir kaydı döner; ok=false → yok.
 	GetRecord(key string) (data []byte, ok bool, err error)
+	// RecordSeq, bir kaydın store'da izlenen monotonik seq'ini döner (yok → 0).
+	// LoadOffboard, yüklenen İMZALI kaydın seq'inin bununla EŞLEŞTİĞİNİ doğrular:
+	// bir saldırgan eski geçerli-imzalı bir envelope'u yalan bir newSeq ile yazsa bile
+	// (CAS'ı geçse) gövdedeki seq izlenen seq'le uyuşmaz → rollback tespit edilir.
+	RecordSeq(key string) (uint64, error)
 	// ListRecords, prefix ile eşleşen kayıt anahtarlarını (sıralı) döner.
 	ListRecords(prefix string) ([]string, error)
 	// AppendLedger, append-only bir JSONL ledger'a bir satır ekler.
@@ -66,8 +79,9 @@ type MemStore struct {
 	proj map[string]*projState
 
 	// kontrol düzlemi.
-	records map[string][]byte
-	ledgers map[string][][]byte
+	records   map[string][]byte
+	recordSeq map[string]uint64 // per-key monotonik seq (PutRecordCAS anti-rollback)
+	ledgers   map[string][][]byte
 
 	// failCommitAfter, >0 ise CommitManifest ilk N başarılı commit'ten SONRA
 	// errInjectedCommit ile başarısız olur (interrupt-mid-way testi). 0 = kapalı.
@@ -90,9 +104,10 @@ var errInjectedCommit = errors.New("lifecycle/memstore: injected commit failure"
 // NewMemStore, boş bir bellek-içi store kurar.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		proj:    map[string]*projState{},
-		records: map[string][]byte{},
-		ledgers: map[string][][]byte{},
+		proj:      map[string]*projState{},
+		records:   map[string][]byte{},
+		recordSeq: map[string]uint64{},
+		ledgers:   map[string][][]byte{},
 	}
 }
 
@@ -197,7 +212,7 @@ func (m *MemStore) CommitManifest(project string, signedWrapper []byte, expected
 	return nil
 }
 
-// PutRecord, RecordStore.
+// PutRecord, RecordStore (son-yazan-kazanır; write-once/ledger planı için).
 func (m *MemStore) PutRecord(key string, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -205,6 +220,32 @@ func (m *MemStore) PutRecord(key string, data []byte) error {
 	copy(cp, data)
 	m.records[key] = cp
 	return nil
+}
+
+// PutRecordCAS, RecordStore (monotonik anti-rollback). Worker admin API'sinin
+// sunucu-tarafı zorlamasının bellek-içi eşdeğeri.
+func (m *MemStore) PutRecordCAS(key string, data []byte, expectedSeq, newSeq uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur := m.recordSeq[key] // yok → 0
+	if cur != expectedSeq {
+		return ErrCASConflict // beklenen prev seq mevcut head ile eşleşmiyor (yarış/eş-zamanlı)
+	}
+	if newSeq <= cur {
+		return ErrRecordRollback // MONOTONİK değil → eski envelope replay reddi
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	m.records[key] = cp
+	m.recordSeq[key] = newSeq
+	return nil
+}
+
+// RecordSeq, RecordStore. İzlenen monotonik seq (yok → 0).
+func (m *MemStore) RecordSeq(key string) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.recordSeq[key], nil
 }
 
 // GetRecord, RecordStore.

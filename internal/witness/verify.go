@@ -3,7 +3,6 @@ package witness
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -414,7 +413,7 @@ func writerKeyring(m *trust.TrustManifest) manifest.WriterKeyring {
 			if sk.Status != registry.StatusActive {
 				continue
 			}
-			raw, err := base64.StdEncoding.DecodeString(sk.Pubkey)
+			raw, err := sk.DecodePubkey() // KATİ KANONİK base64 (Worker b64ToBytes paritesi)
 			if err != nil {
 				continue
 			}

@@ -1,7 +1,6 @@
 package trust
 
 import (
-	"encoding/base64"
 	"fmt"
 	"reflect"
 
@@ -86,7 +85,7 @@ func (m *TrustManifest) buildSignerView() (signerView, error) {
 			if sk.Alg != cryptoid.AlgECDSAP256SHA256 {
 				continue // admin presence anahtarları P-256'dır (§4.1)
 			}
-			raw, err := base64.StdEncoding.DecodeString(sk.Pubkey)
+			raw, err := sk.DecodePubkey() // KATİ KANONİK base64 (Worker b64ToBytes paritesi)
 			if err != nil {
 				return signerView{}, fmt.Errorf("trust.buildSignerView: admin key decode: %w", ErrTrustChainBroken)
 			}
@@ -156,6 +155,32 @@ func verifyQuorum(childBytes []byte, sigs []cryptoid.Signature, req Requirement,
 	}
 	if got < req.Threshold {
 		return fmt.Errorf("trust.verifyQuorum: have %d, need %d %s signatures: %w", got, req.Threshold, req.Class, ErrTrustQuorumUnmet)
+	}
+	return nil
+}
+
+// validateEmbeddedRegistry, doğrulanmış bir epoch'un GÖMÜLÜ kayıt görünümünün
+// (§4.3) TOKEN-MINT açısından kritik anlamsal alt kümesini denetler. Quorum +
+// hash-link + roster değişmezleri geçse BİLE bu denetim geçmezse epoch GEÇERSİZDİR:
+//   - MAKİNE prensiplerinin joker ("*") grant/writer-allowlist'i YASAK; aksi halde
+//     tek sızmış otomasyon anahtarı projedeki HER değere erişir ve Worker bir wildcard
+//     token BASARDI (fix 3).
+//   - Her anahtar (enc + signing) girdisinin declared key_id'si (boş değilse) pubkey
+//     parmak izine (§3.7) UYMALI (COORD b / fix 4): kök + admin anahtarları zaten ayrı
+//     kontrol edilir; bu çağrı daily/automation ve admin-dışı kimliklerin anahtarlarını
+//     da kapsar — Worker'ın artık uyguladığı türetme-ve-reddet kuralıyla eşleşir.
+//
+// KASITLI OLARAK Validate()'in TAMAMINI değil, YALNIZCA bu consensus alt kümesini
+// (ValidateSignerSemantics) çalıştırır: rotate_by / insan-enrollment gibi tam kayıt
+// bütünlüğü Worker'ın token-mint yolunda YAPTIRILMADIĞI için, tam Validate() Go'yu
+// Worker'dan KATI yapıp YENİ bir Go↔TS divergence yaratırdı.
+//
+// Kayıt görünümü, imza kümesi TAM baytlar üzerinde geçtikten SONRA otoritatif
+// kabul edilen aynı imzalı payload'dan gelir (SPEC §3.6.3); tamper edilmiş bir
+// grant zaten imzayı bozardı.
+func validateEmbeddedRegistry(cand *TrustManifest) error {
+	if err := cand.Registry().ValidateSignerSemantics(); err != nil {
+		return fmt.Errorf("trust: embedded registry invalid: %w", err)
 	}
 	return nil
 }
@@ -230,13 +255,18 @@ func validateRosterInvariants(m *TrustManifest) error {
 // anahtarları) yüksek-değerli bir anahtar sınıfıdır → yalnızca roster M-of-N
 // epoch'u döndürebilir; 1-admin (registry/policy/lab-grant) epoch'u ASLA.
 func compareUnchanged(parent, cur *TrustManifest) error {
-	if !reflect.DeepEqual(parent.Roots, cur.Roots) {
+	// COORD (a): array-şekilli KİLİTLİ alanlar (roots/admins/worker_mint_pubkeys)
+	// için JSON null / yokluk / [] hepsi "girdi yok" demektir ve EŞDEĞER sayılır.
+	// reflect.DeepEqual nil ve boş dilimi AYIRDIĞINDAN (nil != []) burada
+	// eqArrayNilAsEmpty ile normalize edilir; aksi halde null<->[] değişimi Go'da
+	// reddedilir ama Worker'da (null→[] indirger) kabul edilirdi → desync.
+	if !eqArrayNilAsEmpty(parent.Roots, cur.Roots) {
 		return fmt.Errorf("trust.compareUnchanged: non-roster epoch modifies roots: %w", ErrTrustChainBroken)
 	}
 	if parent.Quorum != cur.Quorum {
 		return fmt.Errorf("trust.compareUnchanged: non-roster epoch modifies quorum: %w", ErrTrustChainBroken)
 	}
-	if !reflect.DeepEqual(parent.Admins, cur.Admins) {
+	if !eqArrayNilAsEmpty(parent.Admins, cur.Admins) {
 		return fmt.Errorf("trust.compareUnchanged: non-roster epoch modifies admins: %w", ErrTrustChainBroken)
 	}
 	if parent.BootstrapSolo != cur.BootstrapSolo {
@@ -245,10 +275,21 @@ func compareUnchanged(parent, cur *TrustManifest) error {
 	if !reflect.DeepEqual(parent.WorkerReceiptPub, cur.WorkerReceiptPub) {
 		return fmt.Errorf("trust.compareUnchanged: non-roster epoch modifies worker_receipt_pubkey: %w", ErrTrustChainBroken)
 	}
-	if !reflect.DeepEqual(parent.WorkerMintPubs, cur.WorkerMintPubs) {
+	if !eqArrayNilAsEmpty(parent.WorkerMintPubs, cur.WorkerMintPubs) {
 		return fmt.Errorf("trust.compareUnchanged: non-roster epoch modifies worker_mint_pubkeys: %w", ErrTrustChainBroken)
 	}
 	return nil
+}
+
+// eqArrayNilAsEmpty, iki dilimi karşılaştırırken nil ve boş dilimi EŞDEĞER sayar
+// (COORD a): imzalı array-şekilli kilitli alanlarda JSON null/yokluk/[] hepsi
+// "girdi yok" anlamına gelir ve Worker de bunları []'ye indirger. İki taraf da
+// boşsa (len==0) her zaman eşit; aksi halde eleman-bazlı reflect.DeepEqual.
+func eqArrayNilAsEmpty[T any](a, b []T) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // grantTargetClass, bir grant epoch'unun parent'a göre EKLENEN/DEĞİŞEN
@@ -325,6 +366,10 @@ func VerifyGenesis(pinnedGenesis Pin, obj cryptoid.SignedObject) (*VerifiedEpoch
 	if err := verifyQuorum(obj.Bytes, obj.Sigs, req, view); err != nil {
 		return nil, err
 	}
+	// Gömülü kayıt anlamsal denetimi (makine-wildcard + key_id tutarlılığı).
+	if err := validateEmbeddedRegistry(cand); err != nil {
+		return nil, err
+	}
 	return &VerifiedEpoch{Manifest: cand, BytesSHA256: hash, Raw: obj, view: view}, nil
 }
 
@@ -390,6 +435,12 @@ func VerifyNext(parent *VerifiedEpoch, obj cryptoid.SignedObject, classifier Pro
 		if err := compareUnchanged(parent.Manifest, cand); err != nil {
 			return nil, err
 		}
+	}
+	// Gömülü kayıt anlamsal denetimi (§4.3): makine-wildcard grant/allowlist ve
+	// key_id ↔ pubkey tutarsızlığı burada reddedilir — aksi halde imzalı ama geçersiz
+	// bir kayıt Worker'da wildcard/yanlış-anahtar token'a çevrilirdi.
+	if err := validateEmbeddedRegistry(cand); err != nil {
+		return nil, err
 	}
 
 	view, err := cand.buildSignerView()

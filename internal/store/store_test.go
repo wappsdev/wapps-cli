@@ -426,9 +426,18 @@ func mkManifestSignedBy(t *testing.T, f *fixture, changeKey string, signer crypt
 		}
 	}
 	if !found {
+		// Yeni girdi de ZORUNLU wrap-set taşımalı (COORD b: `wraps` null/yok RED).
+		// Gerçekçilik için taban bir girdinin wrap-set'ini kopyala (escrow dahil).
+		var wraps []manifest.DEKWrap
+		if len(entries) > 0 {
+			wraps = append([]manifest.DEKWrap(nil), entries[0].Wraps...)
+		} else {
+			wraps = []manifest.DEKWrap{}
+		}
 		entries = append(entries, manifest.KeyEntry{
 			KeyName: changeKey, KeyVersion: 1,
 			BlobHash: sha256Hex([]byte("changed-blob-" + changeKey)),
+			Wraps:    wraps,
 		})
 	}
 	wm := &manifest.DataManifest{
