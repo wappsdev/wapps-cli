@@ -534,9 +534,10 @@ async function handleRead(
       }
       try {
         const decoded = new TextDecoder().decode(openValue(dek, project, k, entry.keyVersion, blob.bytes));
-        // SERİLEŞTİRİLMİŞ boyutu say (plaintext bayt DEĞİL): JSON.stringify kaçışları
-        // (ör. NUL →   = 6 bayt) + anahtar adı gerçek yanıt/bellek maliyetidir (codex P3).
-        totalBytes += JSON.stringify(decoded).length + k.length + 4; // +4 ≈ "":, çerçeve
+        // Serileştirilmiş UTF-8 BAYT say: JS string.length UTF-16 code unit'idir (çok-baytlı
+        // karakterde undercount) ve JSON kaçışları (kontrol karakterleri 6 bayta genişler)
+        // yanıtı büyütür → utf8(JSON.stringify(...)) gerçek yanıt/bellek maliyeti (codex P2/P3).
+        totalBytes += utf8(JSON.stringify(decoded)).length + k.length + 4; // +4 ~ anahtar-çerçevesi
         if (totalBytes > RESPONSE_MAX) return jsonError(HTTP.PAYLOAD_TOO_LARGE, "RESPONSE_TOO_LARGE", "read response exceeds the size cap; request fewer keys");
         values[k] = decoded;
       } catch (e) {

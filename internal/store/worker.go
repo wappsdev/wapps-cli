@@ -251,8 +251,14 @@ func (w *WorkerStore) Read(ctx context.Context, project string, keys []string) (
 		if err != nil {
 			return nil, err
 		}
+		// TÜM batch'ler AYNI epoch'u görmeli — aksi halde araya bir yazım girmiştir ve
+		// birleştirilmiş sonuç mixed-epoch olurdu (tek-manifest snapshot değil). Böyle bir
+		// durumda fail-closed conflict (retryable) döneriz → çağıran tekrar dener (tek-batch
+		// okumalar zaten atomiktir; bu yalnız çok-batch read-all + eşzamanlı yazımda tetiklenir).
 		if start == 0 {
 			epoch = res.Epoch
+		} else if res.Epoch != epoch {
+			return nil, clierr.Newf(clierr.CASConflict, "read spanned a concurrent write (epoch %d→%d); retry", epoch, res.Epoch)
 		}
 		for k, v := range res.Values {
 			merged[k] = v
