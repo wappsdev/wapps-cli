@@ -13,12 +13,14 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/config"
 )
 
-// agentPolicy, her secrets verb'ünün ajan-modu sınıfıdır (SPEC §7.4.2). MERKEZİ
-// kayıt: yeni bir verb bu haritada YOKSA fail-closed REFUSED sayılır (§7.4.2:
-// "unannotated new verbs default to REFUSED"). Bir verb yazarı, verb'ünü buraya
-// açıkça eklemek zorundadır — "AgentPolicy: allow" beyanının somut hali.
+// agentPolicy, her secrets verb'ünün ajan-modu sınıfıdır (SPEC §7.1). MERKEZİ
+// kayıt: yeni bir verb bu haritada YOKSA fail-closed REFUSED sayılır
+// ("unannotated new verbs default to REFUSED"). Bir verb yazarı, verb'ünü
+// buraya açıkça eklemek zorundadır. Alt-komut aileleri (policy show/set/lint,
+// migrate ...) SecretsCmd'nin ALTINDAKİ ilk seviye adıyla anahtarlanır
+// (gateKey) — böylece "policy set", data-plane "set" iznini MİRAS ALAMAZ.
 var agentPolicy = map[string]string{
-	// data-plane yazımlar + okumalar → ajan serbest (hardware daily imzası yetki verir).
+	// data-plane yazımlar + okumalar → ajan serbest (policy.json sunucuda yetkilendirir).
 	"exec":       agentmode.PolicyAllow, // --break-glass RunE'de reddedilir
 	"apply":      agentmode.PolicyAllow,
 	"set":        agentmode.PolicyAllow,
@@ -29,66 +31,77 @@ var agentPolicy = map[string]string{
 	"list":       agentmode.PolicyAllow,
 	"diff":       agentmode.PolicyAllow,
 	"verify":     agentmode.PolicyAllow,
-	"env":        agentmode.PolicyAllow, // print-form RunE'de reddedilir (§7.4.2)
+	"env":        agentmode.PolicyAllow, // print-form RunE'de reddedilir (§7.1)
 	"status":     agentmode.PolicyAllow,
 	// gizli-değer basan yüzey → ajan reddedilir.
 	"get": agentmode.PolicyRefuseAgent,
 	// TTY-only pin verb'ü.
 	"trust-repo": agentmode.PolicyTTY,
-	// Yaşam döngüsü (SPEC §8, G9). enroll TTY-only anahtar-üretim seremonisidir
-	// (§8.1.1: ajan AGENT_MODE_REFUSED). vouch/grant/revoke/offboard control-plane
-	// admin seremonileridir (§8.5: ajan CONTROL_PLANE_REQUIRED).
-	"enroll":   agentmode.PolicyTTY,
-	"vouch":    agentmode.PolicyControl,
-	"grant":    agentmode.PolicyControl,
-	"revoke":   agentmode.PolicyControl,
-	"offboard": agentmode.PolicyControl,
+	// Kontrol düzlemi (SPEC §7.1): policy düzenleme + rotate-plan admin
+	// op'larıdır (write-AUD 15 dk WebAuthn oturumu) → ajan CONTROL_PLANE_REQUIRED.
+	"policy":      agentmode.PolicyControl,
+	"rotate-plan": agentmode.PolicyControl,
+	// migrate import/export/tombstone insan-eli admin op'larıdır (SPEC §7.1);
+	// haritada YOK → fail-closed REFUSED.
 }
 
 // bindingExempt, repo→proje bağlama kontrolünden muaf verb'ler: trust-repo
-// (bağlamayı KURAN), status (her durumda güvenli olmalı §7.10).
+// (bağlamayı KURAN), status (her durumda güvenli olmalı). policy/rotate-plan
+// GLOBAL admin op'larıdır — bir repo→proje bağlamasına bağlı değildirler.
 var bindingExempt = map[string]bool{
-	"trust-repo": true,
-	"status":     true,
-	// Yaşam döngüsü seremonileri bir repo→proje bağlamasına bağlı değildir: enroll
-	// yeni prensibin kendi makinesinde, vouch/offboard bir operatör workstation'ında
-	// çalışır; --project'i açıkça isimlendirirler (SPEC §8).
-	"enroll":   true,
-	"vouch":    true,
-	"grant":    true,
-	"revoke":   true,
-	"offboard": true,
+	"trust-repo":  true,
+	"status":      true,
+	"policy":      true,
+	"rotate-plan": true,
 }
 
 func init() {
 	// Cobra'nın parent PersistentPreRunE'unu (root: config resolve + git preflight)
 	// EZMEDEN, SecretsCmd'nin kendi hook'unu da çalıştır: zincirdeki TÜM
-	// PersistentPreRunE'lar root→leaf sırayla koşar (§7.4.1: hook SecretsCmd'de).
+	// PersistentPreRunE'lar root→leaf sırayla koşar.
 	cobra.EnableTraverseRunHooks = true
 	SecretsCmd.PersistentPreRunE = secretsPreRunE
 }
 
+// gateKey, gating anahtarını döner: SecretsCmd'nin ALTINDAKİ ilk seviye komut
+// adı. Yaprak bir alt-komutsa (örn. `policy set`) ailenin adı ("policy")
+// kullanılır — yaprak adları data-plane verb'leriyle çakışıp yanlış izin
+// devralmasın diye.
+func gateKey(cmd *cobra.Command) string {
+	name := cmd.Name()
+	for c := cmd; c != nil; c = c.Parent() {
+		p := c.Parent()
+		if p != nil && p.Name() == "secrets" {
+			name = c.Name()
+			break
+		}
+	}
+	return name
+}
+
 // secretsPreRunE, HER secrets verb'ünden önce ajan-modu gating'i + repo→proje
-// bağlama pinini uygular (SPEC §7.4/§7.7). SecretsCmd'de olduğu için hiçbir verb
+// bağlama pinini uygular (SPEC §7.1). SecretsCmd'de olduğu için hiçbir verb
 // bunu unutamaz; annotation'sız verb fail-closed REFUSED olur.
 func secretsPreRunE(cmd *cobra.Command, _ []string) error {
-	// Grup komutu (bare `wapps secrets`) veya yardım → gating yok.
+	// Grup komutu (bare `wapps secrets` / `wapps secrets policy`) veya yardım → gating yok.
 	if !cmd.Runnable() || cmd.Name() == "secrets" {
 		return nil
 	}
 	isAgent := agentmode.IsAgent()
-	policy := agentPolicy[cmd.Name()] // yoksa "" → Guard fail-closed REFUSED
+	key := gateKey(cmd)
+	policy := agentPolicy[key] // yoksa "" → Guard fail-closed REFUSED
 	if err := agentmode.Guard(policy, isAgent); err != nil {
 		return err
 	}
-	if bindingExempt[cmd.Name()] {
+	if bindingExempt[key] {
 		return nil
 	}
 	return checkRepoBinding(isAgent)
 }
 
 // checkRepoBinding, store-backed bir config için repo→proje bağlamasının GÜVENİLEN
-// home-dir'de pinli olduğunu doğrular (SPEC §7.7). legacy-git config'lerde no-op.
+// home-dir'de pinli olduğunu doğrular (SPEC §7.1 trust-repo). legacy-git
+// config'lerde no-op.
 //   - pinsiz → BINDING_UNPINNED (ajan asla pinleyemez; insan trust-repo çalıştırır)
 //   - farklı proje → hard fail (re-pin bir insan ister)
 func checkRepoBinding(_ bool) error {

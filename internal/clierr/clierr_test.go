@@ -33,11 +33,11 @@ func TestEmit_Envelope(t *testing.T) {
 
 func TestEmit_RetryableCode(t *testing.T) {
 	var buf bytes.Buffer
-	Emit(&buf, New(OfflineWriteBlocked, "worker down"))
+	Emit(&buf, New(NetworkRequired, "worker down"))
 	var w wire
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &w))
 	require.True(t, w.Retryable)
-	require.Contains(t, w.Recovery, "never queued")
+	require.Contains(t, w.Recovery, "no offline mode")
 }
 
 func TestEmit_NeverLeaksSecretValue(t *testing.T) {
@@ -69,7 +69,7 @@ func TestEmit_WrapsPlainError(t *testing.T) {
 func TestIs(t *testing.T) {
 	err := New(CASConflict, "race")
 	require.True(t, Is(err, CASConflict))
-	require.False(t, Is(err, AuthExpired))
+	require.False(t, Is(err, SessionExpired))
 	require.False(t, Is(errors.New("x"), CASConflict))
 }
 

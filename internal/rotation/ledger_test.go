@@ -5,15 +5,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wappsdev/wapps-cli/internal/lifecycle"
 )
 
 // TestLedger_NotPlannedIsPending, planlanmamış bir run'ın PENDING bildirdiğini
 // (Complete=false, Pending=-1) — StubRotationRunLedger'ın güvenli varsayılanını
 // KORUDUĞUNU kanıtlar (§8.5.5.4: hiçbir yürütme = pending, close bloklu).
 func TestLedger_NotPlannedIsPending(t *testing.T) {
-	l := NewRunLedger(lifecycle.NewMemStore(), fixedNow)
+	l := NewRunLedger(NewMemStore(), fixedNow)
 	st, err := l.RunState("wl_unknown")
 	require.NoError(t, err)
 	assert.False(t, st.Complete)
@@ -24,11 +22,11 @@ func TestLedger_NotPlannedIsPending(t *testing.T) {
 // TestLedger_TerminalWhenAllDone, plan girdilerinin HEPSİ DONE olduğunda run'ın
 // terminal (Complete=true) bildirdiğini kanıtlar.
 func TestLedger_TerminalWhenAllDone(t *testing.T) {
-	l := NewRunLedger(lifecycle.NewMemStore(), fixedNow)
+	l := NewRunLedger(NewMemStore(), fixedNow)
 	w := wl(
 		"wl_l1",
-		staticEntry(testProject, "A", RecipeCoolifyStart, lifecycle.TierProdShared),
-		staticEntry(testProject, "B", RecipeCoolifyStart, lifecycle.TierProdShared),
+		staticEntry(testProject, "A", RecipeCoolifyStart, TierProdShared),
+		staticEntry(testProject, "B", RecipeCoolifyStart, TierProdShared),
 	)
 	require.NoError(t, l.EnsurePlan(w))
 
@@ -50,10 +48,10 @@ func TestLedger_TerminalWhenAllDone(t *testing.T) {
 // TestLedger_TriageSurfacedUntilSkipped, plan'daki metadata-eksik girdinin
 // NeedsTriage bildirdiğini ve ancak imzalı-SKIPPED ile çözüldüğünü kanıtlar (§8.5.5.1).
 func TestLedger_TriageSurfacedUntilSkipped(t *testing.T) {
-	l := NewRunLedger(lifecycle.NewMemStore(), fixedNow)
+	l := NewRunLedger(NewMemStore(), fixedNow)
 	w := wl(
 		"wl_l2",
-		lifecycle.WorklistEntry{Project: testProject, Key: "NO_META", NeedsTriage: true, BlastTier: lifecycle.TierUnknown, State: StatePending},
+		WorklistEntry{Project: testProject, Key: "NO_META", NeedsTriage: true, BlastTier: TierUnknown, State: StatePending},
 	)
 	require.NoError(t, l.EnsurePlan(w))
 
@@ -73,9 +71,9 @@ func TestLedger_TriageSurfacedUntilSkipped(t *testing.T) {
 // TestLedger_EnsurePlanIdempotent, EnsurePlan'in idempotent olduğunu (resume: ikinci
 // çağrı planı BOZMAZ) kanıtlar.
 func TestLedger_EnsurePlanIdempotent(t *testing.T) {
-	mem := lifecycle.NewMemStore()
+	mem := NewMemStore()
 	l := NewRunLedger(mem, fixedNow)
-	w := wl("wl_l3", staticEntry(testProject, "A", RecipeCoolifyStart, lifecycle.TierProdShared))
+	w := wl("wl_l3", staticEntry(testProject, "A", RecipeCoolifyStart, TierProdShared))
 	require.NoError(t, l.EnsurePlan(w))
 	require.NoError(t, l.Record("wl_l3", testProject, "A", StateDone, "human:a", nil))
 	// İkinci EnsurePlan (resume) planı yeniden yazmamalı.
@@ -88,8 +86,8 @@ func TestLedger_EnsurePlanIdempotent(t *testing.T) {
 // TestLedger_LatestStateWins, aynı anahtar için EN SON durumun (yazım sırasına göre)
 // döndüğünü kanıtlar (resume için).
 func TestLedger_LatestStateWins(t *testing.T) {
-	l := NewRunLedger(lifecycle.NewMemStore(), fixedNow)
-	w := wl("wl_l4", staticEntry(testProject, "A", RecipeCoolifyStart, lifecycle.TierProdShared))
+	l := NewRunLedger(NewMemStore(), fixedNow)
+	w := wl("wl_l4", staticEntry(testProject, "A", RecipeCoolifyStart, TierProdShared))
 	require.NoError(t, l.EnsurePlan(w))
 	require.NoError(t, l.Record("wl_l4", testProject, "A", StateValueMinted, "human:a", nil))
 	require.NoError(t, l.Record("wl_l4", testProject, "A", StateStoreWritten, "human:a", nil))

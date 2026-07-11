@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/clierr"
 )
 
 var diffCmd = &cobra.Command{
@@ -44,6 +45,20 @@ Examples:
 type gitShowFn func(ref, path string) ([]byte, error)
 
 func runDiff(ref string, gitShow gitShowFn, stdoutW io.Writer) error {
+	// Backend yönlendirme (SPEC §7.1): backend:store'da anahtar tarihçesi
+	// SUNUCUDADIR — git-ref karşılaştırması tanımsızdır ve buradaki legacy yol
+	// ya passphrase hatasıyla ya da BAYAT bir legacy arşivi listeleyerek
+	// yanıltırdı. Arşive/passphrase'e DOKUNMADAN fail loud; store tarihçe
+	// diff'i bir sunucu history API'si gerektirir (bugün yok).
+	storeCfg, cerr := storeBackendConfig()
+	if cerr != nil {
+		return cerr
+	}
+	if storeCfg != nil {
+		return clierr.New(clierr.NotAvailable,
+			"diff compares legacy git-archive snapshots; with backend:store the key history lives server-side — use 'wapps secrets list' (current key names, GET /keys metadata) or the audit log; a store history diff needs a server history API")
+	}
+
 	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
 	if passphrase == "" {
 		return fmt.Errorf("diff: WAPPS_SECRETS_PASSPHRASE not set")

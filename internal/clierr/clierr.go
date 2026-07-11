@@ -29,32 +29,33 @@ type Code string
 const (
 	BindingUnpinned      Code = "BINDING_UNPINNED"
 	AgentModeRefused     Code = "AGENT_MODE_REFUSED"
-	AuthExpired          Code = "AUTH_EXPIRED"
-	OfflineWriteBlocked  Code = "OFFLINE_WRITE_BLOCKED"
-	StaleReceipt         Code = "STALE_RECEIPT"
-	WitnessContradiction Code = "WITNESS_CONTRADICTION"
-	WitnessUnreachable   Code = "WITNESS_UNREACHABLE"
-	WitnessNotWired      Code = "WITNESS_NOT_WIRED"
-	WriterNotAllowed     Code = "WRITER_NOT_ALLOWED"
-	TFOriginMirrorOnly   Code = "TF_ORIGIN_MIRROR_ONLY"
 	EpochDowngrade       Code = "EPOCH_DOWNGRADE"
-	CacheStale           Code = "CACHE_STALE"
 	CASConflict          Code = "CAS_CONFLICT"
 	GrantDenied          Code = "GRANT_DENIED"
 	RateLimited          Code = "RATE_LIMITED"
-	IdentityMissing      Code = "IDENTITY_MISSING"
-	SigInvalid           Code = "SIG_INVALID"
 	BlobHashMismatch     Code = "BLOB_HASH_MISMATCH"
 	ControlPlaneRequired Code = "CONTROL_PLANE_REQUIRED"
 	BreakGlassRefused    Code = "BREAK_GLASS_REFUSED"
 	LegacyArchiveRetired Code = "LEGACY_ARCHIVE_RETIRED"
 	LegacyWriteBlocked   Code = "LEGACY_WRITE_BLOCKED"
 	ArchiveMigrated      Code = "ARCHIVE_MIGRATED"
-	EscrowWrapMissing    Code = "ESCROW_WRAP_MISSING"
 	TokenExchangeFailed  Code = "TOKEN_EXCHANGE_FAILED"
 	BlobTooLarge         Code = "BLOB_TOO_LARGE"
 	NotAvailable         Code = "NOT_AVAILABLE"
 	Internal             Code = "INTERNAL"
+
+	// Server-decrypt v2 kodları (SPEC §7.5 registry). ZK-only kodlar
+	// (SIG_INVALID, WITNESS_*, CACHE_STALE, OFFLINE_WRITE_BLOCKED, IDENTITY_MISSING,
+	// STALE_RECEIPT, WRITER_NOT_ALLOWED, ESCROW_WRAP_MISSING, AUTH_EXPIRED)
+	// alt sistemleriyle birlikte SİLİNDİ (SPEC §0.2/§7.5 dropped satırı).
+	SessionExpired      Code = "SESSION_EXPIRED"
+	NetworkRequired     Code = "NETWORK_REQUIRED"
+	NotFound            Code = "NOT_FOUND"
+	PolicyInvalid       Code = "POLICY_INVALID"
+	PolicyConflict      Code = "POLICY_CONFLICT"
+	AuditUnavailable    Code = "AUDIT_UNAVAILABLE"
+	IdentityUnavailable Code = "IDENTITY_UNAVAILABLE"
+	ServiceMisconfig    Code = "SERVICE_MISCONFIGURED"
 )
 
 // spec, bir kodun varsayılan kurtarma metnini ve retryable bayrağını tutar
@@ -68,32 +69,30 @@ type spec struct {
 var registry = map[Code]spec{
 	BindingUnpinned:      {"run wapps secrets trust-repo in a terminal", false},
 	AgentModeRefused:     {"use exec/apply; a human can run get in a terminal", false},
-	AuthExpired:          {"run wapps login in a terminal", false},
-	OfflineWriteBlocked:  {"retry when online; writes are never queued", true},
-	StaleReceipt:         {"retry; if Cloudflare is down a human may run exec --intent deploy --break-glass in a terminal", true},
-	WitnessContradiction: {"do NOT deploy; investigate per §9 (possible CF-side freeze); page the admin", false},
-	WitnessUnreachable:   {"retry; if the outage is confirmed benign, a human may re-run with --accept-witness-outage in a terminal (double-confirm)", true},
-	WitnessNotWired:      {"deploy needs an escrow-witness origin; none is wired yet — use --intent dev, or wait for the witness to be configured", false},
-	WriterNotAllowed:     {"integrity failure — the manifest writer lacks a grant for a changed key; do not proceed; run wapps doctor and contact the admin", false},
-	TFOriginMirrorOnly:   {"rotate at the origin: run the tofu-level recipe, then tofu apply, then wapps secrets sync", false},
 	EpochDowngrade:       {"possible rollback attack; verify with wapps secrets status and contact the admin; do not force", false},
-	CacheStale:           {"reconnect and re-run; wapps secrets status shows cache_age", true},
 	CASConflict:          {"re-run the original command; conflicting writers are shown above", true},
-	GrantDenied:          {"ask an admin to run wapps secrets grant <principal> <project>/<KEY>", false},
+	GrantDenied:          {"ask an admin to extend policy.json (wapps secrets policy set) or fix the Google group membership", false},
 	RateLimited:          {"wait for the Retry-After window and retry", true},
-	IdentityMissing:      {"run wapps secrets enroll in a terminal", false},
-	SigInvalid:           {"integrity failure — do not proceed; run wapps doctor and contact the admin", false},
 	BlobHashMismatch:     {"integrity failure — do not proceed; run wapps doctor and contact the admin", false},
-	ControlPlaneRequired: {"this is an admin ceremony: a human must run it in a terminal with the admin key present", false},
+	ControlPlaneRequired: {"this is an admin ceremony: a human must run it in a terminal (write-AUD session)", false},
 	BreakGlassRefused:    {"a human must run this in a terminal (double-confirm required)", false},
 	LegacyArchiveRetired: {"this project migrated to the store; pull latest .wapps.yaml and use wapps secrets set", false},
 	LegacyWriteBlocked:   {"this project reads from the store; use wapps secrets set", false},
 	ArchiveMigrated:      {"run wapps secrets exec in this repo; the git archive is retired", false},
-	EscrowWrapMissing:    {"re-fetch trust and rebuild the wrap-set; run wapps doctor if it persists", false},
-	TokenExchangeFailed:  {"verify the per-repo service token in Woodpecker secrets; an admin can re-issue via §6 token ops", false},
+	TokenExchangeFailed:  {"verify the pipeline's CF Access service-token pair; an admin can re-issue it at the edge", false},
 	BlobTooLarge:         {"store a pointer/reference instead; the store caps values at 64KB", false},
 	NotAvailable:         {"this action needs a live Cloudflare Access session; run it from a human terminal", false},
 	Internal:             {"run wapps doctor; if it persists contact the admin", false},
+
+	// Server-decrypt v2 kurtarma metinleri (SPEC §7.2/§7.4/§7.5).
+	SessionExpired:      {"run wapps login in a terminal (CI uses CF_ACCESS_CLIENT_ID/CF_ACCESS_CLIENT_SECRET)", false},
+	NetworkRequired:     {"reconnect and retry; the store has no offline mode (values are server-decrypted)", true},
+	NotFound:            {"check the key/project name with wapps secrets list", false},
+	PolicyInvalid:       {"fix the policy file (see the named rule index) and re-run wapps secrets policy lint", false},
+	PolicyConflict:      {"another admin updated the policy; re-run policy show, rebase your edit, retry", true},
+	AuditUnavailable:    {"the audit ledger is down — plaintext is refused fail-closed; retry shortly", true},
+	IdentityUnavailable: {"identity/groups unresolvable at the edge; retry shortly", true},
+	ServiceMisconfig:    {"the secrets gate is misconfigured; contact the admin (alert A8 fired)", false},
 }
 
 // Error, makine-okunur bir CLI hatasıdır. Emit tam JSON zarfı üretir; Error()

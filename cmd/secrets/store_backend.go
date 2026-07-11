@@ -1,39 +1,30 @@
 package secrets
 
 // store_backend.go, `.wapps.yaml` `backend:` anahtarı `store` olduğunda secrets
-// verb'lerini (exec/apply/get/env/set/sync) never-trust-Worker STORE'una
+// verb'lerini (exec/apply/get/env/set/sync) secrets-gate Worker istemcisine
 // (internal/store) yönlendirir. `backend` yoksa veya `legacy-git` ise (DEFAULT)
-// verb'ler eski age-arşiv yolunda kalır (byte-for-byte değişmez) — yönlendirme
-// kararı her verb'ün başında storeBackendConfig() ile verilir.
+// verb'ler eski age-arşiv yolunda kalır (byte-for-byte değişmez).
 //
-// YAZILIM (CI/test) yolu artık uçtan uca round-trippable: `wapps secrets enroll`
-// yerel bir 0600 kimlik deposu (~/.config/wapps/identity.json) yazar; localDecrypt
-// Identity/localSigningKey bunu yükler ve store snapshot'ı YEREL X25519 kimlikle
-// çözülür (§7.1: CLI çözer, Worker DEĞİL). Oturum bearer'ı out-of-band da sağlanabilir
-// (WAPPS_SESSION_TOKEN veya session.json) — böylece bir test/CI, canlı tarayıcı
-// login'i OLMADAN gate'e bearer sunabilir. GERÇEK interaktif `wapps login` (cloudflared)
-// canlı CF Access hesabı gerektiren TEK insan adımıdır ve bir stub olarak kalır.
-//
-// Kimlik/oturum GERÇEKTEN yoksa store yolu NET, EYLEMLİ bir clierr yüzeye çıkarır
-// (oturum yoksa AUTH_EXPIRED → "run wapps login"; yerel kimlik yoksa IDENTITY_MISSING
-// → "run wapps secrets enroll"). DONANIM (SE/YubiKey) yolu arayüzlü kalır (kapsam dışı).
+// SERVER-DECRYPT v2 (SPEC §2.7/§7.4): Worker PLAINTEXT döner — istemcide yerel
+// KEK/unwrap/kimlik YOKTUR. CLI yalnızca çeker + enjekte eder (exec/apply child
+// env'ine / 0600 hedef dosyalara; agent-mode gate + scrubber sözleşmesi AYNEN).
+// Kimlik = CF Access oturumu (`wapps login`, §7.2) veya CI service token env'i;
+// geçersiz/dolmuş oturum SESSION_EXPIRED ile istek ağ'a çıkmadan yüzeye çıkar.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
-	"time"
+	"sort"
 
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/config"
-	"github.com/wappsdev/wapps-cli/internal/cryptoid"
 	"github.com/wappsdev/wapps-cli/internal/intent"
+	"github.com/wappsdev/wapps-cli/internal/session"
 	"github.com/wappsdev/wapps-cli/internal/store"
-	"github.com/wappsdev/wapps-cli/internal/witness"
 )
 
 // storeBackendConfig, geçerli .wapps.yaml `backend: store` ise cfg'i döner; aksi
@@ -53,148 +44,57 @@ func storeBackendConfig() (*config.WappsYAML, error) {
 
 // openStore, backend:store verb'lerinin okuma/yazma için kullandığı internal/store
 // istemcisini kurar. PAKET-DÜZEYİ SEAM (üretimde openWorkerStore; testte çağrıları
-// gözleyen bir fake ile değiştirilir). intent parametresi, deploy'da HTTPWitness'in
-// wire'lanıp lanmayacağını belirler (dev'de tanık ilgisizdir).
+// gözleyen bir fake ile değiştirilir).
 var openStore = openWorkerStore
 
-// openWorkerStore, gerçek üretim istemcisini kurar (SPEC §7.3):
-//   - BaseURL = WAPPS_SECRETS_GATE (secrets-gate Worker kökü);
-//   - Auth = sessionAuth → geçerli oturum yoksa AUTH_EXPIRED (istek ağ'a çıkmadan);
-//   - Witness = deploy intent + WITNESS_ORIGIN varsa gerçek HTTPWitness (fresh-or-fail
-//     escrow-tanık çapraz kontrolü, §7.3.4/§9.3); origin yoksa nil → store deploy'da
-//     WITNESS_NOT_WIRED döner (ama oturum yoksa AUTH_EXPIRED önce ateşlenir).
-//
-// Yerel çözme/imzalama kimliği enroll'ün yazdığı 0600 kimlik deposundan yüklenir
-// (localDecryptIdentity/localSigningKey); kimlik yoksa okuma IDENTITY_MISSING, yazma
-// da IDENTITY_MISSING ile yüzeye çıkar.
-func openWorkerStore(cfg *config.WappsYAML, in intent.Intent) (store.Store, error) {
-	var wit intent.Witness
-	if in == intent.Deploy {
-		if origin := os.Getenv("WITNESS_ORIGIN"); origin != "" {
-			wit = witness.NewHTTPWitness(origin, cfg.Project)
-		}
-	}
+// openWorkerStore, gerçek üretim istemcisini kurar (SPEC §7.4):
+//   - BaseURL = WAPPS_SECRETS_GATE (yoksa OD-4 varsayılanı secrets.meapps.dev);
+//   - Auth = session.Auth() → CI service-token env'i veya `wapps login` oturumu;
+//     geçerli kimlik yoksa SESSION_EXPIRED (istek ağ'a çıkmadan).
+func openWorkerStore(cfg *config.WappsYAML) (store.Store, error) {
 	return store.New(store.Config{
-		BaseURL: os.Getenv("WAPPS_SECRETS_GATE"),
-		Auth:    sessionAuth,
-		Witness: wit,
-		Now:     time.Now,
+		BaseURL: session.GateURL(),
+		Auth:    session.Auth(),
 	}), nil
 }
 
-// sessionAuth, her Worker isteğine oturum kimliğini (bearer) iliştirir (SPEC §6/§7.2).
-// Geçerli bir oturum yoksa AUTH_EXPIRED — do() bu hatayı yayar ve istek ağ'a HİÇ
-// çıkmaz (temiz, eylemli mesaj). Oturum, GERÇEK `wapps login` (cloudflared) dosyasından
-// VEYA out-of-band (WAPPS_SESSION_TOKEN / session.json{token}) yüklenir — böylece
-// CI/test canlı tarayıcı login'i olmadan bir bearer sunabilir (loadSession, status.go).
-func sessionAuth(req *http.Request) error {
-	s, ok := loadSession()
-	if !ok || s.expired(time.Now().Unix()) {
-		return clierr.New(clierr.AuthExpired, "no valid CF Access session for the secrets gate")
+// storeValues, backend:store'da verilen anahtarları (boşsa principal'ın
+// OKUNABİLİR tüm kümesi) Worker'dan PLAINTEXT çeker (SPEC §7.4 read: bulk POST
+// /read; all-or-nothing). Değerler yalnızca süreç belleğinde yaşar.
+func storeValues(ctx context.Context, cfg *config.WappsYAML, keys []string) (map[string]string, error) {
+	st, err := openStore(cfg)
+	if err != nil {
+		return nil, err
 	}
-	// Varsa bearer'ı sun (gate doğrular); token'sız (yalnızca expires_at) oturumlar
-	// header eklemez — gerçek gate CF Access JWT'sini kenar katmanından zaten görür.
-	if s.token != "" {
-		req.Header.Set("Authorization", "Bearer "+s.token)
+	res, err := st.Read(ctx, cfg.Project, keys)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return res.Values, nil
 }
 
-// localDecryptIdentity, yerel enrolled X25519 çözme kimliğini kimlik deposundan
-// yükler (SPEC §7.1: CLI çözer). Kimlik GERÇEKTEN yoksa (nil, nil) — çağıran bunu
-// eylemli IDENTITY_MISSING'e çevirir; bozuk/gevşek-izinli dosya net bir clierr döner.
-func localDecryptIdentity() (*cryptoid.X25519Identity, error) {
-	pid, err := loadPersistedIdentity()
-	if err != nil {
-		return nil, err
-	}
-	if pid == nil {
-		return nil, nil
-	}
-	id, perr := cryptoid.ParseX25519Identity(pid.EncSecret)
-	if perr != nil {
-		return nil, clierr.Wrapf(clierr.IdentityMissing, perr, "identity file encryption key is malformed")
-	}
-	return id, nil
-}
-
-// localSigningKey, yerel enrolled writer (daily/automation) imzalama anahtarını
-// kimlik deposundan yükler (store commit imzası). Yoksa (nil, nil); bozuksa clierr.
-func localSigningKey() (cryptoid.SigningKey, error) {
-	pid, err := loadPersistedIdentity()
-	if err != nil {
-		return nil, err
-	}
-	if pid == nil {
-		return nil, nil
-	}
-	sk, serr := pid.Writer.toSigningKey()
-	if serr != nil {
-		return nil, clierr.Wrapf(clierr.IdentityMissing, serr, "identity file writer key is malformed")
-	}
-	return sk, nil
-}
-
-// storeValues, backend:store'da verilen anahtarları (boşsa identity'nin granted
-// tüm kümesi) çeker + yerel kimlikle çözer. WorkerStore.Fetch okur (çevrimiçi-first
-// conditional GET + ciphertext cache; deploy'da fresh-or-fail liveness receipt +
-// tanık çapraz kontrolü), SONRA snapshot yerel X25519 kimlikle çözülür. Oturum yoksa
-// Fetch AUTH_EXPIRED; yerel kimlik yoksa IDENTITY_MISSING (doğru koşum-zamanı yüzeyi).
-func storeValues(ctx context.Context, cfg *config.WappsYAML, in intent.Intent, keys []string) (map[string][]byte, error) {
-	st, err := openStore(cfg, in)
-	if err != nil {
-		return nil, err
-	}
-	snap, err := st.Fetch(ctx, cfg.Project, store.FetchOpts{Intent: in, Keys: keys})
-	if err != nil {
-		return nil, err
-	}
-	id, err := localDecryptIdentity()
-	if err != nil {
-		return nil, err
-	}
-	if id == nil {
-		return nil, clierr.New(clierr.IdentityMissing,
-			"no local decryption identity; the fetched store snapshot cannot be decrypted")
-	}
-	return snap.DecryptAll(id, keys)
-}
-
-// storeCommit, backend:store'da bir dizi anahtarı epoch+1 CAS ile yazar
-// (WorkerStore.Commit; çevrimdışıysa fail-closed, 412'de auto-rebase). Yerel
-// imzalama anahtarı yoksa (Writer=nil) store.Commit IDENTITY_MISSING döner.
-func storeCommit(ctx context.Context, cfg *config.WappsYAML, in intent.Intent, sets map[string][]byte) error {
+// storeCommit, backend:store'da bir dizi anahtarı TEK atomik epoch'ta yazar
+// (POST /import; writer DO serileştirir, §7.6). opts, bilgilendirici audit
+// etiketlerini taşır (sync → key.sync, §6.4).
+func storeCommit(ctx context.Context, cfg *config.WappsYAML, sets map[string]string, opts store.WriteOpts) error {
 	if len(sets) == 0 {
 		return clierr.New(clierr.Internal, "store commit: no changes")
 	}
-	writer, err := localSigningKey()
+	st, err := openStore(cfg)
 	if err != nil {
 		return err
 	}
-	if writer == nil {
-		return clierr.New(clierr.IdentityMissing,
-			"no local signing identity; the store commit cannot be signed")
-	}
-	st, err := openStore(cfg, in)
-	if err != nil {
-		return err
-	}
-	_, err = st.Commit(ctx, cfg.Project, store.ManifestDelta{
-		Sets:   sets,
-		Writer: writer,
-		Intent: in,
-	})
-	return err
+	return st.Import(ctx, cfg.Project, sets, opts)
 }
 
 // valuesToArchiveJSON, düz metin değer haritasını tofu-output-şekilli arşiv JSON'una
 // ({"KEY":{"value":"..."}}) çevirir; böylece store yolu, mevcut (legacy ile paylaşılan)
 // env/target yazıcılarını (execEnvAndValues, writeTofuOutputsAsEnv, applyTargets)
 // yeniden kullanır — çıktı biçimi iki backend'de birebir aynı kalır.
-func valuesToArchiveJSON(values map[string][]byte) ([]byte, error) {
+func valuesToArchiveJSON(values map[string]string) ([]byte, error) {
 	envelopes := make(map[string]json.RawMessage, len(values))
 	for k, v := range values {
-		b, err := json.Marshal(map[string]string{"value": string(v)})
+		b, err := json.Marshal(map[string]string{"value": v})
 		if err != nil {
 			return nil, fmt.Errorf("store: envelope %s: %w", k, err)
 		}
@@ -204,9 +104,9 @@ func valuesToArchiveJSON(values map[string][]byte) ([]byte, error) {
 }
 
 // mergedToSets, kaynaklardan (sources) okunmuş {"value":...} zarflarını store
-// Commit için düz metin bayt haritasına çevirir (sync store yolu).
-func mergedToSets(merged map[string]json.RawMessage) (map[string][]byte, error) {
-	sets := make(map[string][]byte, len(merged))
+// Import için düz metin harita'ya çevirir (sync store yolu).
+func mergedToSets(merged map[string]json.RawMessage) (map[string]string, error) {
+	sets := make(map[string]string, len(merged))
 	for k, raw := range merged {
 		var env struct {
 			Value json.RawMessage `json:"value"`
@@ -214,22 +114,22 @@ func mergedToSets(merged map[string]json.RawMessage) (map[string][]byte, error) 
 		if err := json.Unmarshal(raw, &env); err != nil {
 			return nil, fmt.Errorf("store: source key %s malformed: %w", k, err)
 		}
-		sets[k] = []byte(rawValueToString(env.Value))
+		sets[k] = rawValueToString(env.Value)
 	}
 	return sets, nil
 }
 
 // --- verb store yolları -----------------------------------------------------
 
-// runExecStore, exec'in backend:store yoludur: store'dan değerleri çeker
-// (deploy'da fresh-or-fail) ve alt-süreci — legacy ile AYNI scrubber sözleşmesiyle
-// (§7.4.3) — enjekte edilmiş env ile çalıştırır.
+// runExecStore, exec'in backend:store yoludur: store'dan değerleri çeker ve
+// alt-süreci — legacy ile AYNI scrubber sözleşmesiyle (§7.4.3) — enjekte
+// edilmiş env ile çalıştırır. intentName yalnızca doğrulanır (v2'de deploy'un
+// ayrı bir tazelik yolu yoktur — her okuma taze, sunucudan).
 func runExecStore(args []string, prefix, intentName string, cfg *config.WappsYAML, out, errW io.Writer, runner execRunner) error {
-	in, err := intent.Parse(intentName)
-	if err != nil {
+	if _, err := intent.Parse(intentName); err != nil {
 		return err
 	}
-	values, err := storeValues(context.Background(), cfg, in, nil)
+	values, err := storeValues(context.Background(), cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -263,7 +163,7 @@ func runApplyStore(cfg *config.WappsYAML, stdoutW io.Writer) error {
 	if len(cfg.Targets) == 0 {
 		return fmt.Errorf("apply: no targets declared in %s — add a 'targets:' block or use 'wapps secrets env --write <file>' for one-off writes", wappsYAMLPath)
 	}
-	values, err := storeValues(context.Background(), cfg, intent.Dev, nil)
+	values, err := storeValues(context.Background(), cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -274,24 +174,48 @@ func runApplyStore(cfg *config.WappsYAML, stdoutW io.Writer) error {
 	return applyTargets(cfg, archiveJSON, stdoutW)
 }
 
-// getStore, get'in backend:store yoludur: yalnızca istenen anahtarı çeker (blast-
-// radius min §7.3.3) ve düz metin değeri döner (RunE agent-modu red'i AYNI kalır).
+// runListStore, list'in backend:store yoludur: anahtar ADLARINI metadata
+// düzleminden çeker (GET /keys, SPEC §7.4 — Store.Read ÇAĞRILMAZ, audit'e
+// value.read düşmez; liste Worker'da principal'ın read grant'ına filtrelenir
+// §4.3.3). Çıktı legacy list ile birebir aynı: satır başına bir ad, sıralı.
+func runListStore(cfg *config.WappsYAML, w io.Writer) error {
+	st, err := openStore(cfg)
+	if err != nil {
+		return err
+	}
+	res, err := st.Keys(context.Background(), cfg.Project)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(res.Keys))
+	for _, k := range res.Keys {
+		names = append(names, k.KeyName)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		fmt.Fprintln(w, n)
+	}
+	return nil
+}
+
+// getStore, get'in backend:store yoludur: yalnızca istenen anahtarı çeker
+// (blast-radius min) ve düz metin değeri döner (RunE agent-modu red'i AYNI kalır).
 func getStore(cfg *config.WappsYAML, key string) (string, error) {
-	values, err := storeValues(context.Background(), cfg, intent.Dev, []string{key})
+	values, err := storeValues(context.Background(), cfg, []string{key})
 	if err != nil {
 		return "", err
 	}
 	v, ok := values[key]
 	if !ok {
-		return "", clierr.Newf(clierr.GrantDenied, "key %q not in the granted set for this identity", key)
+		return "", clierr.Newf(clierr.NotFound, "key %q not returned by the store", key)
 	}
-	return string(v), nil
+	return v, nil
 }
 
 // runEnvStore, env'in backend:store yoludur: store'dan değerleri çeker ve export
 // satırlarını stdout'a (veya --write dosyasına, AI-safe) yazar.
 func runEnvStore(cfg *config.WappsYAML, writePath, prefix string, stdoutW io.Writer) error {
-	values, err := storeValues(context.Background(), cfg, intent.Dev, nil)
+	values, err := storeValues(context.Background(), cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -306,14 +230,18 @@ func runEnvStore(cfg *config.WappsYAML, writePath, prefix string, stdoutW io.Wri
 }
 
 // runSetStore, set'in backend:store yoludur: değeri (legacy ile aynı --from-file /
-// no-echo prompt kuralıyla) yakalar ve WorkerStore.Commit ile yazar (git drift
-// preflight'ı YOK — store yazımları CAS ile eşzamanlılığı çözer, git değil).
+// no-echo prompt kuralıyla) yakalar ve tek-anahtar PUT ile yazar (git drift
+// preflight'ı YOK — store yazımları CAS'ı sunucuda çözer, git değil).
 func runSetStore(key string, cfg *config.WappsYAML, opts setOptions) error {
 	value, err := captureSetValue(key, opts)
 	if err != nil {
 		return err
 	}
-	if err := storeCommit(context.Background(), cfg, intent.Dev, map[string][]byte{key: []byte(value)}); err != nil {
+	st, err := openStore(cfg)
+	if err != nil {
+		return err
+	}
+	if err := st.Set(context.Background(), cfg.Project, key, value, store.WriteOpts{}); err != nil {
 		return err
 	}
 	fmt.Printf("✓ Set %s (store: %s)\n", key, cfg.Project)
@@ -321,7 +249,8 @@ func runSetStore(key string, cfg *config.WappsYAML, opts setOptions) error {
 }
 
 // runSyncStore, sync'in backend:store yoludur: kaynakları (sources) okur+merge eder
-// ve tüm anahtarları TEK bir epoch+1 commit'te store'a yazar (WorkerStore.Commit).
+// ve tüm anahtarları TEK bir atomik import'ta store'a yazar. X-Wapps-Intent: sync
+// etiketi audit satırlarını key.sync yapar (§6.4 — rotate-plan oracle'ı için).
 func runSyncStore(ctx context.Context, cfg *config.WappsYAML, lookup func(string) string) error {
 	if hasTofuSource(cfg.Sources) {
 		if err := preflightTofuEnv(lookup); err != nil {
@@ -339,7 +268,7 @@ func runSyncStore(ctx context.Context, cfg *config.WappsYAML, lookup func(string
 	if len(sets) == 0 {
 		return fmt.Errorf("secrets.sync: no source keys to commit to the store")
 	}
-	if err := storeCommit(ctx, cfg, intent.Dev, sets); err != nil {
+	if err := storeCommit(ctx, cfg, sets, store.WriteOpts{Sync: true}); err != nil {
 		return err
 	}
 	fmt.Printf("✓ Committed %d keys to the store for %s\n", len(sets), cfg.Project)

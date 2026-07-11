@@ -9,21 +9,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/wappsdev/wapps-cli/internal/clierr"
-	"github.com/wappsdev/wapps-cli/internal/lifecycle"
 )
 
 // wl, test worklist'i kurar.
-func wl(runID string, entries ...lifecycle.WorklistEntry) *lifecycle.Worklist {
-	return &lifecycle.Worklist{Schema: lifecycle.WorklistSchema, RunID: runID, Entries: entries}
+func wl(runID string, entries ...WorklistEntry) *Worklist {
+	return &Worklist{Schema: WorklistSchema, RunID: runID, Entries: entries}
 }
 
-func staticEntry(project, key, recipe, tier string) lifecycle.WorklistEntry {
-	return lifecycle.WorklistEntry{Project: project, Key: key, Recipe: recipe, Origin: OriginStatic, BlastTier: tier, State: StatePending}
+func staticEntry(project, key, recipe, tier string) WorklistEntry {
+	return WorklistEntry{Project: project, Key: key, Recipe: recipe, Origin: OriginStatic, BlastTier: tier, State: StatePending}
 }
 
 // newTestEngine, mem-backed bir rotasyon motoru + ledger + değer-store kurar.
-func newTestEngine() (*Engine, *RunLedger, *lifecycle.MemStore, *MemValueStore) {
-	mem := lifecycle.NewMemStore()
+func newTestEngine() (*Engine, *RunLedger, *MemStore, *MemValueStore) {
+	mem := NewMemStore()
 	ledger := NewRunLedger(mem, fixedNow)
 	vs := NewMemValueStore()
 	e := NewEngine(Config{Ledger: ledger, Values: vs, Now: fixedNow})
@@ -31,7 +30,7 @@ func newTestEngine() (*Engine, *RunLedger, *lifecycle.MemStore, *MemValueStore) 
 }
 
 // ledgerRows, bir run'ın ledger satırlarını yazım SIRASIYLA döner (ordering iddiaları).
-func ledgerRows(t *testing.T, mem *lifecycle.MemStore, runID string) []LedgerRow {
+func ledgerRows(t *testing.T, mem *MemStore, runID string) []LedgerRow {
 	t.Helper()
 	lines, err := mem.ReadLedger(ledgerKey(runID))
 	require.NoError(t, err)
@@ -50,8 +49,8 @@ func TestRun_WalksWorklist(t *testing.T) {
 	e, ledger, mem, vs := newTestEngine()
 	w := wl(
 		"wl_walk",
-		staticEntry(testProject, "A", RecipeCoolifyStart, lifecycle.TierProdShared),
-		staticEntry(testProject, "B", RecipeDBRolePhase1, lifecycle.TierProdShared),
+		staticEntry(testProject, "A", RecipeCoolifyStart, TierProdShared),
+		staticEntry(testProject, "B", RecipeDBRolePhase1, TierProdShared),
 	)
 	rep, err := e.Run(context.Background(), w, NewMockExecutor(), "human:a", nil)
 	require.NoError(t, err)
@@ -91,9 +90,9 @@ func TestRun_ResumableAfterInterrupt(t *testing.T) {
 	// Anahtarlar aynı tier + kısıtsız → anahtar adına göre sıra: A, B, C.
 	w := wl(
 		"wl_resume",
-		staticEntry(testProject, "A", RecipeCoolifyStart, lifecycle.TierProdShared),
-		staticEntry(testProject, "B", RecipeCoolifyStart, lifecycle.TierProdShared),
-		staticEntry(testProject, "C", RecipeCoolifyStart, lifecycle.TierProdShared),
+		staticEntry(testProject, "A", RecipeCoolifyStart, TierProdShared),
+		staticEntry(testProject, "B", RecipeCoolifyStart, TierProdShared),
+		staticEntry(testProject, "C", RecipeCoolifyStart, TierProdShared),
 	)
 	// B'nin probe'u başarısız → run B'de durur.
 	mock.FailProbeFor[stateKey(testProject, "B")] = true
@@ -128,8 +127,8 @@ func TestRun_NeedsTriageBlocks(t *testing.T) {
 	e, ledger, _, vs := newTestEngine()
 	w := wl(
 		"wl_triage",
-		staticEntry(testProject, "OK", RecipeCoolifyStart, lifecycle.TierProdShared),
-		lifecycle.WorklistEntry{Project: testProject, Key: "NO_META", NeedsTriage: true, BlastTier: lifecycle.TierUnknown, State: StatePending},
+		staticEntry(testProject, "OK", RecipeCoolifyStart, TierProdShared),
+		WorklistEntry{Project: testProject, Key: "NO_META", NeedsTriage: true, BlastTier: TierUnknown, State: StatePending},
 	)
 	rep, err := e.Run(context.Background(), w, NewMockExecutor(), "human:a", nil)
 	require.NoError(t, err)
@@ -151,10 +150,10 @@ func TestRun_NeedsTriageBlocks(t *testing.T) {
 // görünür kalır. Böylece tofu-origin anahtar içeren bir offboard ASLA deadlock olmaz.
 func TestRun_MirrorOnlyRefusesTofu(t *testing.T) {
 	e, ledger, _, vs := newTestEngine()
-	tofu := lifecycle.WorklistEntry{Project: testProject, Key: "DATABASE_URL", Recipe: RecipeDBRolePhase1, Origin: OriginTofu, BlastTier: lifecycle.TierProdShared, State: StatePending}
+	tofu := WorklistEntry{Project: testProject, Key: "DATABASE_URL", Recipe: RecipeDBRolePhase1, Origin: OriginTofu, BlastTier: TierProdShared, State: StatePending}
 	w := wl(
 		"wl_tofu",
-		staticEntry(testProject, "STATIC_KEY", RecipeCoolifyStart, lifecycle.TierProdShared),
+		staticEntry(testProject, "STATIC_KEY", RecipeCoolifyStart, TierProdShared),
 		tofu,
 	)
 	rep, err := e.Run(context.Background(), w, NewMockExecutor(), "human:a", nil)
@@ -175,7 +174,7 @@ func TestRun_ManualPauses(t *testing.T) {
 	e, ledger, mem, _ := newTestEngine()
 	w := wl(
 		"wl_manual",
-		lifecycle.WorklistEntry{Project: testProject, Key: "CF_TOKEN", Recipe: RecipeCFManual, Origin: OriginStatic, BlastTier: lifecycle.TierPlatformAnchor, State: StatePending},
+		WorklistEntry{Project: testProject, Key: "CF_TOKEN", Recipe: RecipeCFManual, Origin: OriginStatic, BlastTier: TierPlatformAnchor, State: StatePending},
 	)
 	rep, err := e.Run(context.Background(), w, NewMockExecutor(), "human:a", nil)
 	require.NoError(t, err)
@@ -212,7 +211,7 @@ func TestRun_ResumeDoesNotRemint(t *testing.T) {
 	mock := NewMockExecutor()
 	w := wl(
 		"wl_remint",
-		staticEntry(testProject, "DB", RecipeDBRolePhase1, lifecycle.TierProdShared),
+		staticEntry(testProject, "DB", RecipeDBRolePhase1, TierProdShared),
 	)
 	// Verify probe'u başarısız → DB, CONSUMER_UPDATED'a ULAŞMIŞ olarak FAILED olur.
 	mock.FailProbeFor[stateKey(testProject, "DB")] = true
@@ -257,7 +256,7 @@ func TestRun_ManualConfirmationCompletes(t *testing.T) {
 	e, ledger, _, _ := newTestEngine()
 	w := wl(
 		"wl_manual_ok",
-		lifecycle.WorklistEntry{Project: testProject, Key: "CF_TOKEN", Recipe: RecipeCFManual, Origin: OriginStatic, BlastTier: lifecycle.TierPlatformAnchor, State: StatePending},
+		WorklistEntry{Project: testProject, Key: "CF_TOKEN", Recipe: RecipeCFManual, Origin: OriginStatic, BlastTier: TierPlatformAnchor, State: StatePending},
 	)
 	confirms := &Confirmations{
 		Tokens: map[string]string{stateKey(testProject, "CF_TOKEN"): "human-attested"},
@@ -279,7 +278,7 @@ func TestRun_ConfirmationRefusedInAgentMode(t *testing.T) {
 	e, ledger, _, _ := newTestEngine()
 	w := wl(
 		"wl_manual_agent",
-		lifecycle.WorklistEntry{Project: testProject, Key: "CF_TOKEN", Recipe: RecipeCFManual, Origin: OriginStatic, BlastTier: lifecycle.TierPlatformAnchor, State: StatePending},
+		WorklistEntry{Project: testProject, Key: "CF_TOKEN", Recipe: RecipeCFManual, Origin: OriginStatic, BlastTier: TierPlatformAnchor, State: StatePending},
 	)
 	confirms := &Confirmations{
 		IsAgent: true,

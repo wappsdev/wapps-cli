@@ -17,5 +17,5 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "worker-configuration.d.ts"],
-  "exclude": ["node_modules", "testdata-gen"]
+  "exclude": ["node_modules"]
 }

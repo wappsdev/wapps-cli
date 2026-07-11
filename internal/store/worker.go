@@ -1,83 +1,46 @@
 package store
 
+// worker.go, WorkerStore'un HTTP taşıması + v2 rota implementasyonlarıdır
+// (SPEC §7.4/§7.6). Ham Worker gövdesi ASLA transcript'e yayılmaz — hatalar
+// clierr sözleşmesine eşlenir (§7.5), yalnızca kod + kısa mesaj taşınır.
+
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
-	"time"
 
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/intent"
 )
 
-// Config, bir WorkerStore'un bağımlılıklarıdır. Tüm dış kenarlar (HTTP, saat,
-// disk yolları) enjekte edilebilir — bu yüzden store tam test-edilebilir.
-type Config struct {
-	// BaseURL, secrets-gate Worker kökü (örn. https://secrets.meapps.dev).
-	BaseURL string
-	// Doer, HTTP taşıması; nil ise http.DefaultClient.
-	Doer httpDoer
-	// Auth, her isteğe oturum/token header'ı ekler (CF Access JWT veya minted
-	// Bearer). nil olabilir (test/anonim). Hata dönerse istek yapılmaz.
-	Auth func(*http.Request) error
-	// PinPath, trust pin deposu (roots.json). Boşsa trust.DefaultPinPath().
-	PinPath string
-	// CacheDir, ciphertext önbellek dizini. Boşsa cache.DefaultDir().
-	CacheDir string
-	// EpochPinPath, per-proje DATA epoch pin dosyası. Boşsa DefaultEpochPinPath().
-	EpochPinPath string
-	// Witness, deploy-intent escrow-tanık çapraz kontrolü için tanık origin'idir
-	// (§7.3.4/§9.3). nil ise deploy fail-closed (WITNESS_NOT_WIRED) — G10 gerçek
-	// non-CF origin'i enjekte eder. dev intent'i ETKİLEMEZ.
-	Witness intent.Witness
-	// Now, saat (test için). Boşsa time.Now.
-	Now func() time.Time
-}
-
-// WorkerStore, Store'u secrets-gate Worker HTTP sözleşmesi üzerinden uygular.
-type WorkerStore struct {
-	cfg Config
-}
-
-// New, verilen config'le bir WorkerStore kurar; boş alanlara üretim
-// varsayılanları uygulanır.
-func New(cfg Config) *WorkerStore {
-	if cfg.Doer == nil {
-		cfg.Doer = http.DefaultClient
-	}
-	if cfg.Now == nil {
-		cfg.Now = time.Now
-	}
-	return &WorkerStore{cfg: cfg}
-}
-
-func (w *WorkerStore) now() time.Time { return w.cfg.Now() }
-
-// errOffline, taşıma katmanında (bağlantı hatası/timeout) Worker'a
-// ulaşılamadığını işaret eder. Fetch bunu çevrimdışı fallback'e, Commit'i
-// OFFLINE_WRITE_BLOCKED'e çevirir.
-var errOffline = errors.New("store: worker unreachable")
-
 // httpResp, bir Worker yanıtının çözülmüş halidir.
 type httpResp struct {
 	status int
 	body   []byte
-	etag   string
 	header http.Header
 }
 
-// do, bir Worker isteği yapar. Taşıma hatası → errOffline. Aksi halde gövde
-// tamamen okunur (Worker yanıtları küçük: manifest ≤1MB, blob ≤64KB).
-func (w *WorkerStore) do(ctx context.Context, method, path string, ifNoneMatch string, body []byte, headers map[string]string) (*httpResp, error) {
+// do, bir Worker isteği yapar. Taşıma hatası → NETWORK_REQUIRED (çevrimdışı mod
+// YOK, §1.5). Gövde tamamen okunur (Worker yanıtları küçük; 2 MB güvenlik tavanı).
+func (w *WorkerStore) do(ctx context.Context, method, path string, body []byte, headers map[string]string) (*httpResp, error) {
+	// Query string'i path'ten ayır: url.JoinPath '?' karakterini yol segmenti
+	// olarak escape ederdi.
+	rawQuery := ""
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path, rawQuery = path[:i], path[i+1:]
+	}
 	u, err := url.JoinPath(w.cfg.BaseURL, path)
 	if err != nil {
 		return nil, clierr.Wrapf(clierr.Internal, err, "bad worker path")
+	}
+	if rawQuery != "" {
+		u += "?" + rawQuery
 	}
 	var rdr io.Reader
 	if body != nil {
@@ -87,8 +50,8 @@ func (w *WorkerStore) do(ctx context.Context, method, path string, ifNoneMatch s
 	if err != nil {
 		return nil, clierr.Wrapf(clierr.Internal, err, "build request")
 	}
-	if ifNoneMatch != "" {
-		req.Header.Set("If-None-Match", `"`+ifNoneMatch+`"`)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -100,36 +63,26 @@ func (w *WorkerStore) do(ctx context.Context, method, path string, ifNoneMatch s
 	}
 	resp, err := w.cfg.Doer.Do(req)
 	if err != nil {
-		return nil, errOffline
+		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate unreachable")
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 2 MB güvenlik tavanı
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return nil, errOffline
+		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate response truncated")
 	}
-	etag := trimETag(resp.Header.Get("ETag"))
-	return &httpResp{status: resp.StatusCode, body: raw, etag: etag, header: resp.Header}, nil
+	return &httpResp{status: resp.StatusCode, body: raw, header: resp.Header}, nil
 }
 
-// trimETag, W/ ve çift-tırnakları soyar.
-func trimETag(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "W/")
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// workerError, Worker'ın makine-okunur hata gövdesidir ({error, message, ...}).
+// workerError, Worker'ın makine-okunur hata gövdesidir ({error, message, ...detail}).
 type workerError struct {
 	Error      string `json:"error"`
-	Message    string `json:"message"`
 	RetryAfter int    `json:"retry_after"`
-	// EPOCH_CONFLICT detay alanları (§6.2).
-	CurrentEpoch       uint64 `json:"current_epoch"`
-	CurrentManifestSHA string `json:"current_manifest_sha256"`
-	Reason             string `json:"reason"`
+	// GRANT_DENIED / read-path detay alanları (§4.3.4/§7.6).
+	Key       string `json:"key"`
+	Dimension string `json:"dimension"`
+	// POLICY_INVALID / POLICY_CONFLICT detayları (§4.4/§4.1).
+	RuleIndex      *int   `json:"rule_index"`
+	CurrentVersion uint64 `json:"current_version"`
 }
 
 // parseWorkerError, gövdeyi güvenle çözer (parse edilemezse boş — ham HTML
@@ -140,38 +93,63 @@ func parseWorkerError(body []byte) workerError {
 	return we
 }
 
-// mapHTTPError, bir non-2xx/304 Worker yanıtını CLI hata sözleşmesine (§7.5)
-// eşler. Ham gövde ASLA yayılmaz — yalnızca kod + kısa mesaj.
+// mapHTTPError, bir non-2xx Worker yanıtını CLI hata sözleşmesine (§7.5) eşler.
+// Ham gövde ASLA yayılmaz — yalnızca kod + kısa alanlar.
 func mapHTTPError(r *httpResp, ctxMsg string) error {
 	we := parseWorkerError(r.body)
 	switch r.status {
-	case http.StatusUnauthorized: // 401
-		return clierr.Newf(clierr.AuthExpired, "%s: worker rejected session (%s)", ctxMsg, safeCode(we.Error))
+	case http.StatusUnauthorized: // 401 — kenar/Worker oturumu reddetti
+		return clierr.Newf(clierr.SessionExpired, "%s: gate rejected the session (%s)", ctxMsg, safeCode(we.Error))
 	case http.StatusForbidden: // 403
 		switch we.Error {
-		case "MACHINE_TOKEN_REQUIRED", "TOKEN_EXPIRED", "TOKEN_REVOKED":
-			return clierr.Newf(clierr.AuthExpired, "%s: machine token invalid (%s)", ctxMsg, safeCode(we.Error))
+		case "MACHINE_TOKEN_REQUIRED", "TOKEN_EXPIRED", "TOKEN_REVOKED", "TOKEN_SCOPE_EXCEEDED":
+			return clierr.Newf(clierr.SessionExpired, "%s: machine token invalid (%s)", ctxMsg, safeCode(we.Error))
 		default:
-			return clierr.Newf(clierr.GrantDenied, "%s: %s", ctxMsg, safeCode(we.Error))
+			if we.Key != "" {
+				return clierr.Newf(clierr.GrantDenied, "%s: denied on key %s (dimension %s)", ctxMsg, safeCode(we.Key), safeCode(we.Dimension)).
+					WithRecovery("ask an admin to extend policy.json (wapps secrets policy set)")
+			}
+			return clierr.Newf(clierr.GrantDenied, "%s: %s (dimension %s)", ctxMsg, safeCode(we.Error), safeCode(we.Dimension)).
+				WithRecovery("ask an admin to extend policy.json (wapps secrets policy set)")
 		}
 	case http.StatusNotFound: // 404
-		return clierr.Newf(clierr.Internal, "%s: not found (%s)", ctxMsg, safeCode(we.Error))
-	case http.StatusConflict: // 409 — TRUST_EPOCH_STALE vb.
+		if we.Key != "" {
+			return clierr.Newf(clierr.NotFound, "%s: key %s not found", ctxMsg, safeCode(we.Key))
+		}
+		return clierr.Newf(clierr.NotFound, "%s: not found (%s)", ctxMsg, safeCode(we.Error))
+	case http.StatusConflict: // 409 — MIGRATION_FREEZE vb.
 		return clierr.Newf(clierr.CASConflict, "%s: %s", ctxMsg, safeCode(we.Error))
-	case http.StatusPreconditionFailed: // 412 — EPOCH_CONFLICT (commit'te özel ele alınır)
+	case http.StatusPreconditionFailed: // 412 — EPOCH_CONFLICT | POLICY_CONFLICT
+		if we.Error == "POLICY_CONFLICT" {
+			return clierr.Newf(clierr.PolicyConflict, "%s: policy version conflict (current %d)", ctxMsg, we.CurrentVersion)
+		}
 		return clierr.Newf(clierr.CASConflict, "%s: epoch conflict", ctxMsg)
 	case http.StatusRequestEntityTooLarge: // 413
 		return clierr.Newf(clierr.BlobTooLarge, "%s: %s", ctxMsg, safeCode(we.Error))
 	case http.StatusUnprocessableEntity: // 422
-		if we.Error == "ESCROW_WRAP_MISSING" {
-			return clierr.Newf(clierr.EscrowWrapMissing, "%s", ctxMsg)
+		if we.Error == "POLICY_INVALID" {
+			idx := "?"
+			if we.RuleIndex != nil {
+				idx = fmt.Sprintf("%d", *we.RuleIndex)
+			}
+			return clierr.Newf(clierr.PolicyInvalid, "%s: policy invalid (rule index %s)", ctxMsg, idx)
 		}
 		return clierr.Newf(clierr.Internal, "%s: %s", ctxMsg, safeCode(we.Error))
 	case http.StatusTooManyRequests: // 429
 		return clierr.Newf(clierr.RateLimited, "%s: rate limited (retry after %ds)", ctxMsg, r.retryAfter())
-	case http.StatusServiceUnavailable: // 503
-		return clierr.Newf(clierr.Internal, "%s: service misconfigured (%s)", ctxMsg, safeCode(we.Error))
+	case http.StatusServiceUnavailable: // 503 — fail-closed sınıfı (§7.5)
+		switch we.Error {
+		case "AUDIT_UNAVAILABLE":
+			return clierr.Newf(clierr.AuditUnavailable, "%s: audit ledger unavailable — plaintext refused", ctxMsg)
+		case "IDENTITY_UNAVAILABLE":
+			return clierr.Newf(clierr.IdentityUnavailable, "%s: identity/groups unresolvable", ctxMsg)
+		default:
+			return clierr.Newf(clierr.ServiceMisconfig, "%s: %s", ctxMsg, safeCode(we.Error))
+		}
 	default:
+		if r.status == http.StatusBadRequest {
+			return clierr.Newf(clierr.Internal, "%s: bad request (%s)", ctxMsg, safeCode(we.Error))
+		}
 		return clierr.Newf(clierr.Internal, "%s: unexpected status %d", ctxMsg, r.status)
 	}
 }
@@ -190,8 +168,8 @@ func (r *httpResp) retryAfter() int {
 	return 60
 }
 
-// safeCode, bir Worker hata kodunu güvenli (kısa, alfanumerik) bir dizeye
-// indirger — ham gövde/HTML sızmaz.
+// safeCode, bir Worker hata kodunu/alanını güvenli (kısa, alfanumerik) bir
+// dizeye indirger — ham gövde/HTML sızmaz.
 func safeCode(code string) string {
 	if code == "" {
 		return "unknown"
@@ -199,11 +177,10 @@ func safeCode(code string) string {
 	if len(code) > 48 {
 		code = code[:48]
 	}
-	// Yalnızca güvenli karakterler.
 	out := make([]byte, 0, len(code))
 	for i := 0; i < len(code); i++ {
 		c := code[i]
-		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' {
 			out = append(out, c)
 		}
 	}
@@ -211,4 +188,255 @@ func safeCode(code string) string {
 		return "unknown"
 	}
 	return string(out)
+}
+
+// decodeJSON, 200 gövdesini hedefe çözer; bozuk gövde Internal (fail-closed).
+func decodeJSON(body []byte, dst any, ctxMsg string) error {
+	if err := json.Unmarshal(body, dst); err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "%s: malformed gate response", ctxMsg)
+	}
+	return nil
+}
+
+// --- Metadata + okuma (§7.6) --------------------------------------------------
+
+// Keys, GET /v1/projects/{p}/keys — okunabilir anahtar listesi (filtreli, §4.3.3).
+func (w *WorkerStore) Keys(ctx context.Context, project string) (*KeysResult, error) {
+	r, err := w.do(ctx, http.MethodGet, "/v1/projects/"+url.PathEscape(project)+"/keys", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.status != http.StatusOK {
+		return nil, mapHTTPError(r, "list "+project)
+	}
+	var out KeysResult
+	if err := decodeJSON(r.body, &out, "list "+project); err != nil {
+		return nil, err
+	}
+	if err := w.checkAndAdvanceEpochPin(project, out.Epoch); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Read, POST /v1/projects/{p}/read — PLAINTEXT bulk read (all-or-nothing §7.6).
+// keys boş → önce Keys ile principal'ın okunabilir kümesi çözülür; küme boşsa
+// boş sonuç döner (Worker boş keys gövdesini reddeder).
+func (w *WorkerStore) Read(ctx context.Context, project string, keys []string) (*ReadResult, error) {
+	if len(keys) == 0 {
+		kr, err := w.Keys(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range kr.Keys {
+			keys = append(keys, k.KeyName)
+		}
+		if len(keys) == 0 {
+			return &ReadResult{Epoch: kr.Epoch, Values: map[string]string{}}, nil
+		}
+	}
+	sort.Strings(keys)
+	body, err := json.Marshal(map[string][]string{"keys": keys})
+	if err != nil {
+		return nil, clierr.Wrapf(clierr.Internal, err, "encode read request")
+	}
+	r, err := w.do(ctx, http.MethodPost, "/v1/projects/"+url.PathEscape(project)+"/read", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.status != http.StatusOK {
+		return nil, mapHTTPError(r, "read "+project)
+	}
+	var out ReadResult
+	if err := decodeJSON(r.body, &out, "read "+project); err != nil {
+		return nil, err
+	}
+	if out.Values == nil {
+		out.Values = map[string]string{}
+	}
+	if err := w.checkAndAdvanceEpochPin(project, out.Epoch); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// --- Yazımlar (§7.6; writer DO serileştirir, epoch+1) ---------------------------
+
+// writeHeaders, bilgilendirici yazım etiketlerini kurar (§6.4).
+func writeHeaders(opts WriteOpts) map[string]string {
+	h := map[string]string{}
+	if opts.RotationID != "" {
+		h[intent.HeaderRotation] = opts.RotationID
+	}
+	if opts.Sync {
+		h[intent.HeaderIntent] = intent.IntentSync
+	}
+	return h
+}
+
+// Set, PUT /v1/projects/{p}/keys/{KEY} — tek anahtar yazımı.
+func (w *WorkerStore) Set(ctx context.Context, project, key, value string, opts WriteOpts) error {
+	body, err := json.Marshal(map[string]string{"value": value})
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "encode set request")
+	}
+	r, err := w.do(ctx, http.MethodPut,
+		"/v1/projects/"+url.PathEscape(project)+"/keys/"+url.PathEscape(key), body, writeHeaders(opts))
+	if err != nil {
+		return err
+	}
+	if r.status != http.StatusOK {
+		return mapHTTPError(r, "set "+key)
+	}
+	return nil
+}
+
+// Import, POST /v1/projects/{p}/import — bulk atomik yazım (tek epoch).
+func (w *WorkerStore) Import(ctx context.Context, project string, values map[string]string, opts WriteOpts) error {
+	if len(values) == 0 {
+		return clierr.New(clierr.Internal, "import: no values")
+	}
+	body, err := json.Marshal(map[string]any{"values": values})
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "encode import request")
+	}
+	r, err := w.do(ctx, http.MethodPost, "/v1/projects/"+url.PathEscape(project)+"/import", body, writeHeaders(opts))
+	if err != nil {
+		return err
+	}
+	if r.status != http.StatusOK {
+		return mapHTTPError(r, "import "+project)
+	}
+	return nil
+}
+
+// Delete, DELETE /v1/projects/{p}/keys/{KEY}.
+func (w *WorkerStore) Delete(ctx context.Context, project, key string) error {
+	r, err := w.do(ctx, http.MethodDelete,
+		"/v1/projects/"+url.PathEscape(project)+"/keys/"+url.PathEscape(key), nil, nil)
+	if err != nil {
+		return err
+	}
+	if r.status != http.StatusOK {
+		return mapHTTPError(r, "delete "+key)
+	}
+	return nil
+}
+
+// --- Oturum / kontrol düzlemi (§7.2/§7.3/§6.3) ---------------------------------
+
+// Whoami, GET /v1/whoami — principal + gruplar + efektif grant'ler.
+func (w *WorkerStore) Whoami(ctx context.Context) (*WhoamiResult, error) {
+	r, err := w.do(ctx, http.MethodGet, "/v1/whoami", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.status != http.StatusOK {
+		return nil, mapHTTPError(r, "whoami")
+	}
+	var out WhoamiResult
+	if err := decodeJSON(r.body, &out, "whoami"); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PolicyGet, GET /v1/policy (admin verb + write-AUD oturumu, §7.6).
+func (w *WorkerStore) PolicyGet(ctx context.Context) (*PolicyResult, error) {
+	r, err := w.do(ctx, http.MethodGet, "/v1/policy", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.status != http.StatusOK {
+		return nil, mapHTTPError(r, "policy show")
+	}
+	var out PolicyResult
+	if err := decodeJSON(r.body, &out, "policy show"); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PolicyPut, PUT /v1/policy — CAS'lı policy yazımı (version = current+1, §4.1).
+func (w *WorkerStore) PolicyPut(ctx context.Context, doc PolicyDoc) (version uint64, sha256 string, err error) {
+	body, merr := json.Marshal(doc)
+	if merr != nil {
+		return 0, "", clierr.Wrapf(clierr.Internal, merr, "encode policy")
+	}
+	r, err := w.do(ctx, http.MethodPut, "/v1/policy", body, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if r.status != http.StatusOK {
+		return 0, "", mapHTTPError(r, "policy set")
+	}
+	var out struct {
+		Version uint64 `json:"version"`
+		SHA256  string `json:"sha256"`
+	}
+	if err := decodeJSON(r.body, &out, "policy set"); err != nil {
+		return 0, "", err
+	}
+	return out.Version, out.SHA256, nil
+}
+
+// RotatePlan, GET /v1/admin/rotate-plan — audit-ledger rotate-set oracle (§6.3).
+func (w *WorkerStore) RotatePlan(ctx context.Context, identity, since string, assumePolicy bool) (*RotatePlanResult, error) {
+	q := url.Values{}
+	q.Set("identity", identity)
+	if since != "" {
+		q.Set("since", since)
+	}
+	if assumePolicy {
+		q.Set("assume_policy", "1")
+	}
+	r, err := w.do(ctx, http.MethodGet, "/v1/admin/rotate-plan?"+q.Encode(), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.status != http.StatusOK {
+		return nil, mapHTTPError(r, "rotate-plan")
+	}
+	var out RotatePlanResult
+	if err := decodeJSON(r.body, &out, "rotate-plan"); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// TokenMint, POST /v1/token — opsiyonel mint katmanı (§5.3; yalnızca service
+// principal). Dönen minted token ASLA loglanmaz; çağıran CI adımına iletir.
+func (w *WorkerStore) TokenMint(ctx context.Context, project string, keys, verbs []string, ttlSeconds int) (token string, expiresAt int64, err error) {
+	req := map[string]any{
+		"project": project,
+		"scope":   map[string]any{"keys": keys, "verbs": verbs},
+	}
+	if ttlSeconds > 0 {
+		req["ttl_seconds"] = ttlSeconds
+	}
+	body, merr := json.Marshal(req)
+	if merr != nil {
+		return "", 0, clierr.Wrapf(clierr.Internal, merr, "encode token request")
+	}
+	r, err := w.do(ctx, http.MethodPost, "/v1/token", body, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	if r.status != http.StatusOK {
+		if r.status == http.StatusBadRequest {
+			return "", 0, clierr.Newf(clierr.TokenExchangeFailed, "token exchange rejected (%s)", safeCode(parseWorkerError(r.body).Error))
+		}
+		return "", 0, mapHTTPError(r, "token exchange")
+	}
+	var out struct {
+		Token string `json:"token"`
+		Exp   int64  `json:"exp"`
+	}
+	if err := decodeJSON(r.body, &out, "token exchange"); err != nil {
+		return "", 0, err
+	}
+	if strings.TrimSpace(out.Token) == "" {
+		return "", 0, clierr.New(clierr.TokenExchangeFailed, "gate returned an empty token")
+	}
+	return out.Token, out.Exp, nil
 }

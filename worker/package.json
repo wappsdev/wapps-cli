@@ -7,8 +7,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "gen-vectors": "cd .. && go run ./worker/testdata-gen/main.go"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@noble/ciphers": "2.0.1",
