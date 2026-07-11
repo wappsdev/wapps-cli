@@ -16,6 +16,7 @@ import {
   ADMIN_EMAIL,
   AUD_WRITE,
 } from "./helpers.js";
+import { scopeAllowsKey } from "../src/mint.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
@@ -41,6 +42,17 @@ async function seedValues(): Promise<void> {
     body: JSON.stringify({ values: { DEPLOY_TOKEN: "tok", DB_URL: "url" } }),
   });
 }
+
+describe("scopeAllowsKey — case-insensitive anahtar kimliği (§5.3, policy ile tutarlı)", () => {
+  it("case-fold: DEPLOY_TOKEN scope'u deploy_token'ı da kapsar; '*' tümünü", () => {
+    const scope = { project: "vaulter", keys: ["DEPLOY_TOKEN"], verbs: ["read"] } as never;
+    expect(scopeAllowsKey(scope, "DEPLOY_TOKEN")).toBe(true);
+    expect(scopeAllowsKey(scope, "deploy_token")).toBe(true);
+    expect(scopeAllowsKey(scope, "Deploy_Token")).toBe(true);
+    expect(scopeAllowsKey(scope, "OTHER_KEY")).toBe(false);
+    expect(scopeAllowsKey({ project: "vaulter", keys: ["*"], verbs: ["read"] } as never, "anything")).toBe(true);
+  });
+});
 
 describe("POST /v1/token (§5.3)", () => {
   it("mints within policy rows; token.mint audited synchronously; TTL clamped", async () => {

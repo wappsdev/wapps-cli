@@ -37,7 +37,13 @@ export type Topology = "primary" | "fallback";
 
 // --- Glob (pinli sözdizimi, §4.2) --------------------------------------------
 // `*` = herhangi bir karakter dizisi (boş dahil), `?` = tek karakter, gerisi
-// literal, case-sensitive, TAM-string eşleşme. Karakter sınıfı / `**` YOK.
+// literal, TAM-string eşleşme. Karakter sınıfı / `**` YOK.
+//
+// KATMAN AYRIMI: globMatch primitivi case-SENSITIVE'dir (aşağıdaki testler pinler);
+// ANCAK anahtar-ADI yetkilendirmesi keyGlobMatch üstünden CASE-INSENSITIVE yapılır —
+// anahtar adları case-insensitive KİMLİKtir (POSIX env-var; writer-DO farklı-case
+// varyantı 409 KEY_CASE_COLLISION ile reddeder, token scope'u da aynı). Böylece hiçbir
+// katman (policy/token/storage) diğerinden farklı case-semantiği taşımaz.
 //
 // GÜVENLİK (ReDoS): regex TABANLI DEĞİL. Greedy `[\s\S]*` çevirisi, policy
 // admin'inin PUT edebildiği `*A*A*...*B` şekilli bir pattern'de katastrofik
