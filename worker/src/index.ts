@@ -494,12 +494,20 @@ async function handleRead(
   if (!loaded) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "project has no secrets");
   const byName = new Map(loaded.manifest.entries.map((e) => [e.keyName, e]));
 
-  // Çöz: blob → içerik-adres doğrula → KEK-unwrap DEK → XChaCha open (§2).
-  const values: Record<string, string> = {};
+  // Tüm anahtarlar manifest'te mi? (NOT_FOUND fail-fast, I/O'dan ÖNCE.)
   for (const k of keys) {
-    const entry = byName.get(k);
-    if (!entry) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "key not found", { key: k });
-    const blob = await getObject(env.SECRETS_BUCKET, keyBlob(project, entry.blobHash));
+    if (!byName.get(k)) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "key not found", { key: k });
+  }
+  // Blob'ları PARALEL getir (I/O wall-time sink): bulk read'de (ör. migration verify
+  // 156 key) sıralı R2 GET exceededWallTime'a yol açıyordu. Çözüm (CPU) sıralı kalır.
+  const blobs = await Promise.all(keys.map((k) => getObject(env.SECRETS_BUCKET, keyBlob(project, byName.get(k)!.blobHash))));
+
+  // Çöz: içerik-adres doğrula → KEK-unwrap DEK → XChaCha open (§2).
+  const values: Record<string, string> = {};
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const entry = byName.get(k)!;
+    const blob = blobs[i];
     if (!blob) {
       fireAlert(ctx, env, ALERT.A8, "referenced blob missing", { project, key: k });
       return jsonError(HTTP.MISCONFIGURED, "BLOB_MISSING", "referenced blob missing", { key: k });
