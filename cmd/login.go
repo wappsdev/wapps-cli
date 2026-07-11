@@ -49,7 +49,10 @@ var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
 		return "", clierr.New(clierr.NotAvailable,
 			"wapps login needs cloudflared for the CF Access SSO flow (edge token transfer).\n"+
 				"  install: brew install cloudflared\n"+
-				"  then re-run: wapps login")
+				"  then re-run: wapps login").
+			WithRecovery("install cloudflared (macOS: `brew install cloudflared`; " +
+				"other: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/), " +
+				"then re-run: wapps login")
 	}
 	// İzole config/cache konumu → cloudflared token cache'ini burada tutar, defer ile
 	// siliyoruz. isolatedEnv TÜM home/config/cache anahtarlarını (platformlar arası)

@@ -83,7 +83,7 @@ func runDoctorFull(out interface{ Write(p []byte) (int, error) }) error {
 	allOK := true
 
 	// CLI tools
-	for _, tool := range []string{"opentofu", "age", "git", "jq", "gh"} {
+	for _, tool := range []string{"opentofu", "age", "git", "jq", "gh", "cloudflared"} {
 		binName := tool
 		if tool == "opentofu" {
 			binName = "tofu"
