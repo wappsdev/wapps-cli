@@ -35,6 +35,14 @@ describe("validKeyName", () => {
     }
   });
 
+  it("rejects JS prototype-special names (regex would otherwise accept them)", () => {
+    // Bunlar regex'ten geçer ama plain-object response haritalarında sırrı düşürür /
+    // prototype-pollution eder → açıkça reddet.
+    for (const k of ["__proto__", "constructor", "prototype"]) {
+      expect(validKeyName(k), k).toBe(false);
+    }
+  });
+
   it("bounds length to 128", () => {
     expect(validKeyName("A".repeat(128))).toBe(true);
     expect(validKeyName("A".repeat(129))).toBe(false);
