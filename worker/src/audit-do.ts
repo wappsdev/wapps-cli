@@ -7,7 +7,7 @@
 // row_json = 12 alanın [seq,ts,principal,principal_type,project,key,verb,decision,
 // intent,ip,cf_ray,token_jti] boşluksuz JSON dizisi (null = eksik).
 
-import { sha256Hex, utf8, bytesToB64 } from "./crypto/verify.js";
+import { sha256Hex, utf8, bytesToB64 } from "./crypto/encoding.js";
 import { ensureSchema } from "./schema.js";
 import { AuditRow, GENESIS_HASH } from "./audit.js";
 import {
@@ -99,8 +99,8 @@ export class AuditLogDO {
         return json(res);
       }
       if (url.pathname === "/append-batch" && request.method === "POST") {
-        const { rows, batchCounter } = (await request.json()) as { rows: AuditRow[]; batchCounter?: number };
-        const res = await this.runExclusive(() => this.appendBatch(rows, batchCounter));
+        const { rows, batchCounter, idempotencyKey } = (await request.json()) as { rows: AuditRow[]; batchCounter?: number; idempotencyKey?: string };
+        const res = await this.runExclusive(() => this.appendBatch(rows, batchCounter, idempotencyKey));
         return json(res);
       }
       if (url.pathname === "/head" && request.method === "GET") {
@@ -137,8 +137,14 @@ export class AuditLogDO {
     return { seq: inserted.seq, hash: inserted.hash };
   }
 
-  private async appendBatch(rows: AuditRow[], batchCounter?: number): Promise<{ appended: number; seq: number; hash: string }> {
+  private async appendBatch(rows: AuditRow[], batchCounter?: number, idempotencyKey?: string): Promise<{ appended: number; seq: number; hash: string; deduped?: boolean }> {
     await ensureSchema(this.db);
+    // Batch idempotency (§6.4 bulk outcome recovery): aynı anahtar tekrar gelirse
+    // TÜM batch dedup edilir (crash-recovery retry çift per-key satır üretmez).
+    if (idempotencyKey) {
+      const existing = await this.ctx.storage.get<ChainHead>(IDEM_PREFIX + idempotencyKey);
+      if (existing) return { appended: 0, seq: existing.seq, hash: existing.hash, deduped: true };
+    }
     let head = await this.head();
     const inserted: insertedRow[] = [];
     for (const row of rows) {
@@ -147,6 +153,7 @@ export class AuditLogDO {
       inserted.push(ins);
     }
     await this.ctx.storage.put(HEAD_KEY, head);
+    if (idempotencyKey) await this.ctx.storage.put(IDEM_PREFIX + idempotencyKey, head);
     for (const ins of inserted) await this.enqueueAuditSegment(ins); // §6.8 (fail-soft)
     // Ingest-liveness (A8 backlog/silence, §6.5): son batch zamanı + sayaç.
     await this.ctx.storage.put(INGEST_TS_KEY, new Date().toISOString());

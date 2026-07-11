@@ -6,17 +6,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wappsdev/wapps-cli/internal/cryptoid"
-	"github.com/wappsdev/wapps-cli/internal/lifecycle"
 )
 
 // mirrorEntry, origin:"tofu" bir worklist girdisi kurar (store-tarafı mint reddi →
 // MIRROR_ONLY_ORIGIN). Metadata mevcut (NeedsTriage=false).
-func mirrorEntry(project, key string) lifecycle.WorklistEntry {
-	return lifecycle.WorklistEntry{
+func mirrorEntry(project, key string) WorklistEntry {
+	return WorklistEntry{
 		Project: project, Key: key, Recipe: "db-role/phase1", Origin: OriginTofu,
-		BlastTier: lifecycle.TierProdShared, State: StatePending,
+		BlastTier: TierProdShared, State: StatePending,
 	}
 }
 
@@ -25,9 +22,9 @@ func mirrorEntry(project, key string) lifecycle.WorklistEntry {
 // Complete'e ulaşır. Aksi halde tofu-origin anahtar içeren HER vaulter offboard'ı
 // ASLA kapanamazdı.
 func TestLedger_MirrorOnlyIsTerminal(t *testing.T) {
-	l := NewRunLedger(lifecycle.NewMemStore(), fixedNow)
+	l := NewRunLedger(NewMemStore(), fixedNow)
 	w := wl("wl_mirror",
-		staticEntry(testProject, "APP_KEY", RecipeCoolifyStart, lifecycle.TierProdShared),
+		staticEntry(testProject, "APP_KEY", RecipeCoolifyStart, TierProdShared),
 		mirrorEntry(testProject, "DATABASE_URL"),
 	)
 	require.NoError(t, l.EnsurePlan(w))
@@ -48,14 +45,16 @@ func TestLedger_MirrorOnlyIsTerminal(t *testing.T) {
 	assert.False(t, st.NeedsTriage)
 }
 
-// TestLedger_NeedsTriageBlocksUntilSignedSkip (FIX #6): metadata-eksik (NEEDS_TRIAGE)
-// bir anahtar, run'ı bloklar; ancak ADMIN-İMZALI SkipKey ile SKIPPED'e geçince triyaj
-// çözülür ve run Complete'e ulaşır — RunState'in var saydığı kaçış kapısı.
-func TestLedger_NeedsTriageBlocksUntilSignedSkip(t *testing.T) {
-	mem := lifecycle.NewMemStore()
+// TestLedger_NeedsTriageBlocksUntilRecordedSkip: metadata-eksik (NEEDS_TRIAGE)
+// bir anahtar, run'ı bloklar; ancak KAYITLI (reason+by zorunlu) SkipKey ile
+// SKIPPED'e geçince triyaj çözülür ve run Complete'e ulaşır — RunState'in var
+// saydığı kaçış kapısı. (Server-decrypt pivotu: yerel imza katmanı SİLİNDİ;
+// admin yetkisi Worker admin API'sinde zorlanır, SPEC §0.2/§4.5.)
+func TestLedger_NeedsTriageBlocksUntilRecordedSkip(t *testing.T) {
+	mem := NewMemStore()
 	l := NewRunLedger(mem, fixedNow)
 	w := wl("wl_triage",
-		lifecycle.WorklistEntry{Project: testProject, Key: "NO_META", NeedsTriage: true, BlastTier: lifecycle.TierUnknown, State: StatePending},
+		WorklistEntry{Project: testProject, Key: "NO_META", NeedsTriage: true, BlastTier: TierUnknown, State: StatePending},
 	)
 	require.NoError(t, l.EnsurePlan(w))
 
@@ -65,20 +64,18 @@ func TestLedger_NeedsTriageBlocksUntilSignedSkip(t *testing.T) {
 	assert.True(t, st.NeedsTriage)
 	assert.False(t, st.Complete)
 
-	// İmzasız/gerekçesiz SkipKey reddedilir.
-	admin, err := cryptoid.GenerateECDSAP256()
-	require.NoError(t, err)
-	require.Error(t, l.SkipKey("wl_triage", testProject, "NO_META", "", "human:a", admin), "reason zorunlu")
-	require.Error(t, l.SkipKey("wl_triage", testProject, "NO_META", "manually-triaged", "human:a", nil), "signer zorunlu")
+	// Gerekçesiz/kimliksiz SkipKey reddedilir.
+	require.Error(t, l.SkipKey("wl_triage", testProject, "NO_META", "", "human:a"), "reason zorunlu")
+	require.Error(t, l.SkipKey("wl_triage", testProject, "NO_META", "manually-triaged", ""), "by zorunlu")
 
-	// Admin-imzalı SkipKey → StateSkipped satırı → triyaj çözülür, run complete.
-	require.NoError(t, l.SkipKey("wl_triage", testProject, "NO_META", "value is a public constant; not a secret", "human:a", admin))
+	// Kayıtlı SkipKey → StateSkipped satırı → triyaj çözülür, run complete.
+	require.NoError(t, l.SkipKey("wl_triage", testProject, "NO_META", "value is a public constant; not a secret", "human:a"))
 	st, err = l.RunState("wl_triage")
 	require.NoError(t, err)
-	assert.False(t, st.NeedsTriage, "signed-SKIP resolves triage")
+	assert.False(t, st.NeedsTriage, "recorded SKIP resolves triage")
 	assert.True(t, st.Complete)
 
-	// Yazılan satır GERÇEKTEN imzalı (evidence: attestation + key_id + sig).
+	// Yazılan satır kanonik attestation taşır (audit izi).
 	states, err := l.LatestStates("wl_triage")
 	require.NoError(t, err)
 	assert.Equal(t, StateSkipped, states[stateKey(testProject, "NO_META")])
@@ -89,7 +86,6 @@ func TestLedger_NeedsTriageBlocksUntilSignedSkip(t *testing.T) {
 	var ev skipEvidence
 	require.NoError(t, json.Unmarshal(last.Evidence, &ev))
 	assert.Equal(t, skipAttestationSchema, ev.Attestation.Schema)
-	assert.NotEmpty(t, ev.KeyID, "signed skip must record the admin key fingerprint")
-	assert.NotEmpty(t, ev.Sig, "signed skip must carry a signature")
 	assert.Equal(t, "human:a", ev.Attestation.By)
+	assert.NotEmpty(t, ev.Attestation.Reason)
 }

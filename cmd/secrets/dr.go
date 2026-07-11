@@ -1,281 +1,308 @@
 package secrets
 
+// wapps dr — felaket kurtarma verb'leri (server-decrypt SPEC §8.4).
+//
+//	dr verify   Ciphertext replikasının (B2 snapshot) yapısal bütünlüğünü doğrular:
+//	            current pointer → manifest hash zinciri → blob içerik-adresleri.
+//	            Hiçbir sır gerektirmez; Cloudflare tamamen erişilemezken çalışır.
+//	dr restore  TTY-ONLY seremoni: ≥2 MASTER_KEK Shamir payı + bir B2 snapshot'ından
+//	            MASTER_KEK'i yeniden kurar, per-proje KEK türetir (HKDF §2.3), DEK'leri
+//	            açar (WKW1 §2.4), blob'ları çözer (WSB1 §2.1) ve 0600 env dosyası yazar.
+//	            Değerler ASLA yazdırılmaz. Sıfır Cloudflare bağımlılığı.
+//
+// Canlı B2 okuma anahtarlarının provisioning'i insan-elidir; her iki verb de yerel
+// (hava-boşluklu) bir snapshot dizininde çalışır (`rclone sync b2:… <dir>` sonrası).
+
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
-	"time"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
-	"github.com/wappsdev/wapps-cli/internal/trust"
-	"github.com/wappsdev/wapps-cli/internal/witness"
+	"github.com/wappsdev/wapps-cli/internal/cryptoid"
 )
-
-// wapps dr — felaket kurtarma verb'leri (SPEC §9.5). dr verify HERHANGİ BİR sırla
-// gerekmez (yapı+imza doğrular, private escrow key GEREKMEZ) ve Cloudflare tamamen
-// erişilemezken / hava-boşluklu bir snapshot'a karşı çalışabilir. dr restore
-// TTY-ONLY bir seremonidir (ajan-modu reddedilir): 2-of-3 Shamir payından escrow
-// özel anahtarını yeniden kurar, snapshot'ı uçtan uca doğrular, escrow wrap'lerini
-// açar. Canlı B2 read + estate replay İNSAN-elidir; bu araç doğrulama+reconstruct
-// çekirdeğini sürer.
 
 // DrCmd, `wapps dr` grup komutudur.
 var DrCmd = &cobra.Command{
 	Use:   "dr",
-	Short: "Disaster recovery: verify / restore the escrow snapshot (§9.5)",
-	Long: `Disaster recovery against the NON-Cloudflare, object-locked B2 escrow snapshot
-(SPEC §9.5). The escrow subsystem is the answer to two failures: LOSS of Cloudflare
-(availability) and LOSS of TRUST in Cloudflare (freeze/rollback). dr verify runs the
-full §9.3.2 check suite from LOCAL pins only; dr restore is the true-disaster,
-TTY-only ceremony that reconstructs the escrow key from 2-of-3 Shamir shares.`,
+	Short: "Disaster recovery against the B2 ciphertext replica (§8.4)",
+	Long: `Disaster recovery against the NON-Cloudflare, append-only B2 replica (SPEC §8.4).
+The replica holds ONLY ciphertext + metadata — MASTER_KEK never reaches B2, so the
+replica alone yields nothing. dr verify is a structural integrity check; dr restore
+is the true-disaster TTY ceremony (Shamir shares + snapshot → plaintext env files).`,
 }
 
-var (
-	drSnapshotDir   string
-	drRequireCanary bool
+// --- snapshot v2 şekilleri (worker/src/manifest.ts paritesi) --------------------
+
+const (
+	schemaCurrentPointer = "wapps-secrets/current/v1"
+	schemaDataManifest   = "wapps-secrets/data-manifest/v2"
 )
 
+type snapshotPointer struct {
+	Schema         string `json:"schema"`
+	Project        string `json:"project"`
+	Epoch          uint64 `json:"epoch"`
+	ManifestSha256 string `json:"manifestSha256"`
+}
+
+type snapshotWrap struct {
+	Recipient string `json:"recipient"`
+	Kid       string `json:"kid"`
+	Wrap      string `json:"wrap"`
+}
+
+type snapshotEntry struct {
+	KeyName    string       `json:"keyName"`
+	KeyVersion uint64       `json:"keyVersion"`
+	BlobHash   string       `json:"blobHash"`
+	Wrap       snapshotWrap `json:"wrap"`
+}
+
+type snapshotManifest struct {
+	Schema  string          `json:"schema"`
+	Project string          `json:"project"`
+	Epoch   uint64          `json:"epoch"`
+	Entries []snapshotEntry `json:"entries"`
+}
+
+// loadSnapshotProject, snapshot dizininden bir projenin current head'ini yükler
+// ve zincir bütünlüğünü doğrular (pointer→manifest hash, şema, proje eşleşmesi).
+func loadSnapshotProject(dir, project string) (*snapshotManifest, *snapshotPointer, error) {
+	curRaw, err := os.ReadFile(filepath.Join(dir, "secrets", project, "current"))
+	if err != nil {
+		return nil, nil, clierr.Wrapf(clierr.Internal, err, "snapshot: read current pointer for %s", project)
+	}
+	var ptr snapshotPointer
+	if err := json.Unmarshal(curRaw, &ptr); err != nil || ptr.Schema != schemaCurrentPointer {
+		return nil, nil, clierr.Newf(clierr.Internal, "snapshot: current pointer for %s malformed", project)
+	}
+	manRaw, err := os.ReadFile(filepath.Join(dir, "secrets", project, "manifests", fmt.Sprintf("%d.json", ptr.Epoch)))
+	if err != nil {
+		return nil, nil, clierr.Wrapf(clierr.Internal, err, "snapshot: read manifest epoch %d for %s", ptr.Epoch, project)
+	}
+	sum := sha256.Sum256(manRaw)
+	if hex.EncodeToString(sum[:]) != strings.ToLower(ptr.ManifestSha256) {
+		return nil, nil, clierr.Newf(clierr.BlobHashMismatch, "snapshot: pointer/manifest hash mismatch for %s (tamper or partial replica)", project)
+	}
+	var man snapshotManifest
+	if err := json.Unmarshal(manRaw, &man); err != nil || man.Schema != schemaDataManifest {
+		return nil, nil, clierr.Newf(clierr.Internal, "snapshot: manifest for %s malformed/unsupported schema", project)
+	}
+	if man.Project != project || man.Epoch != ptr.Epoch {
+		return nil, nil, clierr.Newf(clierr.Internal, "snapshot: manifest project/epoch mismatch for %s", project)
+	}
+	return &man, &ptr, nil
+}
+
+// snapshotProjects, snapshot dizinindeki proje adlarını (secrets/<p>/) döner.
+func snapshotProjects(dir string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(dir, "secrets"))
+	if err != nil {
+		return nil, clierr.Wrapf(clierr.Internal, err, "snapshot: list %s/secrets", dir)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// --- dr verify -------------------------------------------------------------------
+
+var drSnapshotDir string
+
 var drVerifyCmd = &cobra.Command{
-	Use:   "verify",
-	Short: "Run the §9.3.2 verification suite against the escrow snapshot (read-only)",
-	Long: `Run the full §9.3.2 verification suite (writer/roster signatures vs pinned
-roots, blob content-addresses, manifest chain continuity, escrow-wrap presence,
-audit chain continuity, pointer-event density/consistency) against the B2 escrow
-snapshot — or a local air-gapped copy (--snapshot). Uses ONLY local pins; needs
-NO escrow private key; runnable with Cloudflare entirely unreachable (§9.5.1).`,
+	Use:   "verify --snapshot <dir>",
+	Short: "Structural integrity check of the B2 replica snapshot (read-only, §8.4)",
+	Long: `Verify the ciphertext replica: for every project, current pointer → manifest
+hash chain, manifest schema, and every referenced blob's content address. Uses NO
+secrets and NO Cloudflare — runnable against an air-gapped snapshot copy.
+(Live-B2 lag comparison alerts run in the Worker's nightly reconcile, §8.3.)`,
 	RunE: runDrVerify,
 }
 
 func runDrVerify(cmd *cobra.Command, _ []string) error {
-	pins, err := loadLocalPins()
+	if drSnapshotDir == "" {
+		return clierr.New(clierr.NotAvailable,
+			"dr verify runs against a local snapshot copy of the B2 replica: sync it first (rclone/b2 CLI, read-only key) and pass --snapshot <dir>")
+	}
+	projects, err := snapshotProjects(drSnapshotDir)
 	if err != nil {
 		return err
 	}
-	reader, source, err := resolveEscrowReader()
-	if err != nil {
-		return err
+	w := cmd.OutOrStdout()
+	for _, project := range projects {
+		man, ptr, err := loadSnapshotProject(drSnapshotDir, project)
+		if err != nil {
+			return err
+		}
+		for _, e := range man.Entries {
+			blob, berr := os.ReadFile(filepath.Join(drSnapshotDir, "secrets", project, "blobs", e.BlobHash))
+			if berr != nil {
+				return clierr.Wrapf(clierr.Internal, berr, "snapshot: blob missing for %s/%s", project, e.KeyName)
+			}
+			if verr := cryptoid.VerifyBlobHash(blob, e.BlobHash); verr != nil {
+				return clierr.Wrapf(clierr.BlobHashMismatch, verr, "snapshot: blob content-address mismatch for %s/%s", project, e.KeyName)
+			}
+			if e.Wrap.Recipient != cryptoid.WrapRecipient {
+				return clierr.Newf(clierr.Internal, "snapshot: unsupported wrap recipient on %s/%s", project, e.KeyName)
+			}
+		}
+		fmt.Fprintf(w, "  %-20s epoch=%d keys=%d manifest=%s\n", project, ptr.Epoch, len(man.Entries), short(ptr.ManifestSha256))
 	}
-	cfg := witness.Config{Pins: pins, RequireCanary: drRequireCanary, Now: time.Now}
-	res, err := witness.Verify(context.Background(), reader, cfg)
-	if err != nil {
-		return clierr.Wrapf(clierr.Internal, err, "escrow verification FAILED (%s)", source)
-	}
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "✓ escrow snapshot VERIFIED (%s)\n", source)
-	fmt.Fprintf(out, "  trust head: admin_epoch=%d sha=%s\n", res.TrustHead.AdminEpoch, short(res.TrustHead.TrustSha256))
-	projects := make([]string, 0, len(res.ProjectHeads))
-	for p := range res.ProjectHeads {
-		projects = append(projects, p)
-	}
-	sort.Strings(projects)
-	for _, p := range projects {
-		h := res.ProjectHeads[p]
-		fmt.Fprintf(out, "  %-20s epoch=%d manifest=%s\n", p, h.Epoch, short(h.ManifestSha256))
-	}
+	fmt.Fprintf(w, "✓ snapshot VERIFIED (%d project(s), %s)\n", len(projects), drSnapshotDir)
 	return nil
 }
 
+// --- dr restore ------------------------------------------------------------------
+
 var (
 	drRestoreProject string
-	drRestorePath    string
+	drRestoreOut     string
 	drRestoreConfirm bool
 	drRestoreShares  []string
 )
 
 var drRestoreCmd = &cobra.Command{
-	Use:   "restore",
-	Short: "TTY-only DR ceremony: reconstruct a project from escrow (§9.5.2/§9.5.3)",
-	Long: `TRUE-disaster restore ceremony (SPEC §9.5.2). TTY-ONLY — REFUSED under agent
-mode. Reconstructs the escrow private key from ANY 2-of-3 Shamir shares on an
-air-gapped machine, verifies the escrow snapshot end-to-end (dr verify semantics),
-then unwraps escrow DEK wraps and reconstructs the project's current pointer from
-the append-only representation (§9.5.3). Both paths (A restore-in-place, B full
-rebuild) issue an epoch-reset record; the live R2 replay + estate re-provision are
-the human half of the ceremony. Every restored value enters the rotation worklist
-(§9.5.5).`,
+	Use:   "restore --project <p> --snapshot <dir> --share <file> --share <file> --out <env-file>",
+	Short: "TTY-only DR ceremony: Shamir shares + snapshot → 0600 env file (§8.4)",
+	Long: `TRUE-disaster restore (SPEC §8.4). TTY-ONLY — REFUSED under agent mode.
+Reconstructs MASTER_KEK from ANY 2-of-3 Shamir share files (hex), verifies the
+snapshot chain, derives the project KEK (HKDF §2.3), unwraps every DEK (WKW1 §2.4),
+opens every blob (WSB1 §2.1) and writes a 0600 env file. The assembled MASTER_KEK
+and the plaintext values are NEVER printed and never persisted beyond --out.
+Works with zero Cloudflare availability.`,
 	RunE: runDrRestore,
 }
 
 func runDrRestore(cmd *cobra.Command, _ []string) error {
-	// TTY-only: ajan-modunda ASLA (§9.5.2). agentmode.PolicyTTY guard'ı.
+	// TTY-only seremoni: ajan modunda ASLA (§7.1 dr restore REFUSED).
 	if err := agentmode.Guard(agentmode.PolicyTTY, agentmode.IsAgent()); err != nil {
 		return err
 	}
-	if drRestoreProject == "" {
-		return clierr.New(clierr.Internal, "dr restore: --project is required")
+	if drRestoreProject == "" || drSnapshotDir == "" {
+		return clierr.New(clierr.Internal, "dr restore: --project and --snapshot are required")
 	}
-	reason := witness.RestorePathA
-	switch drRestorePath {
-	case "", "a":
-		reason = witness.RestorePathA
-	case "b":
-		reason = witness.RestorePathB
-	default:
-		return clierr.Newf(clierr.Internal, "dr restore: --path must be a (restore-in-place) or b (full rebuild)")
-	}
-	if !drRestoreConfirm {
-		return clierr.New(clierr.NotAvailable,
-			"dr restore is a destructive TTY ceremony; re-run with --confirm once the air-gapped machine holds ≥2 Shamir shares and the escrow snapshot is reachable (--snapshot or live B2)")
+	if drRestoreOut == "" {
+		return clierr.New(clierr.Internal, "dr restore: --out <env-file> is required (values are NEVER printed)")
 	}
 	if len(drRestoreShares) < 2 {
 		return clierr.New(clierr.NotAvailable,
-			"dr restore needs ≥2 Shamir share files (--share PATH --share PATH); the assembled escrow key is NEVER persisted (§9.1)")
+			"dr restore needs ≥2 Shamir share files (--share PATH --share PATH); the assembled MASTER_KEK is NEVER persisted")
 	}
-
-	// Payları oku + escrow özel anahtarını yeniden kur (asla diske yazılmaz).
-	shares, err := readShares(drRestoreShares)
-	if err != nil {
-		return err
-	}
-	escrowID, err := witness.ReconstructEscrowKey(shares)
-	if err != nil {
-		return clierr.Wrapf(clierr.Internal, err, "reconstruct escrow key from shares")
-	}
-
-	pins, err := loadLocalPins()
-	if err != nil {
-		return err
-	}
-	reader, source, err := resolveEscrowReader()
-	if err != nil {
-		return err
-	}
-	res, err := witness.Verify(context.Background(), reader, witness.Config{Pins: pins, Now: time.Now})
-	if err != nil {
-		return clierr.Wrapf(clierr.Internal, err, "refuse to restore an UNVERIFIED snapshot (%s)", source)
-	}
-	restored, err := witness.Restore(context.Background(), reader, res, drRestoreProject, escrowID, reason, time.Now())
-	if err != nil {
-		return clierr.Wrapf(clierr.Internal, err, "restore %s", drRestoreProject)
-	}
-
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "✓ RECONSTRUCTED %s from escrow (%s, %s)\n", restored.Project, source, reason)
-	fmt.Fprintf(out, "  current pointer: epoch=%d manifest=%s\n", restored.Current.Epoch, short(restored.Current.ManifestSha256))
-	fmt.Fprintf(out, "  recovered %d value(s) into ceremony memory (NEVER printed; all enter the rotation worklist §9.5.5)\n", len(restored.Values))
-	resetBody, _ := restored.EpochReset.Marshal()
-	fmt.Fprintf(out, "\nepoch-reset record to be signed by ≥M root keys (§9.5.4):\n%s\n", resetBody)
-	fmt.Fprintln(out, "\nNEXT (human half): sign the epoch-reset record with ≥M root keys, replay objects into R2, write the reconstructed current pointer, rebuild the D1 index, then rotate every recovered value.")
-	return nil
-}
-
-var drRepinCmd = &cobra.Command{
-	Use:   "repin-genesis",
-	Short: "Re-pin a client's genesis trust root from a verified snapshot (§4.10)",
-	Long: `Genesis re-pin ceremony (SPEC §4.10 / §9.5.3 Path B quorum-loss break-glass).
-Writes a fresh roots.json genesis pin from a verified escrow snapshot's trust head.
-TTY-only. Use only under the out-of-band quorum-loss recovery procedure — a
-mismatched compiled-vs-local genesis pin otherwise routes to this ceremony
-(TRUST_PIN_CONFLICT).`,
-	RunE: runDrRepin,
-}
-
-func runDrRepin(cmd *cobra.Command, _ []string) error {
-	if err := agentmode.Guard(agentmode.PolicyTTY, agentmode.IsAgent()); err != nil {
-		return err
-	}
-	pins, err := loadLocalPins()
-	if err != nil {
-		return err
-	}
-	reader, source, err := resolveEscrowReader()
-	if err != nil {
-		return err
-	}
-	res, err := witness.Verify(context.Background(), reader, witness.Config{Pins: pins, Now: time.Now})
-	if err != nil {
-		return clierr.Wrapf(clierr.Internal, err, "refuse to re-pin from an UNVERIFIED snapshot (%s)", source)
-	}
-	newGenesis := trust.Pin{AdminEpoch: res.TrustHead.AdminEpoch, SHA256: res.TrustHead.TrustSha256}
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "verified trust head (%s): admin_epoch=%d sha=%s\n", source, newGenesis.AdminEpoch, newGenesis.SHA256)
-	fmt.Fprintln(out, "\nThis re-pin ADVANCES the genesis root of trust — a full re-key event. Confirm out-of-band with ≥M root-key holders, then run:")
-	fmt.Fprintf(out, "  wapps secrets trust-repo   # after writing roots.json genesis = {admin_epoch:%d, sha256:%q}\n", newGenesis.AdminEpoch, newGenesis.SHA256)
-	return nil
-}
-
-var drVerifierCmd = &cobra.Command{
-	Use:   "verifier",
-	Short: "VM hourly cron: verify escrow + publish witness head + alert (§9.3)",
-	Long: `The VM (ci.meapps.dev) hourly verifier entry (SPEC §9.3): verify the escrow
-snapshot, and on success PUBLISH the per-project witness head + trust head to the
-NON-object-locked NON-Cloudflare witness bucket; on failure or staleness ALERT
-(Discord, A5). The live B2 read/witness-write keys + the VM cron deploy are
-DEFERRED (human/infra); this is the runnable entry the cron invokes.`,
-	RunE: func(cmd *cobra.Command, _ []string) error {
+	if !drRestoreConfirm {
 		return clierr.New(clierr.NotAvailable,
-			"dr verifier is the VM hourly cron entry (§9.3): it needs the read-only B2 escrow key + the witness-bucket write key + WITNESS_ORIGIN, provisioned on ci.meapps.dev — live B2 buckets + VM cron deploy are DEFERRED (human/infra). The verify+publish+alert core is internal/witness (RunOnce).")
-	},
+			"dr restore is a disaster ceremony; re-run with --confirm once the air-gapped machine holds ≥2 shares and the snapshot copy")
+	}
+	return restoreProjectFromSnapshot(cmd.OutOrStdout(), drSnapshotDir, drRestoreProject, drRestoreShares, drRestoreOut)
 }
 
-// --- yardımcılar ------------------------------------------------------------
-
-// loadLocalPins, YEREL trust pin deposunu (roots.json) yükler; yoksa derlenmiş
-// genesis'ten bootstrap eder. dr verify Cloudflare'e ASLA güvenmez (§9.5.1).
-func loadLocalPins() (*trust.PinStore, error) {
-	path, err := trust.DefaultPinPath()
+// restoreProjectFromSnapshot, restore seremonisinin çekirdeğidir (guard'lar
+// runDrRestore'da): paylar → MASTER_KEK → KEK → DEK → plaintext → 0600 dosya.
+func restoreProjectFromSnapshot(w io.Writer, snapshotDir, project string, sharePaths []string, outPath string) error {
+	shares, err := readShareFiles(sharePaths)
 	if err != nil {
-		return nil, clierr.Wrapf(clierr.Internal, err, "resolve pin path")
+		return err
 	}
-	if ps, err := trust.LoadPinStore(path); err == nil {
-		return ps, nil
+	master, err := cryptoid.ShamirCombine(shares)
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "reconstruct MASTER_KEK from shares")
 	}
-	if g, ok := trust.CompiledGenesis(); ok {
-		return trust.NewPinStore(g), nil
+	if len(master) != 32 {
+		return clierr.Newf(clierr.Internal, "reconstructed MASTER_KEK is %d bytes, want 32 (wrong/mismatched shares?)", len(master))
 	}
-	return nil, clierr.New(clierr.SigInvalid, "no trust pins and no compiled genesis (dr verify needs local pins §4)")
-}
+	kid, err := cryptoid.KekKid(master)
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "derive kid")
+	}
 
-// resolveEscrowReader, escrow Reader'ını çözer: --snapshot verilirse yerel dizin
-// (hava-boşluklu, §9.5.1); aksi halde canlı B2 (env config). Canlı B2 config
-// eksikse NotAvailable (canlı B2 DEFERRED). source = insan-okunur kaynak etiketi.
-func resolveEscrowReader() (witness.Reader, string, error) {
-	if drSnapshotDir != "" {
-		if fi, err := os.Stat(drSnapshotDir); err != nil || !fi.IsDir() {
-			return nil, "", clierr.Newf(clierr.Internal, "--snapshot %q is not a directory", drSnapshotDir)
+	man, ptr, err := loadSnapshotProject(snapshotDir, project)
+	if err != nil {
+		return err
+	}
+
+	var lines []string
+	for _, e := range man.Entries {
+		if e.Wrap.Kid != kid {
+			return clierr.Newf(clierr.Internal,
+				"wrap kid %s on %s does not match the reconstructed key's kid %s — wrong MASTER_KEK generation (older shares? see §2.5 rotation)", e.Wrap.Kid, e.KeyName, kid)
 		}
-		return witness.DirReader{Root: drSnapshotDir}, "snapshot " + drSnapshotDir, nil
+		wrapBytes, derr := base64.StdEncoding.DecodeString(e.Wrap.Wrap)
+		if derr != nil {
+			return clierr.Newf(clierr.Internal, "wrap for %s not base64", e.KeyName)
+		}
+		blob, berr := os.ReadFile(filepath.Join(snapshotDir, "secrets", project, "blobs", e.BlobHash))
+		if berr != nil {
+			return clierr.Wrapf(clierr.Internal, berr, "blob missing for %s", e.KeyName)
+		}
+		if verr := cryptoid.VerifyBlobHash(blob, e.BlobHash); verr != nil {
+			return clierr.Wrapf(clierr.BlobHashMismatch, verr, "blob content-address mismatch for %s", e.KeyName)
+		}
+		slot := cryptoid.Slot{Project: project, KeyName: e.KeyName, KeyVersion: e.KeyVersion}
+		dek, uerr := cryptoid.UnwrapDEKWithKEK(master, project, slot, wrapBytes)
+		if uerr != nil {
+			return clierr.Wrapf(clierr.Internal, uerr, "DEK unwrap failed for %s (tamper or key mismatch)", e.KeyName)
+		}
+		pt, oerr := cryptoid.OpenBlob(blob, dek, slot)
+		if oerr != nil {
+			return clierr.Wrapf(clierr.Internal, oerr, "blob open failed for %s", e.KeyName)
+		}
+		lines = append(lines, e.KeyName+"="+string(pt))
 	}
-	cfg, ok := escrowS3ConfigFromEnv()
-	if !ok {
-		return nil, "", clierr.New(clierr.NotAvailable,
-			"no escrow source: pass --snapshot <dir> for an air-gapped copy, or set B2_ENDPOINT/B2_REGION/B2_BUCKET/B2_READ_KEY_ID/B2_READ_KEY for live B2 (live bucket DEFERRED)")
+
+	if err := writeRestoredEnvFile(outPath, lines); err != nil {
+		return err
 	}
-	return witness.NewS3Store(cfg), "live B2 " + cfg.Bucket, nil
+	fmt.Fprintf(w, "✓ RESTORED %s (epoch %d): %d value(s) → %s (0600; values never printed)\n",
+		project, ptr.Epoch, len(lines), outPath)
+	fmt.Fprintln(w, "NEXT (human half): re-provision the estate from this file, then ROTATE every restored value (rotate-plan doctrine §2.5).")
+	return nil
 }
 
-// escrowS3ConfigFromEnv, READ-ONLY B2 escrow config'ini env'den çözer (§9.3.1
-// read-only key). Herhangi biri eksikse ok=false.
-func escrowS3ConfigFromEnv() (witness.S3Config, bool) {
-	get := os.Getenv
-	cfg := witness.S3Config{
-		Endpoint:  get("B2_ENDPOINT"),
-		Region:    get("B2_REGION"),
-		Bucket:    get("B2_BUCKET"),
-		KeyID:     get("B2_READ_KEY_ID"),
-		SecretKey: get("B2_READ_KEY"),
-	}
-	if cfg.Endpoint == "" || cfg.Region == "" || cfg.Bucket == "" || cfg.KeyID == "" || cfg.SecretKey == "" {
-		return witness.S3Config{}, false
-	}
-	return cfg, true
-}
-
-// readShares, verilen dosya yollarından Shamir paylarını okur (her dosya bir pay).
-func readShares(paths []string) ([][]byte, error) {
+// readShareFiles, hex-kodlu Shamir pay dosyalarını okur (boşluk/yenisatır tolere).
+func readShareFiles(paths []string) ([][]byte, error) {
 	out := make([][]byte, 0, len(paths))
 	for _, p := range paths {
-		b, err := os.ReadFile(p)
+		raw, err := os.ReadFile(p)
 		if err != nil {
 			return nil, clierr.Wrapf(clierr.Internal, err, "read share %s", p)
 		}
-		out = append(out, decodeShare(b))
+		clean := strings.Join(strings.Fields(string(raw)), "")
+		b, err := hex.DecodeString(clean)
+		if err != nil {
+			return nil, clierr.Newf(clierr.Internal, "share %s is not hex", p)
+		}
+		out = append(out, b)
 	}
 	return out, nil
+}
+
+// writeRestoredEnvFile, KEY=value satırlarını 0600 atomik yazar (asla stdout'a değil).
+func writeRestoredEnvFile(path string, lines []string) error {
+	tmp := path + ".tmp"
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "write %s", tmp)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return clierr.Wrapf(clierr.Internal, err, "finalize %s", path)
+	}
+	return nil
 }
 
 func short(s string) string {
@@ -286,16 +313,11 @@ func short(s string) string {
 }
 
 func init() {
-	drVerifyCmd.Flags().StringVar(&drSnapshotDir, "snapshot", "", "verify a local air-gapped snapshot dir instead of live B2 (§9.5.1)")
-	drVerifyCmd.Flags().BoolVar(&drRequireCanary, "require-canary", false, "also require a WAPPS_ESCROW_CANARY entry in every project head (§9.3.2g presence)")
-
-	drRestoreCmd.Flags().StringVar(&drSnapshotDir, "snapshot", "", "restore from a local air-gapped snapshot dir instead of live B2")
+	drVerifyCmd.Flags().StringVar(&drSnapshotDir, "snapshot", "", "local (air-gapped) copy of the B2 replica")
+	drRestoreCmd.Flags().StringVar(&drSnapshotDir, "snapshot", "", "local (air-gapped) copy of the B2 replica")
 	drRestoreCmd.Flags().StringVar(&drRestoreProject, "project", "", "project to reconstruct")
-	drRestoreCmd.Flags().StringVar(&drRestorePath, "path", "a", "restore path: a (restore-in-place) | b (full rebuild)")
-	drRestoreCmd.Flags().BoolVar(&drRestoreConfirm, "confirm", false, "confirm the destructive TTY restore ceremony")
-	drRestoreCmd.Flags().StringArrayVar(&drRestoreShares, "share", nil, "Shamir share file (repeat ≥2; assembled key NEVER persisted)")
-
-	drRepinCmd.Flags().StringVar(&drSnapshotDir, "snapshot", "", "verify a local air-gapped snapshot dir instead of live B2")
-
-	DrCmd.AddCommand(drVerifyCmd, drRestoreCmd, drRepinCmd, drVerifierCmd)
+	drRestoreCmd.Flags().StringVar(&drRestoreOut, "out", "", "0600 env file to write the restored values into")
+	drRestoreCmd.Flags().BoolVar(&drRestoreConfirm, "confirm", false, "confirm the TTY restore ceremony")
+	drRestoreCmd.Flags().StringArrayVar(&drRestoreShares, "share", nil, "MASTER_KEK Shamir share file, hex (repeat ≥2; assembled key NEVER persisted)")
+	DrCmd.AddCommand(drVerifyCmd, drRestoreCmd)
 }

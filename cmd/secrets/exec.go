@@ -64,9 +64,9 @@ func runExec(args []string, prefix, intent string, breakGlass, isAgent bool, out
 		return clierr.New(clierr.BreakGlassRefused, "--break-glass refused in agent mode")
 	}
 
-	// Backend yönlendirme (§7.12): `.wapps.yaml` backend:store ise exec, değerleri
-	// never-trust-Worker store'undan çeker ve deploy intent'i store'un GERÇEK
-	// fresh-or-fail (receipt + tanık) yolundan geçer — legacy fail-loud DEĞİL.
+	// Backend yönlendirme: `.wapps.yaml` backend:store ise exec, PLAINTEXT
+	// değerleri secrets-gate Worker'ından çeker (server-decrypt SPEC §2.7 —
+	// her okuma sunucudan taze; ayrı bir deploy tazelik yolu yoktur).
 	// backend yoksa / legacy-git ise aşağıdaki legacy age-arşiv yolu AYNEN korunur.
 	storeCfg, cerr := storeBackendConfig()
 	if cerr != nil {

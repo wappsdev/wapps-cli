@@ -12,6 +12,8 @@ import (
 var (
 	initWithFileSource bool
 	initForce          bool
+	initBackendStore   bool
+	initProjectName    string
 )
 
 var initCmd = &cobra.Command{
@@ -36,8 +38,41 @@ After init, set WAPPS_SECRETS_PASSPHRASE, populate .env.shared (if file
 source) or set up your tofu project (if tofu source), then run
 'wapps secrets sync'.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if initBackendStore {
+			return runInitStore(".", initProjectName, initForce)
+		}
 		return runInit(".", initWithFileSource, initForce)
 	},
+}
+
+// runInitStore, v2 backend:store config'ini iskeletler (SPEC §6.1): yerel
+// arşiv/secrets dizini YOKTUR — değerler gate'te yaşar. Sonraki adımlar:
+// login → trust-repo → set.
+func runInitStore(repoRoot, project string, force bool) error {
+	if project == "" {
+		abs, err := filepath.Abs(repoRoot)
+		if err != nil {
+			return fmt.Errorf("secrets.init: resolve repo root: %w", err)
+		}
+		project = filepath.Base(abs)
+	}
+	yamlPath := filepath.Join(repoRoot, ".wapps.yaml")
+	if existing, err := os.Stat(yamlPath); err == nil && !existing.IsDir() && !force {
+		return fmt.Errorf("secrets.init: %s already exists (use --force to overwrite)", yamlPath)
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("secrets.init: stat %s: %w", yamlPath, err)
+	}
+	if err := writeWappsYAMLStore(yamlPath, project); err != nil {
+		return err
+	}
+	fmt.Println("✓ wapps init complete (backend: store)")
+	fmt.Println("  +", yamlPath)
+	fmt.Println("\nNext steps:")
+	fmt.Println("  1. wapps login                 # CF Access browser SSO")
+	fmt.Println("  2. wapps secrets trust-repo    # pin this repo to project " + project)
+	fmt.Println("  3. wapps secrets set <KEY>     # first set creates the manifest chain")
+	fmt.Println("     (an admin adds policy rows: wapps secrets policy set)")
+	return nil
 }
 
 // runInit scaffolds the wapps directory layout at repoRoot. withFile adds
@@ -100,6 +135,30 @@ func runInit(repoRoot string, withFile, force bool) error {
 		fmt.Println("  2. Confirm 'tofu output -json' works in this directory")
 		fmt.Println("  3. wapps doctor --for tofu")
 		fmt.Println("  4. wapps secrets sync")
+	}
+	return nil
+}
+
+// writeWappsYAMLStore, v2 backend:store template'ini yazar (server-decrypt
+// SPEC §6.1: yeni proje = init → ilk set manifest zincirini kurar; policy
+// satırları admin tarafından eklenir). Değerler Worker store'unda yaşar;
+// yerel arşiv/passphrase YOKTUR.
+func writeWappsYAMLStore(path, project string) error {
+	var b strings.Builder
+	b.WriteString("# wapps-cli configuration (v2, server-decrypt store)\n")
+	b.WriteString("# Docs: https://github.com/wappsdev/wapps-cli\n")
+	b.WriteString("\n")
+	b.WriteString("version: 2\n")
+	b.WriteString("backend: store\n")
+	b.WriteString("project: " + project + "\n")
+	b.WriteString("\n")
+	b.WriteString("# Optional consumption targets. 'wapps secrets apply' materializes these\n")
+	b.WriteString("# from the store — atomic, mode 0600, idempotent. Gitignore them.\n")
+	b.WriteString("# targets:\n")
+	b.WriteString("#   - path: .env.local\n")
+	b.WriteString("#     prefix: \"\"\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
+		return fmt.Errorf("secrets.init: write %s: %w", path, err)
 	}
 	return nil
 }
@@ -174,5 +233,9 @@ func init() {
 		"include a 'file' source declaration for .env.shared (non-Tofu repos)")
 	initCmd.Flags().BoolVar(&initForce, "force", false,
 		"overwrite existing .wapps.yaml (default refuses to clobber)")
+	initCmd.Flags().BoolVar(&initBackendStore, "store", false,
+		"scaffold a v2 backend:store config (server-decrypt gate) instead of the legacy git archive")
+	initCmd.Flags().StringVar(&initProjectName, "project-name", "",
+		"project id for --store (default: current directory name)")
 	SecretsCmd.AddCommand(initCmd)
 }

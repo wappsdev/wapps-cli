@@ -1,21 +1,20 @@
-// Alert kuralları (SPEC §6.10) — hepsi Discord webhook'una (DISCORD_WEBHOOK_URL).
-// v1 için 8 normatif kural. Alert teslimatı başarısızlığı ALTTAKİ operasyonu ASLA
+// Alert kuralları (SPEC §0.1 mutabık envanter) — hepsi Discord webhook'una
+// (DISCORD_WEBHOOK_URL). Alert teslimatı başarısızlığı ALTTAKİ operasyonu ASLA
 // bloklamaz/düşürmez (alert = tespit, enforcement değil); başarısız post bir kez
-// retry edilir ve audit'e `alert.failed` yazılır (§6.10). Bu dosyada Discord POST
-// mekaniği + kural sabitleri var; kuralları tetikleyen yerler index/writer/admin.
+// retry edilir ve audit'e `alert.failed` yazılır. Kuralları tetikleyen yerler
+// index/writer/gc/identity. Bu liste EKSİKSİZDİR; başka kural yaşamaz (§0.1).
 
 import { AuditRow } from "./audit.js";
 
-// 8 normatif kural (§6.10).
 export const ALERT = {
-  A1: "A1", // denial spike (≥10 deny / principal / 5dk)
-  A2: "A2", // full-manifest blob-fetch burst (≥50 distinct blobs / 10dk)
-  A3: "A3", // machine rotate_by (14 gün içinde / geçmiş)
-  A4: "A4", // escrow push failure (G10 stub)
-  A5: "A5", // witness stale / verification failure (G10 stub; Worker'ın kendi fetch'i)
-  A6: "A6", // GC failure/skip (G10 stub)
-  A7: "A7", // Worker version change (deploy-time)
-  A8: "A8", // integrity/config anomaly (audit-DO down, misconfig, chain discontinuity, ingest backlog)
+  A1: "A1", // denial spike (GRANT_DENIED/deny-row burst — policy-deny modelinin birincil erken uyarısı)
+  A2: "A2", // value-read burst (value.read/value.read.bulk satır patlaması / principal)
+  A3: "A3", // service-token rotasyon hatırlatması (90 gün; doctor + CF expires_at)
+  A4: "A4", // escrow/replika backlog (§8.3)
+  A7: "A7", // Worker versiyon değişimi (deploy-time; C1)
+  A8: "A8", // misconfig / audit-down / GC anomalisi (fail-closed yol sinyali)
+  A9: "A9", // policy değişimi (§4.1 — her policy PUT)
+  A10: "A10", // identity-endpoint şekil kayması (§3.2 adım 2 / §3.4)
 } as const;
 export type AlertRule = (typeof ALERT)[keyof typeof ALERT];
 

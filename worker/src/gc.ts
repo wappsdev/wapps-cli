@@ -1,47 +1,34 @@
-// GC cron (SPEC §6.7). Haftalık Worker cron (pinli `0 3 * * 0` UTC). Bir
+// GC cron (SPEC §0.1 KEPT). Haftalık Worker cron (pinli `0 3 * * 0` UTC). Bir
 // ciphertext blob'u YALNIZCA ÜÇ koşul birden tutunca silinir:
 //   (a) projenin son 50 epoch'unun HİÇBİR manifest'i tarafından referanslanmıyor, VE
 //   (b) 90 GÜNDEN eski, VE
-//   (c) DOĞRULANMIŞ bir escrow snapshot'ında bulunuyor — silmeden ÖNCE non-CF
-//       witness origin'inden (§9.3 B2 witness bucket) VM verifier raporu çekilir;
-//       rapor erişilemez / bayat (>2h) / FAILING ise TÜM run atlanır ve A6 tetiklenir.
-//       Worker escrow durumuna KENDİ tanıklığıyla ASLA silme yapmaz.
+//   (c) B2 replikasında MEVCUT olduğu teyit edilmiş (escrowHas — append-only key
+//       okuyabilir; teyit edilemeyen blob SİLİNMEZ, güvenli taraf).
+// v2 delta: ZK tasarımın VM-witness gate'i SİLİNDİ (§0.2) — koşul (c) doğrudan
+// B2 HEAD teyididir; GC anomalileri A8 (misconfig/anomali) olarak alarmlanır.
 //
-// Ek kurallar (§6.7): manifest'ler SONSUZA kadar tutulur; audit ledger ASLA
-// GC'lenmez (bu modül yalnızca `secrets/<project>/blobs/` dokunur). İlk 30 GÜN
-// DRY-RUN: yalnızca RAPOR (A6 informational), silme YOK. Her silme bir audit
-// satırı yazar (verb `gc.delete`, principal `worker`).
+// Ek kurallar: manifest'ler SONSUZA kadar tutulur; audit ledger ASLA GC'lenmez
+// (bu modül yalnızca `secrets/<project>/blobs/` dokunur). İlk 30 GÜN DRY-RUN.
+// Her silme bir audit satırı yazar (verb `gc.delete`, principal `worker`).
 
 import { getObject, keyCurrent, keyManifest, keyBlob } from "./storage.js";
-import { parseCurrentPointer, parseManifestBody } from "./manifest.js";
-import { parseSignedObject } from "./crypto/verify.js";
+import { parseCurrentPointer, parseManifest } from "./manifest.js";
 
 const RETENTION_MS = 90 * 24 * 3600 * 1000; // 90 gün (b)
 const DRYRUN_MS = 30 * 24 * 3600 * 1000; // ilk 30 gün DRY-RUN
-const WITNESS_STALE_MS = 2 * 3600 * 1000; // 2 saat (c)
 const LAST_EPOCHS = 50; // (a)
-
-/** GCWitnessReport, VM verifier'ın non-CF witness origin'inden çekilen özeti. */
-export interface GCWitnessReport {
-  reachable: boolean; // origin'e ulaşıldı mı
-  failing: boolean; // verifier bir doğrulama HATASI raporladı mı
-  ageMs: number; // en son başarılı doğrulamanın yaşı (staleness)
-}
 
 /** GCDeps, GC'nin enjekte edilebilir dış kenarlarıdır (tam test-edilebilir). */
 export interface GCDeps {
   now: Date;
   // enabledAt, GC'nin etkinleştirildiği an (GC_ENABLED_AT). null (unset/blank) →
-  // etkinleşme tarihi BİLİNMİYOR → fail-safe: report-only (dry-run) + A6, ASLA
-  // gerçek silme. Bilinen tarih ise ilk 30 gün DRY-RUN, sonrası gerçek silme.
+  // fail-safe: report-only (dry-run), ASLA gerçek silme.
   enabledAt: Date | null;
-  // witness, VM verifier raporunu non-CF witness origin'inden çeker (§9.3).
-  witness: () => Promise<GCWitnessReport>;
-  // escrowHas, blob'un DOĞRULANMIŞ escrow snapshot'ında bulunduğunu teyit eder (c).
+  // escrowHas, blob'un B2 replikasında bulunduğunu teyit eder (c).
   escrowHas: (project: string, sha: string) => Promise<boolean>;
   // auditDelete, `gc.delete` audit satırı yazar (principal worker).
   auditDelete: (project: string, sha: string) => Promise<void>;
-  // alert, A6 (§6.10) tetikler (best-effort).
+  // alert, A8 (misconfig/anomali) tetikler (best-effort).
   alert: (rule: string, summary: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -56,7 +43,7 @@ export interface GCReport {
 
 /**
  * referencedBlobs, projenin SON 50 epoch'undaki tüm manifest'lerin referansladığı
- * blob hash kümesini döner (§6.7 koşul a). current pointer yoksa boş küme.
+ * blob hash kümesini döner (koşul a). current pointer yoksa boş küme.
  */
 async function referencedBlobs(bucket: R2Bucket, project: string): Promise<Set<string>> {
   const refs = new Set<string>();
@@ -67,8 +54,7 @@ async function referencedBlobs(bucket: R2Bucket, project: string): Promise<Set<s
   for (let e = lo; e <= ptr.epoch; e++) {
     const man = await getObject(bucket, keyManifest(project, e));
     if (!man) continue;
-    const signed = parseSignedObject(JSON.parse(new TextDecoder().decode(man.bytes)));
-    const body = parseManifestBody(signed.bytes);
+    const body = parseManifest(man.bytes);
     for (const entry of body.entries) refs.add(entry.blobHash);
   }
   return refs;
@@ -91,38 +77,21 @@ async function listBlobs(bucket: R2Bucket, project: string): Promise<{ sha: stri
 }
 
 /**
- * runGC, GC cron'un saf çekirdeğidir (§6.7). projects = taranacak projeler.
- * Witness raporu erişilemez/bayat/failing ise TÜM run atlanır (A6). Aksi halde
- * her proje için (a)∧(b)∧(c) tutan blob'lar aday; ilk 30 gün DRY-RUN (sadece
- * A6 informational rapor), sonra gerçek silme + `gc.delete` audit satırı.
+ * runGC, GC cron'un saf çekirdeğidir. projects = taranacak projeler. Her proje
+ * için (a)∧(b)∧(c) tutan blob'lar aday; ilk 30 gün DRY-RUN (rapor, silme yok),
+ * sonra gerçek silme + `gc.delete` audit satırı.
  */
 export async function runGC(bucket: R2Bucket, projects: string[], deps: GCDeps): Promise<GCReport> {
   const report: GCReport = { skipped: false, dryRun: false, candidates: [], deleted: [] };
 
-  // (c) — silmeden ÖNCE escrow doğrulama durumu. Worker KENDİ tanıklığıyla silmez.
-  let w: GCWitnessReport;
-  try {
-    w = await deps.witness();
-  } catch {
-    w = { reachable: false, failing: false, ageMs: Infinity };
-  }
-  if (!w.reachable || w.failing || w.ageMs > WITNESS_STALE_MS) {
-    report.skipped = true;
-    report.reason = !w.reachable ? "witness_unreachable" : w.failing ? "witness_failing" : "witness_stale";
-    deps.alert("A6", `GC run skipped: ${report.reason}`, { ageMs: w.ageMs });
-    return report;
-  }
-
-  // DRY-RUN penceresi (§6.7 / D9): ilk 30 gün SADECE-RAPOR, silme YOK. enabledAt
-  // BİLİNMİYORSA (GC_ENABLED_AT unset/blank → null) etkinleşme tarihi belirsizdir →
-  // GÜVENLİ TARAF: "az önce etkinleşti" say (report-only), ASLA "pencere geçti"
-  // DEĞİL. Aksi halde B2+WITNESS_ORIGIN bağlanıp GC_ENABLED_AT unutulursa İLK canlı
-  // GC koşusu 30 günlük güvenlik penceresini atlayıp blob'ları ANINDA silerdi.
+  // DRY-RUN penceresi: ilk 30 gün SADECE-RAPOR. enabledAt BİLİNMİYORSA güvenli
+  // taraf: report-only + alert (aksi halde GC_ENABLED_AT unutulunca ilk canlı
+  // koşu 30 günlük pencereyi atlayıp blob'ları ANINDA silerdi).
   let dryRun: boolean;
   if (deps.enabledAt === null) {
     dryRun = true;
     deps.alert(
-      "A6",
+      "A8",
       "GC report-only: GC_ENABLED_AT unset — refusing live deletion until the 30-day window start is known (set GC_ENABLED_AT or skip the run)",
     );
   } else {
@@ -138,15 +107,21 @@ export async function runGC(bucket: R2Bucket, projects: string[], deps: GCDeps):
       if (refs.has(b.sha)) continue;
       // (b) 90 günden eski.
       if (deps.now.getTime() - b.uploaded.getTime() <= RETENTION_MS) continue;
-      // (c) doğrulanmış escrow snapshot'ında mevcut.
-      if (!(await deps.escrowHas(project, b.sha))) continue;
+      // (c) B2 replikasında mevcut (teyit edilemedi → silme, güvenli taraf).
+      let inReplica = false;
+      try {
+        inReplica = await deps.escrowHas(project, b.sha);
+      } catch {
+        inReplica = false;
+      }
+      if (!inReplica) continue;
       report.candidates.push({ project, sha: b.sha });
     }
   }
 
   if (dryRun) {
-    // İlk 30 gün: sadece rapor et (A6 informational), HİÇBİR ŞEY silme.
-    deps.alert("A6", `GC dry-run: ${report.candidates.length} blob(s) would be deleted`, { count: report.candidates.length });
+    // İlk 30 gün: sadece rapor et (informational), HİÇBİR ŞEY silme.
+    deps.alert("A8", `GC dry-run: ${report.candidates.length} blob(s) would be deleted`, { count: report.candidates.length });
     return report;
   }
 
@@ -156,7 +131,7 @@ export async function runGC(bucket: R2Bucket, projects: string[], deps: GCDeps):
       await deps.auditDelete(c.project, c.sha);
       report.deleted.push(c);
     } catch (err) {
-      deps.alert("A6", `GC delete failed for ${c.project}/${c.sha}`, { error: String(err) });
+      deps.alert("A8", `GC delete failed for ${c.project}/${c.sha}`, { error: String(err) });
     }
   }
   return report;

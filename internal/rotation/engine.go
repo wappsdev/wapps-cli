@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
-	"github.com/wappsdev/wapps-cli/internal/lifecycle"
 )
 
-// ValueStore, store-first değer-yazımı port'udur (SPEC §8.6.1: yeni değer tüketici-
-// tarafı değişiklikten ÖNCE wapps-secrets'a yazılır). ÜRETİM: internal/store.
-// WorkerStore üzerinden değer-değiştiren imzalı bir epoch (rewrap remint gibi ama
-// düz-metni değiştirerek). Bu, doğrulanmış bir trust head + alıcı kümesi gerektirir
-// = CANLI wiring (DEFER, G14+); burada test için MemValueStore, prod için StubValueStore.
+// ValueStore, store-first değer-yazımı port'udur (yeni değer tüketici-tarafı
+// değişiklikten ÖNCE wapps-secrets'a yazılır). ÜRETİM: internal/store v2
+// plaintext istemcisi üzerinden PUT/Import (SPEC §7.4 — imza/wrap katmanı
+// YOK, Worker düz-metin alır). Canlı wiring DEFER; burada test için
+// MemValueStore, prod için StubValueStore.
 type ValueStore interface {
 	// WriteValue, yeni değeri store'a yazar ve yeni sürümü döner (store-first).
 	WriteValue(ctx context.Context, project, key string, newVal []byte) (version uint64, err error)
@@ -27,8 +26,8 @@ type ValueStore interface {
 }
 
 // StubValueStore, üretim değer-yazımının YER-TUTUCUSUDUR (DEFER): gerçek yol
-// internal/store.WorkerStore ile değer-değiştiren imzalı epoch commit'idir (canlı
-// trust head + alıcı kümesi gerekir). Her çağrı ErrLiveExecutionNotWired.
+// internal/store v2 istemcisiyle plaintext PUT/Import'tur (canlı oturum/
+// service-token gerekir). Her çağrı ErrLiveExecutionNotWired.
 type StubValueStore struct{}
 
 func (StubValueStore) WriteValue(context.Context, string, string, []byte) (uint64, error) {
@@ -194,7 +193,7 @@ type entryCtx struct {
 // ordering_constraints (phase1-first/gateway-last) TOPOLOJİSİNE göre sıralanır.
 // Manuel recipe onay yoksa DURAKLAR (Paused'a eklenir); metadata-eksik girdi
 // TRİYAJ ile bloklanır ve rotate EDİLMEZ.
-func (e *Engine) Run(ctx context.Context, wl *lifecycle.Worklist, exec Executor, by string, confirms *Confirmations) (RunReport, error) {
+func (e *Engine) Run(ctx context.Context, wl *Worklist, exec Executor, by string, confirms *Confirmations) (RunReport, error) {
 	rep := RunReport{RunID: wl.RunID}
 	// Onay token'ı YALNIZCA insan TTY'sinden gelebilir: ajan/CI modunda token
 	// verilirse yapısal reddet (AGENT_MODE_REFUSED) — hiçbir plan/side-effect'ten önce.
@@ -365,7 +364,7 @@ func (e *Engine) driveKey(ctx context.Context, runID string, recipe Recipe, req 
 
 // entryParams, worklist girdisinden recipe params'ını kurar (project/key +
 // ordering ipuçları; canlı params recipe_params'tan gelir — burada temel).
-func entryParams(en lifecycle.WorklistEntry) map[string]string {
+func entryParams(en WorklistEntry) map[string]string {
 	p := map[string]string{"project": en.Project, "key": en.Key}
 	if len(en.OrderingConstraints) > 0 {
 		p["ordering"] = joinConstraints(en.OrderingConstraints)
@@ -386,10 +385,10 @@ func joinConstraints(cs []string) string {
 
 // orderEntries, worklist girdilerini blast-tier + ordering_constraints topolojisine
 // göre sıralar (SPEC §8.6.3): en yüksek blast önce; tier içinde phase1-first ÖNCE,
-// gateway-last SONRA; sonra proje + anahtar (deterministik). lifecycle.EmitWorklist
+// gateway-last SONRA; sonra proje + anahtar (deterministik). EmitWorklist
 // yalnızca tier→proje→anahtar sıralar; ordering-topolojisini G11 motoru uygular.
-func orderEntries(in []lifecycle.WorklistEntry) []lifecycle.WorklistEntry {
-	out := make([]lifecycle.WorklistEntry, len(in))
+func orderEntries(in []WorklistEntry) []WorklistEntry {
+	out := make([]WorklistEntry, len(in))
 	copy(out, in)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
@@ -411,17 +410,17 @@ func orderEntries(in []lifecycle.WorklistEntry) []lifecycle.WorklistEntry {
 // Metadata eksikliği (unknown/triage) HER ŞEYDEN önce (blocker).
 func tierOrdinal(tier string) int {
 	switch tier {
-	case lifecycle.TierUnknown:
+	case TierUnknown:
 		return -1
-	case lifecycle.TierPlatformAnchor:
+	case TierPlatformAnchor:
 		return 0
-	case lifecycle.TierProdShared:
+	case TierProdShared:
 		return 1
-	case lifecycle.TierProdSingle:
+	case TierProdSingle:
 		return 2
-	case lifecycle.TierStagingLab:
+	case TierStagingLab:
 		return 3
-	case lifecycle.TierDev:
+	case TierDev:
 		return 4
 	default:
 		return 5

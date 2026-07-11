@@ -1,130 +1,88 @@
-// D1 hash-chained audit testleri (SPEC §6.5 + §6.2 F7 sıralaması): zincir sürekliliği
-// + hash kuralı, attempt-önce/outcome-sonra, deny satırları, AUDIT_UNAVAILABLE
-// commit'i fail-close eder, read-path async.
+// D1 hash-zincirli audit testleri (SPEC §6.4): zincir kuralı + süreklilik,
+// attempt→outcome sıralaması, deny satırları, yazma yolunda AUDIT_UNAVAILABLE
+// fail-closed (hiçbir store durumu değişmez), metadata okumaları async.
+
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
 import { env } from "cloudflare:test";
 import {
-  seedTrust,
   ensureJwks,
+  resetWorld,
   validClaims,
   authHeader,
   callGate,
-  resetWorld,
-  signDataManifest,
-  putBlob,
+  seedPolicy,
+  defaultRules,
+  groupsByEmail,
+  allAuditRows,
+  settleAudit,
+  AuditRowDb,
   runInDoRetry,
-  TrustContext,
+  discordCalls,
 } from "./helpers.js";
 import { keyCurrent, keyManifest } from "../src/storage.js";
-import { sha256Hex, utf8 } from "../src/crypto/verify.js";
+import { sha256Hex, utf8 } from "../src/crypto/encoding.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
 beforeAll(async () => {
   signer = await ensureJwks();
 });
-beforeEach(resetWorld);
+beforeEach(async () => {
+  await resetWorld();
+  await seedPolicy(defaultRules());
+  groupsByEmail.set("writer@wapps.dev", ["developers@wapps.co"]);
+});
 
-interface Row {
-  seq: number;
-  ts: string;
-  principal: string;
-  principal_type: string;
-  project: string | null;
-  key: string | null;
-  verb: string;
-  decision: string;
-  intent: string | null;
-  ip: string | null;
-  cf_ray: string | null;
-  token_jti: string | null;
-  prev_hash: string;
-  hash: string;
-}
-
-function fullWraps(t: TrustContext) {
-  return [
-    { recipient: t.writerDevice, wrap: "a" },
-    { recipient: t.writerBackup, wrap: "b" },
-    { recipient: t.escrowFp, wrap: "c" },
-  ];
-}
-
-async function allRows(): Promise<Row[]> {
-  const r = await env.AUDIT_DB.prepare("SELECT * FROM audit ORDER BY seq ASC").all<Row>();
-  return r.results ?? [];
-}
-
-/** rowHash, DO ile AYNI formülle bir satırın hash'ini yeniden hesaplar (§6.5 chain rule). */
-function rowHash(prevHash: string, r: Row): string {
-  const values = [r.seq, r.ts, r.principal, r.principal_type, r.project, r.key, r.verb, r.decision, r.intent, r.ip, r.cf_ray, r.token_jti];
+/** rowHash, DO ile AYNI formülle bir satırın hash'ini yeniden hesaplar (zincir kuralı). */
+function rowHash(prevHash: string, r: AuditRowDb & { ip?: string | null; cf_ray?: string | null; token_jti?: string | null }): string {
+  const rr = r as unknown as Record<string, unknown>;
+  const values = [r.seq, r.ts, r.principal, r.principal_type, r.project, r.key, r.verb, r.decision, r.intent, rr.ip ?? null, rr.cf_ray ?? null, rr.token_jti ?? null];
   return sha256Hex(utf8(prevHash + "\n" + JSON.stringify(values)));
 }
 
-async function doCommit(t: TrustContext, email: string, bodyStr: string): Promise<Response> {
-  const jwt = await signer.makeJWT(validClaims(email));
-  return callGate("/v1/projects/vaulter/commit", { method: "POST", headers: authHeader(jwt), body: bodyStr }, t.pin);
+async function put(key: string, value: string): Promise<Response> {
+  const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
+  return callGate(`/v1/projects/vaulter/keys/${key}`, { method: "PUT", headers: authHeader(jwt), body: JSON.stringify({ value }) });
 }
 
-async function genesisCommit(t: TrustContext): Promise<void> {
-  const blob = await putBlob("vaulter", new Uint8Array([9, 9, 9, 9]));
-  const w = signDataManifest({ project: "vaulter", epoch: 1, prev: "", trustEpoch: 1, entries: [{ keyName: "DATABASE_URL", keyVersion: 1, blobHash: blob, wraps: fullWraps(t) }] }, t.writer);
-  const res = await doCommit(t, "writer@wapps.dev", w.wrapperStr);
-  expect(res.status).toBe(200);
-}
-
-describe("hash-chained audit (§6.5)", () => {
+describe("hash-chained audit (§6.4)", () => {
   it("CHAIN: every row hash = SHA256(prev_hash || 0x0A || row_json); consecutive rows link", async () => {
-    const t = await seedTrust();
-    await genesisCommit(t);
-    const rows = await allRows();
-    expect(rows.length).toBeGreaterThanOrEqual(2); // attempt + outcome
-    // Gerçek tamper-evidence invaryantı: HER satır hash kuralına uyar VE ardışık
-    // satırlar birbirine bağlanır. (Segmentin İLK prev_hash'inin genesis olması, ancak
-    // DO head'i sıfırlanabildiğinde geçerlidir — test-harness bunu garanti edemez, bu
-    // yüzden zincir-kuralı + süreklilik doğrulanır; bu güvenlik özelliğinin ta kendisidir.)
+    expect((await put("DATABASE_URL", "v")).status).toBe(200);
+    // Harness invalidation'ı outcome batch'ini pending kuyruğuna düşürebilir → settle.
+    const rows = await settleAudit("vaulter", (r) => r.length >= 2);
+    expect(rows.length).toBeGreaterThanOrEqual(2); // attempt + per-key outcome
     for (let i = 0; i < rows.length; i++) {
-      expect(rows[i].hash).toBe(rowHash(rows[i].prev_hash, rows[i])); // hash kuralı (§6.5)
-      if (i > 0) expect(rows[i].prev_hash).toBe(rows[i - 1].hash); // süreklilik
+      expect(rows[i].hash).toBe(rowHash(rows[i].prev_hash, rows[i]));
+      if (i > 0) expect(rows[i].prev_hash).toBe(rows[i - 1].hash);
     }
-    // İlk satır prev_hash'i ya genesis'tir ya da önceki bir (silinmiş) satırın hash'i —
-    // her iki halde de 64-hane hex.
     expect(rows[0].prev_hash).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("F7 ORDERING: commit.attempt row precedes the commit outcome row (allow)", async () => {
-    const t = await seedTrust();
-    await genesisCommit(t);
-    const rows = await allRows();
+  it("ORDERING: commit.attempt row precedes the per-key outcome row", async () => {
+    await put("DATABASE_URL", "v");
+    const rows = await settleAudit("vaulter", (r) => r.some((x) => x.verb === "key.set" && x.decision === "allow"));
     const attempt = rows.find((r) => r.verb === "commit.attempt");
-    const outcome = rows.find((r) => r.verb === "commit" && r.decision === "allow");
+    const outcome = rows.find((r) => r.verb === "key.set" && r.decision === "allow");
     expect(attempt).toBeTruthy();
     expect(outcome).toBeTruthy();
-    expect(attempt!.seq).toBeLessThan(outcome!.seq); // attempt ÖNCE, outcome SONRA
+    expect(attempt!.seq).toBeLessThan(outcome!.seq);
   });
 
-  it("DENY: a rejected commit appends a deny row (no allow outcome)", async () => {
-    const t = await seedTrust();
-    // reader DATABASE_URL yazmaya çalışır → GRANT_DENIED (step 8, attempt'ten ÖNCE).
-    const blob = await putBlob("vaulter", new Uint8Array([7]));
-    const w = signDataManifest({ project: "vaulter", epoch: 1, prev: "", trustEpoch: 1, entries: [{ keyName: "DATABASE_URL", keyVersion: 1, blobHash: blob, wraps: fullWraps(t) }] }, t.reader);
-    const res = await doCommit(t, "reader@wapps.dev", w.wrapperStr);
+  it("DENY: a rejected write appends a deny row (no allow outcome)", async () => {
+    // Developer *_PROD_* yazamaz (policy deny-glob) → Worker-level deny satırı.
+    const res = await put("DB_PROD_URL", "x");
     expect(res.status).toBe(403);
-    const rows = await allRows();
-    const deny = rows.find((r) => r.verb === "commit" && r.decision === "deny");
+    const rows = await allAuditRows();
+    const deny = rows.find((r) => r.verb === "key.set" && r.decision === "deny");
     expect(deny).toBeTruthy();
-    expect(deny!.intent).toBe("GRANT_DENIED");
-    // Başarısız yazımın allow outcome'ı OLMAMALI (F7).
-    expect(rows.find((r) => r.verb === "commit" && r.decision === "allow")).toBeUndefined();
-    // Deny satırı da zincire bağlı.
+    expect(deny!.key).toBe("DB_PROD_URL");
+    expect(rows.find((r) => r.verb === "key.set" && r.decision === "allow")).toBeUndefined();
     expect(deny!.hash).toBe(rowHash(deny!.prev_hash, deny!));
   });
 
-  it("AUDIT_UNAVAILABLE: audit DO down at attempt → commit fails closed (503), NOTHING written", async () => {
-    const t = await seedTrust();
-    await genesisCommit(t); // epoch 1 → PROJECT_WRITER DO'yu warm eder
-    const stub = env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName("vaulter"));
+  it("AUDIT_UNAVAILABLE: audit DO down at attempt → write fails closed (503), NOTHING written + A8", async () => {
+    expect((await put("DATABASE_URL", "v1")).status).toBe(200); // epoch 1 → DO warm
 
-    // this.auditLog'u, get().fetch()'i reject eden bir namespace ile değiştir.
+    const stub = env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName("vaulter"));
     const failing = {
       idFromName: () => ({}),
       get: () => ({ fetch: async () => { throw new Error("audit down"); } }),
@@ -136,37 +94,41 @@ describe("hash-chained audit (§6.5)", () => {
       h.auditLog = failing;
     });
 
-    // Geçerli epoch-2 commit → attempt append patlar → 503 AUDIT_UNAVAILABLE.
-    const blob = await putBlob("vaulter", new Uint8Array([2, 2]));
-    const cur = await env.SECRETS_BUCKET.get(keyCurrent("vaulter"));
-    const prevSha = sha256Hex(new Uint8Array(await (await env.SECRETS_BUCKET.get(keyManifest("vaulter", 1))!)!.arrayBuffer()));
-    void cur;
-    const w = signDataManifest({ project: "vaulter", epoch: 2, prev: prevSha, trustEpoch: 1, entries: [{ keyName: "DATABASE_URL", keyVersion: 1, blobHash: blob, wraps: fullWraps(t) }] }, t.writer);
-    const res = await doCommit(t, "writer@wapps.dev", w.wrapperStr);
+    const res = await put("DATABASE_URL", "v2");
     expect(res.status).toBe(503);
     expect(((await res.json()) as { error: string }).error).toBe("AUDIT_UNAVAILABLE");
 
     // Fail-closed: current epoch-1'de kaldı, manifests/2 YAZILMADI.
-    const curNow = JSON.parse(await (await env.SECRETS_BUCKET.get(keyCurrent("vaulter")))!.text()) as { epoch: number };
-    expect(curNow.epoch).toBe(1);
+    const cur = JSON.parse(await (await env.SECRETS_BUCKET.get(keyCurrent("vaulter")))!.text()) as { epoch: number };
+    expect(cur.epoch).toBe(1);
     expect(await env.SECRETS_BUCKET.get(keyManifest("vaulter", 2))).toBeNull();
+    // A8 alert'i ateşlendi (audit-down commit).
+    expect(discordCalls.some((c) => c.body.includes("A8") && c.body.toLowerCase().includes("audit"))).toBe(true);
 
-    // auditLog'u geri yükle (singleWorker → instance paylaşımlı).
     await runInDoRetry(stub, (instance: unknown) => {
       if (saved) (instance as { auditLog: DurableObjectNamespace }).auditLog = saved;
     });
   });
 
-  it("READ-PATH ASYNC: an allowed manifest read appends an async (waitUntil) audit row", async () => {
-    const t = await seedTrust();
-    await genesisCommit(t);
-    const before = (await allRows()).length;
+  it("METADATA ASYNC: an allowed keys-list read appends an async audit row", async () => {
+    await put("DATABASE_URL", "v");
+    const before = (await allAuditRows()).length;
     const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
-    const res = await callGate("/v1/projects/vaulter/manifests/current", { headers: authHeader(jwt) }, t.pin);
+    const res = await callGate("/v1/projects/vaulter/keys", { headers: authHeader(jwt) });
     expect(res.status).toBe(200);
-    // callGate waitOnExecutionContext'i await eder → waitUntil flush tamamlanır.
-    const rows = await allRows();
+    const rows = await allAuditRows();
     expect(rows.length).toBeGreaterThan(before);
-    expect(rows.some((r) => r.verb === "read" && r.decision === "allow" && r.project === "vaulter")).toBe(true);
+    expect(rows.some((r) => r.verb === "key.list" && r.decision === "allow" && r.project === "vaulter")).toBe(true);
+  });
+
+  it("304 poll is NOT audited (KEPT behavior)", async () => {
+    await put("DATABASE_URL", "v");
+    const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
+    const first = await callGate("/v1/projects/vaulter/keys", { headers: authHeader(jwt) });
+    const etag = first.headers.get("ETag")!;
+    const before = (await allAuditRows()).length;
+    const poll = await callGate("/v1/projects/vaulter/keys", { headers: authHeader(jwt, { "If-None-Match": etag }) });
+    expect(poll.status).toBe(304);
+    expect((await allAuditRows()).length).toBe(before);
   });
 });

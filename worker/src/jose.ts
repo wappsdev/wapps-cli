@@ -1,6 +1,5 @@
-// Ortak JOSE/base64url yardımcıları (mint token + freshness receipt). Worker'ın
-// TUTTUĞU tek özel anahtar sınıfı mint anahtarıdır (§6.4); attestation anahtarı
-// non-extractable olarak ATTESTATION DO içinde üretilir (§6.6). Bu dosya yalnızca
+// Ortak JOSE/base64url yardımcıları (opsiyonel mint katmanı, §5.3). Worker'ın
+// tuttuğu tek imza anahtarı sınıfı MINT_KEY'dir (§8.5). Bu dosya yalnızca
 // kodlama + ES256 JWS mekaniğini içerir; anahtar politikası çağıranlarda.
 
 const utf8Encoder = new TextEncoder();

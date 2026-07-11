@@ -6,7 +6,7 @@
 // hatalar (audit down vb.) regex'e uymaz → hemen propagate eder (fail-closed korunur).
 // Prod'da bu retry yolu ~hiç tetiklenmez (modül reload = test-runtime olayı).
 
-const TRANSIENT_RE = /invalidating|broken|please retry/i;
+const TRANSIENT_RE = /invalidating|broken|please retry|code was updated|reset because/i;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

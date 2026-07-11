@@ -1,13 +1,9 @@
 package rotation
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/wappsdev/wapps-cli/internal/cryptoid"
-	"github.com/wappsdev/wapps-cli/internal/lifecycle"
 )
 
 // Per-key rotasyon durum makinesi (SPEC §8.6.4):
@@ -111,18 +107,18 @@ type LedgerRow struct {
 }
 
 // RunLedger, G11 rotasyon-run ledger'ının GERÇEK, store-backed uygulamasıdır ve
-// lifecycle.RotationRunLedger port'unu (offboard close §8.5.7'nin tükettiği)
+// RotationRunLedger port'unu (offboard close §8.5.7'nin tükettiği)
 // KARŞILAR. Plan (girdi kümesi) + append-only ilerleme satırları RecordStore'da
 // yaşar → resumable, herhangi bir admin devralabilir (§8.5.1), ve close bir run'ın
 // TERMİNAL olduğunu buradan DOĞRULAR — StubRotationRunLedger'ın aksine gerçek
 // yürütmeye bağlı ("awaiting rotation" ancak gerçekten tamamlanınca ilerler).
 type RunLedger struct {
-	store lifecycle.RecordStore
+	store RecordStore
 	now   func() time.Time
 }
 
 // NewRunLedger, verilen RecordStore ile bir ledger kurar. now nil → time.Now.
-func NewRunLedger(store lifecycle.RecordStore, now func() time.Time) *RunLedger {
+func NewRunLedger(store RecordStore, now func() time.Time) *RunLedger {
 	if now == nil {
 		now = time.Now
 	}
@@ -134,7 +130,7 @@ func ledgerKey(runID string) string { return "rotation-runs/" + runID + "/ledger
 
 // EnsurePlan, run planını (idempotent) yazar: zaten varsa dokunmaz (resume). Plan,
 // worklist'in TAM girdi kümesini dondurur — RunState terminal-sorgusunun temeli.
-func (l *RunLedger) EnsurePlan(wl *lifecycle.Worklist) error {
+func (l *RunLedger) EnsurePlan(wl *Worklist) error {
 	if wl == nil || wl.RunID == "" {
 		return fmt.Errorf("rotation.EnsurePlan: nil/empty worklist")
 	}
@@ -195,43 +191,35 @@ type skipAttestation struct {
 	At      time.Time `json:"at"`
 }
 
-// skipEvidence, StateSkipped ledger satırının evidence gövdesidir: imzalı attestation
-// + imzalayan admin anahtarının parmak izi + base64 imza (audit — doğrulanabilir).
+// skipEvidence, StateSkipped ledger satırının evidence gövdesidir: kanonik
+// attestation (audit izi). NOT (server-decrypt pivotu, SPEC §0.2): istemci-taraflı
+// imzalama hiyerarşisi SİLİNDİ — admin yetkisi artık Worker admin API'sinde
+// (write-AUD + `admin` verb'i, §4.5) zorlanır; yerel imza katmanı yoktur.
 type skipEvidence struct {
 	Attestation skipAttestation `json:"attestation"`
-	KeyID       string          `json:"key_id"`
-	Sig         string          `json:"sig"`
 }
 
-// SkipKey, bir NEEDS_TRIAGE (veya başka bir pending) anahtarı, ADMIN İMZASIYLA
-// SKIPPED'e geçirir — RunState'in var saydığı imzalı-SKIP kaçış kapısı (§8.5.5.4).
-// İmza kanonik skip-attestation baytları üzerinedir ve evidence'a gömülür. Bir
-// StateSkipped ledger satırı yazar → RunState o anahtarı terminal sayar, triyaj
-// çözülür ve offboard close ilerleyebilir. reason + admin signer ZORUNLUdur; hiçbiri
-// gizli değer taşımaz. (`wapps rotate skip` verb'ünün motor tarafı.)
-func (l *RunLedger) SkipKey(runID, project, key, reason, by string, signer cryptoid.SigningKey) error {
+// SkipKey, bir NEEDS_TRIAGE (veya başka bir pending) anahtarı ADMIN KARARIYLA
+// SKIPPED'e geçirir — RunState'in var saydığı SKIP kaçış kapısı. Kanonik
+// attestation evidence'a gömülür ve bir StateSkipped ledger satırı yazılır →
+// RunState o anahtarı terminal sayar, triyaj çözülür ve offboard close
+// ilerleyebilir. reason + by ZORUNLUdur; hiçbiri gizli değer taşımaz.
+// (`wapps rotate skip` verb'ünün motor tarafı; yetki = Worker admin API'si.)
+func (l *RunLedger) SkipKey(runID, project, key, reason, by string) error {
 	if runID == "" || project == "" || key == "" {
 		return fmt.Errorf("rotation.SkipKey: run_id/project/key required")
 	}
 	if reason == "" {
-		return fmt.Errorf("rotation.SkipKey: a --reason is required for a signed skip")
+		return fmt.Errorf("rotation.SkipKey: a --reason is required for a recorded skip")
 	}
-	if signer == nil {
-		return fmt.Errorf("rotation.SkipKey: an admin signing key is required for a signed skip")
+	if by == "" {
+		return fmt.Errorf("rotation.SkipKey: an admin principal (by) is required for a recorded skip")
 	}
 	att := skipAttestation{
 		Schema: skipAttestationSchema, RunID: runID, Project: project, Key: key,
 		Reason: reason, By: by, At: l.now().UTC(),
 	}
-	body, err := json.Marshal(att)
-	if err != nil {
-		return fmt.Errorf("rotation.SkipKey: marshal attestation: %w", err)
-	}
-	sig, err := signer.Sign(body)
-	if err != nil {
-		return fmt.Errorf("rotation.SkipKey: sign: %w", err)
-	}
-	ev := skipEvidence{Attestation: att, KeyID: sig.KeyID, Sig: base64.StdEncoding.EncodeToString(sig.Sig)}
+	ev := skipEvidence{Attestation: att}
 	return l.Record(runID, project, key, StateSkipped, by, ev)
 }
 
@@ -306,23 +294,23 @@ func (l *RunLedger) FurthestProgress(runID string) (map[string]string, error) {
 // stateKey, (project,key) ledger anahtarı.
 func stateKey(project, key string) string { return project + "\x00" + key }
 
-// RunState, lifecycle.RotationRunLedger — worklist run'ının yürütme durumunu
+// RunState, RotationRunLedger — worklist run'ının yürütme durumunu
 // GERÇEK ilerlemeden türetir (SPEC §8.5.5.4/§8.6.4). Plan yoksa run henüz
 // başlatılmamıştır → Complete=false, Pending=-1 (stub güvenliğini korur: hiçbir
 // yürütme = pending). Aksi halde HER plan girdisi terminal olmadıkça (ve triyaj
 // yoksa) Complete=false — böylece offboard close ancak run gerçekten bitince ilerler.
-func (l *RunLedger) RunState(runID string) (lifecycle.RotationRunState, error) {
+func (l *RunLedger) RunState(runID string) (RotationRunState, error) {
 	p, ok, err := l.plan(runID)
 	if err != nil {
-		return lifecycle.RotationRunState{}, err
+		return RotationRunState{}, err
 	}
 	if !ok {
 		// Planlanmamış run: hiçbir girdi yürütülmedi → pending (close bloklu).
-		return lifecycle.RotationRunState{RunID: runID, Complete: false, Pending: -1}, nil
+		return RotationRunState{RunID: runID, Complete: false, Pending: -1}, nil
 	}
 	states, err := l.latestStates(runID)
 	if err != nil {
-		return lifecycle.RotationRunState{}, err
+		return RotationRunState{}, err
 	}
 	pending := 0
 	needsTriage := false
@@ -344,7 +332,7 @@ func (l *RunLedger) RunState(runID string) (lifecycle.RotationRunState, error) {
 		}
 		pending++
 	}
-	return lifecycle.RotationRunState{
+	return RotationRunState{
 		RunID:       runID,
 		Complete:    pending == 0 && !needsTriage,
 		NeedsTriage: needsTriage,
@@ -354,4 +342,4 @@ func (l *RunLedger) RunState(runID string) (lifecycle.RotationRunState, error) {
 }
 
 // arayüz uyumluluğu: RunLedger, offboard close'un tükettiği port'u karşılar.
-var _ lifecycle.RotationRunLedger = (*RunLedger)(nil)
+var _ RotationRunLedger = (*RunLedger)(nil)

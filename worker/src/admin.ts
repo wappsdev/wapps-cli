@@ -1,347 +1,278 @@
-// Admin API + pending-operations kuyruğu (SPEC §6.9). Control-plane: write-AUD
-// (15dk, WebAuthn) + email SIGNED trust manifest'te admin üyesi + strict CORS.
-// KRİTİK model (seam #1): tarayıcılar donanım age kimliğini süremez / manifest
-// imzalayamaz → admin API TRUST/GRANT/WRAP/VALUE'yu DOĞRUDAN MUTASYON ETMEZ. Panel
-// ÖNERİR (pending-ops), enrolled makine CLI ceremony'si imzalar+commit'ler. Kuyruk
-// girdileri SIFIR otorite taşır. Tüm admin çağrıları audit'lenir (admin.* / denials).
+// Admin/control-plane rotaları (SPEC §7.6 write-AUD path kümesi: /v1/admin/* +
+// /v1/policy). ZK tasarımın pending-ops töre kuyruğu SİLİNDİ (§0.2) — policy
+// düzenlemeleri DOĞRUDAN admin yazımlarıdır (§4.5). Rotalar:
+//   GET  /v1/policy                 → aktif policy (admin verb)
+//   PUT  /v1/policy                 → CAS'lı policy yazımı (§4.1/§4.4), audit + A9
+//   GET  /v1/admin/rotate-plan      → audit ledger = rotate-set oracle (§6.3)
+//   POST /v1/admin/token/revoke     → minted-token jti revoke (§5.3)
+//   POST /v1/admin/rewrap-kek       → MASTER_KEK rotasyonu re-wrap turu (§2.5)
+//
+// `admin` verb'i GLOBAL op'ları kapsar (§4.2: policy edit, rotate-plan, token
+// revoke, rewrap-kek) — bu yüzden admin kontrolü selector+verb üzerindendir
+// (proje glob'ları global op'ta anlamsız); kök çapa ADMIN_EMAILS (§4.5). Tüm bu
+// rotalar Access WRITE app'inin (15 dk + WebAuthn) arkasındadır (§3.2).
 
-import { HTTP, jsonError } from "./errors.js";
+import { HTTP, jsonError, jsonOK } from "./errors.js";
 import { Env, Principal } from "./auth.js";
-import { VerifiedEpoch } from "./trust.js";
-import { auditAppendSync, AuditRow, ipOf, rayOf } from "./audit.js";
-import { revokeJti } from "./token.js";
-import { attestationPubkey } from "./receipt.js";
-import { activeMintKid } from "./mint.js";
+import {
+  AuthzPrincipal,
+  LoadedPolicy,
+  PolicyConflictError,
+  PolicyDoc,
+  PolicyValidationError,
+  Topology,
+  authorize,
+  expandVerbs,
+  putPolicy,
+  rulesFor,
+} from "./policy.js";
+import { deriveProjects, getObject, keyCurrent, keyManifest } from "./storage.js";
+import { parseCurrentPointer, parseManifest } from "./manifest.js";
 import { ensureSchema } from "./schema.js";
-import { uuidv7 } from "./jose.js";
-import { keyCurrent, keyManifest, keyTrustManifest } from "./storage.js";
-import { parseCurrentPointer, parseManifestBody } from "./manifest.js";
-import { parseSignedObject } from "./crypto/verify.js";
+import { auditAppendSync, auditReadAsync, AuditRow, ipOf, rayOf } from "./audit.js";
+import { revokeJti } from "./token.js";
+import { fireAlert, ALERT } from "./alerts.js";
+import { doStubFetch } from "./do-util.js";
 
-const ADMIN_ORIGIN = "https://admin.meapps.dev"; // strict, wildcard YOK (§6.9)
-const PENDING_TTL_DAYS = 7;
-const PENDING_TYPES = new Set(["grant", "revoke", "offboard", "rotation", "token_policy", "machine_enroll", "token_revoke"]);
+/** rotate-plan oracle verb kümesi (§6.3) — §6.4 sözlüğünün plaintext-bilen verb'leriyle
+ * KİLİTLİ adım: buraya verb eklemeden §6.4'e plaintext-bilen verb eklemek gate 7c ihlalidir. */
+export const ROTATE_PLAN_VERBS = ["value.read", "value.read.bulk", "key.set", "key.import", "key.sync", "rotate.step"] as const;
 
-function corsHeaders(): Record<string, string> {
-  return {
-    "Access-Control-Allow-Origin": ADMIN_ORIGIN,
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "content-type,authorization,cf-access-jwt-assertion",
-    Vary: "Origin",
-  };
-}
-function withCors(res: Response): Response {
-  const h = new Headers(res.headers);
-  for (const [k, v] of Object.entries(corsHeaders())) h.set(k, v);
-  return new Response(res.body, { status: res.status, headers: h });
-}
-function adminJson(body: unknown, status = 200): Response {
-  return withCors(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
-}
-function adminErr(status: number, code: string, message: string, detail?: Record<string, unknown>): Response {
-  return withCors(jsonError(status, code, message, detail));
+/** hasAdminVerb, principal'ın `admin` verb'ini tutup tutmadığı: kök çapa (ADMIN_EMAILS,
+ * §4.5) VEYA selector'üne eşleşen herhangi bir kuralın verbs'ünde admin.
+ *
+ * NOT (bilinçli): eşleşen kuralın projects/keys kapsaması BURADA OKUNMAZ — `admin`
+ * verb'i GLOBAL op'ları yetkilendirir (§4.2), proje/anahtar glob'ları admin op'unda
+ * ölü kapsamdır. Proje-kapsamlı bir kurala admin/["*"] yazmak yanıltıcıdır; bunu
+ * `wapps policy lint` kuralı (e) uyarır (§7.3). */
+export function hasAdminVerb(policy: LoadedPolicy, p: AuthzPrincipal, principal: Principal, adminEmails: string[]): boolean {
+  if (principal.kind === "human" && adminEmails.includes(principal.email)) return true;
+  return rulesFor(policy.doc, p).some((r) => expandVerbs(r.verbs).has("admin"));
 }
 
-/** isAdmin, email'in SIGNED trust manifest'te admin üyesi olup olmadığı (§6.9). */
-function isAdmin(head: VerifiedEpoch, principalId: string): boolean {
-  return head.manifest.admins.includes(principalId);
+export interface AdminContext {
+  policy: LoadedPolicy;
+  authz: AuthzPrincipal;
+  adminEmails: string[];
+  topology: Topology;
 }
 
-async function auditAdmin(env: Env, principal: Principal, verb: string, decision: "allow" | "deny", request: Request, extra?: Partial<AuditRow>): Promise<void> {
-  const row: AuditRow = {
-    principal: principal.id,
-    principal_type: "human",
-    verb,
-    decision,
-    ip: ipOf(request),
-    cf_ray: rayOf(request),
-    ...extra,
-  };
-  // Control-plane: SENKRON audit. Audit DO down → çağıran 503'e çevirir.
-  await auditAppendSync(env.AUDIT_LOG, row);
-}
-
-/**
- * handleAdmin, /v1/admin/* dispatcher. Çağıran ZATEN write-AUD ile authenticate etmiş
- * ve human principal'ı geçmiştir; burada admin üyeliği + CORS + rota kontrolü yapılır.
- */
+/** handleAdmin, /v1/policy + /v1/admin/* rotalarını sürer. Çağıran write-AUD'u zaten doğruladı. */
 export async function handleAdmin(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
   parts: string[],
   principal: Principal,
-  head: VerifiedEpoch,
+  actx: AdminContext,
 ): Promise<Response> {
-  // Preflight (§6.9): non-GET için OPTIONS.
-  if (request.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
+  const denyVerb = parts[1] === "policy" ? (request.method === "PUT" ? "policy.write" : "policy.read") : `admin.${parts[2] ?? ""}`;
 
-  if (principal.kind !== "human") return adminErr(HTTP.FORBIDDEN, "AUD_MISMATCH", "admin requires a human session");
-  if (!isAdmin(head, principal.id)) {
+  // Minted machine-token'lar admin rotalarında REDDEDİLİR (§5.3: minted scope,
+  // service satırıyla KESİŞİR — asla genişletmez; MINTABLE_VERBS 'admin' içermez,
+  // dolayısıyla hiçbir minted scope bir admin op'unu kapsayamaz). Aksi hâlde
+  // read-scoped 10 dk'lık bir token, parent service satırı admin/["*"] veriyorsa
+  // parent'ın TAM admin hakkına yükselirdi (scope-escalation, fail-closed red).
+  if (principal.kind === "machine") {
+    auditReadAsync(ctx, env.AUDIT_LOG, {
+      principal: actx.authz.id,
+      principal_type: "machine",
+      verb: denyVerb,
+      decision: "deny",
+      intent: "minted_token",
+      ip: ipOf(request),
+      cf_ray: rayOf(request),
+    });
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "minted machine tokens cannot use admin routes", { dimension: "verb" });
+  }
+
+  // Tüm admin rotaları `admin` verb'i gerektirir (§7.6 route table).
+  if (!hasAdminVerb(actx.policy, actx.authz, principal, actx.adminEmails)) {
+    auditReadAsync(ctx, env.AUDIT_LOG, {
+      principal: actx.authz.id,
+      principal_type: principal.kind === "human" ? "human" : "machine",
+      verb: denyVerb,
+      decision: "deny",
+      intent: "verb",
+      ip: ipOf(request),
+      cf_ray: rayOf(request),
+    });
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "admin verb required", { dimension: "verb" });
+  }
+
+  // --- /v1/policy -------------------------------------------------------------
+  if (parts[1] === "policy" && parts.length === 2) {
+    if (request.method === "GET") {
+      auditReadAsync(ctx, env.AUDIT_LOG, adminRow(actx.authz.id, principal, "policy.read", request));
+      return jsonOK({ version: actx.policy.version, sha256: actx.policy.sha256, policy: actx.policy.doc });
+    }
+    if (request.method === "PUT") {
+      let raw: unknown;
+      try {
+        raw = await request.json();
+      } catch {
+        return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+      }
+      const oldVersion = actx.policy.version;
+      const oldSha = actx.policy.sha256;
+      let stored;
+      try {
+        stored = await putPolicy(env.SECRETS_BUCKET, raw as PolicyDoc, actx.topology, actx.adminEmails);
+      } catch (e) {
+        if (e instanceof PolicyValidationError) {
+          return jsonError(HTTP.UNPROCESSABLE, "POLICY_INVALID", e.message, { rule_index: e.ruleIndex });
+        }
+        if (e instanceof PolicyConflictError) {
+          return jsonError(HTTP.PRECONDITION_FAILED, "POLICY_CONFLICT", e.message, { current_version: oldVersion });
+        }
+        throw e;
+      }
+      // Policy değişimi SENKRON audit'lenir (eski/yeni versiyon + sha, §4.1) + A9.
+      try {
+        await auditAppendSync(env.AUDIT_LOG, {
+          ...adminRow(actx.authz.id, principal, "policy.write", request),
+          intent: `v${oldVersion}:${oldSha.slice(0, 12)}->v${stored.version}:${stored.sha256.slice(0, 12)}`,
+        });
+      } catch {
+        return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "policy stored but audit unavailable — investigate", {
+          version: stored.version,
+        });
+      }
+      fireAlert(ctx, env, ALERT.A9, `policy updated v${oldVersion} -> v${stored.version} by ${actx.authz.id}`, {
+        old_version: oldVersion,
+        new_version: stored.version,
+        sha256: stored.sha256,
+      });
+      return jsonOK({ version: stored.version, sha256: stored.sha256 });
+    }
+    return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown policy route");
+  }
+
+  // --- /v1/admin/* --------------------------------------------------------------
+  if (parts[1] !== "admin") return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
+
+  // GET /v1/admin/rotate-plan?identity=<p>[&since=..][&assume_policy=1] (§6.3).
+  if (parts[2] === "rotate-plan" && parts.length === 3 && request.method === "GET") {
+    const url = new URL(request.url);
+    const identity = url.searchParams.get("identity") ?? "";
+    if (!identity) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "identity required");
+    const since = url.searchParams.get("since");
+    if (since && Number.isNaN(Date.parse(since))) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "since not RFC3339");
+    const assumePolicy = url.searchParams.get("assume_policy") === "1";
+
+    await ensureSchema(env.AUDIT_DB);
+    const verbList = ROTATE_PLAN_VERBS.map((v) => `'${v}'`).join(",");
+    const stmt = since
+      ? env.AUDIT_DB.prepare(
+          `SELECT project, key, MAX(ts) AS last_read, COUNT(*) AS reads FROM audit
+           WHERE principal = ? AND decision = 'allow' AND key IS NOT NULL AND verb IN (${verbList}) AND ts >= ?
+           GROUP BY project, key`,
+        ).bind(identity, since)
+      : env.AUDIT_DB.prepare(
+          `SELECT project, key, MAX(ts) AS last_read, COUNT(*) AS reads FROM audit
+           WHERE principal = ? AND decision = 'allow' AND key IS NOT NULL AND verb IN (${verbList})
+           GROUP BY project, key`,
+        ).bind(identity);
+    const res = await stmt.all<{ project: string | null; key: string; last_read: string; reads: number }>();
+    const items = (res.results ?? []).map((r) => ({ project: r.project ?? "", key: r.key, last_read: r.last_read, reads: r.reads }));
+
+    // --assume-policy (§6.3): identity'nin kuralları altında OKUYABİLECEĞİ her
+    // anahtarı da birleştir (paranoyak süperset). Human için gruplar offboard
+    // sonrası bilinemez → TÜM group kuralları potansiyel sayılır (süperset yönü güvenli).
+    if (assumePolicy) {
+      const seen = new Set(items.map((i) => `${i.project} ${i.key}`));
+      const candidateGroups = actx.policy.doc.rules.map((r) => r.group).filter((g): g is string => g !== undefined);
+      const assumed: AuthzPrincipal = identity.startsWith("service:")
+        ? { kind: "service", id: identity, groups: [] }
+        : { kind: "human", id: identity, groups: candidateGroups };
+      for (const project of await deriveProjects(env.SECRETS_BUCKET)) {
+        const cur = await getObject(env.SECRETS_BUCKET, keyCurrent(project));
+        if (!cur) continue;
+        let names: string[];
+        try {
+          const ptr = parseCurrentPointer(cur.bytes);
+          const man = await getObject(env.SECRETS_BUCKET, keyManifest(project, ptr.epoch));
+          if (!man) continue;
+          names = parseManifest(man.bytes).entries.map((e) => e.keyName);
+        } catch {
+          continue; // bozuk proje assume-policy taramasını düşürmez
+        }
+        for (const k of names) {
+          if (!authorize(actx.policy.doc, assumed, project, k, "read").allowed) continue;
+          const dedup = `${project} ${k}`;
+          if (seen.has(dedup)) continue;
+          seen.add(dedup);
+          items.push({ project, key: k, last_read: "", reads: 0 });
+        }
+      }
+    }
+
+    // rotate-plan SENKRON audit (control-plane).
     try {
-      await auditAdmin(env, principal, "admin.denied", "deny", request, { intent: "not_admin" });
+      await auditAppendSync(env.AUDIT_LOG, { ...adminRow(actx.authz.id, principal, "admin.rotate_plan", request), intent: identity });
     } catch {
-      /* best-effort deny logging */
+      return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable");
     }
-    return adminErr(HTTP.FORBIDDEN, "GRANT_DENIED", "not an admin member of the signed trust manifest");
+    return jsonOK({ identity, generated_at: new Date().toISOString(), items });
   }
 
-  try {
-    const sub = parts[2]; // v1 / admin / <sub>
-    if (sub === "audit" && request.method === "GET") return await adminAuditQuery(request, env, principal);
-    if (sub === "projects" && request.method === "GET") return await adminProjects(request, env, principal, parts);
-    if (sub === "tokens" && parts.length === 3 && request.method === "GET") return await adminTokens(request, env, principal);
-    if (sub === "tokens" && parts[3] === "revoke" && request.method === "POST") return await adminRevoke(request, env, ctx, principal);
-    if (sub === "gc" && parts[3] === "run" && request.method === "POST") return await adminGcRun(request, env, principal);
-    if (sub === "attestation" && request.method === "GET") return await adminAttestation(request, env, principal);
-    if (sub === "pending-ops") return await adminPendingOps(request, env, principal, parts, head);
-    return adminErr(HTTP.NOT_FOUND, "NOT_FOUND", "unknown admin route");
-  } catch (e) {
-    if (e instanceof AuditDown) return adminErr(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable");
-    throw e;
+  // POST /v1/admin/token/revoke (§7.6 — bare /v1/token/revoke READ app'e düşerdi).
+  if (parts[2] === "token" && parts[3] === "revoke" && parts.length === 4 && request.method === "POST") {
+    let jti = "";
+    try {
+      jti = ((await request.json()) as { jti?: string }).jti ?? "";
+    } catch {
+      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+    }
+    if (!jti) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "jti required");
+    try {
+      await revokeJti(ctx, env, jti, actx.authz.id, request);
+    } catch {
+      return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable");
+    }
+    return jsonOK({ jti, revoked: true });
   }
+
+  // POST /v1/admin/rewrap-kek (§2.5): her proje için writer DO'dan bir re-wrap epoch'u.
+  if (parts[2] === "rewrap-kek" && parts.length === 3 && request.method === "POST") {
+    const projects = await deriveProjects(env.SECRETS_BUCKET);
+    const results: Record<string, unknown> = {};
+    let failed = 0;
+    for (const project of projects) {
+      const res = await doStubFetch(
+        () => env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName(project)),
+        `https://do/commit?project=${encodeURIComponent(project)}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-principal-id": actx.authz.id,
+            "x-principal-type": principal.kind === "human" ? "human" : "machine",
+            "x-audit-verb": "admin.rewrap_kek",
+            "x-policy-version": String(actx.policy.version),
+            "x-cf-ip": ipOf(request) ?? "",
+            "x-cf-ray": rayOf(request) ?? "",
+          },
+          body: JSON.stringify({ op: "rewrap" }),
+        },
+      );
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      results[project] = res.status === HTTP.OK ? body : { error: body.error ?? res.status };
+      if (res.status !== HTTP.OK) failed++;
+    }
+    return jsonOK({ projects: results, failed });
+  }
+
+  return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown admin route");
 }
 
-class AuditDown extends Error {}
-async function auditAdminOr503(env: Env, principal: Principal, verb: string, decision: "allow" | "deny", request: Request, extra?: Partial<AuditRow>): Promise<void> {
-  try {
-    await auditAdmin(env, principal, verb, decision, request, extra);
-  } catch {
-    throw new AuditDown();
-  }
-}
-
-// --- Audit query (§6.9) ----------------------------------------------------
-
-async function adminAuditQuery(request: Request, env: Env, principal: Principal): Promise<Response> {
-  await ensureSchema(env.AUDIT_DB);
-  const u = new URL(request.url);
-  const clauses: string[] = [];
-  const binds: (string | number)[] = [];
-  const eq = (col: string, param: string | null) => {
-    if (param) {
-      clauses.push(`${col} = ?`);
-      binds.push(param);
-    }
+function adminRow(principalId: string, principal: Principal, verb: string, request: Request): AuditRow {
+  return {
+    principal: principalId,
+    principal_type: principal.kind === "human" ? "human" : "machine",
+    verb,
+    decision: "allow",
+    ip: ipOf(request),
+    cf_ray: rayOf(request),
   };
-  eq("principal", u.searchParams.get("principal"));
-  eq("project", u.searchParams.get("project"));
-  eq("key", u.searchParams.get("key"));
-  eq("verb", u.searchParams.get("verb"));
-  eq("decision", u.searchParams.get("decision"));
-  eq("token_jti", u.searchParams.get("jti"));
-  const from = u.searchParams.get("from");
-  const to = u.searchParams.get("to");
-  if (from) {
-    clauses.push("ts >= ?");
-    binds.push(from);
-  }
-  if (to) {
-    clauses.push("ts <= ?");
-    binds.push(to);
-  }
-  const limit = Math.min(1000, Math.max(1, parseInt(u.searchParams.get("limit") ?? "200", 10) || 200));
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const rows = await env.AUDIT_DB.prepare(`SELECT * FROM audit ${where} ORDER BY seq DESC LIMIT ?`)
-    .bind(...binds, limit)
-    .all();
-  await auditAdminOr503(env, principal, "admin.audit.query", "allow", request);
-  return adminJson({ rows: rows.results ?? [] });
-}
-
-// --- Metadata (§6.9) — NEVER values ----------------------------------------
-
-async function adminProjects(request: Request, env: Env, principal: Principal, parts: string[]): Promise<Response> {
-  // /v1/admin/projects   veya  /v1/admin/projects/{p}/keys
-  if (parts.length >= 5 && parts[4] === "keys") {
-    const project = parts[3];
-    const cur = await env.SECRETS_BUCKET.get(keyCurrent(project));
-    if (!cur) return adminErr(HTTP.NOT_FOUND, "NOT_FOUND", "no current manifest");
-    const ptr = parseCurrentPointer(new Uint8Array(await cur.arrayBuffer()));
-    const man = await env.SECRETS_BUCKET.get(keyManifest(project, ptr.epoch));
-    if (!man) return adminErr(HTTP.NOT_FOUND, "NOT_FOUND", "manifest object missing");
-    const signed = parseSignedObject(JSON.parse(new TextDecoder().decode(new Uint8Array(await man.arrayBuffer()))));
-    const body = parseManifestBody(signed.bytes);
-    const keys = body.entries.map((e) => ({ keyName: e.keyName, keyVersion: e.keyVersion, wrapSetSize: e.wraps.length, hasRotation: e.hasRotation }));
-    await auditAdminOr503(env, principal, "admin.projects.keys", "allow", request, { project });
-    return adminJson({ project, epoch: ptr.epoch, keys });
-  }
-  // Proje listesi: R2 prefix'inden benzersiz proje adları (metadata).
-  const seen = new Set<string>();
-  let cursor: string | undefined;
-  do {
-    const l = await env.SECRETS_BUCKET.list({ prefix: "secrets/", cursor, delimiter: "/" });
-    for (const p of l.delimitedPrefixes ?? []) {
-      const name = p.replace(/^secrets\//, "").replace(/\/$/, "");
-      if (name) seen.add(name);
-    }
-    cursor = l.truncated ? l.cursor : undefined;
-  } while (cursor);
-  await auditAdminOr503(env, principal, "admin.projects.list", "allow", request);
-  return adminJson({ projects: [...seen] });
-}
-
-async function adminTokens(request: Request, env: Env, principal: Principal): Promise<Response> {
-  await ensureSchema(env.AUDIT_DB);
-  // Aktif mint'ler (audit token.mint) + deny-list durumu.
-  const mints = await env.AUDIT_DB.prepare("SELECT ts, principal, project, token_jti, intent FROM audit WHERE verb = 'token.mint' AND decision = 'allow' ORDER BY seq DESC LIMIT 100").all();
-  const revoked = await env.AUDIT_DB.prepare("SELECT token_jti, ts FROM audit WHERE verb = 'token.revoke' ORDER BY seq DESC LIMIT 100").all();
-  await auditAdminOr503(env, principal, "admin.tokens.list", "allow", request);
-  return adminJson({ active_mint_kid: activeMintKid(env), mints: mints.results ?? [], revoked: revoked.results ?? [] });
-}
-
-async function adminRevoke(request: Request, env: Env, ctx: ExecutionContext, principal: Principal): Promise<Response> {
-  let jti = "";
-  try {
-    jti = ((await request.json()) as { jti?: string }).jti ?? "";
-  } catch {
-    return adminErr(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-  }
-  if (!jti) return adminErr(HTTP.BAD_REQUEST, "BAD_REQUEST", "jti required");
-  try {
-    await revokeJti(ctx, env, jti, principal.id, request);
-  } catch {
-    return adminErr(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable — revoke not recorded");
-  }
-  return adminJson({ jti, revoked: true });
-}
-
-async function adminGcRun(request: Request, env: Env, principal: Principal): Promise<Response> {
-  // GC (§6.7) G10'a ERTELENDİ — bu rota şimdilik yalnızca audit + 202 döner (escrow
-  // doğrulama koşulu G10'da). NOT: gerçek GC witness-verified snapshot gerektirir.
-  await auditAdminOr503(env, principal, "admin.gc.run", "allow", request, { intent: "deferred_g10" });
-  return adminJson({ status: "accepted", note: "GC deferred to G10 (escrow-verified deletion condition)" }, HTTP.ACCEPTED);
-}
-
-async function adminAttestation(request: Request, env: Env, principal: Principal): Promise<Response> {
-  const pub = await attestationPubkey(env);
-  await auditAdminOr503(env, principal, "admin.attestation.pubkey", "allow", request);
-  return adminJson(pub);
-}
-
-// --- Pending-ops kuyruğu (§6.9) --------------------------------------------
-
-async function adminPendingOps(request: Request, env: Env, principal: Principal, parts: string[], head: VerifiedEpoch): Promise<Response> {
-  await ensureSchema(env.AUDIT_DB);
-  // /v1/admin/pending-ops            POST propose | GET list
-  // /v1/admin/pending-ops/{id}       GET
-  // /v1/admin/pending-ops/{id}/withdraw   POST
-  // /v1/admin/pending-ops/{id}/resolve    POST
-  const id = parts[3];
-  const action = parts[4];
-
-  if (!id) {
-    if (request.method === "POST") return await proposeOp(request, env, principal);
-    if (request.method === "GET") return await listOps(request, env, principal);
-    return adminErr(HTTP.NOT_FOUND, "NOT_FOUND", "bad pending-ops route");
-  }
-  if (!action && request.method === "GET") return await getOp(request, env, principal, id);
-  if (action === "withdraw" && request.method === "POST") return await transitionOp(request, env, principal, id, "withdrawn");
-  if (action === "resolve" && request.method === "POST") return await resolveOp(request, env, principal, id, head);
-  return adminErr(HTTP.NOT_FOUND, "NOT_FOUND", "bad pending-ops route");
-}
-
-async function proposeOp(request: Request, env: Env, principal: Principal): Promise<Response> {
-  let bodyObj: { type?: unknown; payload?: unknown };
-  try {
-    bodyObj = (await request.json()) as { type?: unknown; payload?: unknown };
-  } catch {
-    return adminErr(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-  }
-  const type = typeof bodyObj.type === "string" ? bodyObj.type : "";
-  if (!PENDING_TYPES.has(type)) return adminErr(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid pending-op type");
-  const payload = JSON.stringify(bodyObj.payload ?? {});
-  const id = uuidv7();
-  const now = new Date();
-  const proposedAt = now.toISOString();
-  const expiresAt = new Date(now.getTime() + PENDING_TTL_DAYS * 86400_000).toISOString();
-  await env.AUDIT_DB.prepare(
-    "INSERT INTO pending_ops (id, type, payload, proposed_by, proposed_at, status, expires_at) VALUES (?,?,?,?,?, 'proposed', ?)",
-  )
-    .bind(id, type, payload, principal.id, proposedAt, expiresAt)
-    .run();
-  await auditAdminOr503(env, principal, "admin.pending_op.propose", "allow", request, { intent: type });
-  return adminJson({ id, type, status: "proposed", proposed_by: principal.id, proposed_at: proposedAt, expires_at: expiresAt }, HTTP.CREATED);
-}
-
-async function listOps(request: Request, env: Env, principal: Principal): Promise<Response> {
-  const status = new URL(request.url).searchParams.get("status");
-  const rows = status
-    ? await env.AUDIT_DB.prepare("SELECT * FROM pending_ops WHERE status = ? ORDER BY proposed_at DESC").bind(status).all()
-    : await env.AUDIT_DB.prepare("SELECT * FROM pending_ops ORDER BY proposed_at DESC").all();
-  await auditAdminOr503(env, principal, "admin.pending_op.list", "allow", request);
-  return adminJson({ ops: (rows.results ?? []).map(derivedExpiry) });
-}
-
-async function getOp(request: Request, env: Env, principal: Principal, id: string): Promise<Response> {
-  const row = await env.AUDIT_DB.prepare("SELECT * FROM pending_ops WHERE id = ?").bind(id).first();
-  if (!row) return adminErr(HTTP.NOT_FOUND, "PENDING_OP_NOT_FOUND", "no such pending op");
-  await auditAdminOr503(env, principal, "admin.pending_op.get", "allow", request, { intent: id });
-  return adminJson(derivedExpiry(row as Record<string, unknown>));
-}
-
-async function transitionOp(request: Request, env: Env, principal: Principal, id: string, to: "withdrawn"): Promise<Response> {
-  const row = (await env.AUDIT_DB.prepare("SELECT * FROM pending_ops WHERE id = ?").bind(id).first()) as Record<string, unknown> | null;
-  if (!row) return adminErr(HTTP.NOT_FOUND, "PENDING_OP_NOT_FOUND", "no such pending op");
-  const cur = effectiveStatus(row);
-  if (cur !== "proposed") return adminErr(HTTP.CONFLICT, "PENDING_OP_INVALID_STATE", `cannot ${to} from ${cur}`);
-  await env.AUDIT_DB.prepare("UPDATE pending_ops SET status = ? WHERE id = ?").bind(to, id).run();
-  await auditAdminOr503(env, principal, "admin.pending_op.withdraw", "allow", request, { intent: id });
-  return adminJson({ id, status: to });
-}
-
-async function resolveOp(request: Request, env: Env, principal: Principal, id: string, head: VerifiedEpoch): Promise<Response> {
-  void head;
-  let bodyObj: { status?: unknown; committed_epoch?: unknown; resolution_note?: unknown };
-  try {
-    bodyObj = (await request.json()) as typeof bodyObj;
-  } catch {
-    return adminErr(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-  }
-  const status = bodyObj.status === "committed" || bodyObj.status === "rejected" ? bodyObj.status : null;
-  if (!status) return adminErr(HTTP.BAD_REQUEST, "BAD_REQUEST", "status must be committed|rejected");
-  const row = (await env.AUDIT_DB.prepare("SELECT * FROM pending_ops WHERE id = ?").bind(id).first()) as Record<string, unknown> | null;
-  if (!row) return adminErr(HTTP.NOT_FOUND, "PENDING_OP_NOT_FOUND", "no such pending op");
-  const cur = effectiveStatus(row);
-  if (cur === "expired") return adminErr(HTTP.CONFLICT, "PENDING_OP_EXPIRED", "pending op expired");
-  if (cur !== "proposed") return adminErr(HTTP.CONFLICT, "PENDING_OP_INVALID_STATE", `cannot resolve from ${cur}`);
-
-  const note = typeof bodyObj.resolution_note === "string" ? bodyObj.resolution_note : null;
-  let committedEpoch: number | null = null;
-  if (status === "committed") {
-    committedEpoch = typeof bodyObj.committed_epoch === "number" ? bodyObj.committed_epoch : NaN;
-    if (!Number.isInteger(committedEpoch)) return adminErr(HTTP.BAD_REQUEST, "BAD_REQUEST", "committed_epoch required for committed");
-    // Cross-check (§6.9): committed çözümü, resolving principal'ın GERÇEKTEN committed_epoch'u
-    // yazdığına dair kanıt gerektirir. "Principal'a ait HERHANGİ bir commit" YETMEZ (aksi hâlde
-    // admin, yazmadığı rastgele bir epoch'a atıf yaparak op'u committed işaretleyebilir). İki
-    // koşul, SPESİFİK committed_epoch'a bağlı:
-    //   (a) committed_epoch'ta bir trust manifest R2'de VAR (epoch gerçekten yazıldı), VE
-    //   (b) o epoch'a atıfta bulunan, principal.id'ye ait bir allow commit audit satırı var
-    //       (trust-commit audit satırları enacted admin_epoch'u `intent`'te taşır).
-    const manifestExists = await env.SECRETS_BUCKET.head(keyTrustManifest(committedEpoch));
-    const proof = manifestExists
-      ? await env.AUDIT_DB.prepare(
-          "SELECT seq FROM audit WHERE principal = ? AND decision = 'allow' AND verb IN ('commit','trust.commit') AND intent = ? LIMIT 1",
-        )
-          .bind(principal.id, String(committedEpoch))
-          .first()
-      : null;
-    if (!proof) return adminErr(HTTP.CONFLICT, "PENDING_OP_INVALID_STATE", "committed_epoch not written by this principal (audit cross-check)");
-  }
-  await env.AUDIT_DB.prepare("UPDATE pending_ops SET status = ?, committed_epoch = ?, committed_by = ?, resolution_note = ? WHERE id = ?")
-    .bind(status, committedEpoch, principal.id, note, id)
-    .run();
-  await auditAdminOr503(env, principal, "admin.pending_op.resolve", "allow", request, { intent: `${id}:${status}` });
-  return adminJson({ id, status, committed_epoch: committedEpoch });
-}
-
-/** effectiveStatus, DB status'ünü türev-expiry ile hesaplar (7 gün geçmiş proposed → expired). */
-function effectiveStatus(row: Record<string, unknown>): string {
-  const status = String(row.status);
-  if (status === "proposed" && typeof row.expires_at === "string" && Date.parse(row.expires_at) < Date.now()) return "expired";
-  return status;
-}
-function derivedExpiry(row: Record<string, unknown>): Record<string, unknown> {
-  return { ...row, status: effectiveStatus(row) };
 }

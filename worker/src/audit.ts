@@ -54,15 +54,22 @@ export async function auditAppendSync(ns: DurableObjectNamespace, row: AuditRow,
 }
 
 /**
- * auditAppendBatch, birden çok satırı tek exclusive turda append eder (read-path
- * batch flush). batchCounter ingest-liveness için (A8 backlog/silence, §6.5).
+ * auditAppendBatch, birden çok satırı TEK exclusive turda append eder — bulk
+ * op'ların per-key satırları için TEK zincir append, TEK ack, TEK DO round-trip
+ * (§6.4). idempotencyKey verilirse (örn. commit outcome `project:epoch`) DO tüm
+ * batch'i dedup eder (crash-recovery retry çift satır üretmez). batchCounter
+ * ingest-liveness için (A8 backlog/silence).
  */
-export async function auditAppendBatch(ns: DurableObjectNamespace, rows: AuditRow[], batchCounter?: number): Promise<void> {
+export async function auditAppendBatch(
+  ns: DurableObjectNamespace,
+  rows: AuditRow[],
+  opts?: { batchCounter?: number; idempotencyKey?: string },
+): Promise<void> {
   if (rows.length === 0) return;
   const res = await doStubFetch(makeAuditStub(ns), "https://audit/append-batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ rows, batchCounter }),
+    body: JSON.stringify({ rows, batchCounter: opts?.batchCounter, idempotencyKey: opts?.idempotencyKey }),
   });
   if (!res.ok) throw new Error(`audit append-batch failed: ${res.status}`);
 }

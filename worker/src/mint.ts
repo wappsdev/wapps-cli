@@ -19,7 +19,11 @@ export interface TokenScope {
 
 export interface MintedClaims {
   iss: string;
-  sub: string; // machine:<identity-id>
+  // sub = mint EDEN principal'ın id'si ("service:<common_name>") — token.ts mint
+  // anında dış CF-Access-doğrulanmış principal'dan yazar. resolveMachinePrincipal
+  // bu alanı dış principal'a EŞİTLİK için doğrular (principal binding); minted
+  // token kendi ihraççısından başka bir kimliğe ASLA adapte edilemez.
+  sub: string;
   aud: string;
   project: string;
   scope: TokenScope;
@@ -166,9 +170,14 @@ export async function verifyMintedToken(env: MintEnv, token: string): Promise<{ 
 
 // --- Scope yardımcıları (per-key confinement, §6.3/§6.4) --------------------
 
-/** scopeAllowsVerb, token scope'unun bir verb'i kapsayıp kapsamadığı. */
+/** scopeAllowsVerb, token scope'unun bir verb'i kapsayıp kapsamadığı. §4.2 pinli
+ * rotate⊃write genişletmesi BURADA DA uygulanır: rotasyon, değer yazımlarını normal
+ * data-plane write rotalarından yürütür; rotate-scoped bir minted token bu yazmaları
+ * da kapsamalıdır (policy expandVerbs ile tutarlı — daha dar semantik server-side
+ * uygulanamaz). */
 export function scopeAllowsVerb(scope: TokenScope, verb: string): boolean {
-  return scope.verbs.includes(verb);
+  if (scope.verbs.includes(verb)) return true;
+  return verb === "write" && scope.verbs.includes("rotate");
 }
 
 /** scopeAllowsKey, token scope'unun bir anahtarı kapsayıp kapsamadığı ("*" = tümü). */

@@ -1,468 +1,249 @@
 package store
 
+// v2 istemci testleri: httptest fake-worker'a karşı Read/Keys/Set/Import/Delete +
+// epoch-pin tripwire (§7.4) + hata eşlemesi (§7.5) + auth enjeksiyonu (§7.2).
+
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
-	"time"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/wappsdev/wapps-cli/internal/clierr"
-	"github.com/wappsdev/wapps-cli/internal/cryptoid"
 	"github.com/wappsdev/wapps-cli/internal/intent"
-	"github.com/wappsdev/wapps-cli/internal/manifest"
-	"github.com/wappsdev/wapps-cli/internal/trust"
 )
 
-func init() { noSleep = true } // rebase backoff'unu testlerde atla
-
-// errDoer, her isteği taşıma hatasıyla reddeder (çevrimdışı simülasyonu).
-type errDoer struct{}
-
-func (errDoer) Do(*http.Request) (*http.Response, error) { return nil, errors.New("offline") }
-
-func (f *fixture) storeDir(t *testing.T) string {
+// newTestStore, verilen handler'la bir fake gate + istemci kurar.
+func newTestStore(t *testing.T, handler http.Handler) (*WorkerStore, *httptest.Server) {
 	t.Helper()
-	if f.dirCache == "" {
-		f.dirCache = t.TempDir()
-		require.NoError(t, trust.NewPinStore(f.genesisPin).Save(f.dirCache+"/roots.json"))
-	}
-	return f.dirCache
-}
-
-func (f *fixture) store(t *testing.T, doer httpDoer) *WorkerStore {
-	t.Helper()
-	dir := f.storeDir(t)
-	if doer == nil {
-		doer = f.server.srv.Client()
-	}
-	return New(Config{
-		BaseURL:      f.server.srv.URL,
-		Doer:         doer,
-		PinPath:      dir + "/roots.json",
-		CacheDir:     dir + "/cache",
-		EpochPinPath: dir + "/epochs.json",
-		Witness:      intent.NoWitness{}, // deploy testleri için tanık wire'lı (stub)
-		Now:          f.server.now,
-	})
-}
-
-// seed, epoch1 data manifest'ini iki anahtarla (A, DB) kurar (Commit üzerinden).
-func (f *fixture) seed(t *testing.T) *WorkerStore {
-	t.Helper()
-	st := f.store(t, nil)
-	res, err := st.Commit(context.Background(), testProject, f.delta(map[string][]byte{
-		"A":  []byte("secret-A"),
-		"DB": []byte("postgres://user:pw@host/db"),
-	}))
-	require.NoError(t, err)
-	require.EqualValues(t, 1, res.EpochAfter)
-	return st
-}
-
-func TestCommitAndFetch_Roundtrip(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t)
-
-	snap, err := st.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Dev})
-	require.NoError(t, err)
-	require.EqualValues(t, 1, snap.Epoch)
-	require.ElementsMatch(t, []string{"A", "DB"}, snap.Keys())
-
-	// CLI ÇÖZER (Worker aksine): device kimliğiyle düz metin.
-	a, err := snap.Decrypt(f.human.device, "A")
-	require.NoError(t, err)
-	require.Equal(t, "secret-A", string(a))
-
-	db, err := snap.Decrypt(f.human.device, "DB")
-	require.NoError(t, err)
-	require.Equal(t, "postgres://user:pw@host/db", string(db))
-
-	// Backup kimliği de çözebilmeli (wrap-set device+backup+escrow içerir).
-	ab, err := snap.Decrypt(f.human.backup, "A")
-	require.NoError(t, err)
-	require.Equal(t, "secret-A", string(ab))
-
-	// Escrow da çözebilir (escrow recipient wrap-set'te zorunlu).
-	ae, err := snap.Decrypt(f.escrow, "A")
-	require.NoError(t, err)
-	require.Equal(t, "secret-A", string(ae))
-}
-
-func TestFetch_304Reuse(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t)
-
-	_, err := st.Fetch(context.Background(), testProject, FetchOpts{})
-	require.NoError(t, err)
-	blobsAfterFirst := f.server.blobGets
-
-	// İkinci fetch: cache'teki ETag → 304 → hiçbir blob yeniden çekilmez.
-	snap, err := st.Fetch(context.Background(), testProject, FetchOpts{})
-	require.NoError(t, err)
-	require.GreaterOrEqual(t, f.server.notModified, 1, "second fetch must hit the 304 path")
-	require.Equal(t, blobsAfterFirst, f.server.blobGets, "304 reuse must fetch no blobs")
-
-	// 304 sonrası cache'ten çözme çalışmalı.
-	a, err := snap.Decrypt(f.human.device, "A")
-	require.NoError(t, err)
-	require.Equal(t, "secret-A", string(a))
-}
-
-func TestFetch_OfflineCacheFallback(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t)
-	_, err := st.Fetch(context.Background(), testProject, FetchOpts{}) // cache doldur
-	require.NoError(t, err)
-
-	// Çevrimdışı store (aynı dizin, hatalı taşıma).
-	off := f.store(t, errDoer{})
-	snap, err := off.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Dev})
-	require.NoError(t, err)
-	require.True(t, snap.FromCache)
-	require.NotEmpty(t, snap.Warnings, "offline read must warn (key-count + age only)")
-	require.NotContains(t, snap.Warnings[0], "secret-A", "warning must never contain a value")
-
-	a, err := snap.Decrypt(f.human.device, "A")
-	require.NoError(t, err)
-	require.Equal(t, "secret-A", string(a))
-}
-
-func TestFetch_OfflineDeployFailsClosed(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t)
-	_, err := st.Fetch(context.Background(), testProject, FetchOpts{})
-	require.NoError(t, err)
-
-	off := f.store(t, errDoer{})
-	_, err = off.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Deploy})
-	require.True(t, clierr.Is(err, clierr.StaleReceipt), "deploy offline must fail closed: %v", err)
-}
-
-func TestFetch_TamperManifestSig(t *testing.T) {
-	f := newFixture(t)
-	f.seed(t)
-
-	// İmzayı boz + pointer hash'ini eşleştir → hash-link geçer, İMZA düşer.
-	f.server.mu.Lock()
-	corrupt := corruptManifestSig(t, f.server.projManifests[1])
-	f.server.installCurrent(1, corrupt)
-	f.server.mu.Unlock()
-
-	fresh := f.freshStore(t)
-	_, err := fresh.Fetch(context.Background(), testProject, FetchOpts{})
-	require.True(t, clierr.Is(err, clierr.SigInvalid), "tampered manifest sig must be rejected: %v", err)
-}
-
-func TestFetch_TamperBlobHash(t *testing.T) {
-	f := newFixture(t)
-	f.seed(t)
-
-	// A'nın blob'unu bozuk baytlarla değiştir (hash artık eşleşmez).
-	f.server.mu.Lock()
-	obj, _ := manifest.ParseSignedObject(f.server.projManifests[1])
-	m, _ := manifest.ParseManifestBody(obj.Bytes)
-	var aHash string
-	for _, e := range m.Entries {
-		if e.KeyName == "A" {
-			aHash = e.BlobHash
-		}
-	}
-	orig := f.server.blobs[aHash]
-	tampered := append([]byte(nil), orig...)
-	tampered[len(tampered)-1] ^= 0xFF
-	f.server.blobs[aHash] = tampered
-	f.server.mu.Unlock()
-
-	fresh := f.freshStore(t)
-	_, err := fresh.Fetch(context.Background(), testProject, FetchOpts{})
-	require.True(t, clierr.Is(err, clierr.BlobHashMismatch), "tampered blob must be rejected: %v", err)
-}
-
-func TestFetch_UnpinnedTrustRejected(t *testing.T) {
-	f := newFixture(t)
-	f.seed(t)
-
-	// Yanlış genesis pin ile store → trust zinciri doğrulanamaz.
-	dir := t.TempDir()
-	badPin := trust.Pin{AdminEpoch: 1, SHA256: "0000000000000000000000000000000000000000000000000000000000000000"}
-	require.NoError(t, trust.NewPinStore(badPin).Save(dir+"/roots.json"))
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
 	st := New(Config{
-		BaseURL: f.server.srv.URL, Doer: f.server.srv.Client(),
-		PinPath: dir + "/roots.json", CacheDir: dir + "/cache", EpochPinPath: dir + "/epochs.json",
-		Now: f.server.now,
+		BaseURL:      srv.URL,
+		EpochPinPath: filepath.Join(t.TempDir(), "epochs.json"),
+		Auth: func(req *http.Request) error {
+			req.Header.Set("cf-access-token", "test-session")
+			return nil
+		},
 	})
-	_, err := st.Fetch(context.Background(), testProject, FetchOpts{})
-	require.True(t, clierr.Is(err, clierr.SigInvalid), "wrong genesis pin must reject the chain: %v", err)
+	return st, srv
 }
 
-func TestCommit_AutoRebaseDisjoint(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t) // epoch1: A, DB
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
 
-	// Kazanan epoch2, A'yı değiştirir (bizim set'imiz B — disjoint).
-	winner := mkWinner(t, f, "A")
-	f.server.mu.Lock()
-	f.server.injectQueue = append(f.server.injectQueue, winner)
-	f.server.mu.Unlock()
-
-	res, err := st.Commit(context.Background(), testProject, f.delta(map[string][]byte{
-		"B": []byte("secret-B"),
+// TestRead_PlaintextBulk, POST /read'in plaintext değerler döndürdüğünü, auth
+// header'ının taşındığını ve epoch pin'inin İLERLEDİĞİNİ doğrular.
+func TestRead_PlaintextBulk(t *testing.T) {
+	var gotAuth string
+	var gotBody struct {
+		Keys []string `json:"keys"`
+	}
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/projects/vaulter/read" {
+			t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
+		}
+		gotAuth = r.Header.Get("cf-access-token")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		writeJSON(w, 200, map[string]any{"epoch": 7, "values": map[string]string{"DB_URL": "postgres://x"}})
 	}))
-	require.NoError(t, err)
-	require.Equal(t, 1, res.Rebased, "disjoint conflict must auto-rebase exactly once")
-	require.EqualValues(t, 3, res.EpochAfter, "rebased commit lands at epoch 3")
+
+	res, err := st.Read(context.Background(), "vaulter", []string{"DB_URL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Epoch != 7 || res.Values["DB_URL"] != "postgres://x" {
+		t.Fatalf("read result: %+v", res)
+	}
+	if gotAuth != "test-session" {
+		t.Errorf("auth header not injected")
+	}
+	if len(gotBody.Keys) != 1 || gotBody.Keys[0] != "DB_URL" {
+		t.Errorf("request keys: %v", gotBody.Keys)
+	}
+	// Pin ilerledi mi?
+	pin, err := st.pinnedEpoch("vaulter")
+	if err != nil || pin != 7 {
+		t.Fatalf("epoch pin should advance to 7, got %d (%v)", pin, err)
+	}
 }
 
-func TestCommit_SameKeyConflictAborts(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t) // epoch1: A, DB
-
-	// Kazanan epoch2, B'yi değiştirir; biz de B set ediyoruz → aynı-key abort.
-	winner := mkWinner(t, f, "B")
-	// Kazananın B girdisi yok (epoch1'de B yok) — mkWinner ekler.
-	f.server.mu.Lock()
-	f.server.injectQueue = append(f.server.injectQueue, winner)
-	f.server.mu.Unlock()
-
-	_, err := st.Commit(context.Background(), testProject, f.delta(map[string][]byte{
-		"B": []byte("mine-B"),
+// TestRead_EmptyKeysResolvesViaKeys, keys boşken önce GET /keys ile okunabilir
+// küme çözülür (Worker boş keys gövdesini reddeder).
+func TestRead_EmptyKeysResolvesViaKeys(t *testing.T) {
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/projects/vaulter/keys":
+			writeJSON(w, 200, map[string]any{"project": "vaulter", "epoch": 3,
+				"keys": []map[string]any{{"keyName": "A", "keyVersion": 1}, {"keyName": "B", "keyVersion": 2}}})
+		case "/v1/projects/vaulter/read":
+			var body struct {
+				Keys []string `json:"keys"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if len(body.Keys) != 2 {
+				t.Errorf("expected both readable keys, got %v", body.Keys)
+			}
+			writeJSON(w, 200, map[string]any{"epoch": 3, "values": map[string]string{"A": "1", "B": "2"}})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
 	}))
-	require.True(t, clierr.Is(err, clierr.CASConflict), "same-key race must abort with CAS_CONFLICT: %v", err)
-	var e *clierr.Error
-	require.True(t, errors.As(err, &e))
-	require.Contains(t, e.Recovery, "conflicting writers", "recovery must name both writers")
+	res, err := st.Read(context.Background(), "vaulter", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Values) != 2 {
+		t.Fatalf("values: %v", res.Values)
+	}
 }
 
-func TestFetch_DeployFreshOK(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t)
-	snap, err := st.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Deploy})
-	require.NoError(t, err)
-	require.NotNil(t, snap.Receipt, "deploy fetch must carry a verified liveness receipt")
+// TestRead_EpochDowngradeTripwire, served epoch < pinned → EPOCH_DOWNGRADE (§7.4).
+func TestRead_EpochDowngradeTripwire(t *testing.T) {
+	epoch := uint64(9)
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"epoch": epoch, "values": map[string]string{"A": "1"}})
+	}))
+	if _, err := st.Read(context.Background(), "vaulter", []string{"A"}); err != nil {
+		t.Fatal(err)
+	}
+	epoch = 4 // rollback!
+	_, err := st.Read(context.Background(), "vaulter", []string{"A"})
+	if !clierr.Is(err, clierr.EpochDowngrade) {
+		t.Fatalf("want EPOCH_DOWNGRADE, got %v", err)
+	}
 }
 
-func TestFetch_DeployStaleReceiptRejected(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t)
-	// Receipt iat'ı 20dk geriye al → tazelik penceresi dışında.
-	f.server.mu.Lock()
-	f.server.receiptIAT = f.server.clock.Add(-20 * time.Minute).Unix()
-	f.server.mu.Unlock()
+// TestWriteHeaders_RotationAndSync, §6.4 bilgilendirici etiketleri: rotation
+// header'ı + sync intent'i Worker'a taşınır.
+func TestWriteHeaders_RotationAndSync(t *testing.T) {
+	var rotHeader, intentHeader string
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rotHeader = r.Header.Get(intent.HeaderRotation)
+		intentHeader = r.Header.Get(intent.HeaderIntent)
+		writeJSON(w, 200, map[string]any{"ok": true, "epoch": 1})
+	}))
 
-	_, err := st.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Deploy})
-	require.True(t, clierr.Is(err, clierr.StaleReceipt), "stale receipt must be rejected: %v", err)
+	if err := st.Set(context.Background(), "vaulter", "KEY_A", "v", WriteOpts{RotationID: "db-role/phase1"}); err != nil {
+		t.Fatal(err)
+	}
+	if rotHeader != "db-role/phase1" {
+		t.Errorf("rotation header: %q", rotHeader)
+	}
+
+	if err := st.Import(context.Background(), "vaulter", map[string]string{"K": "v"}, WriteOpts{Sync: true}); err != nil {
+		t.Fatal(err)
+	}
+	if intentHeader != intent.IntentSync {
+		t.Errorf("sync intent header: %q", intentHeader)
+	}
 }
 
-func TestFetch_EpochDowngradeRejected(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t) // epoch1
-
-	// epoch2 yaz → pin=2.
-	_, err := st.Commit(context.Background(), testProject, f.delta(map[string][]byte{"C": []byte("c")}))
-	require.NoError(t, err)
-	_, err = st.Fetch(context.Background(), testProject, FetchOpts{})
-	require.NoError(t, err)
-
-	// Sunucuyu epoch1'e geri sar → sunulan epoch < pin → EPOCH_DOWNGRADE.
-	f.server.mu.Lock()
-	f.server.rollbackTo(1)
-	f.server.mu.Unlock()
-
-	_, err = st.Fetch(context.Background(), testProject, FetchOpts{})
-	require.True(t, clierr.Is(err, clierr.EpochDowngrade), "epoch rollback must be rejected: %v", err)
+// TestErrorMapping, Worker hata gövdelerinin clierr sözleşmesine eşlenmesi (§7.5).
+func TestErrorMapping(t *testing.T) {
+	cases := []struct {
+		status int
+		body   map[string]any
+		want   clierr.Code
+	}{
+		{401, map[string]any{"error": "AUTH_INVALID"}, clierr.SessionExpired},
+		{403, map[string]any{"error": "GRANT_DENIED", "key": "DB_URL", "dimension": "key_denied"}, clierr.GrantDenied},
+		{404, map[string]any{"error": "NOT_FOUND", "key": "MISSING"}, clierr.NotFound},
+		{412, map[string]any{"error": "EPOCH_CONFLICT"}, clierr.CASConflict},
+		{412, map[string]any{"error": "POLICY_CONFLICT", "current_version": 4}, clierr.PolicyConflict},
+		{422, map[string]any{"error": "POLICY_INVALID", "rule_index": 2}, clierr.PolicyInvalid},
+		{429, map[string]any{"error": "RATE_LIMITED", "retry_after": 30}, clierr.RateLimited},
+		{503, map[string]any{"error": "AUDIT_UNAVAILABLE"}, clierr.AuditUnavailable},
+		{503, map[string]any{"error": "IDENTITY_UNAVAILABLE"}, clierr.IdentityUnavailable},
+		{503, map[string]any{"error": "SERVICE_MISCONFIGURED"}, clierr.ServiceMisconfig},
+	}
+	for _, tc := range cases {
+		st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, tc.status, tc.body)
+		}))
+		_, err := st.Read(context.Background(), "vaulter", []string{"A"})
+		if !clierr.Is(err, tc.want) {
+			t.Errorf("status %d %v: want %s, got %v", tc.status, tc.body["error"], tc.want, err)
+		}
+	}
 }
 
-func TestCommit_OfflineWriteBlocked(t *testing.T) {
-	f := newFixture(t)
-	f.seed(t)
-	off := f.store(t, errDoer{})
-	_, err := off.Commit(context.Background(), testProject, f.delta(map[string][]byte{"X": []byte("x")}))
-	require.True(t, clierr.Is(err, clierr.OfflineWriteBlocked), "offline write must fail closed: %v", err)
-}
-
-// TestCommit_WorkerInflatedEpochRejected (P2-a): başarılı bir 200 commit'te Worker
-// YEREL imzalı epoch'tan farklı (şişirilmiş) bir epoch echo'larsa, İstemci bunu
-// kurcalama sayar (SIG_INVALID) ve monotonik pin'i İLERLETMEZ — aksi halde pin
-// ileriye zehirlenip gelecekteki tüm okumaları EPOCH_DOWNGRADE ile brick'lerdi.
-func TestCommit_WorkerInflatedEpochRejected(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t) // epoch1, pin=1
-
-	f.server.mu.Lock()
-	f.server.commitEpochOverride = 999 // >> newEpoch(2)
-	f.server.mu.Unlock()
-
-	_, err := st.Commit(context.Background(), testProject, f.delta(map[string][]byte{"C": []byte("secret-C")}))
-	require.True(t, clierr.Is(err, clierr.SigInvalid), "inflated epoch echo must be rejected as tampering: %v", err)
-
-	// Pin, newEpoch(2)'nin ötesine (hatta ona) ilerlememeli — seed'deki 1'de kalmalı.
-	pin, perr := st.pinnedEpoch(testProject)
-	require.NoError(t, perr)
-	require.EqualValues(t, 1, pin, "pin must not advance on a tampered epoch echo")
-}
-
-// TestCommit_WriteThroughCacheKeepsOfflineReadCoherent (P2-b): commit ciphertext
-// cache'i write-through etmezse ama pin'i ilerletirse, write→çevrimdışı→dev-read
-// bayat cache'i ESKİ epoch'ta yükleyip EPOCH_DOWNGRADE ile bozulurdu. Write-through
-// ile cache epoch'u ve pin epoch'u coherent kalır → çevrimdışı okuma başarılı.
-func TestCommit_WriteThroughCacheKeepsOfflineReadCoherent(t *testing.T) {
-	f := newFixture(t)
-	st := f.seed(t) // epoch1
-
-	// Önce online oku → cache epoch1'de.
-	_, err := st.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Dev})
-	require.NoError(t, err)
-
-	// Yeni anahtar yaz → epoch2; pin=2 VE write-through cache de epoch2'ye.
-	res, err := st.Commit(context.Background(), testProject, f.delta(map[string][]byte{"C": []byte("secret-C")}))
-	require.NoError(t, err)
-	require.EqualValues(t, 2, res.EpochAfter)
-
-	// Çevrimdışı dev okuma: coherent cache → EPOCH_DOWNGRADE YOK.
-	off := f.store(t, errDoer{})
-	snap, err := off.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Dev})
-	require.NoError(t, err, "write-through cache must keep the offline read coherent (no EPOCH_DOWNGRADE)")
-	require.True(t, snap.FromCache)
-	require.EqualValues(t, 2, snap.Epoch, "offline read must serve the new epoch, not the stale old one")
-
-	// Yeni anahtar cache'ten çözülebilmeli (blob write-through ile yazıldı).
-	c, err := snap.Decrypt(f.human.device, "C")
-	require.NoError(t, err)
-	require.Equal(t, "secret-C", string(c))
-}
-
-// TestFetch_DeployWitnessNotWiredFailsClosed (P3-a): --intent deploy, wire'lı bir
-// Witness olmadan SESSİZCE ilerleyemez — fail-closed (WITNESS_NOT_WIRED). Bu, stub
-// bir tanıkla witness-blind deploy'un shipping'ini engeller (G10 gerçek non-CF
-// origin'i enjekte edecek).
-func TestFetch_DeployWitnessNotWiredFailsClosed(t *testing.T) {
-	f := newFixture(t)
-	f.seed(t) // epoch1 (f.store, tanık wire'lı — seed = commit, tanıktan etkilenmez)
-
-	// Tanık wire'lanMAMIŞ bir store (Witness alanı boş).
-	dir := f.storeDir(t)
+// TestTransportError_NetworkRequired, taşıma hatası → NETWORK_REQUIRED (çevrimdışı
+// mod YOK, §1.5).
+func TestTransportError_NetworkRequired(t *testing.T) {
 	st := New(Config{
-		BaseURL: f.server.srv.URL, Doer: f.server.srv.Client(),
-		PinPath: dir + "/roots.json", CacheDir: dir + "/cache", EpochPinPath: dir + "/epochs.json",
-		Now: f.server.now,
-		// Witness: nil
+		BaseURL:      "http://127.0.0.1:1", // kapalı port
+		EpochPinPath: filepath.Join(t.TempDir(), "epochs.json"),
 	})
-	_, err := st.Fetch(context.Background(), testProject, FetchOpts{Intent: intent.Deploy})
-	require.True(t, clierr.Is(err, clierr.WitnessNotWired), "deploy without a wired witness must fail closed: %v", err)
+	_, err := st.Read(context.Background(), "vaulter", []string{"A"})
+	if !clierr.Is(err, clierr.NetworkRequired) {
+		t.Fatalf("want NETWORK_REQUIRED, got %v", err)
+	}
 }
 
-// TestFetch_WriterOverreachRejected (P3-b): geçerli imzalı ama imzalayanın yazma
-// grant'ı OLMAYAN bir anahtarı değiştiren bir manifest, okuma doğrulama boru
-// hattında reddedilir (WRITER_NOT_ALLOWED). Compromised bir Worker, düşük-yetkili
-// bir yazar imzasıyla yetkisiz anahtarlara taşan bir manifest sunamaz.
-func TestFetch_WriterOverreachRejected(t *testing.T) {
-	f := newFixture(t)
-	f.seed(t) // epoch1: A, DB (insan-imzalı)
-
-	// machine:limited YALNIZCA "B"yi yazabilir; "A"yı değiştiren epoch2 imzalar → taşma.
-	tampered := mkManifestSignedBy(t, f, "A", f.limitedWriter)
-	f.server.mu.Lock()
-	f.server.installCurrent(2, tampered)
-	f.server.mu.Unlock()
-
-	fresh := f.freshStore(t)
-	_, err := fresh.Fetch(context.Background(), testProject, FetchOpts{})
-	require.True(t, clierr.Is(err, clierr.WriterNotAllowed), "writer overreach must be rejected: %v", err)
-}
-
-// --- test yardımcıları ------------------------------------------------------
-
-// freshStore, cache'siz taze bir store döner (tamper testleri blob'u yeniden
-// çekmeli, cache'ten okumamalı).
-func (f *fixture) freshStore(t *testing.T) *WorkerStore {
-	t.Helper()
-	dir := t.TempDir()
-	require.NoError(t, trust.NewPinStore(f.genesisPin).Save(dir+"/roots.json"))
-	return New(Config{
-		BaseURL: f.server.srv.URL, Doer: f.server.srv.Client(),
-		PinPath: dir + "/roots.json", CacheDir: dir + "/cache", EpochPinPath: dir + "/epochs.json",
-		Now: f.server.now,
+// TestAuthError_PreemptsNetwork, Auth hatası isteği ağ'a ÇIKMADAN keser.
+func TestAuthError_PreemptsNetwork(t *testing.T) {
+	st := New(Config{
+		BaseURL:      "http://127.0.0.1:1",
+		EpochPinPath: filepath.Join(t.TempDir(), "epochs.json"),
+		Auth: func(*http.Request) error {
+			return clierr.New(clierr.SessionExpired, "no session")
+		},
 	})
+	_, err := st.Read(context.Background(), "vaulter", []string{"A"})
+	if !clierr.Is(err, clierr.SessionExpired) {
+		t.Fatalf("want SESSION_EXPIRED before any dial, got %v", err)
+	}
 }
 
-func (fw *fakeWorker) rollbackTo(epoch uint64) {
-	wrapper := fw.projManifests[epoch]
-	fw.installCurrent(epoch, wrapper)
-}
-
-// mkWinner, changeKey'i değiştiren (varsa keyVersion+1/blobHash, yoksa yeni
-// girdi ekleyen) imzalı bir epoch2 manifest'i kurar (yarış kazananı; insan daily
-// anahtarıyla imzalanır).
-func mkWinner(t *testing.T, f *fixture, changeKey string) []byte {
-	t.Helper()
-	return mkManifestSignedBy(t, f, changeKey, f.human.daily)
-}
-
-// mkManifestSignedBy, epoch1 tabanı üzerine changeKey'i değiştiren (keyVersion+1/
-// blobHash veya yeni girdi) bir epoch2 manifest'i kurar ve VERİLEN anahtarla
-// imzalar. Yarış kazananı (insan daily) VE yazar-yetkisi taşma (sınırlı otomasyon
-// yazarı) senaryolarını paylaşır.
-func mkManifestSignedBy(t *testing.T, f *fixture, changeKey string, signer cryptoid.SigningKey) []byte {
-	t.Helper()
-	f.server.mu.Lock()
-	cur := f.server.projManifests[1]
-	f.server.mu.Unlock()
-	obj, err := manifest.ParseSignedObject(cur)
-	require.NoError(t, err)
-	m, err := manifest.ParseManifestBody(obj.Bytes)
-	require.NoError(t, err)
-
-	entries := append([]manifest.KeyEntry(nil), m.Entries...)
-	found := false
-	for i := range entries {
-		if entries[i].KeyName == changeKey {
-			entries[i].KeyVersion++
-			entries[i].BlobHash = sha256Hex([]byte("changed-blob-" + changeKey))
-			found = true
+// TestPolicyAndRotatePlanAndWhoami, kontrol-düzlemi istemci çağrılarının rota +
+// gövde şekillerini doğrular.
+func TestPolicyAndRotatePlanAndWhoami(t *testing.T) {
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/whoami":
+			writeJSON(w, 200, map[string]any{"principal": "human:a@wapps.co", "kind": "human",
+				"groups": []string{"developers@wapps.co"}, "policy_version": 3})
+		case r.URL.Path == "/v1/policy" && r.Method == http.MethodGet:
+			writeJSON(w, 200, map[string]any{"version": 3, "sha256": "abc",
+				"policy": map[string]any{"schema": "wapps-secrets/policy/v1", "version": 3, "rules": []any{}}})
+		case r.URL.Path == "/v1/policy" && r.Method == http.MethodPut:
+			var doc PolicyDoc
+			_ = json.NewDecoder(r.Body).Decode(&doc)
+			if doc.Version != 4 {
+				t.Errorf("PUT version = %d, want 4 (CAS current+1)", doc.Version)
+			}
+			writeJSON(w, 200, map[string]any{"version": 4, "sha256": "def"})
+		case r.URL.Path == "/v1/admin/rotate-plan":
+			if r.URL.Query().Get("identity") != "human:x@wapps.co" || r.URL.Query().Get("assume_policy") != "1" {
+				t.Errorf("rotate-plan query: %s", r.URL.RawQuery)
+			}
+			writeJSON(w, 200, map[string]any{"identity": "human:x@wapps.co", "generated_at": "t",
+				"items": []map[string]any{{"project": "vaulter", "key": "DB_URL", "last_read": "t", "reads": 5}}})
+		default:
+			t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
 		}
-	}
-	if !found {
-		// Yeni girdi de ZORUNLU wrap-set taşımalı (COORD b: `wraps` null/yok RED).
-		// Gerçekçilik için taban bir girdinin wrap-set'ini kopyala (escrow dahil).
-		var wraps []manifest.DEKWrap
-		if len(entries) > 0 {
-			wraps = append([]manifest.DEKWrap(nil), entries[0].Wraps...)
-		} else {
-			wraps = []manifest.DEKWrap{}
-		}
-		entries = append(entries, manifest.KeyEntry{
-			KeyName: changeKey, KeyVersion: 1,
-			BlobHash: sha256Hex([]byte("changed-blob-" + changeKey)),
-			Wraps:    wraps,
-		})
-	}
-	wm := &manifest.DataManifest{
-		Schema: manifest.SchemaDataManifest, Project: testProject, Epoch: 2,
-		PrevManifestSha256: manifest.ManifestObjectHash(cur), TrustEpoch: 1,
-		CreatedAt: fixTime, Entries: entries,
-	}
-	wobj, _, err := manifest.SignManifest(wm, signer)
-	require.NoError(t, err)
-	raw, err := manifest.MarshalSignedObject(wobj)
-	require.NoError(t, err)
-	return raw
-}
+	}))
 
-// corruptManifestSig, imzalı sarmalayıcının imza baytlarından birini bozar
-// (baytlar aynı kalır → hash-link kurtarılabilir, ama imza artık geçmez).
-func corruptManifestSig(t *testing.T, wrapper []byte) []byte {
-	t.Helper()
-	obj, err := manifest.ParseSignedObject(wrapper)
-	require.NoError(t, err)
-	require.NotEmpty(t, obj.Sigs)
-	sig := append([]byte(nil), obj.Sigs[0].Sig...)
-	sig[0] ^= 0xFF
-	obj.Sigs[0].Sig = sig
-	raw, err := json.Marshal(obj)
-	require.NoError(t, err)
-	return raw
+	who, err := st.Whoami(context.Background())
+	if err != nil || who.Principal != "human:a@wapps.co" {
+		t.Fatalf("whoami: %+v %v", who, err)
+	}
+	pol, err := st.PolicyGet(context.Background())
+	if err != nil || pol.Version != 3 {
+		t.Fatalf("policy get: %+v %v", pol, err)
+	}
+	v, sha, err := st.PolicyPut(context.Background(), PolicyDoc{Schema: "wapps-secrets/policy/v1", Version: 4})
+	if err != nil || v != 4 || sha != "def" {
+		t.Fatalf("policy put: %d %s %v", v, sha, err)
+	}
+	plan, err := st.RotatePlan(context.Background(), "human:x@wapps.co", "", true)
+	if err != nil || len(plan.Items) != 1 || plan.Items[0].Key != "DB_URL" {
+		t.Fatalf("rotate-plan: %+v %v", plan, err)
+	}
 }

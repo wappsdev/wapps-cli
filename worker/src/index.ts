@@ -1,211 +1,680 @@
-// secrets-gate Worker entrypoint (SPEC §6). Router + read endpoints (DO-free) +
-// auth middleware + rate-limit + machine-token mint/verify + per-key authz +
-// read-path async audit + freshness receipt + admin API + commit dispatch (DO).
+// secrets-gate Worker entrypoint — SERVER-DECRYPT v2 (SPEC §7.6 route table).
+// Pivot (§0): zero-knowledge trust spine yerine CF Access kimliği + Google
+// Workspace grup üyeliği (get-identity, §3) + policy.json (§4) + MASTER_KEK
+// altında server-side zarf kriptosu (§2). Okumalar plaintext DÖNER (TLS + CF
+// Access); yazmalar plaintext ALIR ve writer DO içinde mühürlenir (§2.7).
 //
-// G6 çekirdeği (read/commit/blob + CF Access auth + M-of-N trust + semantik-diff
-// authz) G7'de genişletildi: §6.1 rate-limit + minted-token, §6.3 per-key authz,
-// §6.4 mint/revoke, §6.5 D1 hash-chained audit (attempt→outcome), §6.6 receipt,
-// §6.9 admin API + pending-ops, §6.10 alerts. ERTELENDİ (G10): B2 escrow push,
-// non-CF witness endpoint, GC cron.
+// Rota sınıfları: /v1/admin/* + /v1/policy = write-AUD (15 dk + WebAuthn app'i);
+// kalan her şey read-AUD (§3.2/§7.6). Plaintext dönen okumalar SENKRON audit'lenir
+// (§6.4 — ledger offboard rotate-oracle'ıdır); metadata okumaları async kalır.
+// C2: hiçbir console.* çağrısına değer/DEK/KEK/MASTER_KEK verilmez.
 
 import { Env, AuthFail, authenticate, loadAccessConfig, stripForgeableHeaders, Principal, resolveMachinePrincipal } from "./auth.js";
-import { HTTP, jsonError } from "./errors.js";
-import { sha256Hex } from "./crypto/verify.js";
+import { HTTP, jsonError, jsonOK } from "./errors.js";
+import { sha256Hex, utf8 } from "./crypto/encoding.js";
+import { MasterKey, loadMasterKeys, unwrapDEK, WrapError } from "./crypto/kek.js";
+import { openValue, BlobError } from "./crypto/blob.js";
 import {
   keyBlob,
   keyCurrent,
   keyManifest,
-  keyTrustCurrent,
-  keyTrustManifest,
   getObject,
   validProject,
-  validSha256Hex,
+  validKeyName,
+  deriveProjects,
 } from "./storage.js";
-import { parseCurrentPointer, manifestObjectHash, verifyDataManifest, ManifestVerifyError } from "./manifest.js";
-import { parseSignedObject } from "./crypto/verify.js";
-import { loadTrustHead, dataWriterKeyring } from "./trust-loader.js";
-import { hasVerbGrant, verbKeyAllowed, identityByID, TrustError, VerifiedEpoch } from "./trust.js";
-import { ProjectWriterDO } from "./writer-do.js";
+import { parseCurrentPointer, parseManifest, manifestObjectHash, DataManifest, ManifestEntry } from "./manifest.js";
+import {
+  AuthzPrincipal,
+  LoadedPolicy,
+  PolicyStoreError,
+  PolicyVerb,
+  Topology,
+  authorize,
+  filterReadableKeys,
+  loadPolicy,
+  rulesFor,
+} from "./policy.js";
+import { IdentityError, createGroupResolver } from "./identity.js";
+import { ProjectWriterDO, WriteOp } from "./writer-do.js";
 import { AuditLogDO } from "./audit-do.js";
-import { AttestationDO } from "./attestation-do.js";
-import { loadMintConfig, scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
+import { scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
 import { checkRateLimit } from "./ratelimit.js";
-import { auditReadAsync, AuditRow, ipOf, rayOf } from "./audit.js";
-import { handleTokenMint, revokeJti } from "./token.js";
-import { handleAdmin } from "./admin.js";
-import { issueReceipt } from "./receipt.js";
+import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME } from "./audit.js";
+import { handleTokenMint } from "./token.js";
+import { handleAdmin, AdminContext } from "./admin.js";
 import { fireAlert, ALERT } from "./alerts.js";
-import { ensureMirror } from "./grants-mirror.js";
 import { doStubFetch } from "./do-util.js";
-import { runGC, GCDeps, GCWitnessReport } from "./gc.js";
-import { escrowConfig, headObject } from "./escrow.js";
+import { runGC, GCDeps } from "./gc.js";
+import { escrowConfig, headObject, putObject, keyEscrowAuditAnchor } from "./escrow.js";
 
-export { ProjectWriterDO, AuditLogDO, AttestationDO };
+export { ProjectWriterDO, AuditLogDO };
 
-const BLOB_CAP = 65_536; // §5.7
-const BLOB_OVERHEAD = 4 + 24 + 16; // magic + XChaCha nonce + Poly1305 tag (§3.5.4)
+// Topoloji (§3.2 PRIMARY / §3.3 FALLBACK): day-1 smoke test kararına kadar PRIMARY.
+// FALLBACK seçilirse: burada "fallback" + get-identity'siz bir GroupResolver
+// (aud→projects haritası) takılır; policy PUT validation'ı aud selector'lerini
+// kabul etmeye başlar (§4.4). Rota/policy katmanı DEĞİŞMEZ.
+export const TOPOLOGY: Topology = "primary";
 
-/** validFramingLength, depolanan blob uzunluğunun §3 padding-kova framing'ine uyduğunu doğrular. */
-function validFramingLength(len: number): boolean {
-  const bucket = len - BLOB_OVERHEAD;
-  if (bucket === 256 || bucket === 1024) return true;
-  const maxBucket = Math.floor((BLOB_CAP - BLOB_OVERHEAD) / 4096) * 4096; // 61440
-  return bucket >= 4096 && bucket <= maxBucket && bucket % 4096 === 0;
-}
+const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
+const ROTATION_HEADER = "X-Wapps-Rotation"; // §6.4 rotate.step intent'i (bilgilendirici)
+const INTENT_HEADER = "X-Wapps-Intent"; // "sync" → key.sync audit verb'ü
 
-function etagResponse(bytes: Uint8Array, etag: string, ifNoneMatch: string | null, contentType: string): Response {
-  const quoted = `"${etag}"`;
-  if (ifNoneMatch && ifNoneMatch.replace(/^W\//, "").trim() === quoted) {
-    return new Response(null, { status: HTTP.NOT_MODIFIED, headers: { ETag: quoted } });
-  }
-  return new Response(bytes, { status: HTTP.OK, headers: { "content-type": contentType, ETag: quoted } });
+/** RequestCtx, bir isteğin çözülmüş kimlik + policy bağlamı. */
+interface RequestCtx {
+  principal: Principal;
+  authz: AuthzPrincipal;
+  policy: LoadedPolicy;
+  adminEmails: string[];
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Fail-closed config (§6 intro): eksik → 503 tüm rotalarda.
+    // Fail-closed config (§3.1): ACCESS_* / MASTER_KEK / ADMIN_EMAILS eksik → 503 + A8.
     const cfg = loadAccessConfig(env);
-    if (!cfg) return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "access config missing");
-    if (!(env.GENESIS_TRUST_SHA256 ?? "").trim()) return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "genesis pin missing");
-    if (!loadMintConfig(env)) return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "mint key missing/invalid");
+    const masters = loadMasterKeys(env);
+    const adminEmails = parseAdminEmails(env.ADMIN_EMAILS);
+    if (!cfg || !masters || adminEmails.length === 0) {
+      fireAlert(ctx, env, ALERT.A8, "SERVICE_MISCONFIGURED: access config / MASTER_KEK / ADMIN_EMAILS missing");
+      return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "service configuration incomplete");
+    }
 
-    // Forgeable Access header'ı her istekten strip et (§6.1 step 8).
+    // Forgeable Access header'ı her istekten strip et (§3.4).
     request = stripForgeableHeaders(request);
 
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter((p) => p !== "");
     if (parts[0] !== "v1") return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
 
-    // Admin preflight (§6.9): CORS OPTIONS auth'tan ÖNCE (credential taşımaz).
-    if (parts[1] === "admin" && request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "https://admin.meapps.dev",
-          "Access-Control-Allow-Credentials": "true",
-          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-          "Access-Control-Allow-Headers": "content-type,authorization,cf-access-jwt-assertion",
-          Vary: "Origin",
-        },
-      });
-    }
-
-    // Rota sınıfı → gereken AUD (§6 route table). Control-plane = write-AUD.
-    const isAdmin = parts[1] === "admin";
-    const isTokenRevoke = parts[1] === "token" && parts[2] === "revoke";
-    const routeAud: "read" | "write" = isAdmin || isTokenRevoke ? "write" : "read";
+    // Rota sınıfı → gereken AUD (§7.6): /v1/admin/* + /v1/policy = write.
+    const isWriteApp = parts[1] === "admin" || parts[1] === "policy";
+    const routeAud: "read" | "write" = isWriteApp ? "write" : "read";
 
     try {
-      const principal = await authenticate(request, cfg, routeAud);
+      let principal = await authenticate(request, cfg, routeAud);
 
-      // Rate limit (§6.1): her authenticated principal 60/dk. 304 poll'ları RATE'e
-      // sayılır ama audit'lenmez; 429 ise deny olarak audit'lenir.
+      // Rate limit: her authenticated principal 60/dk; 429 deny olarak audit'lenir.
       const rl = await checkRateLimit(env, principal.id);
       if (!rl.allowed) {
-        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "rate_limit", null, null));
+        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal.id, ptypeOf(principal), "rate_limit", null, null, null));
+        await countDenyBurst(ctx, env, principal.id);
         return new Response(JSON.stringify({ error: "RATE_LIMITED", message: "rate limit exceeded", retry_after: rl.retryAfter }), {
           status: HTTP.TOO_MANY,
           headers: { "content-type": "application/json", "Retry-After": String(rl.retryAfter) },
         });
       }
 
-      // POST /v1/token — TEK service-token kabul eden rota (§6.4).
+      // OPSİYONEL mint katmanı (§5.3): service principal Bearer minted-token
+      // sunarsa scope-pinli machine principal'a daralır (asla genişlemez).
+      // PRINCIPAL BINDING: minted sub, DIŞ CF-Access-doğrulanmış principal'a
+      // eşit olmalı — başka principal'a mint'lenmiş token = privilege escalation
+      // → TOKEN_PRINCIPAL_MISMATCH + deny audit (dış principal adına).
+      if (principal.kind === "service" && (request.headers.get("authorization") ?? "").trim() !== "") {
+        const outerId = principal.id;
+        try {
+          principal = await resolveMachinePrincipal(request, env, outerId);
+        } catch (e) {
+          if (e instanceof AuthFail && e.code === "TOKEN_PRINCIPAL_MISMATCH") {
+            auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, outerId, "machine", "token.use", null, null, "TOKEN_PRINCIPAL_MISMATCH"));
+            await countDenyBurst(ctx, env, outerId);
+          }
+          throw e;
+        }
+      }
+
+      // Grup çözümü (§3.2): yalnızca human. Hata → 503 IDENTITY_UNAVAILABLE (fail-closed).
+      let groups: string[] = [];
+      if (principal.kind === "human") {
+        const jwt = request.headers.get(ACCESS_ASSERTION_HEADER) ?? "";
+        // Resolver istek-başına kurulur (ucuz closure): A10 alert'i BU isteğin
+        // ExecutionContext'ine bağlanmalı (bayat ctx.waitUntil kullanılamaz).
+        const resolver = createGroupResolver((env.ACCESS_TEAM_DOMAIN ?? "").trim(), env.IDENTITY_CACHE, (summary, detail) => {
+          fireAlert(ctx, env, ALERT.A10, summary, detail);
+        });
+        groups = await resolver.resolve(jwt, principal.email);
+      }
+      const authz: AuthzPrincipal =
+        principal.kind === "human"
+          ? { kind: "human", id: principal.id, groups }
+          : { kind: "service", id: principal.id, groups: [] };
+
+      // Policy yükle (§4.1; izolat cache ≤60 s). Depo bozuksa fail-closed + A8.
+      let policy: LoadedPolicy;
+      try {
+        policy = await loadPolicy(env.SECRETS_BUCKET, TOPOLOGY, adminEmails);
+      } catch (e) {
+        if (e instanceof PolicyStoreError) {
+          fireAlert(ctx, env, ALERT.A8, "policy store integrity failure", { error: e.message });
+          return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "policy store unreadable");
+        }
+        throw e;
+      }
+      const rctx: RequestCtx = { principal, authz, policy, adminEmails };
+
+      // --- Control plane: /v1/policy + /v1/admin/* (write-AUD) ------------------
+      if (isWriteApp) {
+        const actx: AdminContext = { policy, authz, adminEmails, topology: TOPOLOGY };
+        return await handleAdmin(request, env, ctx, parts, principal, actx);
+      }
+
+      // --- GET /v1/whoami --------------------------------------------------------
+      if (parts[1] === "whoami" && parts.length === 2 && request.method === "GET") {
+        return jsonOK({
+          principal: authz.id,
+          kind: principal.kind,
+          ...(principal.kind === "human" ? { email: principal.email } : {}),
+          ...(principal.kind === "service" ? { common_name: principal.commonName } : {}),
+          groups,
+          policy_version: policy.version,
+          grants: rulesFor(policy.doc, authz),
+          is_root_admin: principal.kind === "human" && adminEmails.includes(principal.email),
+        });
+      }
+
+      // --- POST /v1/token (yalnızca service principal, §5.3) ----------------------
       if (parts[1] === "token" && parts.length === 2 && request.method === "POST") {
-        if (principal.kind !== "seed") return jsonError(HTTP.FORBIDDEN, "MACHINE_TOKEN_REQUIRED", "only service tokens may mint");
-        const head = await trustHeadOr503(env);
-        return await handleTokenMint(request, env, ctx, principal.commonName, head);
+        if (principal.kind !== "service") return jsonError(HTTP.FORBIDDEN, "MACHINE_TOKEN_REQUIRED", "only service tokens may mint");
+        return await handleTokenMint(request, env, ctx, principal.commonName, policy);
       }
 
-      // POST /v1/token/revoke — admin (write-AUD).
-      if (isTokenRevoke && request.method === "POST") {
-        const head = await trustHeadOr503(env);
-        if (principal.kind !== "human" || !head.manifest.admins.includes(principal.id)) {
-          return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "revoke requires an admin");
-        }
-        let jti = "";
-        try {
-          jti = ((await request.json()) as { jti?: string }).jti ?? "";
-        } catch {
-          return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-        }
-        if (!jti) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "jti required");
-        try {
-          await revokeJti(ctx, env, jti, principal.id, request);
-        } catch {
-          return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable");
-        }
-        return new Response(JSON.stringify({ jti, revoked: true }), { status: HTTP.OK, headers: { "content-type": "application/json" } });
-      }
-
-      // /v1/admin/* — control plane (§6.9).
-      if (isAdmin) {
-        const head = await trustHeadOr503(env);
-        return await handleAdmin(request, env, ctx, parts, principal, head);
-      }
-
-      // Data-plane: seed → minted machine-token GEREKİR (§6.1 step 8).
-      const dp: Principal = principal.kind === "seed" ? await resolveMachinePrincipal(request, env) : principal;
-
-      // trust/current, trust/{epoch} (herhangi bir enrolled principal).
-      if (parts[1] === "trust") {
-        return await handleTrustRead(request, env, ctx, parts, dp);
-      }
-
-      // projects/{project}/...
+      // --- projects/{p}/... --------------------------------------------------------
       if (parts[1] === "projects" && parts.length >= 4) {
         const project = parts[2];
         if (!validProject(project)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid project segment");
         const kind = parts[3];
 
-        if (kind === "manifests" && request.method === "GET") {
-          return await handleManifestRead(request, env, ctx, project, parts[4], dp);
+        if (kind === "keys" && parts.length === 4 && request.method === "GET") {
+          return await handleKeysList(request, env, ctx, project, rctx, masters);
         }
-        if (kind === "receipt" && request.method === "GET") {
-          return await handleReceipt(request, env, ctx, project, dp);
+        if (kind === "read" && parts.length === 4 && request.method === "POST") {
+          return await handleRead(request, env, ctx, project, rctx, masters);
         }
-        if (kind === "blobs" && parts.length === 5) {
-          const sha = parts[4];
-          if (!validSha256Hex(sha)) return jsonError(HTTP.BAD_REQUEST, "BLOB_HASH_MISMATCH", "invalid blob address");
-          if (request.method === "GET") return await handleBlobRead(request, env, ctx, project, sha, dp);
-          if (request.method === "PUT") return await handleBlobPut(request, env, project, sha, dp);
+        // MIGRATION_FREEZE (§7.5/§8.2) — BİLİNÇLİ ERTELEME: per-proje soak
+        // write-freeze'i (set/import/sync/rotate → 409 MIGRATION_FREEZE) migration
+        // fazının mekanizmasıdır (rollout adım 7; freeze migration kaydında deklare
+        // edilir) ve `wapps migrate` tooling'iyle birlikte gelecektir. Worker
+        // çekirdeğinde şimdilik YOKTUR — spec changelog rev 3'te not düşüldü.
+        if (kind === "keys" && parts.length === 5 && request.method === "PUT") {
+          return await handleSet(request, env, ctx, project, parts[4], rctx);
         }
-        if (kind === "commit" && request.method === "POST") {
-          return await handleCommit(request, env, ctx, project, dp);
+        if (kind === "keys" && parts.length === 5 && request.method === "DELETE") {
+          return await handleDelete(request, env, ctx, project, parts[4], rctx);
+        }
+        if (kind === "import" && parts.length === 4 && request.method === "POST") {
+          return await handleImport(request, env, ctx, project, rctx);
+        }
+        if (kind === "manifests" && parts.length === 5 && request.method === "GET") {
+          return await handleManifestRead(request, env, ctx, project, parts[4], rctx);
         }
       }
       return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
     } catch (e) {
       if (e instanceof AuthFail) return e.toResponse();
-      if (e instanceof TrustError) return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", e.message);
+      if (e instanceof IdentityError) {
+        // §3.2 adım 5: fail-closed, retryable.
+        return jsonError(HTTP.MISCONFIGURED, "IDENTITY_UNAVAILABLE", "identity/groups unresolvable; retry");
+      }
       throw e;
     }
   },
 
-  // scheduled — cron surface (§6.7 GC + §6.8 nightly sweep). event.cron ile
-  // dispatch: haftalık `0 3 * * 0` → GC; nightly `0 2 * * *` sweep DEFERRED-light.
+  // scheduled — cron yüzeyi (§8.3 pinli küme): haftalık GC + NIGHTLY audit-head
+  // çapası + escrow reconcile. event.cron ile dispatch (DO alarm'ı DEĞİL).
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (event.cron === "0 3 * * 0") {
       ctx.waitUntil(runScheduledGC(env, ctx));
     }
+    if (event.cron === "0 2 * * *") {
+      ctx.waitUntil(runNightlyAnchor(env, ctx));
+    }
   },
 };
 
-// --- GC cron wiring (§6.7) --------------------------------------------------
+// --- Kimlik / yardımcılar -------------------------------------------------------
 
-/** runScheduledGC, haftalık GC cron'unu üretim bağımlılıklarıyla sürer (§6.7). */
+function parseAdminEmails(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+}
+
+function ptypeOf(p: Principal): "human" | "machine" {
+  return p.kind === "human" ? "human" : "machine";
+}
+
+function denyRow(
+  request: Request,
+  principalId: string,
+  ptype: "human" | "machine",
+  verb: string,
+  project: string | null,
+  key: string | null,
+  intent: string | null,
+): AuditRow {
+  return { principal: principalId, principal_type: ptype, project, key, verb, decision: "deny", intent, ip: ipOf(request), cf_ray: rayOf(request) };
+}
+
+/**
+ * can, data-plane authz (§4.3 + §5.3 minted-scope kesişimi): policy izin vermeli
+ * VE (machine principal ise) minted scope da kapsamalı — scope asla genişletmez.
+ */
+function can(rctx: RequestCtx, project: string, key: string | null, verb: PolicyVerb): { allowed: boolean; reason?: string } {
+  const p = rctx.principal;
+  if (p.kind === "machine") {
+    if (p.project !== project) return { allowed: false, reason: "token_project" };
+    if (!scopeAllowsVerb(p.scope, verb)) return { allowed: false, reason: "token_verb" };
+    if (key !== null && !scopeAllowsKey(p.scope, key)) return { allowed: false, reason: "token_key" };
+  }
+  const d = authorize(rctx.policy.doc, rctx.authz, project, key, verb);
+  return d.allowed ? { allowed: true } : { allowed: false, reason: d.reason };
+}
+
+// --- A1/A2 burst detektörleri (KV pencere sayaçları) -------------------------------
+
+/** countDenyBurst, A1 (deny spike): principal başına 5 dk penceresinde ≥10 deny. */
+async function countDenyBurst(ctx: ExecutionContext, env: Env, principalId: string): Promise<void> {
+  try {
+    const window = Math.floor(Date.now() / 300_000);
+    const key = `deny:${principalId}:${window}`;
+    const n = (parseInt((await env.RATE.get(key)) ?? "0", 10) || 0) + 1;
+    await env.RATE.put(key, String(n), { expirationTtl: 600 });
+    if (n === 10) fireAlert(ctx, env, ALERT.A1, `denial spike by ${principalId}`, { principal: principalId, count: n });
+  } catch {
+    // sayaç best-effort; alert = tespit
+  }
+}
+
+/** countReadBurst, A2 (value-read burst): principal başına 10 dk penceresinde ≥50 anahtar okuması. */
+async function countReadBurst(ctx: ExecutionContext, env: Env, principalId: string, keys: number): Promise<void> {
+  try {
+    const window = Math.floor(Date.now() / 600_000);
+    const key = `readburst:${principalId}:${window}`;
+    const before = parseInt((await env.RATE.get(key)) ?? "0", 10) || 0;
+    const after = before + keys;
+    await env.RATE.put(key, String(after), { expirationTtl: 1200 });
+    if (before < 50 && after >= 50) fireAlert(ctx, env, ALERT.A2, `value-read burst by ${principalId}`, { principal: principalId, count: after });
+  } catch {
+    // best-effort
+  }
+}
+
+// --- Manifest yükleme (read path ortak) ---------------------------------------------
+
+class ReadPathError extends Error {
+  constructor(public status: number, public code: string, public detail?: Record<string, unknown>) {
+    super(code);
+  }
+  toResponse(): Response {
+    return jsonError(this.status, this.code, this.code, this.detail);
+  }
+}
+
+/** loadCurrentManifest, current pointer + manifest'i zincir-bütünlük kontrolüyle yükler. */
+async function loadCurrentManifest(env: Env, project: string): Promise<{ manifest: DataManifest; epoch: number; sha: string } | null> {
+  const cur = await getObject(env.SECRETS_BUCKET, keyCurrent(project));
+  if (!cur) return null;
+  let ptr;
+  try {
+    ptr = parseCurrentPointer(cur.bytes);
+  } catch {
+    throw new ReadPathError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "current pointer malformed" });
+  }
+  const man = await getObject(env.SECRETS_BUCKET, keyManifest(project, ptr.epoch));
+  if (!man) throw new ReadPathError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "current manifest missing" });
+  if (manifestObjectHash(man.bytes) !== ptr.manifestSha256) {
+    throw new ReadPathError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "pointer/manifest hash mismatch" });
+  }
+  let m: DataManifest;
+  try {
+    m = parseManifest(man.bytes);
+  } catch (e) {
+    throw new ReadPathError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: (e as Error).message });
+  }
+  if (m.project !== project) throw new ReadPathError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "manifest project mismatch" });
+  return { manifest: m, epoch: ptr.epoch, sha: ptr.manifestSha256 };
+}
+
+function etagResponse(bodyStr: string, ifNoneMatch: string | null): Response | { etag: string } {
+  const etag = `"${sha256Hex(utf8(bodyStr))}"`;
+  if (ifNoneMatch && ifNoneMatch.replace(/^W\//, "").trim() === etag) {
+    return new Response(null, { status: HTTP.NOT_MODIFIED, headers: { ETag: etag } });
+  }
+  return { etag };
+}
+
+// --- GET /v1/projects/{p}/keys (metadata; liste FİLTRELİ, §4.3.3) --------------------
+
+async function handleKeysList(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  project: string,
+  rctx: RequestCtx,
+  _masters: MasterKey[],
+): Promise<Response> {
+  // key=null proje-metadata op'u: bir kural principal+read+project'i eşlemeli (§4.3.3).
+  const projectGate = can(rctx, project, null, "read");
+  if (!projectGate.allowed) {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.list", project, null, projectGate.reason ?? null));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project", { dimension: projectGate.reason });
+  }
+  let loaded;
+  try {
+    loaded = await loadCurrentManifest(env, project);
+  } catch (e) {
+    if (e instanceof ReadPathError) return e.toResponse();
+    throw e;
+  }
+  const allNames = loaded ? loaded.manifest.entries.map((e) => e.keyName) : [];
+  // Liste OKUNABİLİR anahtarlara filtrelenir (§4.3.3) + minted scope kesişimi.
+  const readable = filterReadableKeys(rctx.policy.doc, rctx.authz, project, allNames).filter(
+    (k) => can(rctx, project, k, "read").allowed,
+  );
+  const entryByName = new Map<string, ManifestEntry>(loaded ? loaded.manifest.entries.map((e) => [e.keyName, e]) : []);
+  const bodyStr = JSON.stringify({
+    project,
+    epoch: loaded?.epoch ?? 0,
+    keys: readable.map((k) => ({ keyName: k, keyVersion: entryByName.get(k)?.keyVersion ?? 0 })),
+  });
+  const et = etagResponse(bodyStr, request.headers.get("if-none-match"));
+  if (et instanceof Response) return et; // 304 → audit YOK (KEPT davranış)
+  auditReadAsync(ctx, env.AUDIT_LOG, {
+    principal: rctx.authz.id,
+    principal_type: ptypeOf(rctx.principal),
+    project,
+    key: null,
+    verb: "key.list",
+    decision: "allow",
+    ip: ipOf(request),
+    cf_ray: rayOf(request),
+  });
+  return new Response(bodyStr, { status: HTTP.OK, headers: { "content-type": "application/json", ETag: et.etag } });
+}
+
+// --- GET /v1/projects/{p}/manifests/{current|epoch} (entries FİLTRELİ, §7.6) ---------
+
+async function handleManifestRead(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  project: string,
+  sel: string,
+  rctx: RequestCtx,
+): Promise<Response> {
+  const projectGate = can(rctx, project, null, "read");
+  if (!projectGate.allowed) {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "manifest.read", project, null, projectGate.reason ?? null));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project", { dimension: projectGate.reason });
+  }
+  let manifest: DataManifest | null = null;
+  if (sel === "current") {
+    let loaded;
+    try {
+      loaded = await loadCurrentManifest(env, project);
+    } catch (e) {
+      if (e instanceof ReadPathError) return e.toResponse();
+      throw e;
+    }
+    if (!loaded) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "no current manifest");
+    manifest = loaded.manifest;
+  } else {
+    const epoch = Number(sel);
+    if (!Number.isInteger(epoch) || epoch < 1) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "bad epoch");
+    const man = await getObject(env.SECRETS_BUCKET, keyManifest(project, epoch));
+    if (!man) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "manifest not found");
+    try {
+      manifest = parseManifest(man.bytes);
+    } catch {
+      return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "stored manifest unparsable");
+    }
+  }
+  // entries, principal'ın OKUYABİLDİĞİ anahtarlara filtrelenir (§4.3.3/§7.6):
+  // tek-anahtarlı bir principal projenin tam anahtar kümesini SAYAMAZ. Wrap'ler opak.
+  const filtered = manifest.entries.filter((e) => can(rctx, project, e.keyName, "read").allowed);
+  const bodyStr = JSON.stringify({ ...manifest, entries: filtered });
+  const et = etagResponse(bodyStr, request.headers.get("if-none-match"));
+  if (et instanceof Response) return et;
+  auditReadAsync(ctx, env.AUDIT_LOG, {
+    principal: rctx.authz.id,
+    principal_type: ptypeOf(rctx.principal),
+    project,
+    key: null,
+    verb: "manifest.read",
+    decision: "allow",
+    ip: ipOf(request),
+    cf_ray: rayOf(request),
+  });
+  return new Response(bodyStr, { status: HTTP.OK, headers: { "content-type": "application/json", ETag: et.etag } });
+}
+
+// --- POST /v1/projects/{p}/read — PLAINTEXT bulk read (§7.4/§7.6) --------------------
+
+async function handleRead(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  project: string,
+  rctx: RequestCtx,
+  masters: MasterKey[],
+): Promise<Response> {
+  let body: { keys?: unknown };
+  try {
+    body = (await request.json()) as { keys?: unknown };
+  } catch {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+  }
+  if (!Array.isArray(body.keys) || body.keys.length === 0) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "keys required");
+  const keys = [...new Set(body.keys.filter((k): k is string => typeof k === "string"))];
+  if (keys.length !== body.keys.length) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "keys must be unique strings");
+  for (const k of keys) {
+    if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
+  }
+
+  // ALL-OR-NOTHING policy (§7.6): reddedilen HERHANGİ bir anahtar tüm çağrıyı,
+  // anahtarı adlandırarak düşürür.
+  for (const k of keys) {
+    const d = can(rctx, project, k, "read");
+    if (!d.allowed) {
+      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "value.read", project, k, d.reason ?? null));
+      await countDenyBurst(ctx, env, rctx.authz.id);
+      return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "read denied", { key: k, dimension: d.reason });
+    }
+  }
+
+  let loaded;
+  try {
+    loaded = await loadCurrentManifest(env, project);
+  } catch (e) {
+    if (e instanceof ReadPathError) return e.toResponse();
+    throw e;
+  }
+  if (!loaded) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "project has no secrets");
+  const byName = new Map(loaded.manifest.entries.map((e) => [e.keyName, e]));
+
+  // Çöz: blob → içerik-adres doğrula → KEK-unwrap DEK → XChaCha open (§2).
+  const values: Record<string, string> = {};
+  for (const k of keys) {
+    const entry = byName.get(k);
+    if (!entry) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "key not found", { key: k });
+    const blob = await getObject(env.SECRETS_BUCKET, keyBlob(project, entry.blobHash));
+    if (!blob) {
+      fireAlert(ctx, env, ALERT.A8, "referenced blob missing", { project, key: k });
+      return jsonError(HTTP.MISCONFIGURED, "BLOB_MISSING", "referenced blob missing", { key: k });
+    }
+    if (sha256Hex(blob.bytes) !== entry.blobHash) {
+      fireAlert(ctx, env, ALERT.A8, "blob content-address mismatch", { project, key: k });
+      return jsonError(HTTP.MISCONFIGURED, "BLOB_HASH_MISMATCH", "blob bytes do not match address", { key: k });
+    }
+    let dek: Uint8Array;
+    try {
+      dek = unwrapDEK(masters, project, k, entry.keyVersion, entry.wrap);
+    } catch (e) {
+      if (e instanceof WrapError) {
+        fireAlert(ctx, env, ALERT.A8, "DEK unwrap failed (tamper or key mismatch)", { project, key: k });
+        return jsonError(HTTP.MISCONFIGURED, e.code === "ALG_UNSUPPORTED" ? "ALG_UNSUPPORTED" : "WRAP_INVALID", "wrap open failed", { key: k });
+      }
+      throw e;
+    }
+    try {
+      values[k] = new TextDecoder().decode(openValue(dek, project, k, entry.keyVersion, blob.bytes));
+    } catch (e) {
+      if (e instanceof BlobError) {
+        fireAlert(ctx, env, ALERT.A8, "blob open failed (tamper)", { project, key: k });
+        return jsonError(HTTP.MISCONFIGURED, e.code, "blob open failed", { key: k });
+      }
+      throw e;
+    } finally {
+      dek.fill(0);
+    }
+  }
+
+  // SENKRON per-key audit (§6.4): DO ack'i plaintext'ten ÖNCE. Bulk = her anahtara
+  // bir `value.read.bulk` satırı, TEK /append-batch ack'i. Audit down → 503, plaintext YOK.
+  const verb = keys.length === 1 ? "value.read" : "value.read.bulk";
+  const rows: AuditRow[] = keys.map((k) => ({
+    principal: rctx.authz.id,
+    principal_type: ptypeOf(rctx.principal),
+    project,
+    key: k,
+    verb,
+    decision: "allow",
+    ip: ipOf(request),
+    cf_ray: rayOf(request),
+    token_jti: rctx.principal.kind === "machine" ? rctx.principal.jti : null,
+  }));
+  try {
+    await auditAppendBatch(env.AUDIT_LOG, rows);
+  } catch {
+    fireAlert(ctx, env, ALERT.A8, "audit DO unavailable on plaintext read", { project });
+    return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable — plaintext refused");
+  }
+  await countReadBurst(ctx, env, rctx.authz.id, keys.length);
+
+  return jsonOK({ epoch: loaded.epoch, values });
+}
+
+// --- Write dispatch → PROJECT_WRITER DO (§7.6) ----------------------------------------
+
+async function dispatchWrite(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  project: string,
+  rctx: RequestCtx,
+  op: WriteOp,
+  auditVerb: string,
+): Promise<Response> {
+  const doHeaders: Record<string, string> = {
+    "content-type": "application/json",
+    "x-principal-id": rctx.authz.id,
+    "x-principal-type": ptypeOf(rctx.principal),
+    "x-token-jti": rctx.principal.kind === "machine" ? rctx.principal.jti : "",
+    "x-intent": request.headers.get(INTENT_HEADER) ?? "",
+    "x-audit-verb": auditVerb,
+    "x-policy-version": String(rctx.policy.version),
+    "x-cf-ip": ipOf(request) ?? "",
+    "x-cf-ray": rayOf(request) ?? "",
+  };
+  const res = await doStubFetch(
+    () => env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName(project)),
+    `https://do/commit?project=${encodeURIComponent(project)}`,
+    { method: "POST", headers: doHeaders, body: JSON.stringify(op) },
+  );
+  if (res.status === HTTP.MISCONFIGURED) {
+    const clone = res.clone();
+    const j = (await clone.json().catch(() => ({}))) as { error?: string };
+    if (j.error === "AUDIT_UNAVAILABLE") fireAlert(ctx, env, ALERT.A8, "audit DO unavailable on commit", { project });
+  }
+  return res;
+}
+
+/** writeAuditVerb, yazma outcome verb'ünü türetir (§6.4): rotation header →
+ * rotate.step; sync intent → key.sync; yoksa temel verb. Header'lar bilgilendiricidir,
+ * ASLA authz girdisi değildir — strip edilmiş header key.set'e düşer (oracle yine tam). */
+function writeAuditVerb(request: Request, base: "key.set" | "key.import" | "key.delete"): string {
+  if (base === "key.delete") return base;
+  if ((request.headers.get(ROTATION_HEADER) ?? "").trim() !== "") return "rotate.step";
+  if (base === "key.import" && (request.headers.get(INTENT_HEADER) ?? "").trim() === "sync") return "key.sync";
+  return base;
+}
+
+async function handleSet(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
+  if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
+  const d = can(rctx, project, keyName, "write");
+  if (!d.allowed) {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.set", project, keyName, d.reason ?? null));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
+  }
+  let body: { value?: unknown; ifEpoch?: unknown };
+  try {
+    body = (await request.json()) as { value?: unknown; ifEpoch?: unknown };
+  } catch {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+  }
+  if (typeof body.value !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "value must be a string");
+  const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.set"));
+}
+
+async function handleImport(request: Request, env: Env, ctx: ExecutionContext, project: string, rctx: RequestCtx): Promise<Response> {
+  let body: { values?: unknown; ifEpoch?: unknown };
+  try {
+    body = (await request.json()) as { values?: unknown; ifEpoch?: unknown };
+  } catch {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+  }
+  if (typeof body.values !== "object" || body.values === null || Array.isArray(body.values)) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "values must be an object");
+  }
+  const values = body.values as Record<string, unknown>;
+  const names = Object.keys(values);
+  if (names.length === 0) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "values empty");
+  for (const k of names) {
+    if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
+    if (typeof values[k] !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `value for ${k} must be a string`);
+  }
+  // Policy: body'deki HER anahtar için write (§7.6).
+  for (const k of names) {
+    const d = can(rctx, project, k, "write");
+    if (!d.allowed) {
+      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.import", project, k, d.reason ?? null));
+      await countDenyBurst(ctx, env, rctx.authz.id);
+      return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: k, dimension: d.reason });
+    }
+  }
+  const op: WriteOp = { op: "import", values: values as Record<string, string>, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.import"));
+}
+
+async function handleDelete(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
+  if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
+  const d = can(rctx, project, keyName, "write");
+  if (!d.allowed) {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.delete", project, keyName, d.reason ?? null));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
+  }
+  const op: WriteOp = { op: "delete", key: keyName };
+  return dispatchWrite(request, env, ctx, project, rctx, op, "key.delete");
+}
+
+// --- Cron: GC + nightly audit-head anchor (§8.3) ---------------------------------------
+
+/** runScheduledGC, haftalık GC cron'unu üretim bağımlılıklarıyla sürer. */
 async function runScheduledGC(env: Env, ctx: ExecutionContext): Promise<void> {
   const projects = await deriveProjects(env.SECRETS_BUCKET);
   const cfg = escrowConfig(env);
-  const witnessOrigin = (env.WITNESS_ORIGIN ?? "").trim();
   const enabledAt = env.GC_ENABLED_AT ? new Date(env.GC_ENABLED_AT) : null;
 
   const deps: GCDeps = {
     now: new Date(),
     enabledAt: enabledAt && !Number.isNaN(enabledAt.getTime()) ? enabledAt : null,
-    // Witness raporu non-CF origin'den (§9.3). Origin yoksa → unreachable (skip + A6).
-    witness: () => fetchWitnessReport(witnessOrigin),
-    // (c) per-blob escrow teyidi: append-only key OKUYABİLİR (silemez). cfg yoksa
-    // GÜVENLİ TARAF: false (silme) — canlı B2 + VM cron deploy DEFERRED (task).
+    // (c) B2 replika teyidi: append-only key OKUYABİLİR (silemez). cfg yoksa
+    // GÜVENLİ TARAF: false (silme yok).
     escrowHas: async (project, sha) => {
       if (!cfg) return false;
       try {
@@ -216,303 +685,33 @@ async function runScheduledGC(env: Env, ctx: ExecutionContext): Promise<void> {
     },
     auditDelete: async (project, sha) => {
       const row: AuditRow = { principal: "worker", principal_type: "worker", project, key: null, verb: "gc.delete", decision: "allow", intent: `blob:${sha.slice(0, 12)}` };
-      await env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName("__audit__")).fetch("https://audit/append-batch", {
+      await doStubFetch(() => env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME)), "https://audit/append-batch", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ rows: [row] }),
       });
     },
-    alert: (rule, summary, detail) => fireAlert(ctx, env, rule as typeof ALERT.A6, summary, detail),
+    alert: (rule, summary, detail) => fireAlert(ctx, env, rule as typeof ALERT.A8, summary, detail),
   };
   await runGC(env.SECRETS_BUCKET, projects, deps);
 }
 
-/** fetchWitnessReport, VM verifier'ın son doğrulama raporunu non-CF origin'den çeker. */
-async function fetchWitnessReport(origin: string): Promise<GCWitnessReport> {
-  if (!origin) return { reachable: false, failing: false, ageMs: Infinity };
-  try {
-    const res = await fetch(`${origin}/verification/latest.json`, { method: "GET" });
-    if (!res.ok) return { reachable: false, failing: false, ageMs: Infinity };
-    const doc = (await res.json()) as { ok?: boolean; verified_at?: string };
-    const ageMs = doc.verified_at ? Date.now() - Date.parse(doc.verified_at) : Infinity;
-    return { reachable: true, failing: doc.ok === false, ageMs };
-  } catch {
-    return { reachable: false, failing: false, ageMs: Infinity };
-  }
-}
-
-/** deriveProjects, R2'deki `secrets/<project>/` öneklerinden proje adlarını çıkarır. */
-async function deriveProjects(bucket: R2Bucket): Promise<string[]> {
-  const seen = new Set<string>();
-  let cursor: string | undefined;
-  do {
-    const l = await bucket.list({ prefix: "secrets/", delimiter: "/", cursor });
-    for (const p of l.delimitedPrefixes ?? []) {
-      const m = p.match(/^secrets\/([^/]+)\/$/);
-      if (m) seen.add(m[1]);
-    }
-    cursor = l.truncated ? l.cursor : undefined;
-  } while (cursor);
-  return [...seen];
-}
-
-// --- Yardımcılar ------------------------------------------------------------
-
-async function trustHeadOr503(env: Env): Promise<VerifiedEpoch> {
-  return loadTrustHead(env.SECRETS_BUCKET, (env.GENESIS_TRUST_SHA256 ?? "").trim(), env.AUDIT_DB);
-}
-
-function ptypeOf(p: Principal): "human" | "machine" {
-  return p.kind === "machine" ? "machine" : "human";
-}
-function allowRow(request: Request, p: Principal, verb: string, project: string | null, key: string | null): AuditRow {
-  return { principal: p.id, principal_type: ptypeOf(p), project, key, verb, decision: "allow", ip: ipOf(request), cf_ray: rayOf(request), token_jti: p.kind === "machine" ? p.jti : null };
-}
-function denyRow(request: Request, p: Principal, verb: string, project: string | null, key: string | null): AuditRow {
-  return { principal: p.id, principal_type: ptypeOf(p), project, key, verb, decision: "deny", ip: ipOf(request), cf_ray: rayOf(request), token_jti: p.kind === "machine" ? p.jti : null };
-}
-
-// Per-key / project authz (§6.3), makine principal'ları token scope ile SINIRLI.
-function machineScopeOk(p: Principal, project: string, verb: string, key: string | null): boolean {
-  if (p.kind !== "machine") return true;
-  if (p.project !== project) return false;
-  if (!scopeAllowsVerb(p.scope, verb)) return false;
-  if (key !== null && !scopeAllowsKey(p.scope, key)) return false;
-  return true;
-}
-function canProject(head: VerifiedEpoch, p: Principal, project: string, verb: string): boolean {
-  return hasVerbGrant(head.manifest, p.id, project, verb) && machineScopeOk(p, project, verb, null);
-}
-function canKey(head: VerifiedEpoch, p: Principal, project: string, verb: string, key: string): boolean {
-  return verbKeyAllowed(head.manifest, p.id, project, verb, key) && machineScopeOk(p, project, verb, key);
-}
-
-// --- Read handlers (DO-free, §5.5 rule 5; read-path audit ASENKRON, §6.5) ---
-
-async function handleTrustRead(request: Request, env: Env, ctx: ExecutionContext, parts: string[], principal: Principal): Promise<Response> {
-  const head = await trustHeadOr503(env);
-  // Herhangi bir enrolled principal (§6 route table).
-  if (!identityByID(head.manifest, principal.id)) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "trust.read", null, null));
-    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "not an enrolled identity");
-  }
-  const ifNoneMatch = request.headers.get("if-none-match");
-  if (parts[2] === "current") {
-    const o = await getObject(env.SECRETS_BUCKET, keyTrustCurrent());
-    if (!o) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "trust/current not found");
-    const res = etagResponse(o.bytes, sha256Hex(o.bytes), ifNoneMatch, "application/json");
-    if (res.status !== HTTP.NOT_MODIFIED) auditReadAsync(ctx, env.AUDIT_LOG, allowRow(request, principal, "trust.read", null, null));
-    return res;
-  }
-  const epoch = Number(parts[2]);
-  if (!Number.isInteger(epoch) || epoch < 1) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "bad trust epoch");
-  const o = await getObject(env.SECRETS_BUCKET, keyTrustManifest(epoch));
-  if (!o) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "trust epoch not found");
-  const res = etagResponse(o.bytes, sha256Hex(o.bytes), ifNoneMatch, "application/json");
-  if (res.status !== HTTP.NOT_MODIFIED) auditReadAsync(ctx, env.AUDIT_LOG, allowRow(request, principal, "trust.read", null, null));
-  return res;
-}
-
-async function handleManifestRead(request: Request, env: Env, ctx: ExecutionContext, project: string, sel: string, principal: Principal): Promise<Response> {
-  const head = await trustHeadOr503(env);
-  // Manifest read = proje-seviyesi read grant (anahtar ADLARI gizli değil, §6.3).
-  if (!canProject(head, principal, project, "read")) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "read", project, null));
-    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project (or token scope)");
-  }
-  const ifNoneMatch = request.headers.get("if-none-match");
-
-  if (sel === "current") {
-    const cur = await getObject(env.SECRETS_BUCKET, keyCurrent(project));
-    if (!cur) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "no current manifest");
-    const ptr = parseCurrentPointer(cur.bytes);
-    if (ifNoneMatch && ifNoneMatch.replace(/^W\//, "").trim() === `"${ptr.manifestSha256}"`) {
-      return new Response(null, { status: HTTP.NOT_MODIFIED, headers: { ETag: `"${ptr.manifestSha256}"` } });
-    }
-    const man = await getObject(env.SECRETS_BUCKET, keyManifest(project, ptr.epoch));
-    if (!man) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "current manifest object missing");
-    auditReadAsync(ctx, env.AUDIT_LOG, allowRow(request, principal, "read", project, null));
-    return etagResponse(man.bytes, ptr.manifestSha256, ifNoneMatch, "application/json");
-  }
-
-  const epoch = Number(sel);
-  if (!Number.isInteger(epoch) || epoch < 1) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "bad epoch");
-  const man = await getObject(env.SECRETS_BUCKET, keyManifest(project, epoch));
-  if (!man) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "manifest not found");
-  const res = etagResponse(man.bytes, sha256Hex(man.bytes), ifNoneMatch, "application/json");
-  if (res.status !== HTTP.NOT_MODIFIED) auditReadAsync(ctx, env.AUDIT_LOG, allowRow(request, principal, "read", project, null));
-  return res;
-}
-
-async function handleBlobRead(request: Request, env: Env, ctx: ExecutionContext, project: string, sha: string, principal: Principal): Promise<Response> {
-  const head = await trustHeadOr503(env);
-  // Per-key authz (§6.3 blob read): blob hash → current manifest'teki anahtar(lar)a
-  // eşle; principal en az birinde 'read' tutmalı (makine: grants ∩ token scope).
-  // FIX (§5.4 tamper): current manifest'i authz'de KULLANMADAN ÖNCE pointer-hash +
-  // yazar imzası doğrulanır (blobKeyNames içinde). Doğrulama başarısızsa (storage
-  // tamper) fail-closed 503 — aksi halde saldırgan manifest'i yeniden yazıp bir
-  // blob'u okunabilir bir anahtar altında GÖSTEREBİLİRDİ.
-  let keyNames: string[];
-  try {
-    keyNames = await blobKeyNames(env, project, sha, head);
-  } catch {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "blob.get", project, null));
-    return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "current manifest failed integrity verification");
-  }
-  let okKey: string | null = null;
-  if (keyNames.length > 0) {
-    const found = keyNames.find((k) => canKey(head, principal, project, "read", k));
-    if (!found) {
-      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "blob.get", project, keyNames[0]));
-      return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant on any key referencing this blob");
-    }
-    okKey = found;
-  } else {
-    // Current manifest'te referanslanmayan blob (orphan/historical). MAKİNE principal'ları
-    // için kaba proje-read gate'ine DÜŞME (§6.3 per-key/token-key confinement): anahtar A'ya
-    // scoped bir token, geçmiş epoch'tan hash ile anahtar-scope'unu aşan blob'u OKUYAMAMALI
-    // → deny. İnsan principal'ları için proje-reader manifest'ten TÜM blobHash'leri zaten
-    // görür (404 sızıntı değil), dolayısıyla kaba proje-read gate KORUNUR.
-    if (principal.kind === "machine") {
-      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "blob.get", project, null));
-      return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "machine token confined to its key scope; unreferenced/historical blob denied");
-    }
-    if (!canProject(head, principal, project, "read")) {
-      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "blob.get", project, null));
-      return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project (or token scope)");
-    }
-  }
-  const o = await getObject(env.SECRETS_BUCKET, keyBlob(project, sha));
-  if (!o) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "blob not found");
-  const ifNoneMatch = request.headers.get("if-none-match");
-  const res = etagResponse(o.bytes, sha, ifNoneMatch, "application/octet-stream");
-  if (res.status !== HTTP.NOT_MODIFIED) {
-    auditReadAsync(ctx, env.AUDIT_LOG, allowRow(request, principal, "blob.get", project, okKey));
-    // A2 (§6.10): tek principal 10dk'da ≥50 distinct blob → cache-harvest detektörü.
-    await maybeBurstAlert(ctx, env, principal, project);
-  }
-  return res;
-}
-
 /**
- * blobKeyNames, current manifest'te bu blob hash'ini referanslayan anahtar adları.
- *
- * TAMPER GUARD (§5.4.2 / §6.2): entries'i authz'de kullanmadan ÖNCE current
- * manifest'in bütünlüğü DOĞRULANIR — aksi halde R2'ye yazabilen bir saldırgan,
- * manifest'i bir blob'u OKUNABİLİR bir anahtar altında gösterecek şekilde yeniden
- * yazabilirdi (imza/pointer kontrolü olmadan). Sıra:
- *   1) manifestObjectHash(man.bytes) === ptr.manifestSha256 (pointer↔obje bağı),
- *   2) parseSignedObject + verifyDataManifest(dataWriterKeyring(head)) (yazar imzası,
- *      verify-before-parse — doğrulanmış trust head'in yazar ring'ine karşı),
- *   3) body.project === path project.
- * Herhangi biri tutmazsa fırlatır → çağıran fail-closed davranır. Manifest HİÇ
- * yoksa (orphan/historical blob) [] döner (tamper değil; çağıran o yolu ayrı ele alır).
+ * runNightlyAnchor, NIGHTLY cron'u (§8.3): D1 zincir head'ini ({last_seq,
+ * last_hash, ts}) append-only B2'ye çapa olarak iter — CF-seviyesi bir ledger
+ * yeniden-yazımı çapalara karşı tespit edilebilir. B2 yapılandırılmamışsa no-op.
  */
-async function blobKeyNames(env: Env, project: string, sha: string, head: VerifiedEpoch): Promise<string[]> {
-  const cur = await getObject(env.SECRETS_BUCKET, keyCurrent(project));
-  if (!cur) return [];
-  const ptr = parseCurrentPointer(cur.bytes);
-  const man = await getObject(env.SECRETS_BUCKET, keyManifest(project, ptr.epoch));
-  if (!man) return [];
-  // 1) pointer-hash: obje, current pointer'ın işaret ettiği içerik-adresine bağlanmalı.
-  if (manifestObjectHash(man.bytes) !== ptr.manifestSha256) {
-    throw new ManifestVerifyError("MANIFEST_MALFORMED", "current manifest object hash != pointer");
-  }
-  // 2) yazar imzası: verify-before-parse (doğrulanmış head'in yazar ring'i, §5.4.1).
-  const signed = parseSignedObject(JSON.parse(new TextDecoder().decode(man.bytes)));
-  const body = verifyDataManifest(signed, dataWriterKeyring(head.manifest));
-  // 3) proje eşleşmesi (§5.2 rule 1).
-  if (body.project !== project) throw new ManifestVerifyError("MANIFEST_MALFORMED", "manifest project mismatch");
-  return body.entries.filter((e) => e.blobHash === sha).map((e) => e.keyName);
-}
-
-// A2 blob-fetch burst detektörü (basit KV distinct-sayaç; RATE binding'i tekrar kullanır).
-async function maybeBurstAlert(ctx: ExecutionContext, env: Env, principal: Principal, project: string): Promise<void> {
-  const window = Math.floor(Date.now() / 600_000); // 10 dk
-  const key = `burst:${principal.id}:${window}`;
-  const n = (parseInt((await env.RATE.get(key)) ?? "0", 10) || 0) + 1;
-  await env.RATE.put(key, String(n), { expirationTtl: 1200 });
-  if (n === 50) fireAlert(ctx, env, ALERT.A2, `blob-fetch burst by ${principal.id}`, { principal: principal.id, project, count: n });
-}
-
-async function handleReceipt(request: Request, env: Env, ctx: ExecutionContext, project: string, principal: Principal): Promise<Response> {
-  const head = await trustHeadOr503(env);
-  if (!canProject(head, principal, project, "read")) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal, "receipt", project, null));
-    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project");
-  }
-  const cur = await getObject(env.SECRETS_BUCKET, keyCurrent(project));
-  if (!cur) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "no current manifest");
-  const ptr = parseCurrentPointer(cur.bytes);
-  const receipt = await issueReceipt(env, ptr.manifestSha256, ptr.epoch);
-  auditReadAsync(ctx, env.AUDIT_LOG, allowRow(request, principal, "receipt", project, null));
-  return new Response(JSON.stringify(receipt), { status: HTTP.OK, headers: { "content-type": "application/json" } });
-}
-
-// --- Blob PUT (§6.2 blob upload) --------------------------------------------
-
-async function handleBlobPut(request: Request, env: Env, project: string, sha: string, principal: Principal): Promise<Response> {
-  const head = await trustHeadOr503(env);
-  if (!canProject(head, principal, project, "write")) {
-    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no write grant in project (or token scope)");
-  }
-  const body = new Uint8Array(await request.arrayBuffer());
-  if (body.length > BLOB_CAP) return jsonError(HTTP.PAYLOAD_TOO_LARGE, "BLOB_TOO_LARGE", "blob exceeds 64 KB");
-  if (!validFramingLength(body.length)) return jsonError(HTTP.BAD_REQUEST, "PADDING_INVALID", "blob length not a valid framing length");
-  const got = sha256Hex(body);
-  if (got !== sha) return jsonError(HTTP.BAD_REQUEST, "BLOB_HASH_MISMATCH", "bytes do not hash to path");
-  const existing = await env.SECRETS_BUCKET.head(keyBlob(project, sha));
-  if (!existing) await env.SECRETS_BUCKET.put(keyBlob(project, sha), body, { onlyIf: { etagDoesNotMatch: "*" } });
-  return new Response(JSON.stringify({ sha256: sha }), { status: HTTP.OK, headers: { "content-type": "application/json" } });
-}
-
-// --- Commit dispatch → PROJECT_WRITER DO (§6.2) -----------------------------
-
-async function handleCommit(request: Request, env: Env, ctx: ExecutionContext, project: string, principal: Principal): Promise<Response> {
-  const rawWrapper = await request.text();
-  // Mirror'ı doğrulanmış trust head'ine senkronla (audit forensics + admin metadata, §6.3).
+async function runNightlyAnchor(env: Env, ctx: ExecutionContext): Promise<void> {
+  const cfg = escrowConfig(env);
+  if (!cfg) return;
   try {
-    const head = await trustHeadOr503(env);
-    await ensureMirror(env, head.manifest);
-  } catch {
-    // Mirror rebuild başarısızlığı commit'i düşürmez (authz DO'da manifest'ten yapılır).
+    const res = await doStubFetch(() => env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME)), "https://audit/head", { method: "GET" });
+    if (!res.ok) throw new Error(`audit head status ${res.status}`);
+    const head = (await res.json()) as { seq: number; hash: string };
+    const ts = new Date().toISOString();
+    const body = utf8(JSON.stringify({ schema: "wapps.audit-anchor.v1", last_seq: head.seq, last_hash: head.hash, ts }));
+    await putObject(cfg, keyEscrowAuditAnchor(ts.slice(0, 10)), body, "application/json");
+  } catch (e) {
+    fireAlert(ctx, env, ALERT.A4, "nightly audit-head anchor push failed", { error: String(e) });
   }
-  const doHeaders: Record<string, string> = {
-    "content-type": "application/json",
-    "x-principal-id": principal.id,
-    "x-principal-type": ptypeOf(principal),
-    "x-token-jti": principal.kind === "machine" ? principal.jti : "",
-    // Minted token'ın SCOPE'unu (verbs+keys) DO'ya taşı → yazma yolunda least-privilege
-    // enforcement (§6.3 grants ∩ token scope; §6.2 step 8). İnsan principal'larının
-    // (CF-Access JWT) token scope'u yoktur → boş. Client-forge riski yok: bu header
-    // doğrulanmış principal.scope'tan türetilir, inbound header'dan DEĞİL.
-    "x-token-scope": principal.kind === "machine" ? JSON.stringify(principal.scope) : "",
-    "x-intent": request.headers.get("x-wapps-intent") ?? "",
-    "x-genesis-pin": (env.GENESIS_TRUST_SHA256 ?? "").trim(),
-    "x-cf-ip": ipOf(request) ?? "",
-    "x-cf-ray": rayOf(request) ?? "",
-  };
-  const res = await doStubFetch(
-    () => env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName(project)),
-    `https://do/commit?project=${encodeURIComponent(project)}`,
-    { method: "POST", headers: doHeaders, body: rawWrapper },
-  );
-  if (res.status === HTTP.OK) {
-    // 18. Yanıta taze liveness receipt ekle (§6.2 step 18 / §6.6).
-    const body = (await res.json()) as { epoch: number; manifestSha256: string };
-    let receipt: unknown = undefined;
-    try {
-      receipt = await issueReceipt(env, body.manifestSha256, body.epoch);
-    } catch {
-      // Receipt üretilemezse commit yine başarılı (freshness attestation best-effort).
-    }
-    return new Response(JSON.stringify({ ...body, receipt }), { status: HTTP.OK, headers: { "content-type": "application/json" } });
-  }
-  // A8 (§6.10): audit DO down → commit fail-closed 503 AUDIT_UNAVAILABLE → alert.
-  if (res.status === HTTP.MISCONFIGURED) {
-    const clone = res.clone();
-    const j = (await clone.json().catch(() => ({}))) as { error?: string };
-    if (j.error === "AUDIT_UNAVAILABLE") fireAlert(ctx, env, ALERT.A8, "audit DO unavailable on commit", { project });
-  }
-  return res;
 }
