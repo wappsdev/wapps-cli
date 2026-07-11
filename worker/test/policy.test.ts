@@ -101,6 +101,16 @@ describe("authorize (§4.3 normatif)", () => {
     const impostor: AuthzPrincipal = { kind: "service", id: "service:x", groups: ["developers@wapps.co"] };
     expect(authorize(BASE, impostor, "vaulter", "K", "read").allowed).toBe(false);
   });
+
+  it("deny-glob CASE-INSENSITIVE — küçük-harf prod adı `!*_PROD_*`'i atlatamaz", () => {
+    // Anahtar adları artık karışık harf (POSIX env-var). Bir deny savunma amaçlıdır:
+    // `!*_PROD_*` her case'i yakalamalı, yoksa `db_prod_url` gibi bir ad deny'i atlatır.
+    expect(authorize(BASE, dev, "vaulter", "DB_PROD_URL", "read").allowed).toBe(false); // upper (eskiden de)
+    expect(authorize(BASE, dev, "vaulter", "db_prod_url", "read").allowed).toBe(false); // lower (FIX)
+    expect(authorize(BASE, dev, "vaulter", "Db_Prod_Url", "read").allowed).toBe(false); // karışık (FIX)
+    // Allow case-SENSITIVE kalır: prod içermeyen küçük-harf ad hâlâ erişilebilir.
+    expect(authorize(BASE, dev, "vaulter", "database_url", "read").allowed).toBe(true);
+  });
 });
 
 describe("filterReadableKeys (§4.3.3)", () => {

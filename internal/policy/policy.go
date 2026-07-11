@@ -182,18 +182,26 @@ func concretize(glob string) string {
 // prodProbe, (b) kuralının temsilî prod anahtarı: glob'un *_PROD_* desenli bir
 // anahtarı eşleyip eşleyemeyeceğini yoklamak için '*'→"_PROD_" ikamesi denenir.
 func canMatchProd(keyGlob string) bool {
-	if strings.Contains(keyGlob, "_PROD_") {
+	// Case-insensitive: anahtar adları POSIX env-var (karışık harf) olabilir ve
+	// enforcement deny'i case-insensitive eşleştiğinden (bkz. Worker authorize),
+	// risky-prod tespiti de küçük-harf üstünden yapılır — `*_prod_*` kaçmasın.
+	lg := strings.ToLower(keyGlob)
+	if strings.Contains(lg, "_prod_") {
 		return true
 	}
 	probe := strings.ReplaceAll(keyGlob, "*", "_PROD_")
 	probe = strings.ReplaceAll(probe, "?", "x")
-	return GlobMatch(keyGlob, probe) && GlobMatch("*_PROD_*", probe)
+	lp := strings.ToLower(probe)
+	return GlobMatch(lg, lp) && GlobMatch("*_prod_*", lp)
 }
 
-// deniedByRule, key'in kuralın deny glob'larından birine takıldığını döner.
+// deniedByRule, key'in kuralın deny glob'larından birine takıldığını döner. Deny
+// CASE-INSENSITIVE eşleşir (enforcement ile aynı, §4.3): küçük-harf bir ad varyantı
+// bir deny glob'unu atlatmasın.
 func deniedByRule(r store.Rule, key string) bool {
+	lk := strings.ToLower(key)
 	for _, g := range r.Keys {
-		if strings.HasPrefix(g, "!") && GlobMatch(g[1:], key) {
+		if strings.HasPrefix(g, "!") && GlobMatch(strings.ToLower(g[1:]), lk) {
 			return true
 		}
 	}

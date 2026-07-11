@@ -152,8 +152,12 @@ export function authorize(
     furthest = Math.max(furthest, 3);
     // 4. key (null → proje-metadata op'u; adım atlanır)
     if (key !== null) {
-      // deny-glob KENDİ kuralı içinde kazanır (§4.3 pinli semantik 2).
-      if (rule.keys.some((g) => g.startsWith("!") && globMatch(g.slice(1), key))) continue;
+      // deny-glob KENDİ kuralı içinde kazanır (§4.3 pinli semantik 2). Deny
+      // CASE-INSENSITIVE eşleşir (savunma): anahtar adları POSIX env-var (karışık
+      // harf) olabildiğinden `!*_PROD_*` gibi bir deny, `*_prod_*` varyantını da
+      // yakalamalı — yoksa küçük-harf bir ad deny'i sessizce atlatır. Allow ise
+      // case-SENSITIVE kalır (precise: FOO ≠ foo farklı sırlardır → over-grant yok).
+      if (rule.keys.some((g) => g.startsWith("!") && globMatch(g.slice(1).toLowerCase(), key.toLowerCase()))) continue;
       if (!rule.keys.some((g) => !g.startsWith("!") && globMatch(g, key))) continue;
     }
     return { allowed: true };
