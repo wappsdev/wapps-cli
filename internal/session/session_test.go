@@ -15,10 +15,10 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	t.Setenv("WAPPS_SESSION_TOKEN", "")
 
 	exp := time.Now().Add(time.Hour).Unix()
-	if err := Save("secrets.meapps.dev", State{Token: "jwt-bytes", ExpiresAt: exp}); err != nil {
+	if err := Save("gw.meapps.dev", State{Token: "jwt-bytes", ExpiresAt: exp}); err != nil {
 		t.Fatal(err)
 	}
-	path, err := Path("secrets.meapps.dev")
+	path, err := Path("gw.meapps.dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Errorf("session dir mode = %o, want 0700", dfi.Mode().Perm())
 	}
 
-	s, ok := Load("secrets.meapps.dev")
+	s, ok := Load("gw.meapps.dev")
 	if !ok || s.Token != "jwt-bytes" || s.ExpiresAt != exp {
 		t.Fatalf("Load = %+v ok=%v", s, ok)
 	}
@@ -100,7 +100,7 @@ func TestParseClaims(t *testing.T) {
 // TestGateURLAndHost, WAPPS_SECRETS_GATE env'i + OD-4 varsayılanı.
 func TestGateURLAndHost(t *testing.T) {
 	t.Setenv("WAPPS_SECRETS_GATE", "")
-	if GateURL() != DefaultGateURL || GateHost() != "secrets.meapps.dev" {
+	if GateURL() != DefaultGateURL || GateHost() != "gw.meapps.dev" {
 		t.Fatalf("defaults: url=%s host=%s", GateURL(), GateHost())
 	}
 	t.Setenv("WAPPS_SECRETS_GATE", "https://gate.example.com/")

@@ -3,7 +3,7 @@
   // ZK-format test verisiyle birlikte WIPE edilip yeniden yaratılır (Path A yok).
   "name": "secrets-gate-staging",
   "main": "src/index.ts",
-  "routes": [{ "pattern": "secrets-staging.meapps.dev", "custom_domain": true }],
+  "routes": [{ "pattern": "gw-staging.meapps.dev", "custom_domain": true }],
   "compatibility_date": "2025-06-01",
   // BİLİNÇLİ: staging'de "triggers.crons" YOK — Free-plan schedules API'si cron deploy'unu reddediyor; §8.3'ün pinlediği iki cron prod wrangler.jsonc'ta duruyor.
   "durable_objects": { "bindings": [
