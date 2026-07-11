@@ -39,7 +39,7 @@ func TestDoctorReportsAllChecks(t *testing.T) {
 	output := buf.String()
 
 	wantChecks := []string{
-		"opentofu", "age", "git", "jq", "gh",
+		"opentofu", "age", "git", "jq", "gh", "cloudflared",
 		"R2 access", "Coolify API", "git remote",
 	}
 	for _, check := range wantChecks {
