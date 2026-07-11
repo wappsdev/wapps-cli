@@ -66,7 +66,10 @@ func (w *WorkerStore) do(ctx context.Context, method, path string, body []byte, 
 		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate unreachable")
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	// Worker'ın per-request RESPONSE_MAX'i (16 MB) ile HİZALI: Worker'ın kabul edip
+	// döndürebileceği en büyük yanıtı istemci de okuyabilmeli (aksi halde geçerli bir
+	// yanıt truncate olurdu). Worker zaten >RESPONSE_MAX'te 413 verir → bu bir tavan.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate response truncated")
 	}
@@ -219,17 +222,11 @@ func (w *WorkerStore) Keys(ctx context.Context, project string) (*KeysResult, er
 	return &out, nil
 }
 
-// readBatchSize, tek bir /read isteğindeki anahtar üst sınırı. Worker yanıtı per-request
-// RESPONSE_MAX (16 MB) ile bantlar; büyük read-all'ları batch'leyerek her isteği güvenle
-// sınırın altında tutarız (128 × ≤61436B ≈ 7.5 MB « 16 MB).
-const readBatchSize = 128
-
-// Read, POST /v1/projects/{p}/read — PLAINTEXT bulk read. keys boş → önce Keys ile
-// principal'ın okunabilir kümesi çözülür; küme boşsa boş sonuç döner. Büyük read-all'lar
-// readBatchSize'lık BATCH'lere bölünür (Worker per-request RESPONSE_MAX bandı) ve
-// birleştirilir. Her batch epoch-pin ile kontrol edilir (eskiyen batch → EPOCH_DOWNGRADE,
-// fail-closed); batch'ler-arası eşzamanlı yazım olursa sonuç monoton-artan epoch'ların
-// best-effort snapshot'ıdır (tek-epoch atomikliği yalnız tek-batch/eşzamansız okumada).
+// Read, POST /v1/projects/{p}/read — PLAINTEXT bulk read (all-or-nothing, tek epoch §7.6).
+// keys boş → önce Keys ile principal'ın okunabilir kümesi çözülür; küme boşsa boş sonuç
+// döner. Yanıt, Worker'ın per-request RESPONSE_MAX bandıyla (aşağıdaki transport limitiyle
+// HİZALI) sınırlıdır; onu aşan patolojik-büyük bir read-all 413 RESPONSE_TOO_LARGE alır
+// (gerçek sır projeleri « bu sınır). Bu tek-istek şekli tek-epoch atomikliğini korur.
 func (w *WorkerStore) Read(ctx context.Context, project string, keys []string) (*ReadResult, error) {
 	if len(keys) == 0 {
 		kr, err := w.Keys(ctx, project)
@@ -244,31 +241,6 @@ func (w *WorkerStore) Read(ctx context.Context, project string, keys []string) (
 		}
 	}
 	sort.Strings(keys)
-	merged := make(map[string]string, len(keys))
-	var epoch uint64
-	for start := 0; start < len(keys); start += readBatchSize {
-		res, err := w.readOnce(ctx, project, keys[start:min(start+readBatchSize, len(keys))])
-		if err != nil {
-			return nil, err
-		}
-		// TÜM batch'ler AYNI epoch'u görmeli — aksi halde araya bir yazım girmiştir ve
-		// birleştirilmiş sonuç mixed-epoch olurdu (tek-manifest snapshot değil). Böyle bir
-		// durumda fail-closed conflict (retryable) döneriz → çağıran tekrar dener (tek-batch
-		// okumalar zaten atomiktir; bu yalnız çok-batch read-all + eşzamanlı yazımda tetiklenir).
-		if start == 0 {
-			epoch = res.Epoch
-		} else if res.Epoch != epoch {
-			return nil, clierr.Newf(clierr.CASConflict, "read spanned a concurrent write (epoch %d→%d); retry", epoch, res.Epoch)
-		}
-		for k, v := range res.Values {
-			merged[k] = v
-		}
-	}
-	return &ReadResult{Epoch: epoch, Values: merged}, nil
-}
-
-// readOnce, tek bir /read isteği (≤readBatchSize anahtar) yapar + epoch-pin kontrol eder.
-func (w *WorkerStore) readOnce(ctx context.Context, project string, keys []string) (*ReadResult, error) {
 	body, err := json.Marshal(map[string][]string{"keys": keys})
 	if err != nil {
 		return nil, clierr.Wrapf(clierr.Internal, err, "encode read request")
