@@ -135,7 +135,8 @@ func mapHTTPError(r *httpResp, ctxMsg string) error {
 	case http.StatusRequestEntityTooLarge: // 413 — VALUE_TOO_LARGE (per-değer 64KB) VE
 		// RESPONSE_TOO_LARGE (agregat bulk-read yanıtı) aynı statüyü paylaşır → koda göre ayır.
 		if we.Error == "RESPONSE_TOO_LARGE" {
-			return clierr.Newf(clierr.NotAvailable, "%s: read response too large; request fewer keys", ctxMsg)
+			return clierr.Newf(clierr.NotAvailable, "%s: read response too large", ctxMsg).
+				WithRecovery("this bulk read exceeds the gate's response cap — request fewer keys at a time")
 		}
 		return clierr.Newf(clierr.BlobTooLarge, "%s: %s", ctxMsg, safeCode(we.Error))
 	case http.StatusUnprocessableEntity: // 422
