@@ -32,6 +32,7 @@ export interface ManifestEntry {
   keyName: string;
   keyVersion: number;
   blobHash: string; // çıplak-hex SHA-256 içerik adresi
+  size: number; // plaintext bayt uzunluğu — proje toplam-boyut (read-cap) muhasebesi
   wrap: DekWrap; // tam olarak BİR wrap (§2.4)
   rotation?: unknown; // opak taşınır (ZK §8.6.2 şekli); Worker yorumlamaz
 }
@@ -116,6 +117,9 @@ export function parseManifest(bytes: Uint8Array): DataManifest {
       keyName,
       keyVersion: asUint(e.keyVersion, `entry[${i}].keyVersion`),
       blobHash: asString(e.blobHash, `entry[${i}].blobHash`),
+      // Eski (size'sız) manifest'lerde 0'a düşer (geriye-uyumlu okuma); yeni yazımlar
+      // gerçek plaintext boyutunu taşır — writer-DO'daki toplam-boyut bandının girdisi.
+      size: typeof e.size === "number" && Number.isInteger(e.size) && e.size >= 0 ? e.size : 0,
       wrap: { recipient, kid, wrap: wrapB64 },
       rotation: e.rotation,
     };
@@ -151,6 +155,7 @@ export function serializeManifest(m: DataManifest): Uint8Array {
       keyName: e.keyName,
       keyVersion: e.keyVersion,
       blobHash: e.blobHash,
+      size: e.size,
       wrap: e.wrap,
       ...(e.rotation !== undefined ? { rotation: e.rotation } : {}),
     })),
