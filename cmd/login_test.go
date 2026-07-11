@@ -136,6 +136,49 @@ exit 1
 	}
 }
 
+// TestIsolatedEnv, cloudflared alt-process env'inin tüm home/config/cache anahtarlarını
+// tmpHome'a sabitlediğini + cloudflared/tunnel override'larını düşürdüğünü + sıradan
+// değişkenleri koruduğunu doğrular (platformdan bağımsız — codex P2 izolasyon).
+func TestIsolatedEnv(t *testing.T) {
+	t.Setenv("TUNNEL_ORIGIN_CERT", "/real/cert.pem")
+	t.Setenv("CLOUDFLARED_EDGE", "x")
+	t.Setenv("XDG_CONFIG_HOME", "/real/config")
+	t.Setenv("APPDATA", `C:\real\appdata`)
+
+	home := filepath.Join(t.TempDir(), "pinned")
+	env := isolatedEnv(home)
+
+	seen := map[string]string{}
+	for _, kv := range env {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			seen[kv[:i]] = kv[i+1:]
+		}
+	}
+	for _, k := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"} {
+		if seen[k] != home {
+			t.Errorf("%s = %q, want pinned to %q", k, seen[k], home)
+		}
+	}
+	if _, ok := seen["TUNNEL_ORIGIN_CERT"]; ok {
+		t.Error("TUNNEL_* overrides must be dropped")
+	}
+	if _, ok := seen["CLOUDFLARED_EDGE"]; ok {
+		t.Error("CLOUDFLARED_* overrides must be dropped")
+	}
+	if seen["PATH"] == "" {
+		t.Error("ordinary vars like PATH must be preserved")
+	}
+	count := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "HOME=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("HOME appears %d times, want exactly 1 (no duplicate)", count)
+	}
+}
+
 // TestLoginCheck_PrintsSubjectNoToken, --check öznesi + TTL basar, token basmaz;
 // oturum yoksa SESSION_EXPIRED.
 func TestLoginCheck_PrintsSubjectNoToken(t *testing.T) {

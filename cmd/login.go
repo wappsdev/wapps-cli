@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -50,13 +51,15 @@ var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
 				"  install: brew install cloudflared\n"+
 				"  then re-run: wapps login")
 	}
-	// İzole HOME → cloudflared token cache'ini burada tutar, defer ile siliyoruz.
+	// İzole config/cache konumu → cloudflared token cache'ini burada tutar, defer ile
+	// siliyoruz. isolatedEnv TÜM home/config/cache anahtarlarını (platformlar arası)
+	// tmpHome'a sabitler; tek kalıcı token kopyası session.Save'inki olur.
 	tmpHome, herr := os.MkdirTemp("", "wapps-cf-")
 	if herr != nil {
 		return "", clierr.Wrapf(clierr.Internal, herr, "isolate cloudflared home")
 	}
 	defer os.RemoveAll(tmpHome)
-	isolated := append(os.Environ(), "HOME="+tmpHome)
+	isolated := isolatedEnv(tmpHome)
 
 	// Sınırsız asılı kalmayı önle: 5 dk timeout + CommandContext (iki alt-process de).
 	ctx, cancel := context.WithTimeout(cmdContext(cmd), loginTimeout)
@@ -74,18 +77,56 @@ var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
 		}
 		return "", clierr.Wrapf(clierr.Internal, rerr, "cloudflared access login")
 	}
-	// 2) İzole cache'ten app token'ını al — yalnızca stdout (temiz JWT).
-	var out, errb bytes.Buffer
+	// 2) İzole cache'ten app token'ını al — yalnızca stdout (temiz JWT). stderr ATILIR:
+	//    token-taşıyan diagnostik bir hata mesajına/loga sızmasın (§7.2).
+	var out bytes.Buffer
 	tok := exec.CommandContext(ctx, cfPath, "access", "token", "-app="+gate)
 	tok.Env = isolated
-	tok.Stdout, tok.Stderr = &out, &errb
+	tok.Stdout, tok.Stderr = &out, io.Discard
 	if rerr := tok.Run(); rerr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", clierr.New(clierr.SessionExpired, "cloudflared token fetch timed out; re-run wapps login")
 		}
-		return "", clierr.Wrapf(clierr.Internal, rerr, "cloudflared access token: %s", strings.TrimSpace(errb.String()))
+		return "", clierr.Wrapf(clierr.Internal, rerr, "cloudflared access token failed; re-run wapps login")
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// isolatedEnv, cloudflared alt-process'i için tüm home/config/cache konumlarını
+// tmpHome'a sabitleyen bir env üretir (macOS/Linux HOME+XDG_*, Windows USERPROFILE/
+// APPDATA/LOCALAPPDATA) ve cloudflared/tunnel override'larını düşürür — böylece
+// disk üstündeki tek kalıcı token kopyası session.Save'inki olur.
+func isolatedEnv(tmpHome string) []string {
+	pinned := map[string]string{
+		"HOME":            tmpHome,
+		"XDG_CONFIG_HOME": tmpHome,
+		"XDG_CACHE_HOME":  tmpHome,
+		"XDG_DATA_HOME":   tmpHome,
+		"USERPROFILE":     tmpHome,
+		"APPDATA":         tmpHome,
+		"LOCALAPPDATA":    tmpHome,
+	}
+	base := os.Environ()
+	out := make([]string, 0, len(base)+len(pinned))
+	for _, kv := range base {
+		i := strings.IndexByte(kv, '=')
+		if i < 0 {
+			continue
+		}
+		k := kv[:i]
+		if _, isPinned := pinned[k]; isPinned {
+			continue // sabitlenenler aşağıda tekil eklenir
+		}
+		// cloudflared'in cache konumunu kaydırabilecek override'ları düşür.
+		if strings.HasPrefix(k, "TUNNEL_") || strings.HasPrefix(k, "CLOUDFLARED_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	for k, v := range pinned {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 var loginCheck bool
