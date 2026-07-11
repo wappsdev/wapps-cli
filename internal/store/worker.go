@@ -66,12 +66,17 @@ func (w *WorkerStore) do(ctx context.Context, method, path string, body []byte, 
 		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate unreachable")
 	}
 	defer resp.Body.Close()
-	// Worker'ın per-request RESPONSE_MAX'i (16 MB) ile HİZALI: Worker'ın kabul edip
-	// döndürebileceği en büyük yanıtı istemci de okuyabilmeli (aksi halde geçerli bir
-	// yanıt truncate olurdu). Worker zaten >RESPONSE_MAX'te 413 verir → bu bir tavan.
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	// Worker'ın per-request RESPONSE_MAX'i (16 MB) ile HİZALI: tam o kadar + 1 okuruz.
+	// Body sınırı AŞARSA sessiz truncate (malformed JSON) yerine AÇIK hata döneriz —
+	// Worker zaten >RESPONSE_MAX'te 413 verir, bu son bir emniyet (gerçek sır projeleri
+	// « 16 MB).
+	const maxBody = 16 << 20
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate response truncated")
+	}
+	if len(raw) > maxBody {
+		return nil, clierr.Newf(clierr.NotAvailable, "secrets gate response exceeds %d bytes; request fewer keys", maxBody)
 	}
 	return &httpResp{status: resp.StatusCode, body: raw, header: resp.Header}, nil
 }

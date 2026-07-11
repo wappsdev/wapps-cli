@@ -506,7 +506,11 @@ async function handleRead(
   // 64KB ile sınırlı (sıralı-tek-tek wall-time'ı aşıyordu; sınırsız Promise.all TÜM
   // ciphertext'i tutuyordu — codex P2). Toplam plaintext RESPONSE_MAX ile bantlanır.
   const values: Record<string, string> = {};
-  let totalBytes = 0;
+  // Sarmalayıcı payı: gerçek gövde {"epoch":N,"values":{ ... }}'dir; per-değer tahmini
+  // dış çerçeveyi (epoch + parantezler) saymaz → 64 bayt baş-pay ayır ki cap'i geçen bir
+  // yanıt GERÇEKTE de RESPONSE_MAX altında kalsın (client tarafı da +1 okuyup overflow'da
+  // açık hata verir; iki katman — codex).
+  let totalBytes = 64;
   for (let start = 0; start < keys.length; start += BLOB_POOL) {
     const chunk = keys.slice(start, start + BLOB_POOL);
     const blobs = await mapPool(chunk, BLOB_POOL, (k) => getObject(env.SECRETS_BUCKET, keyBlob(project, byName.get(k)!.blobHash)));
