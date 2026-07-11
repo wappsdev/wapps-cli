@@ -320,11 +320,17 @@ export class ProjectWriterDO {
       throw new CommitError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", { reason: "audit DO unavailable at attempt" });
     }
 
-    // 6. Yeni blob'ları yaz (içerik-adresli, immutable, onlyIf-absent).
-    for (const b of newBlobs) {
-      const existing = await this.bucket.head(keyBlob(project, b.hash));
-      if (!existing) await this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } });
-    }
+    // 6. Yeni blob'ları yaz (içerik-adresli, immutable, onlyIf-absent). PARALEL:
+    //    bulk import'ta (ör. migration 156 key) sıralı HEAD+PUT wall-time'ı aşıyordu
+    //    (exceededWallTime, error 1101) — her blob bağımsız + idempotent olduğundan
+    //    Promise.all güvenli; atomiklik korunur (tümü manifest/pointer'dan ÖNCE yazılır,
+    //    başarısızlıkta manifest yazılmaz → yazılmış blob'lar referanssız = GC-safe).
+    await Promise.all(
+      newBlobs.map(async (b) => {
+        const existing = await this.bucket.head(keyBlob(project, b.hash));
+        if (!existing) await this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } });
+      }),
+    );
 
     // 7. Manifest yaz: onlyIf-absent (epoch slot'unu ilk yazan kazanır).
     const manifestKey = keyManifest(project, epoch);
