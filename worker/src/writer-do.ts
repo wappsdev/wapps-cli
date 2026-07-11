@@ -26,7 +26,7 @@ import {
   SCHEMA_CURRENT_POINTER,
   SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
-import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag } from "./storage.js";
+import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL } from "./storage.js";
 import { auditAppendSync, auditAppendBatch, AuditRow, PrincipalType } from "./audit.js";
 import { sha256Hex } from "./crypto/encoding.js";
 import {
@@ -320,11 +320,13 @@ export class ProjectWriterDO {
       throw new CommitError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", { reason: "audit DO unavailable at attempt" });
     }
 
-    // 6. Yeni blob'ları yaz (içerik-adresli, immutable, onlyIf-absent).
-    for (const b of newBlobs) {
-      const existing = await this.bucket.head(keyBlob(project, b.hash));
-      if (!existing) await this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } });
-    }
+    // 6. Yeni blob'ları yaz (içerik-adresli, immutable). SINIRLI-EŞZAMANLI + HEAD'siz:
+    //    sıralı HEAD+PUT bulk import'ta wall-time'ı aşıyordu (exceededWallTime, error
+    //    1101) ama sınırsız Promise.all da eşzamanlı-subrequest/bellek patlatır → mapPool
+    //    (≤BLOB_POOL). `onlyIf: etagDoesNotMatch "*"` = yalnızca yokken yaz → ayrı HEAD
+    //    gereksiz. Her blob bağımsız+idempotent; atomiklik korunur (tümü manifest'ten
+    //    ÖNCE; başarısızlıkta manifest yazılmaz → yazılmış blob'lar referanssız = GC-safe).
+    await mapPool(newBlobs, BLOB_POOL, (b) => this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } }));
 
     // 7. Manifest yaz: onlyIf-absent (epoch slot'unu ilk yazan kazanır).
     const manifestKey = keyManifest(project, epoch);

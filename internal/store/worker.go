@@ -66,9 +66,17 @@ func (w *WorkerStore) do(ctx context.Context, method, path string, body []byte, 
 		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate unreachable")
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	// Worker'ın per-request RESPONSE_MAX'i (16 MB) ile HİZALI: tam o kadar + 1 okuruz.
+	// Body sınırı AŞARSA sessiz truncate (malformed JSON) yerine AÇIK hata döneriz —
+	// Worker zaten >RESPONSE_MAX'te 413 verir, bu son bir emniyet (gerçek sır projeleri
+	// « 16 MB).
+	const maxBody = 16 << 20
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate response truncated")
+	}
+	if len(raw) > maxBody {
+		return nil, clierr.Newf(clierr.NotAvailable, "secrets gate response exceeds %d bytes; request fewer keys", maxBody)
 	}
 	return &httpResp{status: resp.StatusCode, body: raw, header: resp.Header}, nil
 }
@@ -124,7 +132,12 @@ func mapHTTPError(r *httpResp, ctxMsg string) error {
 			return clierr.Newf(clierr.PolicyConflict, "%s: policy version conflict (current %d)", ctxMsg, we.CurrentVersion)
 		}
 		return clierr.Newf(clierr.CASConflict, "%s: epoch conflict", ctxMsg)
-	case http.StatusRequestEntityTooLarge: // 413
+	case http.StatusRequestEntityTooLarge: // 413 — VALUE_TOO_LARGE (per-değer 64KB) VE
+		// RESPONSE_TOO_LARGE (agregat bulk-read yanıtı) aynı statüyü paylaşır → koda göre ayır.
+		if we.Error == "RESPONSE_TOO_LARGE" {
+			return clierr.Newf(clierr.NotAvailable, "%s: read response too large", ctxMsg).
+				WithRecovery("this bulk read exceeds the gate's response cap — request fewer keys at a time")
+		}
 		return clierr.Newf(clierr.BlobTooLarge, "%s: %s", ctxMsg, safeCode(we.Error))
 	case http.StatusUnprocessableEntity: // 422
 		if we.Error == "POLICY_INVALID" {
@@ -219,9 +232,11 @@ func (w *WorkerStore) Keys(ctx context.Context, project string) (*KeysResult, er
 	return &out, nil
 }
 
-// Read, POST /v1/projects/{p}/read — PLAINTEXT bulk read (all-or-nothing §7.6).
-// keys boş → önce Keys ile principal'ın okunabilir kümesi çözülür; küme boşsa
-// boş sonuç döner (Worker boş keys gövdesini reddeder).
+// Read, POST /v1/projects/{p}/read — PLAINTEXT bulk read (all-or-nothing, tek epoch §7.6).
+// keys boş → önce Keys ile principal'ın okunabilir kümesi çözülür; küme boşsa boş sonuç
+// döner. Yanıt, Worker'ın per-request RESPONSE_MAX bandıyla (aşağıdaki transport limitiyle
+// HİZALI) sınırlıdır; onu aşan patolojik-büyük bir read-all 413 RESPONSE_TOO_LARGE alır
+// (gerçek sır projeleri « bu sınır). Bu tek-istek şekli tek-epoch atomikliğini korur.
 func (w *WorkerStore) Read(ctx context.Context, project string, keys []string) (*ReadResult, error) {
 	if len(keys) == 0 {
 		kr, err := w.Keys(ctx, project)

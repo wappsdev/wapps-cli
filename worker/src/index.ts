@@ -22,6 +22,9 @@ import {
   validProject,
   validKeyName,
   deriveProjects,
+  mapPool,
+  BLOB_POOL,
+  RESPONSE_MAX,
 } from "./storage.js";
 import { parseCurrentPointer, parseManifest, manifestObjectHash, DataManifest, ManifestEntry } from "./manifest.js";
 import {
@@ -494,40 +497,62 @@ async function handleRead(
   if (!loaded) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "project has no secrets");
   const byName = new Map(loaded.manifest.entries.map((e) => [e.keyName, e]));
 
-  // Çöz: blob → içerik-adres doğrula → KEK-unwrap DEK → XChaCha open (§2).
-  const values: Record<string, string> = {};
+  // Tüm anahtarlar manifest'te mi? (NOT_FOUND fail-fast, I/O'dan ÖNCE.)
   for (const k of keys) {
-    const entry = byName.get(k);
-    if (!entry) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "key not found", { key: k });
-    const blob = await getObject(env.SECRETS_BUCKET, keyBlob(project, entry.blobHash));
-    if (!blob) {
-      fireAlert(ctx, env, ALERT.A8, "referenced blob missing", { project, key: k });
-      return jsonError(HTTP.MISCONFIGURED, "BLOB_MISSING", "referenced blob missing", { key: k });
-    }
-    if (sha256Hex(blob.bytes) !== entry.blobHash) {
-      fireAlert(ctx, env, ALERT.A8, "blob content-address mismatch", { project, key: k });
-      return jsonError(HTTP.MISCONFIGURED, "BLOB_HASH_MISMATCH", "blob bytes do not match address", { key: k });
-    }
-    let dek: Uint8Array;
-    try {
-      dek = unwrapDEK(masters, project, k, entry.keyVersion, entry.wrap);
-    } catch (e) {
-      if (e instanceof WrapError) {
-        fireAlert(ctx, env, ALERT.A8, "DEK unwrap failed (tamper or key mismatch)", { project, key: k });
-        return jsonError(HTTP.MISCONFIGURED, e.code === "ALG_UNSUPPORTED" ? "ALG_UNSUPPORTED" : "WRAP_INVALID", "wrap open failed", { key: k });
+    if (!byName.get(k)) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "key not found", { key: k });
+  }
+  // Çöz: CHUNK'lar halinde (≤BLOB_POOL). Her chunk'ın blob'ları PARALEL getirilir (I/O
+  // wall-time sink), sonra çözülüp ciphertext bırakılır → canlı ciphertext bir chunk ×
+  // 64KB ile sınırlı (sıralı-tek-tek wall-time'ı aşıyordu; sınırsız Promise.all TÜM
+  // ciphertext'i tutuyordu — codex P2). Toplam plaintext RESPONSE_MAX ile bantlanır.
+  const values: Record<string, string> = {};
+  // Sarmalayıcı payı: gerçek gövde {"epoch":N,"values":{ ... }}'dir; per-değer tahmini
+  // dış çerçeveyi (epoch + parantezler) saymaz → 64 bayt baş-pay ayır ki cap'i geçen bir
+  // yanıt GERÇEKTE de RESPONSE_MAX altında kalsın (client tarafı da +1 okuyup overflow'da
+  // açık hata verir; iki katman — codex).
+  let totalBytes = 64;
+  for (let start = 0; start < keys.length; start += BLOB_POOL) {
+    const chunk = keys.slice(start, start + BLOB_POOL);
+    const blobs = await mapPool(chunk, BLOB_POOL, (k) => getObject(env.SECRETS_BUCKET, keyBlob(project, byName.get(k)!.blobHash)));
+    for (let j = 0; j < chunk.length; j++) {
+      const k = chunk[j];
+      const entry = byName.get(k)!;
+      const blob = blobs[j];
+      if (!blob) {
+        fireAlert(ctx, env, ALERT.A8, "referenced blob missing", { project, key: k });
+        return jsonError(HTTP.MISCONFIGURED, "BLOB_MISSING", "referenced blob missing", { key: k });
       }
-      throw e;
-    }
-    try {
-      values[k] = new TextDecoder().decode(openValue(dek, project, k, entry.keyVersion, blob.bytes));
-    } catch (e) {
-      if (e instanceof BlobError) {
-        fireAlert(ctx, env, ALERT.A8, "blob open failed (tamper)", { project, key: k });
-        return jsonError(HTTP.MISCONFIGURED, e.code, "blob open failed", { key: k });
+      if (sha256Hex(blob.bytes) !== entry.blobHash) {
+        fireAlert(ctx, env, ALERT.A8, "blob content-address mismatch", { project, key: k });
+        return jsonError(HTTP.MISCONFIGURED, "BLOB_HASH_MISMATCH", "blob bytes do not match address", { key: k });
       }
-      throw e;
-    } finally {
-      dek.fill(0);
+      let dek: Uint8Array;
+      try {
+        dek = unwrapDEK(masters, project, k, entry.keyVersion, entry.wrap);
+      } catch (e) {
+        if (e instanceof WrapError) {
+          fireAlert(ctx, env, ALERT.A8, "DEK unwrap failed (tamper or key mismatch)", { project, key: k });
+          return jsonError(HTTP.MISCONFIGURED, e.code === "ALG_UNSUPPORTED" ? "ALG_UNSUPPORTED" : "WRAP_INVALID", "wrap open failed", { key: k });
+        }
+        throw e;
+      }
+      try {
+        const decoded = new TextDecoder().decode(openValue(dek, project, k, entry.keyVersion, blob.bytes));
+        // Serileştirilmiş UTF-8 BAYT say: JS string.length UTF-16 code unit'idir (çok-baytlı
+        // karakterde undercount) ve JSON kaçışları (kontrol karakterleri 6 bayta genişler)
+        // yanıtı büyütür → utf8(JSON.stringify(...)) gerçek yanıt/bellek maliyeti (codex P2/P3).
+        totalBytes += utf8(JSON.stringify(decoded)).length + k.length + 4; // +4 ~ anahtar-çerçevesi
+        if (totalBytes > RESPONSE_MAX) return jsonError(HTTP.PAYLOAD_TOO_LARGE, "RESPONSE_TOO_LARGE", "read response exceeds the size cap; request fewer keys");
+        values[k] = decoded;
+      } catch (e) {
+        if (e instanceof BlobError) {
+          fireAlert(ctx, env, ALERT.A8, "blob open failed (tamper)", { project, key: k });
+          return jsonError(HTTP.MISCONFIGURED, e.code, "blob open failed", { key: k });
+        }
+        throw e;
+      } finally {
+        dek.fill(0);
+      }
     }
   }
 
@@ -633,6 +658,8 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
   const values = body.values as Record<string, unknown>;
   const names = Object.keys(values);
   if (names.length === 0) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "values empty");
+  // Anahtar-SAYISI cap'i yok: import boyutu manifest 1 MB cap'iyle (MANIFEST_TOO_LARGE,
+  // writer-DO) doğal olarak sınırlı → geçerli bir proje her zaman import edilebilir.
   for (const k of names) {
     if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
     if (typeof values[k] !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `value for ${k} must be a string`);
