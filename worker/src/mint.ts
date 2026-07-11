@@ -180,7 +180,8 @@ export function scopeAllowsVerb(scope: TokenScope, verb: string): boolean {
   return verb === "write" && scope.verbs.includes("rotate");
 }
 
-/** scopeAllowsKey, token scope'unun bir anahtarı kapsayıp kapsamadığı ("*" = tümü). */
+/** scopeAllowsKey, token scope'unun bir anahtarı kapsayıp kapsamadığı ("*" = tümü).
+ *  Anahtar adları case-sensitive kimliktir (allow tarafıyla tutarlı) → tam eşleşme. */
 export function scopeAllowsKey(scope: TokenScope, key: string): boolean {
   return scope.keys.some((k) => k === "*" || k === key);
 }

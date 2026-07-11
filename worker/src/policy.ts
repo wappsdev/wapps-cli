@@ -37,7 +37,13 @@ export type Topology = "primary" | "fallback";
 
 // --- Glob (pinli sözdizimi, §4.2) --------------------------------------------
 // `*` = herhangi bir karakter dizisi (boş dahil), `?` = tek karakter, gerisi
-// literal, case-sensitive, TAM-string eşleşme. Karakter sınıfı / `**` YOK.
+// literal, TAM-string eşleşme. Karakter sınıfı / `**` YOK.
+//
+// CASE SEMANTİĞİ: globMatch primitivi case-SENSITIVE'dir (aşağıdaki testler pinler)
+// ve anahtar adları storage'da case-sensitive kimliktir (keyName AEAD AAD'ye bağlı) —
+// allow/token/lookup HEP case-sensitive. TEK istisna DENY'dir: keyGlobMatch üstünden
+// CASE-INSENSITIVE eşleşir (fail-safe hardening: bir `!*_PROD_*` deny'i `*_prod_*`
+// varyantını da yakalasın; deny fazladan eşleşmesi güvenli yöndür).
 //
 // GÜVENLİK (ReDoS): regex TABANLI DEĞİL. Greedy `[\s\S]*` çevirisi, policy
 // admin'inin PUT edebildiği `*A*A*...*B` şekilli bir pattern'de katastrofik
@@ -78,6 +84,17 @@ export function globMatch(glob: string, s: string): boolean {
   // s tükendi: glob'un kalanı yalnızca '*' ise eşleşme tamdır.
   while (gi < glob.length && glob[gi] === "*") gi++;
   return gi === glob.length;
+}
+
+/**
+ * keyGlobMatch, anahtar-ADI eşleşmesidir (§4.3) ve globMatch'i CASE-INSENSITIVE
+ * uygular. Anahtar adları POSIX env-var olabildiğinden case-insensitive KİMLİKtir
+ * (FOO ≡ foo — writer-DO farklı-case varyantı reddeder). Böylece bir `!*_PROD_*`
+ * deny'i `*_prod_*` varyantını da yakalar VE allow tarafı simetrik kalır (asimetri
+ * yok, over-match yok). globMatch'in kendisi §4.2 pinli case-SENSITIVE kalır.
+ */
+export function keyGlobMatch(glob: string, key: string): boolean {
+  return globMatch(glob.toLowerCase(), key.toLowerCase());
 }
 
 // --- Verb genişletmesi (§4.2) --------------------------------------------------
@@ -153,7 +170,12 @@ export function authorize(
     // 4. key (null → proje-metadata op'u; adım atlanır)
     if (key !== null) {
       // deny-glob KENDİ kuralı içinde kazanır (§4.3 pinli semantik 2).
-      if (rule.keys.some((g) => g.startsWith("!") && globMatch(g.slice(1), key))) continue;
+      //  • DENY: keyGlobMatch (CASE-INSENSITIVE) — fail-safe hardening. `!*_PROD_*`
+      //    `*_prod_*` varyantını da yakalar; deny fazladan eşleşmesi GÜVENLİ yöndür.
+      //  • ALLOW: globMatch (case-SENSITIVE, §4.2 pinli) — anahtar adları storage'da
+      //    case-sensitive kimliktir (keyName AEAD AAD'ye bağlı), allow bir case-
+      //    varyantını istemeden GRANT'lamaz (over-grant yok, storage ile tutarlı).
+      if (rule.keys.some((g) => g.startsWith("!") && keyGlobMatch(g.slice(1), key))) continue;
       if (!rule.keys.some((g) => !g.startsWith("!") && globMatch(g, key))) continue;
     }
     return { allowed: true };

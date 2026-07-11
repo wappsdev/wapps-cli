@@ -25,9 +25,17 @@ const globMaxLen = 256
 // --- Glob (pinli sözdizimi, §4.2): `*` = herhangi bir dizi (boş dahil), `?` =
 // tek karakter, gerisi literal, case-sensitive, TAM-string eşleşme. -----------
 
-// GlobMatch, pinli glob semantiğiyle tam-string eşleşme yapar.
+// GlobMatch, pinli glob semantiğiyle tam-string eşleşme yapar (§4.2 case-SENSITIVE).
 func GlobMatch(glob, s string) bool {
 	return globMatchAt(glob, s)
+}
+
+// keyGlobMatch, anahtar-ADI eşleşmesidir: GlobMatch'i CASE-INSENSITIVE uygular.
+// Anahtar adları POSIX env-var (karışık harf) olabildiğinden case-insensitive
+// KİMLİKtir — Worker enforcement (authorize) ile aynı semantik. GlobMatch'in kendisi
+// §4.2 pinli case-sensitive kalır.
+func keyGlobMatch(glob, key string) bool {
+	return GlobMatch(strings.ToLower(glob), strings.ToLower(key))
 }
 
 func globMatchAt(g, s string) bool {
@@ -171,7 +179,9 @@ func selectorOf(r store.Rule) string {
 // diğerinin ürettiği temsili dizeyi eşliyorsa kesişir sayılır. Temsilci =
 // glob'da '*'→"" ve '?'→"x".
 func globsIntersectHeuristic(a, b string) bool {
-	return GlobMatch(a, concretize(b)) || GlobMatch(b, concretize(a)) || a == b
+	// Anahtar-glob'ları CASE-INSENSITIVE kesişir (enforcement/keyGlobMatch ile
+	// tutarlı): küçük-harf bir allow, karışık-harf bir deny'yi override edebilir.
+	return keyGlobMatch(a, concretize(b)) || keyGlobMatch(b, concretize(a)) || strings.EqualFold(a, b)
 }
 
 func concretize(glob string) string {
@@ -182,18 +192,23 @@ func concretize(glob string) string {
 // prodProbe, (b) kuralının temsilî prod anahtarı: glob'un *_PROD_* desenli bir
 // anahtarı eşleyip eşleyemeyeceğini yoklamak için '*'→"_PROD_" ikamesi denenir.
 func canMatchProd(keyGlob string) bool {
-	if strings.Contains(keyGlob, "_PROD_") {
+	// Case-insensitive: anahtar adları POSIX env-var (karışık harf) olabilir ve
+	// enforcement/keyGlobMatch case-insensitive eşleştiğinden, risky-prod tespiti de
+	// küçük-harf üstünden yapılır — `*_prod_*` kaçmasın.
+	if strings.Contains(strings.ToLower(keyGlob), "_prod_") {
 		return true
 	}
 	probe := strings.ReplaceAll(keyGlob, "*", "_PROD_")
 	probe = strings.ReplaceAll(probe, "?", "x")
-	return GlobMatch(keyGlob, probe) && GlobMatch("*_PROD_*", probe)
+	return keyGlobMatch(keyGlob, probe) && keyGlobMatch("*_prod_*", probe)
 }
 
-// deniedByRule, key'in kuralın deny glob'larından birine takıldığını döner.
+// deniedByRule, key'in kuralın deny glob'larından birine takıldığını döner. Deny
+// CASE-INSENSITIVE eşleşir (keyGlobMatch, enforcement ile aynı §4.3): küçük-harf bir
+// ad varyantı bir deny glob'unu atlatmasın.
 func deniedByRule(r store.Rule, key string) bool {
 	for _, g := range r.Keys {
-		if strings.HasPrefix(g, "!") && GlobMatch(g[1:], key) {
+		if strings.HasPrefix(g, "!") && keyGlobMatch(g[1:], key) {
 			return true
 		}
 	}
@@ -311,6 +326,8 @@ func ruleSubsumes(a, b store.Rule) bool {
 			return false
 		}
 	}
+	// Kapsam CASE-SENSITIVE'dir (allow tarafıyla tutarlı: anahtar adları case-sensitive
+	// kimlik; yalnız DENY case-insensitive'dir, kapsam allow gölgelemesidir).
 	covers := func(aGlobs, bGlobs []string) bool {
 		for _, bg := range bGlobs {
 			if strings.HasPrefix(bg, "!") {

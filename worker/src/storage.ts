@@ -27,14 +27,24 @@ export function keyPolicyVersion(n: number): string {
 // --- Proje / anahtar-adı doğrulama -------------------------------------------
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const KEYNAME_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
+// POSIX ortam-değişkeni adı: ilk karakter harf/altçizgi, sonrası alfanümerik/altçizgi
+// (karışık harf). Yalnız-BÜYÜK değil — gerçek infra sırları karışık harf kullanır
+// (tofu `TF_VAR_<lower>` sözleşmesi, `vaulter_pg_<role>_password` çıktıları). Anahtar
+// adı R2 path'ine GİRMEZ (blob'lar sha256 content-addressed; manifest adı DATA tutar),
+// dolayısıyla karışık harf path-güvenliğini bozmaz.
+const KEYNAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+// JS prototype-özel adları reddet: response haritaları plain object (values[k]=…);
+// `__proto__` bir data anahtarı DEĞİL, prototype setter'ını tetikler → yazılan sır
+// read yanıtından SESSİZCE düşer (+ prototype-pollution). Gerçek hiçbir sır bu adları
+// kullanmaz → reddetmek bedava + güvenli.
+const PROTO_SPECIAL = new Set(["__proto__", "constructor", "prototype"]);
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
 export function validProject(p: string): boolean {
   return PROJECT_RE.test(p);
 }
 export function validKeyName(k: string): boolean {
-  return KEYNAME_RE.test(k);
+  return KEYNAME_RE.test(k) && !PROTO_SPECIAL.has(k);
 }
 export function validSha256Hex(h: string): boolean {
   return SHA256_HEX_RE.test(h);

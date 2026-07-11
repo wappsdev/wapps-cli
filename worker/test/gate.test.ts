@@ -116,6 +116,17 @@ describe("write → read plaintext round-trip (§2.7/§7.4)", () => {
     expect(del2.status).toBe(404);
   });
 
+  it("mixed-case anahtar adları (POSIX env-var) yazılıp okunur — farklı-case = farklı kimlik", async () => {
+    // Storage case-sensitive kimlik: TF_VAR_* (tofu) gibi karışık-harf adlar yazılabilir;
+    // farklı-case varyantlar (Api_Token vs API_TOKEN) AYRI anahtarlardır.
+    expect((await putKey("TF_VAR_cloudflare_api_token", "tk")).status).toBe(200);
+    expect((await putKey("vaulter_pg_admin_password", "pw")).status).toBe(200);
+    const rd = await readKeys(["TF_VAR_cloudflare_api_token", "vaulter_pg_admin_password"]);
+    const vals = ((await rd.json()) as { values: Record<string, string> }).values;
+    expect(vals.TF_VAR_cloudflare_api_token).toBe("tk");
+    expect(vals.vaulter_pg_admin_password).toBe("pw");
+  });
+
   it("VALUE_TOO_LARGE: >61436B plaintext refused pre-upload (§2.1)", async () => {
     const res = await putKey("BIG_KEY", "x".repeat(61437));
     expect(res.status).toBe(413);

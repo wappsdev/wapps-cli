@@ -101,6 +101,19 @@ describe("authorize (§4.3 normatif)", () => {
     const impostor: AuthzPrincipal = { kind: "service", id: "service:x", groups: ["developers@wapps.co"] };
     expect(authorize(BASE, impostor, "vaulter", "K", "read").allowed).toBe(false);
   });
+
+  it("DENY case-insensitive (fail-safe) / ALLOW case-sensitive (storage kimliği)", () => {
+    // Deny fail-safe hardening: `!*_PROD_*` her case'i yakalar (fazladan eşleşme güvenli).
+    expect(authorize(BASE, dev, "vaulter", "DB_PROD_URL", "read").allowed).toBe(false); // upper
+    expect(authorize(BASE, dev, "vaulter", "db_prod_url", "read").allowed).toBe(false); // lower (fold)
+    expect(authorize(BASE, dev, "vaulter", "Db_Prod_Url", "read").allowed).toBe(false); // karışık (fold)
+    expect(authorize(BASE, dev, "vaulter", "database_url", "read").allowed).toBe(true); // prod yok → erişilebilir
+    // Allow CASE-SENSITIVE: svc DEPLOY_* yalnız uppercase DEPLOY_ anahtarlarını kapsar
+    // (adlar storage'da case-sensitive kimlik — over-grant yok).
+    expect(authorize(BASE, svc, "vaulter", "DEPLOY_KEY", "read").allowed).toBe(true);
+    expect(authorize(BASE, svc, "vaulter", "deploy_key", "read").allowed).toBe(false); // farklı kimlik
+    expect(authorize(BASE, svc, "vaulter", "API_KEY", "read").allowed).toBe(false); // allow glob yok
+  });
 });
 
 describe("filterReadableKeys (§4.3.3)", () => {
