@@ -84,7 +84,7 @@ func TestExec_ConfigRootInjectsEnv(t *testing.T) {
 	setupForeignProject(t, map[string]string{"coolify_uuid": "u-123"}, "")
 
 	r := &fakeRunner{returnCode: 0}
-	if err := runExec([]string{"true"}, "", r.runner); err != nil {
+	if err := execCall([]string{"true"}, "", r.runner); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 	found := false
@@ -115,8 +115,8 @@ func TestList_NoOverrideLegacy(t *testing.T) {
 		t.Fatalf("yaml: %v", err)
 	}
 	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-	t.Chdir(projDir)        // cwd IS the project dir
-	SetConfigPath("")       // no override (legacy)
+	t.Chdir(projDir)  // cwd IS the project dir
+	SetConfigPath("") // no override (legacy)
 	t.Cleanup(func() { SetConfigPath("") })
 
 	var buf bytes.Buffer

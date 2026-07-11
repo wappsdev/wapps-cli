@@ -28,6 +28,16 @@ Designed to be safe to call from npm 'predev' / 'prebuild' scripts so
 }
 
 func runApply(stdoutW io.Writer) error {
+	// Backend yönlendirme (§7.12): backend:store ise target'lar store snapshot'ından
+	// materialize edilir; aksi halde aşağıdaki legacy age-arşiv yolu AYNEN korunur.
+	storeCfg, cerr := storeBackendConfig()
+	if cerr != nil {
+		return cerr
+	}
+	if storeCfg != nil {
+		return runApplyStore(storeCfg, stdoutW)
+	}
+
 	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
 	if passphrase == "" {
 		return fmt.Errorf("apply: WAPPS_SECRETS_PASSPHRASE not set")

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
@@ -29,6 +30,13 @@ or LLM transcript). Use --prefix to control the env var prefix (default
 TF_VAR_ preserves Tofu workflow; pass --prefix '' for plain emit needed
 by non-Tofu repos like vaulter-api).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// env'in print-form'u (--write yok) gizli DÜZ METİN basar → ajan modunda
+		// YAPISAL red; env --write FILE serbest kalır (§7.4.2).
+		if envWritePath == "" {
+			if err := agentmode.Guard(agentmode.PolicyRefuseAgent, agentmode.IsAgent()); err != nil {
+				return err
+			}
+		}
 		return runEnv(envWritePath, envPrefix, os.Stdout)
 	},
 }
@@ -45,6 +53,16 @@ by non-Tofu repos like vaulter-api).`,
 // workflows are unchanged. Empty string disables prefixing (vaulter-api
 // and other non-Tofu repos).
 func runEnv(writePath, prefix string, stdoutW io.Writer) error {
+	// Backend yönlendirme (§7.12): backend:store ise export satırları store
+	// snapshot'ından üretilir; aksi halde aşağıdaki legacy age-arşiv yolu AYNEN korunur.
+	storeCfg, cerr := storeBackendConfig()
+	if cerr != nil {
+		return cerr
+	}
+	if storeCfg != nil {
+		return runEnvStore(storeCfg, writePath, prefix, stdoutW)
+	}
+
 	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
 	if passphrase == "" {
 		return fmt.Errorf("env: WAPPS_SECRETS_PASSPHRASE not set")

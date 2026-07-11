@@ -4,25 +4,50 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
 var getCmd = &cobra.Command{
 	Use:   "get <key>",
-	Short: "Decrypt + extract single secret value",
+	Short: "Decrypt + extract single secret value (TTY only; refused in agent mode)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		val, err := readKey(resolveArchivePath(), args[0])
+		// get, gizli bir DÜZ METİN değeri basar → ajan modunda YAPISAL red (§7.4.2).
+		if err := agentmode.Guard(agentmode.PolicyRefuseAgent, agentmode.IsAgent()); err != nil {
+			return err
+		}
+		return runGet(args[0], cmd.OutOrStdout())
+	},
+}
+
+// runGet, get'in backend-aware çekirdeğidir: backend:store ise değeri store'dan
+// çeker; aksi halde legacy age-arşivinden (readKey AYNEN korunur). Değer + tek
+// newline yazılır (legacy `fmt.Println` ile aynı çıktı).
+func runGet(key string, out io.Writer) error {
+	storeCfg, cerr := storeBackendConfig()
+	if cerr != nil {
+		return cerr
+	}
+	if storeCfg != nil {
+		val, err := getStore(storeCfg, key)
 		if err != nil {
 			return err
 		}
-		fmt.Println(val)
+		fmt.Fprintln(out, val)
 		return nil
-	},
+	}
+	val, err := readKey(resolveArchivePath(), key)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, val)
+	return nil
 }
 
 func readKey(archivePath, key string) (string, error) {
