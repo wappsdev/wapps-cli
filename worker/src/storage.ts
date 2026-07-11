@@ -55,10 +55,11 @@ export function validSha256Hex(h: string): boolean {
 /** BLOB_POOL, bulk read/write'ta AYNI ANDA açık R2 op üst sınırı. Sıralı (wall-time
  *  aşımı) ile sınırsız Promise.all (bellek + eşzamanlı-subrequest patlaması) arasında. */
 export const BLOB_POOL = 24;
-/** RESPONSE_MAX, tek bir bulk read İSTEĞİNİN döndüreceği serileştirilmiş yanıt üst sınırı
- *  (bellek bandı: isolate 128 MB). PER-REQUEST'tir, proje-geneli bir yazma cap'i DEĞİL —
- *  proje bundan büyük olabilir; istemci read-all'ı bu sınırın altında BATCH'ler (bkz.
- *  WorkerStore.Read). Aşımda 413 RESPONSE_TOO_LARGE (temiz hata; eskiden OOM riski). */
+/** RESPONSE_MAX, tek bir bulk read yanıtının serileştirilmiş üst sınırı — Worker isolate
+ *  belleğini (128 MB) korur (chunked-stream ciphertext'i zaten bantlar; bu, biriken
+ *  plaintext yanıtını bantlar). İstemci transport limiti (16<<20) ile HİZALIDIR: kabul
+ *  edilen her yanıt istemcice okunabilir. Bunu aşan PATOLOJİK-büyük bir read-all 413
+ *  RESPONSE_TOO_LARGE alır (gerçek sır projeleri « bu sınır; OOM yerine temiz hata). */
 export const RESPONSE_MAX = 16 * 1024 * 1024;
 
 /** mapPool, öğeleri EN FAZLA `limit` eşzamanlı işler (sınırsız Promise.all yerine).
