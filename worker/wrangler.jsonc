@@ -5,12 +5,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "secrets-gate",
   "main": "src/index.ts",
+  "routes": [{ "pattern": "secrets.meapps.dev", "custom_domain": true }],
   "compatibility_date": "2025-06-01",
   "observability": { "enabled": true },
 
   // Cron kümesi (§8.3, pinli): "0 2 * * *" NIGHTLY audit-head çapası + escrow
   // reconcile; "0 3 * * 0" haftalık GC (KEPT).
-  "triggers": { "crons": ["0 2 * * *", "0 3 * * 0"] },
 
   // Durable Objects:
   //  - PROJECT_WRITER: proje başına yazma serileştiricisi + zarf kriptosu (idFromName=project).
@@ -38,15 +38,15 @@
 
   // D1: audit ledger (§6.4) — offboard rotate-set oracle'ı.
   "d1_databases": [
-    { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit", "database_id": "00000000-0000-0000-0000-000000000000" }
+    { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit", "database_id": "f33848e6-8e02-463c-8840-40abb45cdb6f" }
   ],
 
   // KV: minted-token jti deny-list + rate-limit sayaçları + get-identity cache
   // (§8.5 pinli: IDENTITY_CACHE kendi namespace'i; SADECE gecikme optimizasyonu §3.4).
   "kv_namespaces": [
-    { "binding": "JTI_DENYLIST", "id": "jti_denylist_local" },
-    { "binding": "RATE", "id": "rate_local" },
-    { "binding": "IDENTITY_CACHE", "id": "identity_cache_local" }
+    { "binding": "JTI_DENYLIST", "id": "34e96e44bea948a586634bc62be41aeb" },
+    { "binding": "RATE", "id": "807df92544954764bf235325c2be93b9" },
+    { "binding": "IDENTITY_CACHE", "id": "32afd04898364468ad628da4872184cf" }
   ],
 
   // Fail-closed config (§3.1): ACCESS_* / MASTER_KEK / ADMIN_EMAILS eksik → 503.
@@ -54,12 +54,10 @@
   // (burada boş var placeholder). MASTER_KEK yalnızca `wrangler secret put` ile girer
   // (§2.2 residence kuralları); ASLA git/CI/R2/D1/KV'ye yazılmaz.
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD_READ": "",
-    "ACCESS_AUD_WRITE": "",
-    "ADMIN_EMAILS": "",
-    "MASTER_KEK": "",
-    "MASTER_KEK_PREV": "",
+    "ACCESS_TEAM_DOMAIN": "wapps-dev.cloudflareaccess.com",
+    "ACCESS_AUD_READ": "8e70ed03b7852f88759b5aac1fea7f739691305d5e1b9d1395a81d8fb82f90bd",
+    "ACCESS_AUD_WRITE": "037398c1f0c4346648f0064c7ae01b0a30654efade8c1ef10728494b782eb626",
+    "ADMIN_EMAILS": "adnan@wapps.co",
     "MINT_KEY": "",
     "MINT_KEY_PREV": "",
     "DISCORD_WEBHOOK_URL": "",
