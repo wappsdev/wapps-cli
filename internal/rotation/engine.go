@@ -11,11 +11,11 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
 )
 
-// ValueStore, store-first değer-yazımı port'udur (SPEC §8.6.1: yeni değer tüketici-
-// tarafı değişiklikten ÖNCE wapps-secrets'a yazılır). ÜRETİM: internal/store.
-// WorkerStore üzerinden değer-değiştiren imzalı bir epoch (rewrap remint gibi ama
-// düz-metni değiştirerek). Bu, doğrulanmış bir trust head + alıcı kümesi gerektirir
-// = CANLI wiring (DEFER, G14+); burada test için MemValueStore, prod için StubValueStore.
+// ValueStore, store-first değer-yazımı port'udur (yeni değer tüketici-tarafı
+// değişiklikten ÖNCE wapps-secrets'a yazılır). ÜRETİM: internal/store v2
+// plaintext istemcisi üzerinden PUT/Import (SPEC §7.4 — imza/wrap katmanı
+// YOK, Worker düz-metin alır). Canlı wiring DEFER; burada test için
+// MemValueStore, prod için StubValueStore.
 type ValueStore interface {
 	// WriteValue, yeni değeri store'a yazar ve yeni sürümü döner (store-first).
 	WriteValue(ctx context.Context, project, key string, newVal []byte) (version uint64, err error)
@@ -26,8 +26,8 @@ type ValueStore interface {
 }
 
 // StubValueStore, üretim değer-yazımının YER-TUTUCUSUDUR (DEFER): gerçek yol
-// internal/store.WorkerStore ile değer-değiştiren imzalı epoch commit'idir (canlı
-// trust head + alıcı kümesi gerekir). Her çağrı ErrLiveExecutionNotWired.
+// internal/store v2 istemcisiyle plaintext PUT/Import'tur (canlı oturum/
+// service-token gerekir). Her çağrı ErrLiveExecutionNotWired.
 type StubValueStore struct{}
 
 func (StubValueStore) WriteValue(context.Context, string, string, []byte) (uint64, error) {

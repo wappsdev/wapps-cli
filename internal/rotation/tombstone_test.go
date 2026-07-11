@@ -41,8 +41,8 @@ func TestTombstone_OverwritesLegacyAndStaleReadFailsLoud(t *testing.T) {
 	assert.Equal(t, testProject, sentinel.Project)
 	assert.Equal(t, "wapps-secrets", sentinel.Store)
 
-	// LegacyArchive.Values de tombstoned arşivde ErrArchiveMigrated döner (cutover
-	// tekrar edilemez).
+	// LegacyArchive.Values de tombstoned arşivde ErrArchiveMigrated döner
+	// (migrasyon tekrar edilemez).
 	_, verr := LegacyArchiveFromBytes(onDisk).Values(legacyPass)
 	require.ErrorIs(t, verr, ErrArchiveMigrated)
 

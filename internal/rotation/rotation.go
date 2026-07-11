@@ -1,21 +1,20 @@
-// Package rotation, G11 rotasyon-yürütme motorudur (SPEC §8.6 + §10): tipli
-// recipe'ler, per-key durum makineli resumable worklist run'ları, store-backed
-// rotasyon-run ledger'ı (offboard close'un §8.5.7 tükettiği port'un GERÇEK
-// uygulaması) ve iki-fazlı migration (cutover → rotate → tombstone).
+// Package rotation, rotasyon-yürütme motorudur (server-decrypt SPEC §7.1
+// `wapps secrets rotate` + §6.3 rotate-plan oracle'ının tüketicisi): tipli
+// recipe'ler, per-key durum makineli resumable worklist run'ları ve
+// rotasyon-run ledger'ı. Ayrıca Path B migrasyonunun legacy-arşiv yüzeyini
+// taşır: salt-okunur LegacyArchive (legacy.go) + __MIGRATED__ tombstone
+// yazıcısı (tombstone.go) — SPEC §8.2.
 //
 // KATMANLAMA (kod tekrarı YOK):
-//   - internal/lifecycle: worklist VERİSİ (WorklistEntry/tier'lar) + RotationRunLedger
-//     ARAYÜZÜ + offboard close. Bu paket o arayüzü GERÇEKTEN uygular ve worklist'i
-//     TÜKETİR (offboard motoru worklist'i yalnızca ÜRETİR, çalıştırmaz).
-//   - internal/store: commit/fetch (üretim değer-yazımı; burada ValueStore port'u).
-//   - internal/cryptoid: per-key DEK zarfı (SealDEK/WrapVerify) — YENİ format.
-//   - internal/ageutil: LEGACY simetrik-scrypt Decrypt (eski all.enc.age okuma).
-//   - internal/manifest: imzalı genesis manifest kurma (rewrap ile AYNI primitifler).
+//   - internal/store: plaintext v2 istemcisi (üretim değer-yazımı; burada
+//     ValueStore port'u). Worker düz-metin döner (§2.7) — istemcide yerel
+//     unwrap/kimlik kriptosu YOKTUR.
+//   - internal/ageutil: LEGACY simetrik-scrypt Decrypt/Encrypt (eski
+//     all.enc.age okuma + tombstone/export yazımı).
 //
-// KAPSAM DIŞI (DEFER, insan-eliyle/prod): CANLI recipe yürütmesi (gerçek Postgres/
-// Coolify/CF) — Executor STUB'u net TODO taşır; gerçek bir projeye karşı migration
-// (G14+); B2 escrow (G10); wrangler/tofu hesap provisyonu. Bunlar aşağıda net
-// biçimde işaretlenir.
+// KAPSAM DIŞI (DEFER, insan-eliyle/prod): CANLI recipe yürütmesi (gerçek
+// Postgres/Coolify/CF) — Executor STUB'u net TODO taşır; canlı store yazım
+// bağlaması. Bunlar aşağıda net biçimde işaretlenir.
 package rotation
 
 import (
@@ -52,23 +51,9 @@ var (
 	// legacy'e yazılabilir.
 	ErrIronRuleViolation = errors.New("rotation: IRON_RULE_VIOLATION")
 
-	// ErrCutoverVerifyMismatch: cutover roundtrip doğrulaması başarısız (store'dan
-	// çözülen değer legacy düz-metniyle byte-eşleşmiyor) → cutover İPTAL, legacy
-	// otoritatif kalır (§10.2). Store'a geçilMEZ.
-	ErrCutoverVerifyMismatch = errors.New("rotation: CUTOVER_VERIFY_MISMATCH")
-
 	// ErrArchiveMigrated: legacy arşiv bir __MIGRATED__ tombstone taşıyor — bayat
-	// checkout GÜRÜLTÜLÜ başarısız olmalı (§10.2.7), store'a yönlendirilir.
+	// checkout GÜRÜLTÜLÜ başarısız olmalı (SPEC §8.2 adım 8), store'a yönlendirilir.
 	ErrArchiveMigrated = errors.New("rotation: ARCHIVE_MIGRATED")
-
-	// ErrRecipientMissing: cutover verifier kimliği alıcı kümesinde değil (roundtrip
-	// çözümü yapılamaz) veya alıcı kümesi boş.
-	ErrRecipientMissing = errors.New("rotation: RECIPIENT_MISSING")
-
-	// ErrEscrowMissing: cutover'a HİÇ escrow parmak izi verilmedi VEYA verilen bir
-	// escrow fp alıcı kümesinde yok (§9.1). Escrow-wrap değişmezi çağıran-özenine
-	// bağlı OLAMAZ — escrow yoksa genesis commit EDİLMEZ, legacy otoritatif kalır.
-	ErrEscrowMissing = errors.New("rotation: ESCROW_WRAP_MISSING")
 )
 
 // Request, tek bir anahtarın rotasyon bağlamıdır — recipe'lerin girdisi.

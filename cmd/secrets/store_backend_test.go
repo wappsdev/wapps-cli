@@ -53,6 +53,21 @@ type fakeStore struct {
 	// importNoop true ise Import çağrıyı KAYDEDER ama f.values'a yazmaz —
 	// migrate import'un round-trip verify başarısızlık yolunu simüle eder.
 	importNoop bool
+	// whoami/whoamiErr, migrate export'un rollback-tamlık kanıtını (storeWhoami)
+	// sürer. whoami nil ise varsayılan root-admin kimliği döner (tam okuma).
+	whoami    *store.WhoamiResult
+	whoamiErr error
+}
+
+// Whoami, cmd/secrets'taki storeWhoami arayüzünü uygular (export tamlık kanıtı).
+func (f *fakeStore) Whoami(_ context.Context) (*store.WhoamiResult, error) {
+	if f.whoamiErr != nil {
+		return nil, f.whoamiErr
+	}
+	if f.whoami != nil {
+		return f.whoami, nil
+	}
+	return &store.WhoamiResult{Principal: "test-admin", IsRootAdmin: true}, nil
 }
 
 func (f *fakeStore) Keys(_ context.Context, project string) (*store.KeysResult, error) {
