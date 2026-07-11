@@ -1,27 +1,25 @@
 package cmd
 
-// GERÇEK `wapps login` (server-decrypt SPEC §7.2) — cloudflared-stili CF Access
-// tarayıcı akışı:
-//  1. Efemeral bir 127.0.0.1 dinleyicisi bağlanır;
-//  2. Tarayıcı, gate app'inin Access CLI login URL'ine açılır
-//     (https://<gate-host>/cdn-cgi/access/cli?redirect_url=http://127.0.0.1:<port>/callback);
-//  3. SSO tamamlanınca callback, app token'ını (CF_Authorization JWT) teslim eder;
-//  4. Token ~/.config/wapps/session/<gate-host>.json'a 0600 yazılır (ASLA loglanmaz);
-//  5. Her Worker isteği onu cf-access-token header'ı olarak sunar (internal/session.Auth).
+// GERÇEK `wapps login` (server-decrypt SPEC §7.2) — CF Access SSO.
+//
+// CF Access CLI akışı localhost-callback redirect'ini REDDEDER ("Invalid redirect
+// URL"); tek desteklenen tarayıcı akışı EDGE-TOKEN-TRANSFER'dir (redirect app'in
+// kendi domain'ine + edge polling). cloudflared bunun referans implementasyonudur
+// (org-session reuse + token cache + renewal) → login ona delege eder:
+//  1. `cloudflared access login <gate>` tarayıcıyı açar, SSO'yu sürer, token'ı cache'ler;
+//  2. `cloudflared access token -app=<gate>` app token'ını (CF_Authorization JWT) verir;
+//  3. Token ~/.config/wapps/session/<gate-host>.json'a 0600 yazılır (ASLA loglanmaz);
+//  4. Her Worker isteği onu cf-access-token header'ı olarak sunar (internal/session.Auth).
 //
 // CI service-token yolu login gerektirmez: CF_ACCESS_CLIENT_ID/SECRET env →
 // CF-Access-Client-Id/Secret header'ları (§7.2 sonu).
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -32,30 +30,42 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/store"
 )
 
-// openBrowser, platform tarayıcısını açar (test seam'i).
-var openBrowser = func(u string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("open", u).Start()
-	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
-	default:
-		return exec.Command("xdg-open", u).Start()
+// cloudflaredLogin, CF Access SSO'yu cloudflared'e delege eder ve app token'ını
+// (JWT) döner (test seam'i). cloudflared kurulu değilse NOT_AVAILABLE. Interaktif
+// çıktı (SSO URL'i vb.) kullanıcının KENDİ terminaline gider — chat/transcript'e DEĞİL.
+var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
+	cfPath, lerr := exec.LookPath("cloudflared")
+	if lerr != nil {
+		return "", clierr.New(clierr.NotAvailable,
+			"wapps login needs cloudflared for the CF Access SSO flow (edge token transfer).\n"+
+				"  install: brew install cloudflared\n"+
+				"  then re-run: wapps login")
 	}
+	// 1) Interaktif SSO: tarayıcı + org-session reuse + token cache.
+	login := exec.Command(cfPath, "access", "login", gate)
+	login.Stdout, login.Stderr, login.Stdin = cmd.OutOrStdout(), cmd.ErrOrStderr(), os.Stdin
+	if rerr := login.Run(); rerr != nil {
+		return "", clierr.Wrapf(clierr.Internal, rerr, "cloudflared access login")
+	}
+	// 2) Cache'lenmiş app token'ını al — yalnızca stdout (temiz JWT).
+	var out, errb bytes.Buffer
+	tok := exec.Command(cfPath, "access", "token", "-app="+gate)
+	tok.Stdout, tok.Stderr = &out, &errb
+	if rerr := tok.Run(); rerr != nil {
+		return "", clierr.Wrapf(clierr.Internal, rerr, "cloudflared access token: %s", strings.TrimSpace(errb.String()))
+	}
+	return strings.TrimSpace(out.String()), nil
 }
-
-// loginTimeout, tarayıcı SSO akışının beklenme süresi.
-var loginTimeout = 5 * time.Minute
 
 var loginCheck bool
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "CF Access browser login for the secrets gate (§7.2) — TTY only",
-	Long: `login opens the browser at the Access CLI login URL for the secrets gate,
-captures the returned CF_Authorization app token on a localhost callback, and
-caches it 0600 at ~/.config/wapps/session/<gate-host>.json. Every store call
-then presents it as the cf-access-token header.
+	Long: `login runs the CF Access SSO for the secrets gate via cloudflared
+(edge token transfer — the CF Access CLI flow rejects a localhost callback), then
+caches the returned app token 0600 at ~/.config/wapps/session/<gate-host>.json.
+Every store call then presents it as the cf-access-token header.
 
 Agent/CI contexts never run login: CI uses a CF Access service token via
 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (no browser, no session file).
@@ -99,28 +109,19 @@ func runLoginCheck(cmd *cobra.Command) error {
 	return nil
 }
 
-// runLogin, tarayıcı SSO akışını sürer ve token'ı önbelleğe yazar.
+// runLogin, SSO'yu cloudflared'e delege eder ve token'ı önbelleğe yazar.
 func runLogin(cmd *cobra.Command) error {
 	gate := session.GateURL()
 	host := session.GateHost()
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return clierr.Wrapf(clierr.Internal, err, "bind localhost callback listener")
-	}
-	defer ln.Close()
-	callback := fmt.Sprintf("http://%s/callback", ln.Addr().String())
-	loginURL := gate + "/cdn-cgi/access/cli?redirect_url=" + url.QueryEscape(callback)
-
 	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "Opening the browser for CF Access SSO…\nIf it does not open, visit:\n  %s\n", loginURL)
-	if berr := openBrowser(loginURL); berr != nil {
-		fmt.Fprintln(w, "(could not launch a browser automatically — open the URL above manually)")
-	}
 
-	token, err := waitForCallbackToken(ln, loginTimeout)
+	fmt.Fprintf(w, "Opening CF Access SSO for %s via cloudflared…\n", host)
+	token, err := cloudflaredLogin(cmd, gate)
 	if err != nil {
 		return err
+	}
+	if !looksLikeJWT(token) {
+		return clierr.New(clierr.Internal, "cloudflared returned no usable token; re-run wapps login")
 	}
 	exp := int64(0)
 	if c, cerr := session.ParseClaims(token); cerr == nil && c.Exp > 0 {
@@ -141,53 +142,10 @@ func runLogin(cmd *cobra.Command) error {
 	return nil
 }
 
-// callbackHandler, Access CLI redirect'ini karşılar: token query param'ı
-// (cloudflared paritesi: `token`; tolerans: `cf_authorization`) kanala teslim
-// edilir. Token ASLA yanıt gövdesine/loga yazılmaz.
-func callbackHandler(tokenCh chan<- string) http.Handler {
-	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/callback" {
-			http.NotFound(rw, r)
-			return
-		}
-		tok := r.URL.Query().Get("token")
-		if tok == "" {
-			tok = r.URL.Query().Get("cf_authorization")
-		}
-		if tok == "" {
-			rw.WriteHeader(http.StatusBadRequest)
-			_, _ = rw.Write([]byte("wapps login: no token in the callback — retry wapps login"))
-			return
-		}
-		rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = rw.Write([]byte("<html><body><h3>wapps login complete</h3>You may close this tab and return to the terminal.</body></html>"))
-		select {
-		case tokenCh <- tok:
-		default:
-		}
-	})
-}
-
-// waitForCallbackToken, dinleyici üzerinde callback'i bekler (≤ timeout).
-func waitForCallbackToken(ln net.Listener, timeout time.Duration) (string, error) {
-	tokenCh := make(chan string, 1)
-	srv := &http.Server{Handler: callbackHandler(tokenCh), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			_ = err // dinleyici kapanışı normal yol
-		}
-	}()
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	}()
-	select {
-	case tok := <-tokenCh:
-		return tok, nil
-	case <-time.After(timeout):
-		return "", clierr.New(clierr.SessionExpired, "browser SSO not completed in time; re-run wapps login")
-	}
+// looksLikeJWT, kabaca üç boş-olmayan base64url segment (header.payload.sig) doğrular.
+func looksLikeJWT(s string) bool {
+	p := strings.Split(s, ".")
+	return len(p) == 3 && p[0] != "" && p[1] != "" && p[2] != ""
 }
 
 // --- whoami -------------------------------------------------------------------
