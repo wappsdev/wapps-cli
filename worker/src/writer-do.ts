@@ -285,12 +285,15 @@ export class ProjectWriterDO {
         throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "unknown op" });
     }
 
-    // Proje toplam-plaintext bandı (RESPONSE_MAX ile TUTARLI): >cap bir projeyi YAZMA
-    // aşamasında reddet → read-all her zaman isolate'e sığar, writer'ın kabul edip
-    // reader'ın 413'lediği tutarsızlık ortadan kalkar (codex). rewrap plaintext
-    // eklemez; delete azaltır → doğal olarak güvenli.
+    // Proje toplam-plaintext bandı (RESPONSE_MAX ile TUTARLI): yalnız BÜYÜMEDE reddet —
+    // delete/rewrap gibi non-increasing mutasyonlar aşırı-büyük bir projede bile geçer,
+    // böylece proje tek tek boşaltılabilir (codex P2). Bu, YENİ projeler için hızlı-fail;
+    // GERÇEK garanti handleRead'deki RESPONSE_MAX sert backstop'udur (tüm projeler; legacy
+    // size=0 entries burada undercount etse de read yolu 413'ler — eskiden OOM olan yol
+    // artık temiz hata, kesin iyileşme).
+    const prevTotal = prevEntries.reduce((s, e) => s + (e.size ?? 0), 0);
     const totalSize = [...byName.values()].reduce((s, e) => s + (e.size ?? 0), 0);
-    if (totalSize > RESPONSE_MAX) {
+    if (totalSize > RESPONSE_MAX && totalSize > prevTotal) {
       throw new CommitError(HTTP.PAYLOAD_TOO_LARGE, "PROJECT_TOO_LARGE", { reason: "project plaintext total exceeds the readable cap", totalSize, cap: RESPONSE_MAX });
     }
 
