@@ -55,9 +55,11 @@ export function validSha256Hex(h: string): boolean {
 /** BLOB_POOL, bulk read/write'ta AYNI ANDA açık R2 op üst sınırı. Sıralı (wall-time
  *  aşımı) ile sınırsız Promise.all (bellek + eşzamanlı-subrequest patlaması) arasında. */
 export const BLOB_POOL = 24;
-/** MAX_BULK_KEYS, tek bir bulk read/import isteğindeki anahtar üst sınırı (DoS bandı;
- *  manifest boyutu zaten MANIFEST_TOO_LARGE ile sınırlı, bu ek/açık bir korkuluk). */
-export const MAX_BULK_KEYS = 1000;
+/** RESPONSE_MAX, tek bir bulk read'in DÖNDÜRECEĞİ toplam plaintext üst sınırı (bellek
+ *  bandı: isolate 128 MB). Anahtar-SAYISI cap'i YOK (manifest 1 MB'a sığan geçerli bir
+ *  proje her zaman okunabilmeli — codex: key-cap manifest byte-cap ile tutarsızdı); bu
+ *  bayt bandı, patolojik olarak büyük değerlerin isolate'i patlatmasını engeller. */
+export const RESPONSE_MAX = 16 * 1024 * 1024;
 
 /** mapPool, öğeleri EN FAZLA `limit` eşzamanlı işler (sınırsız Promise.all yerine).
  *  Sonuçlar giriş sırasında döner; bir fn reddederse başlamış işler iptal EDİLMEZ

@@ -24,7 +24,7 @@ import {
   deriveProjects,
   mapPool,
   BLOB_POOL,
-  MAX_BULK_KEYS,
+  RESPONSE_MAX,
 } from "./storage.js";
 import { parseCurrentPointer, parseManifest, manifestObjectHash, DataManifest, ManifestEntry } from "./manifest.js";
 import {
@@ -472,7 +472,6 @@ async function handleRead(
   if (!Array.isArray(body.keys) || body.keys.length === 0) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "keys required");
   const keys = [...new Set(body.keys.filter((k): k is string => typeof k === "string"))];
   if (keys.length !== body.keys.length) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "keys must be unique strings");
-  if (keys.length > MAX_BULK_KEYS) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `too many keys in one read (max ${MAX_BULK_KEYS})`);
   for (const k of keys) {
     if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
   }
@@ -502,45 +501,51 @@ async function handleRead(
   for (const k of keys) {
     if (!byName.get(k)) return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "key not found", { key: k });
   }
-  // Blob'ları SINIRLI-EŞZAMANLI getir (I/O wall-time sink): sıralı R2 GET bulk read'de
-  // (ör. migration verify 156 key) exceededWallTime'a yol açıyordu, sınırsız Promise.all
-  // ise eşzamanlı-op/bellek patlatır → mapPool (≤BLOB_POOL). Çözüm (CPU) sıralı kalır.
-  const blobs = await mapPool(keys, BLOB_POOL, (k) => getObject(env.SECRETS_BUCKET, keyBlob(project, byName.get(k)!.blobHash)));
-
-  // Çöz: içerik-adres doğrula → KEK-unwrap DEK → XChaCha open (§2).
+  // Çöz: CHUNK'lar halinde (≤BLOB_POOL). Her chunk'ın blob'ları PARALEL getirilir (I/O
+  // wall-time sink), sonra çözülüp ciphertext bırakılır → canlı ciphertext bir chunk ×
+  // 64KB ile sınırlı (sıralı-tek-tek wall-time'ı aşıyordu; sınırsız Promise.all TÜM
+  // ciphertext'i tutuyordu — codex P2). Toplam plaintext RESPONSE_MAX ile bantlanır.
   const values: Record<string, string> = {};
-  for (let i = 0; i < keys.length; i++) {
-    const k = keys[i];
-    const entry = byName.get(k)!;
-    const blob = blobs[i];
-    if (!blob) {
-      fireAlert(ctx, env, ALERT.A8, "referenced blob missing", { project, key: k });
-      return jsonError(HTTP.MISCONFIGURED, "BLOB_MISSING", "referenced blob missing", { key: k });
-    }
-    if (sha256Hex(blob.bytes) !== entry.blobHash) {
-      fireAlert(ctx, env, ALERT.A8, "blob content-address mismatch", { project, key: k });
-      return jsonError(HTTP.MISCONFIGURED, "BLOB_HASH_MISMATCH", "blob bytes do not match address", { key: k });
-    }
-    let dek: Uint8Array;
-    try {
-      dek = unwrapDEK(masters, project, k, entry.keyVersion, entry.wrap);
-    } catch (e) {
-      if (e instanceof WrapError) {
-        fireAlert(ctx, env, ALERT.A8, "DEK unwrap failed (tamper or key mismatch)", { project, key: k });
-        return jsonError(HTTP.MISCONFIGURED, e.code === "ALG_UNSUPPORTED" ? "ALG_UNSUPPORTED" : "WRAP_INVALID", "wrap open failed", { key: k });
+  let totalBytes = 0;
+  for (let start = 0; start < keys.length; start += BLOB_POOL) {
+    const chunk = keys.slice(start, start + BLOB_POOL);
+    const blobs = await mapPool(chunk, BLOB_POOL, (k) => getObject(env.SECRETS_BUCKET, keyBlob(project, byName.get(k)!.blobHash)));
+    for (let j = 0; j < chunk.length; j++) {
+      const k = chunk[j];
+      const entry = byName.get(k)!;
+      const blob = blobs[j];
+      if (!blob) {
+        fireAlert(ctx, env, ALERT.A8, "referenced blob missing", { project, key: k });
+        return jsonError(HTTP.MISCONFIGURED, "BLOB_MISSING", "referenced blob missing", { key: k });
       }
-      throw e;
-    }
-    try {
-      values[k] = new TextDecoder().decode(openValue(dek, project, k, entry.keyVersion, blob.bytes));
-    } catch (e) {
-      if (e instanceof BlobError) {
-        fireAlert(ctx, env, ALERT.A8, "blob open failed (tamper)", { project, key: k });
-        return jsonError(HTTP.MISCONFIGURED, e.code, "blob open failed", { key: k });
+      if (sha256Hex(blob.bytes) !== entry.blobHash) {
+        fireAlert(ctx, env, ALERT.A8, "blob content-address mismatch", { project, key: k });
+        return jsonError(HTTP.MISCONFIGURED, "BLOB_HASH_MISMATCH", "blob bytes do not match address", { key: k });
       }
-      throw e;
-    } finally {
-      dek.fill(0);
+      let dek: Uint8Array;
+      try {
+        dek = unwrapDEK(masters, project, k, entry.keyVersion, entry.wrap);
+      } catch (e) {
+        if (e instanceof WrapError) {
+          fireAlert(ctx, env, ALERT.A8, "DEK unwrap failed (tamper or key mismatch)", { project, key: k });
+          return jsonError(HTTP.MISCONFIGURED, e.code === "ALG_UNSUPPORTED" ? "ALG_UNSUPPORTED" : "WRAP_INVALID", "wrap open failed", { key: k });
+        }
+        throw e;
+      }
+      try {
+        const plain = openValue(dek, project, k, entry.keyVersion, blob.bytes);
+        totalBytes += plain.length;
+        if (totalBytes > RESPONSE_MAX) return jsonError(HTTP.PAYLOAD_TOO_LARGE, "RESPONSE_TOO_LARGE", "read response exceeds the size cap; request fewer keys");
+        values[k] = new TextDecoder().decode(plain);
+      } catch (e) {
+        if (e instanceof BlobError) {
+          fireAlert(ctx, env, ALERT.A8, "blob open failed (tamper)", { project, key: k });
+          return jsonError(HTTP.MISCONFIGURED, e.code, "blob open failed", { key: k });
+        }
+        throw e;
+      } finally {
+        dek.fill(0);
+      }
     }
   }
 
@@ -646,7 +651,8 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
   const values = body.values as Record<string, unknown>;
   const names = Object.keys(values);
   if (names.length === 0) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "values empty");
-  if (names.length > MAX_BULK_KEYS) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `too many keys in one import (max ${MAX_BULK_KEYS})`);
+  // Anahtar-SAYISI cap'i yok: import boyutu manifest 1 MB cap'iyle (MANIFEST_TOO_LARGE,
+  // writer-DO) doğal olarak sınırlı → geçerli bir proje her zaman import edilebilir.
   for (const k of names) {
     if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
     if (typeof values[k] !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `value for ${k} must be a string`);
