@@ -27,7 +27,12 @@ export function keyPolicyVersion(n: number): string {
 // --- Proje / anahtar-adı doğrulama -------------------------------------------
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const KEYNAME_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
+// POSIX ortam-değişkeni adı: ilk karakter harf/altçizgi, sonrası alfanümerik/altçizgi
+// (karışık harf). Yalnız-BÜYÜK değil — gerçek infra sırları karışık harf kullanır
+// (tofu `TF_VAR_<lower>` sözleşmesi, `vaulter_pg_<role>_password` çıktıları). Anahtar
+// adı R2 path'ine GİRMEZ (blob'lar sha256 content-addressed; manifest adı DATA tutar),
+// dolayısıyla karışık harf path-güvenliğini bozmaz.
+const KEYNAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
 export function validProject(p: string): boolean {
