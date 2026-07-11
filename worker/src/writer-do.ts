@@ -320,16 +320,15 @@ export class ProjectWriterDO {
       throw new CommitError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", { reason: "audit DO unavailable at attempt" });
     }
 
-    // 6. Yeni blob'ları yaz (içerik-adresli, immutable, onlyIf-absent). PARALEL:
-    //    bulk import'ta (ör. migration 156 key) sıralı HEAD+PUT wall-time'ı aşıyordu
-    //    (exceededWallTime, error 1101) — her blob bağımsız + idempotent olduğundan
-    //    Promise.all güvenli; atomiklik korunur (tümü manifest/pointer'dan ÖNCE yazılır,
-    //    başarısızlıkta manifest yazılmaz → yazılmış blob'lar referanssız = GC-safe).
+    // 6. Yeni blob'ları yaz (içerik-adresli, immutable). PARALEL + HEAD'siz: bulk
+    //    import'ta (ör. migration 156 key) sıralı HEAD+PUT wall-time'ı aşıyordu
+    //    (exceededWallTime, error 1101). `onlyIf: etagDoesNotMatch "*"` = yalnızca
+    //    yokken yaz → ayrı bir HEAD gereksiz (varsa put no-op/null döner), böylece R2
+    //    op'ları yarıya iner. Her blob bağımsız+idempotent → Promise.all güvenli;
+    //    atomiklik korunur (tümü manifest/pointer'dan ÖNCE; başarısızlıkta manifest
+    //    yazılmaz → yazılmış blob'lar referanssız = GC-safe).
     await Promise.all(
-      newBlobs.map(async (b) => {
-        const existing = await this.bucket.head(keyBlob(project, b.hash));
-        if (!existing) await this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } });
-      }),
+      newBlobs.map((b) => this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } })),
     );
 
     // 7. Manifest yaz: onlyIf-absent (epoch slot'unu ilk yazan kazanır).
