@@ -63,7 +63,9 @@ var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
 	defer cancel()
 
 	// 1) Interaktif SSO: tarayıcı + (çerez-tabanlı) org-session reuse.
-	login := exec.CommandContext(ctx, cfPath, "access", "login", gate)
+	//    --quiet: cloudflared JWT'yi terminale BASMASIN (§7.2 token-never-printed);
+	//    yalnızca SSO URL'i gibi sır-olmayan interaktif metin kullanıcıya gider.
+	login := exec.CommandContext(ctx, cfPath, "access", "login", "--quiet", gate)
 	login.Env = isolated
 	login.Stdout, login.Stderr, login.Stdin = cmd.OutOrStdout(), cmd.ErrOrStderr(), os.Stdin
 	if rerr := login.Run(); rerr != nil {

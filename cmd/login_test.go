@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +90,49 @@ func TestRunLogin_RejectsNonJWT(t *testing.T) {
 	}
 	if _, ok := session.Load("gate.test.example"); ok {
 		t.Error("no session must be cached when the token is unusable")
+	}
+}
+
+// TestCloudflaredLogin_QuietNoLeak, GERÇEK cloudflaredLogin'i sahte bir cloudflared
+// ile sürer. Sahte binary, `access login` --quiet YOKSA JWT basar (gerçek cloudflared
+// davranışı). Kod --quiet geçtiği için kullanıcıya YÖNLENDİRİLEN çıktı token İÇERMEMELİ;
+// dönen token yine de JWT olmalı (regresyon kilidi — codex P1 token-leak).
+func TestCloudflaredLogin_QuietNoLeak(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake cloudflared is a POSIX shell script")
+	}
+	exp := time.Now().Add(30 * time.Minute).Unix()
+	tok := fakeJWT("a@wapps.co", exp)
+
+	dir := t.TempDir()
+	script := "#!/bin/sh\nJWT='" + tok + "'\n" + `if [ "$1" = access ] && [ "$2" = login ]; then
+  echo 'A browser window should have opened at the following URL:'
+  echo 'https://gate.test/cdn-cgi/access/cli?redirect_url=...'
+  case " $* " in *' --quiet '*|*' -q '*) : ;; *) echo 'Successfully fetched your token:'; echo "$JWT" ;; esac
+  exit 0
+fi
+if [ "$1" = access ] && [ "$2" = token ]; then printf '%s' "$JWT"; exit 0; fi
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(dir, "cloudflared"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cmd := &cobra.Command{}
+	var out, errb bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errb)
+
+	got, err := cloudflaredLogin(cmd, "https://gate.test")
+	if err != nil {
+		t.Fatalf("cloudflaredLogin: %v", err)
+	}
+	if got != tok {
+		t.Fatalf("returned token mismatch")
+	}
+	if strings.Contains(out.String(), tok) || strings.Contains(errb.String(), tok) {
+		t.Error("login must pass --quiet so cloudflared never prints the JWT to the user's terminal")
 	}
 }
 
