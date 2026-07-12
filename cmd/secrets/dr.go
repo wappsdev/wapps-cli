@@ -314,6 +314,34 @@ func short(s string) string {
 	return s[:16] + "…"
 }
 
+// writeSecretFile0600, gizli baytları YENİ bir 0600 dosyaya yazar; dosya VARSA hata
+// verir (O_EXCL). Bu, önceden-var-olan gevşek-izinli bir dosyayı clobber etmeyi VE
+// os.WriteFile'ın "var olan dosyanın modunu değiştirmeme" tuzağını (0600 sözleşmesi
+// sessizce bozulur) önler. MASTER_KEK/Shamir payı gibi kron-mücevher baytları için.
+func writeSecretFile0600(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return clierr.Newf(clierr.Internal, "refusing to overwrite existing %s (remove it or pick a fresh path)", path)
+		}
+		return clierr.Wrapf(clierr.Internal, err, "create %s", path)
+	}
+	if _, werr := f.Write(b); werr != nil {
+		_ = f.Close()
+		return clierr.Wrapf(clierr.Internal, werr, "write %s", path)
+	}
+	return f.Close()
+}
+
+// wipeBytes, verilen dilim(ler)i sıfırlar (best-effort bellek temizliği).
+func wipeBytes(bufs ...[]byte) {
+	for _, b := range bufs {
+		for i := range b {
+			b[i] = 0
+		}
+	}
+}
+
 // --- dr split / combine: MASTER_KEK Shamir offline custody (server-decrypt DR) ---
 //
 // Server-decrypt store'un TEK kök sırrı MASTER_KEK'tir (canlı wrangler Worker secret'ı).
@@ -387,14 +415,13 @@ Refused in agent mode — the MASTER_KEK must never reach an AI transcript.`,
 		fmt.Fprintf(w, "MASTER_KEK kid: %s  (this is the key these shares reconstruct — verify against the live Worker)\n", kid)
 		for i, s := range shares {
 			p := filepath.Join(drSplitOutDir, fmt.Sprintf("wapps-master-share-%d-of-%d.hex", i+1, drSplitParts))
-			if werr := os.WriteFile(p, []byte(hex.EncodeToString(s)+"\n"), 0o600); werr != nil {
-				return clierr.Wrapf(clierr.Internal, werr, "write share %d", i+1)
+			if werr := writeSecretFile0600(p, []byte(hex.EncodeToString(s)+"\n")); werr != nil {
+				return werr
 			}
 			fmt.Fprintf(w, "  wrote %s\n", p)
 		}
-		for i := range master {
-			master[i] = 0 // best-effort wipe
-		}
+		wipeBytes(master)      // best-effort bellek temizliği (masterHex string'i wipe edilemez)
+		wipeBytes(shares...)
 		fmt.Fprintf(w, "\n✓ %d shares written (any %d reconstruct). NOW:\n", drSplitParts, drSplitThreshold)
 		fmt.Fprintf(w, "  1) move each file to a SEPARATE offline place (paper safe / YubiKey / trusted person)\n")
 		fmt.Fprintf(w, "  2) delete %s afterwards. NEVER commit shares to git or store them together.\n", drSplitOutDir)
@@ -413,7 +440,7 @@ var drCombineCmd = &cobra.Command{
 	Long: `combine reads >=threshold hex share files and reconstructs the MASTER_KEK (64-hex),
 writing it 0600 to --out (NEVER stdout). Use it to re-provision the store after a loss:
 
-  wapps secrets dr combine --share s1.hex --share s2.hex --out master.hex
+  wapps dr combine --share s1.hex --share s2.hex --out master.hex
   npx wrangler secret put MASTER_KEK < master.hex   # re-set the Worker secret
   rm master.hex
 
@@ -443,11 +470,16 @@ Refused in agent mode.`,
 		if err != nil {
 			return clierr.Wrapf(clierr.Internal, err, "derive kid")
 		}
-		if err := os.WriteFile(drCombineOut, []byte(hex.EncodeToString(master)+"\n"), 0o600); err != nil {
-			return clierr.Wrapf(clierr.Internal, err, "write %s", drCombineOut)
+		if err := writeSecretFile0600(drCombineOut, []byte(hex.EncodeToString(master)+"\n")); err != nil {
+			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ MASTER_KEK reconstructed → %s (0600, kid %s)\n", drCombineOut, kid)
-		fmt.Fprintf(cmd.OutOrStdout(), "  npx wrangler secret put MASTER_KEK < %s   # then: rm %s\n", drCombineOut, drCombineOut)
+		wipeBytes(master)
+		wipeBytes(shares...)
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "✓ MASTER_KEK reconstructed → %s (0600, kid %s)\n", drCombineOut, kid)
+		fmt.Fprintf(w, "  ⚠ VERIFY this kid matches split's / the live Worker's kid BEFORE use — too few or\n")
+		fmt.Fprintf(w, "    mismatched shares yield a silently-WRONG 32-byte key (no error). Then:\n")
+		fmt.Fprintf(w, "  npx wrangler secret put MASTER_KEK < %s   # then: rm %s\n", drCombineOut, drCombineOut)
 		return nil
 	},
 }
@@ -463,7 +495,7 @@ func init() {
 	drSplitCmd.Flags().IntVar(&drSplitParts, "parts", 3, "total Shamir shares to create")
 	drSplitCmd.Flags().IntVar(&drSplitThreshold, "threshold", 2, "shares required to reconstruct")
 	drSplitCmd.Flags().StringVar(&drSplitOutDir, "out-dir", "", "directory for the 0600 hex share files")
-	drSplitCmd.Flags().StringVar(&drSplitMasterHex, "master-hex", "", "supply the MASTER_KEK (64-hex) explicitly instead of reading the archive")
+	drSplitCmd.Flags().StringVar(&drSplitMasterHex, "master-hex", "", "supply the MASTER_KEK (64-hex) explicitly; NOTE: argv is visible via `ps`/shell history — prefer the archive default")
 	drSplitCmd.Flags().StringVar(&drSplitKey, "key", "SECRETSGATE_MASTER_KEK_PROD", "archive key holding the MASTER_KEK (unless --master-hex)")
 	drCombineCmd.Flags().StringArrayVar(&drCombineShares, "share", nil, "hex Shamir share file (repeat ≥ threshold)")
 	drCombineCmd.Flags().StringVar(&drCombineOut, "out", "", "0600 file to write the reconstructed MASTER_KEK hex into")
