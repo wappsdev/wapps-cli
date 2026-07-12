@@ -173,3 +173,42 @@ func TestDrRestore_SharesToEnvFile(t *testing.T) {
 		t.Errorf("restored env content: %q", got)
 	}
 }
+
+// TestDrSplitCombineRoundTrip, `dr split` → `dr combine` çekirdeğini doğrular:
+// ShamirSplit(32B,3,2) → hex pay dosyaları → readShareFiles → ShamirCombine → geri.
+// HERHANGİ 2 pay MASTER_KEK'i kurar; kid türetilir (split'in bastığı doğrulama).
+func TestDrSplitCombineRoundTrip(t *testing.T) {
+	master := make([]byte, 32)
+	if _, err := rand.Read(master); err != nil {
+		t.Fatal(err)
+	}
+	shares, err := cryptoid.ShamirSplit(master, 3, 2, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	paths := make([]string, len(shares))
+	for i, s := range shares {
+		p := filepath.Join(dir, fmt.Sprintf("wapps-master-share-%d-of-3.hex", i+1))
+		if werr := os.WriteFile(p, []byte(hex.EncodeToString(s)+"\n"), 0o600); werr != nil {
+			t.Fatal(werr)
+		}
+		paths[i] = p
+	}
+	for _, pair := range [][2]int{{0, 1}, {0, 2}, {1, 2}} {
+		got, rerr := readShareFiles([]string{paths[pair[0]], paths[pair[1]]})
+		if rerr != nil {
+			t.Fatalf("readShareFiles %v: %v", pair, rerr)
+		}
+		rec, cerr := cryptoid.ShamirCombine(got)
+		if cerr != nil {
+			t.Fatalf("combine %v: %v", pair, cerr)
+		}
+		if !bytes.Equal(rec, master) {
+			t.Fatalf("shares %v did not reconstruct MASTER_KEK", pair)
+		}
+	}
+	if _, kerr := cryptoid.KekKid(master); kerr != nil {
+		t.Fatalf("KekKid: %v", kerr)
+	}
+}
