@@ -174,6 +174,110 @@ func TestDrRestore_SharesToEnvFile(t *testing.T) {
 	}
 }
 
+// --- dr split MASTER_KEK kaynak testleri (P1.7: prompt-default) ---------------
+
+// setupDrSplitFlags, split paket-var bayraklarını kurar + temizlikte varsayılana döndürür.
+func setupDrSplitFlags(t *testing.T, masterHexFlag string) (outDir string) {
+	t.Helper()
+	outDir = t.TempDir()
+	drSplitParts, drSplitThreshold, drSplitOutDir, drSplitMasterHex = 3, 2, outDir, masterHexFlag
+	t.Cleanup(func() {
+		drSplitParts, drSplitThreshold, drSplitOutDir, drSplitMasterHex = 3, 2, "", ""
+	})
+	return outDir
+}
+
+// installFakeSplitPrompt, drSplitPromptMaster seam'ini sahte prompt ile değiştirir;
+// çağrı sayacını döner + temizlikte geri alır.
+func installFakeSplitPrompt(t *testing.T, value string, err error) *int {
+	t.Helper()
+	calls := new(int)
+	prev := drSplitPromptMaster
+	drSplitPromptMaster = func(_ string) (string, bool, error) {
+		*calls++
+		return value, true, err
+	}
+	t.Cleanup(func() { drSplitPromptMaster = prev })
+	return calls
+}
+
+// TestDrSplit_PromptDefaultSource, P1.7'yi kanıtlar: --master-hex verilmediğinde
+// MASTER_KEK varsayılan olarak no-echo TTY prompt'undan okunur (age-arşiv yolu
+// KALDIRILDI). Değer hiçbir çıktıya echo edilmez; yazılan paylar prompt'lanan
+// anahtarı yeniden kurar.
+func TestDrSplit_PromptDefaultSource(t *testing.T) {
+	master := make([]byte, 32)
+	if _, err := rand.Read(master); err != nil {
+		t.Fatal(err)
+	}
+	masterHex := hex.EncodeToString(master)
+
+	// Prompt, çevresinde boşluk/yenisatır ile döner — TrimSpace tolere edilmeli.
+	calls := installFakeSplitPrompt(t, "  "+masterHex+"\n", nil)
+	outDir := setupDrSplitFlags(t, "")
+
+	out := new(bytes.Buffer)
+	if err := runDrSplitCore(out); err != nil {
+		t.Fatalf("dr split core (prompt source): %v", err)
+	}
+	if *calls != 1 {
+		t.Fatalf("prompt must be the default MASTER_KEK source, called %d times", *calls)
+	}
+	// NO-ECHO sözleşmesi: MASTER_KEK hex'i hiçbir çıktı satırında görünmez.
+	if strings.Contains(out.String(), masterHex) {
+		t.Error("MASTER_KEK must NEVER be echoed to output")
+	}
+	// Yazılan HERHANGİ 2 pay, prompt'lanan MASTER_KEK'i yeniden kurmalı.
+	shares, err := readShareFiles([]string{
+		filepath.Join(outDir, "wapps-master-share-1-of-3.hex"),
+		filepath.Join(outDir, "wapps-master-share-3-of-3.hex"),
+	})
+	if err != nil {
+		t.Fatalf("readShareFiles: %v", err)
+	}
+	rec, err := cryptoid.ShamirCombine(shares)
+	if err != nil {
+		t.Fatalf("combine: %v", err)
+	}
+	if !bytes.Equal(rec, master) {
+		t.Fatal("shares from the prompted MASTER_KEK did not reconstruct it")
+	}
+}
+
+// TestDrSplit_MasterHexSkipsPrompt: --master-hex hâlâ çalışır ve prompt'u atlar.
+func TestDrSplit_MasterHexSkipsPrompt(t *testing.T) {
+	master := make([]byte, 32)
+	if _, err := rand.Read(master); err != nil {
+		t.Fatal(err)
+	}
+	calls := installFakeSplitPrompt(t, "MUST-NOT-BE-USED", nil)
+	setupDrSplitFlags(t, hex.EncodeToString(master))
+
+	if err := runDrSplitCore(new(bytes.Buffer)); err != nil {
+		t.Fatalf("dr split core (--master-hex): %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("--master-hex must skip the prompt, called %d times", *calls)
+	}
+}
+
+// TestDrSplit_EmptyPromptRejected: prompt'tan boş değer → net hata, hiçbir pay yazılmaz.
+func TestDrSplit_EmptyPromptRejected(t *testing.T) {
+	installFakeSplitPrompt(t, "\n", nil)
+	outDir := setupDrSplitFlags(t, "")
+
+	if err := runDrSplitCore(new(bytes.Buffer)); err == nil {
+		t.Fatal("empty prompted MASTER_KEK must be rejected")
+	}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("no share files must be written on rejection, found %d", len(entries))
+	}
+}
+
 // TestDrSplitCombineRoundTrip, `dr split` → `dr combine` çekirdeğini doğrular:
 // ShamirSplit(32B,3,2) → hex pay dosyaları → readShareFiles → ShamirCombine → geri.
 // HERHANGİ 2 pay MASTER_KEK'i kurar; kid türetilir (split'in bastığı doğrulama).

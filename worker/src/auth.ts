@@ -18,6 +18,8 @@ export interface Env {
   SECRETS_BUCKET: R2Bucket;
   PROJECT_WRITER: DurableObjectNamespace;
   AUDIT_LOG: DurableObjectNamespace;
+  // P2.4: tek-instance SchedulerDO (§8.3 zamanlama — cron yerine DO alarm).
+  SCHEDULER: DurableObjectNamespace;
   AUDIT_DB: D1Database;
   JTI_DENYLIST: KVNamespace;
   RATE: KVNamespace;
@@ -43,6 +45,15 @@ export interface Env {
   B2_KEY_ID?: string;
   B2_APP_KEY?: string;
   GC_ENABLED_AT?: string; // ISO; ilk 30 gün DRY-RUN (GC cron)
+  // Arch §5.2 tofu state → B2 replikasyonu: wapps-tofu-state bucket binding'i
+  // (YALNIZCA prod wrangler.jsonc — staging'e asla verilmez; yoksa cron no-op).
+  STATE_BUCKET?: R2Bucket;
+  // Alert-on-read sentinel listesi (arch §2.3 Token A invariant'ı): virgülle
+  // ayrılmış anahtar-adı glob'ları (ör. "TF_VAR_worker_admin_token,CF_TOKEN_A*").
+  // Eşleşen anahtarın HER başarılı plaintext okuması A11 alert'i üretir.
+  ALERT_ON_READ_KEYS?: string;
+  // P2.4 prod-only gate: "1" değilse SchedulerDO tamamen dormant (staging no-op).
+  SCHEDULER_ENABLED?: string;
 }
 
 export interface AccessConfig {

@@ -13,6 +13,7 @@ package session
 //  3. hiçbiri yoksa/oturum dolmuşsa SESSION_EXPIRED — istek ağ'a HİÇ çıkmaz.
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,6 +45,48 @@ func GateHost() string {
 
 // HeaderAccessToken, CF Access app-token header adıdır (cloudflared paritesi).
 const HeaderAccessToken = "cf-access-token"
+
+// envMTLSCert / envMTLSKey, CI mTLS client-cert PEM dosya yollarıdır (P1.9 —
+// CF Access service token + mTLS estate, §5/P3.5). İkisi birlikte set edilir.
+const (
+	envMTLSCert = "WAPPS_MTLS_CERT"
+	envMTLSKey  = "WAPPS_MTLS_KEY"
+)
+
+// HTTPClient, store taşıması için üretim *http.Client'ını döner (P1.9).
+// WAPPS_MTLS_CERT + WAPPS_MTLS_KEY doluysa tls.LoadX509KeyPair ile client-cert
+// yüklenir ve http.Transport.TLSClientConfig.Certificates'a konur; ikisi de
+// boşsa http.DefaultClient. Yalnızca biri doluysa veya dosyalar yüklenemezse
+// fail-closed SERVICE_MISCONFIGURED döner — cert'siz devam edip kenardan opak
+// bir 403 almak yerine yanlış-konfig ANINDA yüzeye çıkar.
+func HTTPClient() (*http.Client, error) {
+	certPath := strings.TrimSpace(os.Getenv(envMTLSCert))
+	keyPath := strings.TrimSpace(os.Getenv(envMTLSKey))
+	if certPath == "" && keyPath == "" {
+		return http.DefaultClient, nil
+	}
+	if certPath == "" || keyPath == "" {
+		return nil, clierr.Newf(clierr.ServiceMisconfig,
+			"mTLS misconfigured: %s and %s must be set together", envMTLSCert, envMTLSKey)
+	}
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, clierr.Wrapf(clierr.ServiceMisconfig, err, "load mTLS client certificate")
+	}
+	// DefaultTransport klonu: proxy/timeout/http2 varsayılanları korunur;
+	// yalnızca client-cert eklenir.
+	var transport *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = dt.Clone()
+	} else {
+		transport = &http.Transport{}
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
+	return &http.Client{Transport: transport}, nil
+}
 
 // Auth, store.Config.Auth için üretim enjektörünü döner.
 func Auth() func(*http.Request) error {

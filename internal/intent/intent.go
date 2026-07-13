@@ -31,6 +31,11 @@ const (
 	HeaderIntent = "X-Wapps-Intent"
 	// IntentSync, HeaderIntent'in sync değeri.
 	IntentSync = "sync"
+	// IntentEpochReset, HeaderIntent'in epoch-reset değeri (plan P1.5): yalnızca
+	// `wapps dr accept-epoch-reset` seremonisinin pin-indiren Keys okuması taşır —
+	// audit'te seremoni okuması sıradan bir listelemeden ayrışır (§6.4,
+	// bilgilendirici etiket; ASLA bir yetkilendirme girdisi değildir).
+	IntentEpochReset = "epoch-reset"
 )
 
 // Parse, bir --intent bayrağını çözer; boş → Dev (default). Bilinmeyen değer hata.

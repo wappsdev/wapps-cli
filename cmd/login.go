@@ -248,7 +248,12 @@ var whoamiCmd = &cobra.Command{
 	Short: "Show the gate's view of this principal: groups + effective grants (§7.1)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		w := cmd.OutOrStdout()
-		st := store.New(store.Config{BaseURL: session.GateURL(), Auth: session.Auth()})
+		// Taşıma: WAPPS_MTLS_CERT/KEY doluysa client-cert'li (P1.9).
+		doer, err := session.HTTPClient()
+		if err != nil {
+			return err
+		}
+		st := store.New(store.Config{BaseURL: session.GateURL(), Doer: doer, Auth: session.Auth()})
 		ctx, cancel := context.WithTimeout(cmdContext(cmd), 15*time.Second)
 		defer cancel()
 		res, err := st.Whoami(ctx)
@@ -322,7 +327,12 @@ service tokens may also use the data plane directly.`,
 		if tokenProject == "" || len(tokenKeys) == 0 {
 			return clierr.New(clierr.TokenExchangeFailed, "token exchange needs --project and at least one --key")
 		}
-		st := store.New(store.Config{BaseURL: session.GateURL(), Auth: session.Auth()})
+		// Taşıma: WAPPS_MTLS_CERT/KEY doluysa client-cert'li (P1.9 — CI yolu).
+		doer, err := session.HTTPClient()
+		if err != nil {
+			return err
+		}
+		st := store.New(store.Config{BaseURL: session.GateURL(), Doer: doer, Auth: session.Auth()})
 		ctx, cancel := context.WithTimeout(cmdContext(cmd), 15*time.Second)
 		defer cancel()
 		tok, exp, err := st.TokenMint(ctx, tokenProject, tokenKeys, tokenVerbs, tokenTTL)

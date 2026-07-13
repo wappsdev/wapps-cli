@@ -25,12 +25,12 @@ func installFakeGate(t *testing.T, handler http.Handler) *httptest.Server {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	prev := openAdminStore
-	openAdminStore = func() *store.WorkerStore {
+	openAdminStore = func() (*store.WorkerStore, error) {
 		return store.New(store.Config{
 			BaseURL:      srv.URL,
 			EpochPinPath: filepath.Join(t.TempDir(), "epochs.json"),
 			Auth:         func(*http.Request) error { return nil },
-		})
+		}), nil
 	}
 	t.Cleanup(func() { openAdminStore = prev })
 	return srv
@@ -92,7 +92,7 @@ func TestPolicySet_CASVersionAndConfirm(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "policy.json")
 	doc := `{"schema":"wapps-secrets/policy/v1","version":1,"rules":[
 		{"group":"developers@wapps.co","projects":["*"],"keys":["*","!*_PROD_*"],"verbs":["read","write"]}]}`
-	if err := os.WriteFile(file, []byte(doc), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,7 +128,7 @@ func TestPolicySet_CASVersionAndConfirm(t *testing.T) {
 func TestPolicyLint_FileValidation(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "bad.json")
-	_ = os.WriteFile(bad, []byte(`{"schema":"nope","version":1,"rules":[]}`), 0600)
+	_ = os.WriteFile(bad, []byte(`{"schema":"nope","version":1,"rules":[]}`), 0o600)
 	if err := policyLintCmd.RunE(policyLintCmd, []string{bad}); !clierr.Is(err, clierr.PolicyInvalid) {
 		t.Fatalf("bad schema must fail lint with POLICY_INVALID, got %v", err)
 	}
@@ -136,7 +136,7 @@ func TestPolicyLint_FileValidation(t *testing.T) {
 	warny := filepath.Join(dir, "warny.json")
 	doc := `{"schema":"wapps-secrets/policy/v1","version":1,"rules":[
 		{"service":"svc-x","projects":["*"],"keys":["*"],"verbs":["*"]}]}`
-	_ = os.WriteFile(warny, []byte(doc), 0600)
+	_ = os.WriteFile(warny, []byte(doc), 0o600)
 	out := new(bytes.Buffer)
 	policyLintCmd.SetOut(out)
 	if err := policyLintCmd.RunE(policyLintCmd, []string{warny}); err != nil {
@@ -214,7 +214,10 @@ func TestLoginSessionFeedsAdminStore(t *testing.T) {
 	t.Setenv("WAPPS_SECRETS_GATE", "http://127.0.0.1:1")
 	_ = session.GateHost() // env okunuyor
 
-	st := openAdminStore()
+	st, serr := openAdminStore()
+	if serr != nil {
+		t.Fatalf("openAdminStore: %v", serr)
+	}
 	_, err := st.PolicyGet(t.Context())
 	if !clierr.Is(err, clierr.SessionExpired) {
 		t.Fatalf("no session: want SESSION_EXPIRED before any dial, got %v", err)

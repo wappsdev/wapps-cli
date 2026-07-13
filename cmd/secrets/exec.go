@@ -106,20 +106,29 @@ func runExec(args []string, prefix, intent string, breakGlass, isAgent bool, out
 		return fmt.Errorf("exec: %w", err)
 	}
 
-	// Merge with inherited env; injected entries last so they win on collision.
+	return runWithInjectedEnv(args, injected, values, out, errW, runner)
+}
+
+// runWithInjectedEnv, exec-ailesi verb'lerin ORTAK inject→scrub→run→flush→exit
+// bloğudur (P1.1 dedup — legacy runExec, store runExecStore ve ileride
+// runDrBootstrap aynı sözleşmeyi paylaşır):
+//   - injected ("KEY=VALUE" girdileri) kalıtılan env'in SONUNA eklenir → çakışmada
+//     enjekte edilen kazanır (last-wins);
+//   - scrubValues, agentmode.FilterScrubbable'dan geçirilir (P3-b: floor-altı
+//     atlanan değer için errW'ye TEK, değersiz uyarı — child spawn'dan ÖNCE);
+//   - child stdout/stderr agentmode.NewScrubber ile sarılır (§7.4.3: enjekte
+//     edilen her süzülmüş değer *** olur) ve HER durumda flush edilir (hata olsa
+//     bile kısmi çıktı redakte edilmiş kalır);
+//   - runner hatası "exec:" ile sarılıp döner; sıfır-dışı exit kodu os.Exit ile
+//     AYNEN alt-sürecinkine yansıtılır.
+func runWithInjectedEnv(args, injected, scrubValues []string, out, errW io.Writer, runner execRunner) error {
 	mergedEnv := append(os.Environ(), injected...)
 
-	// Scrubber'a verilecek değerleri süz (P3-b): floor-altı gerçek-görünümlü bir
-	// değer ATLANIRSA operatöre TEK bir uyarı (errW'ye, değersiz) yazılır — child
-	// spawn'dan ÖNCE, scrubber sarımından bağımsız.
-	scrubVals := agentmode.FilterScrubbable(values, errW)
-
-	// Child çıktısını scrubber'dan geçir: enjekte edilen HER (süzülmüş) değer *** olur.
+	scrubVals := agentmode.FilterScrubbable(scrubValues, errW)
 	so := agentmode.NewScrubber(out, scrubVals)
 	se := agentmode.NewScrubber(errW, scrubVals)
 
 	exitCode, runErr := runner(args[0], args[1:], mergedEnv, so, se)
-	// Flush her durumda (hata olsa bile kısmi çıktı redakte edilmiş kalsın).
 	_ = so.Flush()
 	_ = se.Flush()
 	if runErr != nil {

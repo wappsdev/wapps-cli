@@ -28,8 +28,14 @@ import (
 const policyTopology = "primary"
 
 // openAdminStore, kontrol-düzlemi çağrıları için WorkerStore kurar (test seam'i).
-var openAdminStore = func() *store.WorkerStore {
-	return store.New(store.Config{BaseURL: session.GateURL(), Auth: session.Auth()})
+// Taşıma session.HTTPClient()'tan gelir: WAPPS_MTLS_CERT/KEY doluysa client-cert'li
+// (P1.9); yanlış-konfig SERVICE_MISCONFIGURED ile istek ağ'a çıkmadan yüzeye çıkar.
+var openAdminStore = func() (*store.WorkerStore, error) {
+	doer, err := session.HTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	return store.New(store.Config{BaseURL: session.GateURL(), Doer: doer, Auth: session.Auth()}), nil
 }
 
 var policyCmd = &cobra.Command{
@@ -45,7 +51,11 @@ var policyShowCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(cmdContext(cmd), 15*time.Second)
 		defer cancel()
-		res, err := openAdminStore().PolicyGet(ctx)
+		st, err := openAdminStore()
+		if err != nil {
+			return err
+		}
+		res, err := st.PolicyGet(ctx)
 		if err != nil {
 			return err
 		}
@@ -92,7 +102,10 @@ func runPolicySet(cmd *cobra.Command, path string) error {
 
 	ctx, cancel := context.WithTimeout(cmdContext(cmd), 30*time.Second)
 	defer cancel()
-	st := openAdminStore()
+	st, err := openAdminStore()
+	if err != nil {
+		return err
+	}
 	cur, err := st.PolicyGet(ctx)
 	if err != nil {
 		return err

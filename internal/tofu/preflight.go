@@ -25,6 +25,53 @@ var RequiredEnvVars = []RequiredEnvVar{
 	{Name: "TF_VAR_state_passphrase", Hint: "Tofu encryption block (map from WAPPS_TOFU_STATE_PASSPHRASE)"},
 }
 
+// BootstrapEnvVar, `wapps dr bootstrap` akışının child process env'ine
+// enjekte ettiği TEK bir değişkeni tanımlar (mimari §3.3). İki sınıf var:
+//
+//   - Promptable: değer operatörden no-echo TTY prompt'u ile alınır
+//     (dashboard-mint token'lar, paper `state_passphrase` vb.).
+//   - Constant: değer sabittir ve ASLA promptlanmaz — Constant alanı
+//     boş değilse verb bu değeri aynen enjekte eder (örn. AWS_REGION,
+//     Cloudflare R2 sözleşmesi gereği her zaman "auto").
+type BootstrapEnvVar struct {
+	Name string
+	Hint string
+	// Constant boş değilse bu değişken promptlanmaz; sabit değer
+	// olduğu gibi enjekte edilir.
+	Constant string
+}
+
+// Promptable, değişkenin operatörden interaktif olarak istenip
+// istenmeyeceğini söyler. Sabit değerli girdiler (AWS_REGION=auto)
+// hiçbir koşulda prompt'a düşmez.
+func (b BootstrapEnvVar) Promptable() bool {
+	return b.Constant == ""
+}
+
+// BootstrapEnvVars, `wapps dr bootstrap` verb'ünün env kataloğudur:
+// backend env kontratının (RequiredEnvVars) TAMAMI + dashboard-mint
+// provisioning input'ları. Süperset değişmezi (BootstrapEnvVars ⊇
+// RequiredEnvVars) preflight_test.go'da korunur — kontrata eklenen her
+// yeni değişken buraya da girmek ZORUNDADIR, yoksa bootstrap'lanan
+// apply preflight'ta düşer.
+//
+// Sıralama önemlidir: önce backend kontratı (RequiredEnvVars ile aynı
+// sırada), sonra provisioning token'ları — prompt akışı bu sırayı izler.
+var BootstrapEnvVars = []BootstrapEnvVar{
+	// Backend env kontratı (RequiredEnvVars aynası).
+	{Name: "AWS_ACCESS_KEY_ID", Hint: "R2 backend credentials (dashboard-mint R2 access key)"},
+	{Name: "AWS_SECRET_ACCESS_KEY", Hint: "R2 backend credentials (dashboard-mint R2 secret key)"},
+	{Name: "AWS_ENDPOINT_URL_S3", Hint: "R2 backend endpoint (https://<account_id>.r2.cloudflarestorage.com)"},
+	{Name: "AWS_REGION", Hint: "R2 backend region (Cloudflare R2 için sabit 'auto' — promptlanmaz)", Constant: "auto"},
+	{Name: "TF_VAR_state_passphrase", Hint: "Tofu state encryption passphrase (paper envelope — kağıt custody)"},
+	// Provisioning input'ları: dashboard/console'da insan tarafından
+	// mint edilir, TTY'den girilir; diske/store'a yazılmaz (§3.3).
+	{Name: "TF_VAR_cloudflare_api_token", Hint: "Cloudflare API token (dashboard-mint; scope-policy dokümanına uygun)"},
+	{Name: "TF_VAR_cloudflare_r2_api_token", Hint: "Cloudflare R2 API token (dashboard-mint)"},
+	{Name: "TF_VAR_hcloud_token", Hint: "Hetzner Cloud API token (console-mint)"},
+	{Name: "TF_VAR_coolify_token", Hint: "Coolify API token (dashboard-mint)"},
+}
+
 // PreflightEnv checks that every RequiredEnvVar is set, returning a
 // human-readable error listing the missing variables AND a recovery
 // snippet the operator can paste into their shell. Returns nil when

@@ -94,8 +94,12 @@ func (w *WorkerStore) pinnedEpoch(project string) (uint64, error) {
 
 // checkAndAdvanceEpochPin, sunulan epoch'un yerel pin'e karşı monotonluğunu
 // zorlar (SPEC §7.3.2 rule 3/4). served < pinned → EPOCH_DOWNGRADE (hard fail).
-// served ≥ pinned → pin ilerletilir ve kaydedilir (forward-only). Bir
-// epoch_reset kaydı bu kuralın TEK istisnasıdır (§9.5) — G8'de kurulmaz.
+// served ≥ pinned → pin ilerletilir ve kaydedilir (forward-only).
+//
+// TEK meşru istisna (§5.5, plan P1.5): Config.AcceptEpochReset true ise pin
+// sunulan (daha düşük) epoch'a İNDİRİLİR ve kaydedilir. Bu bayrağı yalnızca
+// `wapps dr accept-epoch-reset` seremoni verb'ü — kâğıt zarftaki audit-head
+// hash'inin out-of-band doğrulamasından SONRA — kurar (kritik H4).
 func (w *WorkerStore) checkAndAdvanceEpochPin(project string, served uint64) error {
 	path, err := w.epochPinPath()
 	if err != nil {
@@ -107,7 +111,17 @@ func (w *WorkerStore) checkAndAdvanceEpochPin(project string, served uint64) err
 	}
 	pinned := p.Pins[project]
 	if served < pinned {
-		return clierr.Newf(clierr.EpochDowngrade, "served epoch %d < pinned %d for %q", served, pinned, project)
+		if w.cfg.AcceptEpochReset {
+			// Meşru epoch-reset: pin, sunulan epoch'a indirilir (tek
+			// non-monotonic geçiş). Doğrulama sorumluluğu seremoni verb'ünde.
+			p.Pins[project] = served
+			if err := p.save(path); err != nil {
+				return clierr.Wrapf(clierr.Internal, err, "persist epoch pin (reset)")
+			}
+			return nil
+		}
+		return clierr.Newf(clierr.EpochDowngrade, "served epoch %d < pinned %d for %q", served, pinned, project).
+			WithRecovery("possible rollback attack — do NOT force; if the store was LEGITIMATELY rebuilt (F5), a human must run the §5.5 ceremony: wapps dr accept-epoch-reset --project " + project)
 	}
 	if served > pinned {
 		p.Pins[project] = served

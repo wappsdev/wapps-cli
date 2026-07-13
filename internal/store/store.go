@@ -125,6 +125,13 @@ type Config struct {
 	EpochPinPath string
 	// Now, saat (test için). Boşsa time.Now.
 	Now func() time.Time
+	// AcceptEpochReset, epoch pin'inin sunulan (DAHA DÜŞÜK) epoch'a indirilmesine
+	// izin veren TEK meşru koldur (§5.5 seremonisi, plan P1.5, kritik H4).
+	// Default false: served < pinned her zaman EPOCH_DOWNGRADE. YALNIZCA
+	// `wapps dr accept-epoch-reset` seremoni verb'ü — operatörün kâğıt zarftaki
+	// audit-head hash'ini out-of-band doğrulamasından SONRA — true kurar.
+	// exec/apply/get yollarına ASLA threadlenmez.
+	AcceptEpochReset bool
 }
 
 // WorkerStore, Store'u secrets-gate Worker v2 HTTP sözleşmesi üzerinden uygular.
