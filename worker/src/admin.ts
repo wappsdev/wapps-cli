@@ -6,6 +6,7 @@
 //   GET  /v1/admin/rotate-plan      → audit ledger = rotate-set oracle (§6.3)
 //   POST /v1/admin/token/revoke     → minted-token jti revoke (§5.3)
 //   POST /v1/admin/rewrap-kek       → MASTER_KEK rotasyonu re-wrap turu (§2.5)
+//   POST /v1/admin/scheduler/arm    → SchedulerDO one-shot bootstrap (P2.4, §8.3)
 //
 // `admin` verb'i GLOBAL op'ları kapsar (§4.2: policy edit, rotate-plan, token
 // revoke, rewrap-kek) — bu yüzden admin kontrolü selector+verb üzerindendir
@@ -33,6 +34,7 @@ import { auditAppendSync, auditReadAsync, AuditRow, ipOf, rayOf } from "./audit.
 import { revokeJti } from "./token.js";
 import { fireAlert, ALERT } from "./alerts.js";
 import { doStubFetch } from "./do-util.js";
+import { SCHEDULER_DO_NAME } from "./scheduler-do.js";
 
 /** rotate-plan oracle verb kümesi (§6.3) — §6.4 sözlüğünün plaintext-bilen verb'leriyle
  * KİLİTLİ adım: buraya verb eklemeden §6.4'e plaintext-bilen verb eklemek gate 7c ihlalidir. */
@@ -261,6 +263,25 @@ export async function handleAdmin(
       if (res.status !== HTTP.OK) failed++;
     }
     return jsonOK({ projects: results, failed });
+  }
+
+  // POST /v1/admin/scheduler/arm (P2.4): SchedulerDO alarm bootstrap'ı — one-shot,
+  // idempotent (tekrar çağrı alarm'ı aynı hesapla üzerine yazar). Gate kapalıysa
+  // (SCHEDULER_ENABLED != "1", staging) DO armed:false döner — yan etki yok.
+  if (parts[2] === "scheduler" && parts[3] === "arm" && parts.length === 4 && request.method === "POST") {
+    const res = await doStubFetch(() => env.SCHEDULER.get(env.SCHEDULER.idFromName(SCHEDULER_DO_NAME)), "https://scheduler/arm", { method: "POST" });
+    if (!res.ok) return jsonError(HTTP.MISCONFIGURED, "SCHEDULER_UNAVAILABLE", "scheduler DO arm failed");
+    const body = (await res.json()) as { armed: boolean; next_fire?: string; kind?: string; reason?: string };
+    // Control-plane op → SENKRON audit (rotate-plan deseni).
+    try {
+      await auditAppendSync(env.AUDIT_LOG, {
+        ...adminRow(actx.authz.id, principal, "admin.scheduler_arm", request),
+        intent: body.armed ? `armed:${body.kind}@${body.next_fire}` : "disabled",
+      });
+    } catch {
+      return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable");
+    }
+    return jsonOK(body);
   }
 
   return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown admin route");

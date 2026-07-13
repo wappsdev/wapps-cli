@@ -15,6 +15,7 @@ export const ALERT = {
   A8: "A8", // misconfig / audit-down / GC anomalisi (fail-closed yol sinyali)
   A9: "A9", // policy değişimi (§4.1 — her policy PUT)
   A10: "A10", // identity-endpoint şekil kayması (§3.2 adım 2 / §3.4)
+  A11: "A11", // alert-on-read: ALERT_ON_READ_KEYS glob'una uyan sentinel anahtarın TEK okunuşu bile alarm üretir (arch §2.3 Token A invariant'ı)
 } as const;
 export type AlertRule = (typeof ALERT)[keyof typeof ALERT];
 

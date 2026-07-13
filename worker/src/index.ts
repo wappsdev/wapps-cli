@@ -21,7 +21,6 @@ import {
   getObject,
   validProject,
   validKeyName,
-  deriveProjects,
   mapPool,
   BLOB_POOL,
   RESPONSE_MAX,
@@ -35,12 +34,14 @@ import {
   Topology,
   authorize,
   filterReadableKeys,
+  globMatch,
   loadPolicy,
   rulesFor,
 } from "./policy.js";
 import { IdentityError, createGroupResolver } from "./identity.js";
 import { ProjectWriterDO, WriteOp } from "./writer-do.js";
 import { AuditLogDO } from "./audit-do.js";
+import { SchedulerDO } from "./scheduler-do.js";
 import { scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
 import { checkRateLimit } from "./ratelimit.js";
 import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME } from "./audit.js";
@@ -48,10 +49,8 @@ import { handleTokenMint } from "./token.js";
 import { handleAdmin, AdminContext } from "./admin.js";
 import { fireAlert, ALERT } from "./alerts.js";
 import { doStubFetch } from "./do-util.js";
-import { runGC, GCDeps } from "./gc.js";
-import { escrowConfig, headObject, putObject, keyEscrowAuditAnchor } from "./escrow.js";
 
-export { ProjectWriterDO, AuditLogDO };
+export { ProjectWriterDO, AuditLogDO, SchedulerDO };
 
 // Topoloji (§3.2 PRIMARY / §3.3 FALLBACK): day-1 smoke test kararına kadar PRIMARY.
 // FALLBACK seçilirse: burada "fallback" + get-identity'siz bir GroupResolver
@@ -180,6 +179,13 @@ export default {
         return await handleTokenMint(request, env, ctx, principal.commonName, policy);
       }
 
+      // --- GET /v1/audit/head (zincir head'i, §6.5; epoch-reset seremonisinin canlı
+      // referansı — P1.5). read-AUD yeterli: head bir integrity anchor'dır ({seq,hash},
+      // secret içermez; kâğıt zarfa da yazılır). Okumanın kendisi audit'lenir.
+      if (parts[1] === "audit" && parts.length === 3 && parts[2] === "head" && request.method === "GET") {
+        return await handleAuditHead(request, env, ctx, rctx);
+      }
+
       // --- projects/{p}/... --------------------------------------------------------
       if (parts[1] === "projects" && parts.length >= 4) {
         const project = parts[2];
@@ -221,16 +227,10 @@ export default {
     }
   },
 
-  // scheduled — cron yüzeyi (§8.3 pinli küme): haftalık GC + NIGHTLY audit-head
-  // çapası + escrow reconcile. event.cron ile dispatch (DO alarm'ı DEĞİL).
-  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (event.cron === "0 3 * * 0") {
-      ctx.waitUntil(runScheduledGC(env, ctx));
-    }
-    if (event.cron === "0 2 * * *") {
-      ctx.waitUntil(runNightlyAnchor(env, ctx));
-    }
-  },
+  // scheduled() EMEKLİ (P2.4): "triggers.crons" Free-plan reddi nedeniyle
+  // config'te yok → cron handler'ı hiç tetiklenmeyen ölü koddu. §8.3 zamanlama
+  // kümesi (nightly anchor + state replication + haftalık GC) SchedulerDO'ya
+  // (scheduler-do.ts, DO alarm) taşındı; bootstrap = POST /v1/admin/scheduler/arm.
 };
 
 // --- Kimlik / yardımcılar -------------------------------------------------------
@@ -299,6 +299,32 @@ async function countReadBurst(ctx: ExecutionContext, env: Env, principalId: stri
     if (before < 50 && after >= 50) fireAlert(ctx, env, ALERT.A2, `value-read burst by ${principalId}`, { principal: principalId, count: after });
   } catch {
     // best-effort
+  }
+}
+
+/**
+ * alertSentinelReads, A11 (alert-on-read, arch §2.3 Token A invariant'ı):
+ * ALERT_ON_READ_KEYS (virgülle ayrılmış glob listesi) ile eşleşen HER başarılı
+ * plaintext okuması için tekil alert. A2'nin aksine eşik YOK — sentinel anahtarın
+ * TEK okunuşu bile ateşler. Eşleşme lineer-zamanlı globMatch iledir (ReDoS-safe,
+ * §4.2 pinli case-sensitive). Fail-soft: alert = tespit, enforcement değil —
+ * okuma yanıtını asla bloklamaz. Liste/manifest okumaları (yalnızca adlar,
+ * değer yok) alarm ÜRETMEZ; yalnızca value.read / value.read.bulk yolu çağırır.
+ */
+function alertSentinelReads(ctx: ExecutionContext, env: Env, principalId: string, keys: string[]): void {
+  try {
+    const globs = (env.ALERT_ON_READ_KEYS ?? "")
+      .split(",")
+      .map((g) => g.trim())
+      .filter((g) => g !== "");
+    if (globs.length === 0) return;
+    for (const k of keys) {
+      if (globs.some((g) => globMatch(g, k))) {
+        fireAlert(ctx, env, ALERT.A11, `sentinel key read: ${k} by ${principalId}`, { principal: principalId, key: k });
+      }
+    }
+  } catch {
+    // fail-soft: sentinel listesi bozuk olsa bile okuma yolu etkilenmez
   }
 }
 
@@ -453,6 +479,37 @@ async function handleManifestRead(
   return new Response(bodyStr, { status: HTTP.OK, headers: { "content-type": "application/json", ETag: et.etag } });
 }
 
+// --- GET /v1/audit/head — global zincir head'i ({seq, hash}, §6.5) --------------------
+
+/**
+ * handleAuditHead, AuditLogDO'nun internal GET /head'ini proxy'ler. Metadata
+ * okumasıdır (plaintext yok) → audit'i ASYNC (§6.5); dönen head, audit.head
+ * satırının ÖNCESİNİ gösterir — seremonideki kâğıt karşılaştırması için doğru olan bu.
+ */
+async function handleAuditHead(request: Request, env: Env, ctx: ExecutionContext, rctx: RequestCtx): Promise<Response> {
+  let head: { seq: number; hash: string };
+  try {
+    const res = await doStubFetch(() => env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME)), "https://audit/head", { method: "GET" });
+    if (!res.ok) throw new Error(`audit head status ${res.status}`);
+    head = (await res.json()) as { seq: number; hash: string };
+  } catch {
+    // Audit DO erişilemez → fail-closed 503 (head'siz seremoni ilerleyemez) + A8.
+    fireAlert(ctx, env, ALERT.A8, "audit DO unavailable on head read");
+    return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit head unavailable");
+  }
+  auditReadAsync(ctx, env.AUDIT_LOG, {
+    principal: rctx.authz.id,
+    principal_type: ptypeOf(rctx.principal),
+    project: null,
+    key: null,
+    verb: "audit.head",
+    decision: "allow",
+    ip: ipOf(request),
+    cf_ray: rayOf(request),
+  });
+  return jsonOK({ seq: head.seq, hash: head.hash });
+}
+
 // --- POST /v1/projects/{p}/read — PLAINTEXT bulk read (§7.4/§7.6) --------------------
 
 async function handleRead(
@@ -577,6 +634,9 @@ async function handleRead(
     return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable — plaintext refused");
   }
   await countReadBurst(ctx, env, rctx.authz.id, keys.length);
+  // A11 alert-on-read: plaintext GERÇEKTEN döndürülüyor (audit ack'lendi) —
+  // sentinel eşleşmeleri şimdi alarmlanır (anahtar ADI loglanır, değer asla).
+  alertSentinelReads(ctx, env, rctx.authz.id, keys);
 
   return jsonOK({ epoch: loaded.epoch, values });
 }
@@ -689,56 +749,5 @@ async function handleDelete(request: Request, env: Env, ctx: ExecutionContext, p
   return dispatchWrite(request, env, ctx, project, rctx, op, "key.delete");
 }
 
-// --- Cron: GC + nightly audit-head anchor (§8.3) ---------------------------------------
-
-/** runScheduledGC, haftalık GC cron'unu üretim bağımlılıklarıyla sürer. */
-async function runScheduledGC(env: Env, ctx: ExecutionContext): Promise<void> {
-  const projects = await deriveProjects(env.SECRETS_BUCKET);
-  const cfg = escrowConfig(env);
-  const enabledAt = env.GC_ENABLED_AT ? new Date(env.GC_ENABLED_AT) : null;
-
-  const deps: GCDeps = {
-    now: new Date(),
-    enabledAt: enabledAt && !Number.isNaN(enabledAt.getTime()) ? enabledAt : null,
-    // (c) B2 replika teyidi: append-only key OKUYABİLİR (silemez). cfg yoksa
-    // GÜVENLİ TARAF: false (silme yok).
-    escrowHas: async (project, sha) => {
-      if (!cfg) return false;
-      try {
-        return await headObject(cfg, keyBlob(project, sha));
-      } catch {
-        return false; // teyit edilemedi → silme (güvenli)
-      }
-    },
-    auditDelete: async (project, sha) => {
-      const row: AuditRow = { principal: "worker", principal_type: "worker", project, key: null, verb: "gc.delete", decision: "allow", intent: `blob:${sha.slice(0, 12)}` };
-      await doStubFetch(() => env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME)), "https://audit/append-batch", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ rows: [row] }),
-      });
-    },
-    alert: (rule, summary, detail) => fireAlert(ctx, env, rule as typeof ALERT.A8, summary, detail),
-  };
-  await runGC(env.SECRETS_BUCKET, projects, deps);
-}
-
-/**
- * runNightlyAnchor, NIGHTLY cron'u (§8.3): D1 zincir head'ini ({last_seq,
- * last_hash, ts}) append-only B2'ye çapa olarak iter — CF-seviyesi bir ledger
- * yeniden-yazımı çapalara karşı tespit edilebilir. B2 yapılandırılmamışsa no-op.
- */
-async function runNightlyAnchor(env: Env, ctx: ExecutionContext): Promise<void> {
-  const cfg = escrowConfig(env);
-  if (!cfg) return;
-  try {
-    const res = await doStubFetch(() => env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME)), "https://audit/head", { method: "GET" });
-    if (!res.ok) throw new Error(`audit head status ${res.status}`);
-    const head = (await res.json()) as { seq: number; hash: string };
-    const ts = new Date().toISOString();
-    const body = utf8(JSON.stringify({ schema: "wapps.audit-anchor.v1", last_seq: head.seq, last_hash: head.hash, ts }));
-    await putObject(cfg, keyEscrowAuditAnchor(ts.slice(0, 10)), body, "application/json");
-  } catch (e) {
-    fireAlert(ctx, env, ALERT.A4, "nightly audit-head anchor push failed", { error: String(e) });
-  }
-}
+// NOT (P2.4): eski cron runner'ları (runScheduledGC + runNightlyAnchor)
+// scheduler-do.ts'e taşındı — zamanlama artık SchedulerDO alarm'ındadır (§8.3).
