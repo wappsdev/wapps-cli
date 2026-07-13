@@ -36,6 +36,7 @@ without ever printing values to your tool output:
 | `wapps secrets apply` | Writes every `targets:` declared in `.wapps.yaml` (atomic, 0600, idempotent). No values printed. | Repo declares targets — preferred over `env --write`. Used in `predev` scripts. |
 | `wapps secrets env --write <path>` | Writes one env file to disk (0600, atomic). Stdout stays empty. | One-off / ad-hoc path not declared in `targets:`. |
 | `wapps secrets exec -- <cmd>` | Injects secrets as env vars into the subprocess. Stdout from `wapps` is silent. | A one-shot command that needs creds: `wapps secrets exec -- ./scripts/deploy.sh` |
+| `wapps tofu <args>` (wapps ≥ v0.19.0) | Runs `tofu <args>` with the project's secrets injected verbatim (project resolved from cwd `.wapps.yaml`). Same scrubber + binding-pin as `exec`. | Any tofu run: `wapps tofu plan`, `wapps tofu apply`. Preferred over `secrets exec --prefix '' -- tofu …`. |
 
 After `env --write`, the file on disk DOES contain plaintext secrets. **Do NOT
 read it with the Read tool** — that would put values back into your transcript.
@@ -85,6 +86,19 @@ If any of these fail with a session/auth error on the **store** backend, run
 ```bash
 wapps secrets exec -- ./scripts/migrate-db.sh
 ```
+
+### "Run tofu (plan / apply)"
+
+Use `wapps tofu` — it resolves the project from the cwd `.wapps.yaml` and injects
+secrets verbatim into `tofu`, with the same scrubber + binding-pin as `exec`:
+
+```bash
+wapps tofu plan
+wapps tofu apply
+```
+
+This replaces the older `wapps secrets exec --prefix '' -- tofu …` form. Non-tofu
+wrappers (e.g. `wapps secrets exec -- ./scripts/drift-check.sh`) stay on `exec`.
 
 ## Adding / changing a secret (operator action)
 
