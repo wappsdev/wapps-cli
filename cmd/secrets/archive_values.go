@@ -1,54 +1,63 @@
 package secrets
 
-import (
-	"encoding/json"
-	"fmt"
-	"os"
+// archive_values.go — non-secrets komutların (bugün tek tüketici: `wapps deploy`)
+// credential çözümleme yardımcısı. P1.7 re-point: age-arşiv okuyucusu
+// (ArchiveValues) KALDIRILDI; kaynak artık server-decrypt store'dur
+// (backend:store .wapps.yaml → Worker read). Çağıran env-first çözümlemesini
+// korur — store yalnızca env'de bulunmayan anahtarlar için fallback'tir.
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
+import (
+	"context"
 )
 
-// ArchiveValues reads the config-resolved archive (honoring --config/--project
-// via resolveArchivePath) and returns the values of the requested keys that are
-// present. Missing keys are simply absent from the returned map.
+// StoreValues, config-çözümlü .wapps.yaml (--config/--project onurlandırılır)
+// `backend: store` ise istenen anahtarların DEĞERLERİNİ store'dan çeker.
+// Var olmayan anahtarlar sonuç haritasında sessizce yoktur.
 //
-// Availability is best-effort: when WAPPS_SECRETS_PASSPHRASE is unset or the
-// archive file does not exist, it returns (nil, nil) so callers (e.g.
-// `wapps deploy`) can fall back to environment variables without an error. A
-// genuine read/decrypt/parse failure (archive present + passphrase set but
-// wrong or corrupt) IS returned as an error.
+// Erişilebilirlik best-effort'tur (ArchiveValues sözleşmesinin store karşılığı):
+// .wapps.yaml yoksa veya backend store değilse (nil, nil) döner — çağıran (örn.
+// `wapps deploy`) hatasız env değişkenlerine düşebilir. GERÇEK bir okuma
+// hatası (oturum yok/dolmuş, ağ, grant reddi) hata olarak DÖNER.
 //
-// AI-safe: returns values only to the caller; never prints them. Exposed so
-// non-secrets commands (deploy) can resolve credentials from the archive
-// through the same config-root path resolution.
-func ArchiveValues(keys ...string) (map[string]string, error) {
-	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return nil, nil
-	}
-	archivePath := resolveArchivePath()
-	enc, err := os.ReadFile(archivePath)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+// Bulk read all-or-nothing olduğundan (§7.6) önce ad düzlemi (Keys — değersiz,
+// audit'e value.read düşmez) ile kesişim alınır: var olmayan aday anahtarlar
+// NOT_FOUND üretmez, yalnızca mevcut olanlar okunur (blast-radius minimum).
+//
+// AI-safe: değerleri yalnızca çağırana döner; asla yazdırmaz.
+func StoreValues(keys ...string) (map[string]string, error) {
+	cfg, err := storeBackendConfig()
 	if err != nil {
-		return nil, fmt.Errorf("secrets: read archive %s: %w", archivePath, err)
+		return nil, err
 	}
-	dec, err := ageutil.Decrypt(enc, passphrase)
+	if cfg == nil {
+		return nil, nil // store yapılandırılmamış → çağıran env'e düşer
+	}
+	st, err := openStore(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("secrets: decrypt archive: %w", err)
+		return nil, err
 	}
-	var outputs map[string]struct {
-		Value json.RawMessage `json:"value"`
+	ctx := context.Background()
+	kr, err := st.Keys(ctx, cfg.Project)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(dec, &outputs); err != nil {
-		return nil, fmt.Errorf("secrets: parse archive: %w", err)
+	present := make(map[string]bool, len(kr.Keys))
+	for _, k := range kr.Keys {
+		present[k.KeyName] = true
 	}
-	out := make(map[string]string, len(keys))
+	want := make([]string, 0, len(keys))
 	for _, k := range keys {
-		if entry, ok := outputs[k]; ok {
-			out[k] = rawValueToString(entry.Value)
+		if present[k] {
+			want = append(want, k)
+			present[k] = false // dedupe: aynı aday iki kez istenmesin
 		}
 	}
-	return out, nil
+	if len(want) == 0 {
+		return map[string]string{}, nil
+	}
+	res, err := st.Read(ctx, cfg.Project, want)
+	if err != nil {
+		return nil, err
+	}
+	return res.Values, nil
 }

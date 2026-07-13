@@ -33,10 +33,10 @@ func execTestSetup(t *testing.T, archive map[string]string) string {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	if err := os.MkdirAll("secrets", 0755); err != nil {
+	if err := os.MkdirAll("secrets", 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile("secrets/all.enc.age", enc, 0600); err != nil {
+	if err := os.WriteFile("secrets/all.enc.age", enc, 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	return pp
@@ -324,6 +324,117 @@ func TestRunExec_BreakGlassFailsLoudEvenNonAgent(t *testing.T) {
 	}
 	if r.gotName != "" {
 		t.Fatalf("subprocess must never run; got: %q", r.gotName)
+	}
+}
+
+// --- runWithInjectedEnv (P1.1 ortak helper) ----------------------------------
+
+// Helper, kalıtılan env'i korur ve injected girdileri SONA ekler (last-wins).
+func TestExecRunWithInjectedEnv_MergesParentEnvInjectedLast(t *testing.T) {
+	t.Setenv("HELPER_PARENT_VAR", "from-parent")
+	t.Setenv("HELPER_COLLIDE", "from-shell")
+
+	r := &fakeRunner{returnCode: 0}
+	err := runWithInjectedEnv(
+		[]string{"true"},
+		[]string{"HELPER_INJECTED=v1", "HELPER_COLLIDE=from-injected"},
+		nil, io.Discard, io.Discard, r.runner,
+	)
+	if err != nil {
+		t.Fatalf("runWithInjectedEnv: %v", err)
+	}
+
+	shellIdx, injectedIdx, gotParent, gotInjected := -1, -1, false, false
+	for i, e := range r.gotEnv {
+		switch e {
+		case "HELPER_PARENT_VAR=from-parent":
+			gotParent = true
+		case "HELPER_INJECTED=v1":
+			gotInjected = true
+		case "HELPER_COLLIDE=from-shell":
+			shellIdx = i
+		case "HELPER_COLLIDE=from-injected":
+			injectedIdx = i
+		}
+	}
+	if !gotParent {
+		t.Errorf("parent env var lost: %v", r.gotEnv)
+	}
+	if !gotInjected {
+		t.Errorf("injected var missing: %v", r.gotEnv)
+	}
+	if injectedIdx == -1 {
+		t.Fatal("injected collision entry missing")
+	}
+	if shellIdx >= 0 && injectedIdx <= shellIdx {
+		t.Errorf("injected entry must come AFTER shell entry (last-wins): shell=%d injected=%d", shellIdx, injectedIdx)
+	}
+}
+
+// Helper komut adı + argümanları runner'a AYNEN geçirir.
+func TestExecRunWithInjectedEnv_PassesCommandVerbatim(t *testing.T) {
+	r := &fakeRunner{returnCode: 0}
+	if err := runWithInjectedEnv([]string{"pnpm", "dev", "--port", "8080"}, nil, nil, io.Discard, io.Discard, r.runner); err != nil {
+		t.Fatalf("runWithInjectedEnv: %v", err)
+	}
+	if r.gotName != "pnpm" {
+		t.Errorf("command name: got %q, want pnpm", r.gotName)
+	}
+	wantArgs := []string{"dev", "--port", "8080"}
+	if len(r.gotArgs) != len(wantArgs) {
+		t.Fatalf("args length: got %d, want %d", len(r.gotArgs), len(wantArgs))
+	}
+	for i, a := range wantArgs {
+		if r.gotArgs[i] != a {
+			t.Errorf("args[%d]: got %q, want %q", i, r.gotArgs[i], a)
+		}
+	}
+}
+
+// Scrubber sözleşmesi (§7.4.3): scrubValues'daki bir değeri echo'layan child,
+// yakalanan çıktıya o değeri SIZDIRAMAZ — *** olur.
+func TestExecRunWithInjectedEnv_ScrubsChildOutput(t *testing.T) {
+	secret := "sk_live_helper_secret_0987654321"
+	var out bytes.Buffer
+	leaky := func(name string, args, env []string, stdout, stderr io.Writer) (int, error) {
+		_, _ = stdout.Write([]byte("token is " + secret + "\n"))
+		return 0, nil
+	}
+
+	if err := runWithInjectedEnv([]string{"leak"}, nil, []string{secret}, &out, io.Discard, leaky); err != nil {
+		t.Fatalf("runWithInjectedEnv: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("SECRET LEAKED into transcript: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "***") {
+		t.Fatalf("expected redaction ***, got: %q", out.String())
+	}
+}
+
+// Runner hatasında bile scrubber flush edilir (kısmi çıktı redakte kalır) ve
+// hata "exec:" sarımıyla döner.
+func TestExecRunWithInjectedEnv_FlushesScrubbedOutputOnRunnerError(t *testing.T) {
+	secret := "sk_live_helper_partial_1122334455"
+	var out bytes.Buffer
+	failing := func(name string, args, env []string, stdout, stderr io.Writer) (int, error) {
+		// Newline'sız kısmi yazım: flush olmadan scrubber tamponunda kalırdı.
+		_, _ = stdout.Write([]byte("partial " + secret))
+		return -1, errors.New("spawn failed")
+	}
+
+	err := runWithInjectedEnv([]string{"boom"}, nil, []string{secret}, &out, io.Discard, failing)
+	if err == nil {
+		t.Fatal("expected runner error to propagate")
+	}
+	if !strings.Contains(err.Error(), "exec:") || !strings.Contains(err.Error(), "spawn failed") {
+		t.Errorf("runner error should be wrapped with exec:, got: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("SECRET LEAKED on error path: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "partial ***") {
+		t.Fatalf("partial output must be flushed + redacted, got: %q", out.String())
 	}
 }
 

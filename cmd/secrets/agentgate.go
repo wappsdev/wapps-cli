@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -104,10 +105,28 @@ func secretsPreRunE(cmd *cobra.Command, _ []string) error {
 // config'lerde no-op.
 //   - pinsiz → BINDING_UNPINNED (ajan asla pinleyemez; insan trust-repo çalıştırır)
 //   - farklı proje → hard fail (re-pin bir insan ister)
+//   - service principal (CI) → pin kontrolü ATLANIR (aşağıya bak)
 func checkRepoBinding(_ bool) error {
 	cfg, err := loadOrNil(wappsConfigPath())
 	if err != nil || cfg == nil || !cfg.IsStoreBackend() {
 		return nil // config yok / bozuk-legacy / legacy-git → bağlama kontrolü yok
+	}
+	// Service principal (P1.8): CF Access service-token ÇİFTİ env'de doluysa
+	// repo-pin kontrolü atlanır. Fresh CI container'da trust-repo (TTY) imkânsız —
+	// bu muafiyet olmadan store tüketen HER Woodpecker adımı BINDING_UNPINNED ile
+	// ölür. Confused-deputy riski sunucu tarafında per-key policy (`service:`
+	// selector kuralları, worker/src/policy.ts) ile zaten sınırlandırılmış.
+	// Çiftin YARISI set ise bypass YOK — fail-closed davranış aynen sürer.
+	//
+	// GÜVENLİK KISITI (fresh-eyes P3): repo→proje pin muafiyeti, per-repo
+	// confused-deputy hapsini kaldırır; tek kalan kontrol sunucu-tarafı per-key
+	// policy'dir. Bu YALNIZCA service token'lar PER-PROJECT scoped ise güvenlidir
+	// (her repo tofu-mint edilmiş kendi `repo_seed` token'ını kullanır — plan
+	// P3.6; scope-policy: infra-tofu/docs/SECURITY-token-scopes.md). Geniş-scope'lu
+	// (çok-proje) bir service token bu muafiyetle proje sınırını aşabilir —
+	// provisioning DAİMA dar tutulmalı.
+	if serviceTokenPairSet() {
+		return nil
 	}
 	repoID := repoIdentity(cfg)
 	fp := binding.Fingerprint(repoID)
@@ -144,6 +163,15 @@ func repoIdentity(cfg *config.WappsYAML) string {
 		return root
 	}
 	return abs
+}
+
+// serviceTokenPairSet, CF Access service-token çiftinin (CF_ACCESS_CLIENT_ID +
+// CF_ACCESS_CLIENT_SECRET) İKİSİNİN de env'de dolu olduğunu söyler — okuma,
+// non-interactive auth yolundaki (cmd/login.go path-1) TrimSpace davranışıyla
+// birebir aynıdır ki "auth geçer ama pin-muafiyeti geçmez" ayrışması olmasın.
+func serviceTokenPairSet() bool {
+	return strings.TrimSpace(os.Getenv("CF_ACCESS_CLIENT_ID")) != "" &&
+		strings.TrimSpace(os.Getenv("CF_ACCESS_CLIENT_SECRET")) != ""
 }
 
 // gitRemoteURL, `git -C <dir> remote get-url origin` döner; hata/boşsa "".

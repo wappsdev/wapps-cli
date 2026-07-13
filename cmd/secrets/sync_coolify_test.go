@@ -58,10 +58,10 @@ version: 1
 sources:
   - type: file
     path: .env.shared
-`), 0644); err != nil {
+`), 0o644); err != nil {
 		t.Fatalf("yaml: %v", err)
 	}
-	if err := os.MkdirAll("secrets", 0755); err != nil {
+	if err := os.MkdirAll("secrets", 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	envelope := make(map[string]json.RawMessage)
@@ -88,7 +88,8 @@ sources:
 }
 
 func TestRunSyncCoolify_DryRunDefault_NoMutations(t *testing.T) {
-	fake, opts := setupCoolifyTest(t,
+	fake, opts := setupCoolifyTest(
+		t,
 		map[string]string{"DB_PASSWORD": "secret", "NEW_KEY": "v"},
 		[]coolify.EnvEntry{{UUID: "e1", Key: "DB_PASSWORD", Value: "old"}, {UUID: "e2", Key: "STALE", Value: "x"}},
 	)
@@ -107,7 +108,8 @@ func TestRunSyncCoolify_DryRunDefault_NoMutations(t *testing.T) {
 }
 
 func TestRunSyncCoolify_ForceApplies(t *testing.T) {
-	fake, opts := setupCoolifyTest(t,
+	fake, opts := setupCoolifyTest(
+		t,
 		map[string]string{
 			"DB_PASSWORD": "new-value", // CHANGE
 			"NEW_KEY":     "v",         // ADD
@@ -513,7 +515,7 @@ func TestArchiveToAppMap_StripsPrefix(t *testing.T) {
 	archive := map[string]json.RawMessage{
 		"KREEVA_WEB_VITE_API_URL": json.RawMessage(`{"value":"https://api"}`),
 		"KREEVA_WEB_TOKEN":        json.RawMessage(`{"value":"t"}`),
-		"ROYCO_API_DB":            json.RawMessage(`{"value":"pg"}`), // other app
+		"ROYCO_API_DB":            json.RawMessage(`{"value":"pg"}`),      // other app
 		"lab_01_ipv4":             json.RawMessage(`{"value":"1.2.3.4"}`), // tofu output
 	}
 	got := archiveToAppMap(archive, "KREEVA_WEB_")
@@ -583,10 +585,12 @@ func (f *multiAppFake) ListAppEnvs(uuid string) ([]coolify.EnvEntry, error) {
 	}
 	return f.current[uuid], nil
 }
+
 func (f *multiAppFake) UpsertAppEnv(uuid, key, value string, isBuildtime bool) error {
 	f.upserts[uuid] = append(f.upserts[uuid], upsertCall{key, value, isBuildtime})
 	return f.upsertErr[uuid]
 }
+
 func (f *multiAppFake) DeleteAppEnv(uuid, envUUID string) error {
 	f.deletes[uuid] = append(f.deletes[uuid], deleteCall{envUUID})
 	return nil
@@ -602,10 +606,10 @@ func setupMultiApp(t *testing.T, archive map[string]string, yamlCoolifySync stri
 	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
 
 	yaml := "version: 1\nsources:\n  - type: file\n    path: .env.shared\n" + yamlCoolifySync
-	if err := os.WriteFile(".wapps.yaml", []byte(yaml), 0644); err != nil {
+	if err := os.WriteFile(".wapps.yaml", []byte(yaml), 0o644); err != nil {
 		t.Fatalf("yaml: %v", err)
 	}
-	if err := os.MkdirAll("secrets", 0755); err != nil {
+	if err := os.MkdirAll("secrets", 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	envelope := make(map[string]json.RawMessage)
@@ -620,10 +624,10 @@ func setupMultiApp(t *testing.T, archive map[string]string, yamlCoolifySync stri
 
 	fake := newMultiAppFake()
 	opts := coolifyOptions{
-		allApps:  true,
-		apiToken: "tok",
-		apiURL:   "http://unused",
-		stdoutW:  &bytes.Buffer{},
+		allApps:   true,
+		apiToken:  "tok",
+		apiURL:    "http://unused",
+		stdoutW:   &bytes.Buffer{},
 		newClient: func(string, string) coolifyAPI { return fake },
 	}
 	return fake, opts
@@ -814,8 +818,8 @@ func TestRunSyncCoolifyAllApps_SkipsManagedAndExcluded(t *testing.T) {
 	fake, opts := setupMultiApp(t,
 		map[string]string{
 			"KREEVA_WEB_SERVICE_URL_API": "https://stale", // managed (live), stale archive copy
-			"KREEVA_WEB_SENTRY_RELEASE":  "abc123",         // excluded
-			"KREEVA_WEB_REAL":            "v",              // genuine
+			"KREEVA_WEB_SENTRY_RELEASE":  "abc123",        // excluded
+			"KREEVA_WEB_REAL":            "v",             // genuine
 		},
 		`coolify_sync:
   exclude_keys:
@@ -879,5 +883,157 @@ func TestRunSyncCoolifyAllApps_NoAppsConfigured_Errors(t *testing.T) {
 	err := runSyncCoolify(opts)
 	if err == nil || !strings.Contains(err.Error(), "no apps configured") {
 		t.Errorf("expected 'no apps configured' error, got: %v", err)
+	}
+}
+
+// ---- backend:store source (P1.6) ----
+
+// TestRunSyncCoolify_StoreBackend_PushesStoreValues, P1.6'nın çekirdeği:
+// backend:store'da arşiv/passphrase OLMADAN değerler fake store'dan çekilir ve
+// mevcut diff/push makinesiyle Coolify'a itilir. WAPPS_SECRETS_PASSPHRASE boş —
+// store yolu onu ASLA istememeli (retirement günü kırılmaması bunun kanıtı).
+func TestRunSyncCoolify_StoreBackend_PushesStoreValues(t *testing.T) {
+	setupStoreProject(t, "")
+	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "") // store yolu passphrase istememeli
+	f := installFakeStore(t)
+	f.values["DB_PASSWORD"] = "new-value" // CHANGE
+	f.values["NEW_KEY"] = "v"             // ADD
+
+	fake := &fakeCoolify{listResult: []coolify.EnvEntry{
+		{UUID: "e1", Key: "DB_PASSWORD", Value: "old-value"},
+		{UUID: "e2", Key: "STALE", Value: "x"},
+	}}
+	opts := coolifyOptions{
+		appUUID:   "app-1",
+		apiToken:  "tok",
+		apiURL:    "http://unused",
+		force:     true,
+		stdoutW:   &bytes.Buffer{},
+		newClient: func(string, string) coolifyAPI { return fake },
+	}
+
+	if err := runSyncCoolify(opts); err != nil {
+		t.Fatalf("runSyncCoolify (store): %v", err)
+	}
+	// Değerler store'dan TEK bulk Read ile gelmiş olmalı (tüm okunabilir küme).
+	if len(f.readCalls) != 1 {
+		t.Fatalf("store Read should be called exactly once, got %d", len(f.readCalls))
+	}
+	if f.readCalls[0].project != "testproj" {
+		t.Errorf("Read project: got %q, want testproj", f.readCalls[0].project)
+	}
+	if len(f.readCalls[0].keys) != 0 {
+		t.Errorf("coolify sync must bulk-read the full set, got keys %v", f.readCalls[0].keys)
+	}
+	// Mevcut diff makinesi AYNEN çalışmalı: 2 upsert (add+change) + 1 delete (mirror).
+	if len(fake.upserts) != 2 {
+		t.Fatalf("expected 2 upserts, got %d: %+v", len(fake.upserts), fake.upserts)
+	}
+	got := map[string]string{}
+	for _, u := range fake.upserts {
+		got[u.key] = u.value
+	}
+	if got["DB_PASSWORD"] != "new-value" || got["NEW_KEY"] != "v" {
+		t.Errorf("store values must feed the push unchanged, got: %v", got)
+	}
+	if len(fake.deletes) != 1 || fake.deletes[0].envUUID != "e2" {
+		t.Errorf("single-app mirror must still delete STALE (e2), got: %+v", fake.deletes)
+	}
+	// Store yolunda diskte arşiv OLUŞMAMALI.
+	if _, statErr := os.Stat("secrets/all.enc.age"); !os.IsNotExist(statErr) {
+		t.Error("store-backed coolify sync must not touch a legacy archive")
+	}
+}
+
+// Store okuma hatası (örn. SESSION_EXPIRED) → Coolify istemcisi HİÇ kurulmaz,
+// hata aynen yüzer (ağ'a/coolify API'sine çıkılmadan fail-fast).
+func TestRunSyncCoolify_StoreBackend_ReadErrorStopsBeforeCoolify(t *testing.T) {
+	setupStoreProject(t, "")
+	f := installFakeStore(t)
+	f.readErr = errors.New("SESSION_EXPIRED: no valid CF Access session")
+
+	clientBuilt := false
+	opts := coolifyOptions{
+		appUUID:  "app-1",
+		apiToken: "tok",
+		apiURL:   "http://unused",
+		force:    true,
+		stdoutW:  &bytes.Buffer{},
+		newClient: func(string, string) coolifyAPI {
+			clientBuilt = true
+			return &fakeCoolify{}
+		},
+	}
+
+	err := runSyncCoolify(opts)
+	if err == nil || !strings.Contains(err.Error(), "SESSION_EXPIRED") {
+		t.Fatalf("store read error must propagate, got: %v", err)
+	}
+	if clientBuilt {
+		t.Error("Coolify client must not be built when the store read fails")
+	}
+}
+
+// Multi-app (--all-apps) store yolunda da coolify_sync.apps archive_prefix
+// semantiği AYNEN korunur: her app yalnızca kendi prefix'inin soyulmuş alt
+// kümesini alır (lab 13-app senaryosunun birim eşleniği).
+func TestRunSyncCoolifyAllApps_StoreBackend_PrefixStripPreserved(t *testing.T) {
+	setupStoreProject(t, `coolify_sync:
+  apps:
+    - uuid: kreeva-uuid
+      archive_prefix: "KREEVA_WEB_"
+    - uuid: royco-uuid
+      archive_prefix: "ROYCO_API_"
+`)
+	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "")
+	f := installFakeStore(t)
+	f.values["KREEVA_WEB_TOKEN"] = "kt"
+	f.values["ROYCO_API_DB"] = "rdb"
+	f.values["lab_01_ipv4"] = "1.2.3.4" // eşleşmeyen tofu çıktısı — hiçbir app'e gitmemeli
+
+	fake := newMultiAppFake()
+	opts := coolifyOptions{
+		allApps:   true,
+		apiToken:  "tok",
+		apiURL:    "http://unused",
+		force:     true,
+		stdoutW:   &bytes.Buffer{},
+		newClient: func(string, string) coolifyAPI { return fake },
+	}
+
+	if err := runSyncCoolify(opts); err != nil {
+		t.Fatalf("runSyncCoolify (store, all-apps): %v", err)
+	}
+	if len(fake.upserts["kreeva-uuid"]) != 1 || fake.upserts["kreeva-uuid"][0].key != "TOKEN" {
+		t.Errorf("kreeva upserts wrong: %+v", fake.upserts["kreeva-uuid"])
+	}
+	if len(fake.upserts["royco-uuid"]) != 1 || fake.upserts["royco-uuid"][0].key != "DB" {
+		t.Errorf("royco upserts wrong: %+v", fake.upserts["royco-uuid"])
+	}
+	for uuid, ups := range fake.upserts {
+		for _, u := range ups {
+			if strings.Contains(u.key, "lab_01") || strings.Contains(u.key, "ipv4") {
+				t.Errorf("tofu output leaked to %s: %+v", uuid, u)
+			}
+		}
+	}
+}
+
+// Legacy (backend yok) coolify sync store'a ASLA gitmez — arşiv+passphrase yolu
+// byte-for-byte korunur (fake store kurulu olsa bile Read çağrılmaz).
+func TestRunSyncCoolify_LegacyBackend_DoesNotRouteToStore(t *testing.T) {
+	_, opts := setupCoolifyTest(
+		t,
+		map[string]string{"DB_PASSWORD": "secret"},
+		[]coolify.EnvEntry{{UUID: "e1", Key: "DB_PASSWORD", Value: "old"}},
+	)
+	f := installFakeStore(t)
+	opts.force = false // dry-run yeterli — yönlendirme kanıtı Read sayısında
+
+	if err := runSyncCoolify(opts); err != nil {
+		t.Fatalf("legacy runSyncCoolify: %v", err)
+	}
+	if len(f.readCalls) != 0 {
+		t.Fatalf("legacy coolify sync must NOT route to the store; reads=%d", len(f.readCalls))
 	}
 }

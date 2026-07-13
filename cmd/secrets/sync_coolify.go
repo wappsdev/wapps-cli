@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +18,7 @@ import (
 // substitute a fake transport.
 type coolifyOptions struct {
 	appUUID   string
-	allApps   bool   // multi-app mode driven by coolify_sync.apps in .wapps.yaml
+	allApps   bool // multi-app mode driven by coolify_sync.apps in .wapps.yaml
 	force     bool
 	prefix    string
 	apiURL    string
@@ -38,8 +39,10 @@ type coolifyAPI interface {
 // `wapps secrets sync --target=coolify`.
 //
 // Dispatches to the destructive-mirror Coolify sync flow:
-//  1. Load .wapps.yaml (required — dest path comes from there)
-//  2. Decrypt archive
+//  1. Load .wapps.yaml (required — dest path / backend comes from there)
+//  2. Materialize the archive map: backend:store → PLAINTEXT values from the
+//     Worker (P1.6, no passphrase/archive on disk); legacy → decrypt the age
+//     archive with WAPPS_SECRETS_PASSPHRASE (byte-for-byte unchanged)
 //  3. List current Coolify env state on appUUID
 //  4. Compute diff (add / change / remove buckets)
 //  5. Print diff to stdout — operator-visible regardless of mode
@@ -66,14 +69,29 @@ func runSyncCoolify(opts coolifyOptions) error {
 		return fmt.Errorf("sync --target=coolify: .wapps.yaml required (need dest path for archive)")
 	}
 
-	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return fmt.Errorf("sync --target=coolify: WAPPS_SECRETS_PASSPHRASE not set")
-	}
-
-	archive, err := decryptArchive(cfg.ResolveDest(), passphrase)
-	if err != nil {
-		return err
+	// Arşiv haritasını backend'e göre üret (P1.6): store yolunda değerler Worker'dan
+	// PLAINTEXT çekilir ve decryptArchive ile AYNI zarf şekline sarılır — aşağıdaki
+	// prefix-match/diff/push makinesi iki backend'de de DEĞİŞMEDEN çalışır.
+	// legacy-git yolunda passphrase + age arşivi zorunluluğu aynen korunur.
+	var archive map[string]json.RawMessage
+	if cfg.IsStoreBackend() {
+		values, verr := storeValues(context.Background(), cfg, nil)
+		if verr != nil {
+			return verr
+		}
+		archive, err = valuesToArchiveMap(values)
+		if err != nil {
+			return fmt.Errorf("sync --target=coolify: %w", err)
+		}
+	} else {
+		passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
+		if passphrase == "" {
+			return fmt.Errorf("sync --target=coolify: WAPPS_SECRETS_PASSPHRASE not set")
+		}
+		archive, err = decryptArchive(cfg.ResolveDest(), passphrase)
+		if err != nil {
+			return err
+		}
 	}
 
 	client := opts.newClient(opts.apiURL, opts.apiToken)
@@ -180,10 +198,10 @@ func runSyncCoolifyAllApps(opts coolifyOptions, cfg *config.WappsYAML, archive m
 // coolifyDiff buckets desired vs current Coolify state. Computed before
 // any API write so the operator sees what's about to happen.
 type coolifyDiff struct {
-	add    map[string]string         // key → desired value (POST)
-	change map[string]coolifyChange  // key → {old, new} (PATCH)
-	remove map[string]string         // key → env-uuid (DELETE)
-	noop   []string                  // keys identical on both sides (visibility)
+	add    map[string]string        // key → desired value (POST)
+	change map[string]coolifyChange // key → {old, new} (PATCH)
+	remove map[string]string        // key → env-uuid (DELETE)
+	noop   []string                 // keys identical on both sides (visibility)
 
 	// Filtered-out keys, surfaced for operator visibility (names never
 	// printed — only counts). skippedManaged are Coolify-generated

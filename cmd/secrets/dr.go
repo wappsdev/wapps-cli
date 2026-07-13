@@ -354,8 +354,14 @@ var (
 	drSplitThreshold int
 	drSplitOutDir    string
 	drSplitMasterHex string
-	drSplitKey       string
 )
+
+// drSplitPromptMaster, MASTER_KEK'in varsayılan kaynağı olan no-echo TTY
+// prompt'udur (P1.7 — age-arşiv yolu KALDIRILDI: MASTER_KEK artık git'e
+// yazılmaz; §2.5 hiçbir transcript'e girmez). PAKET-DÜZEYİ SEAM: üretimde
+// promptValueNoEcho (set.go ile aynı, keystrokes echo edilmez); testte sahte
+// prompt ile değiştirilir.
+var drSplitPromptMaster = promptValueNoEcho
 
 var drSplitCmd = &cobra.Command{
 	Use:   "split",
@@ -365,68 +371,76 @@ files (hex, 0600) such that ANY {--threshold} reconstruct it (dr combine) and fe
 reveal NOTHING. Move each share to a SEPARATE offline place (paper safe / YubiKey /
 trusted person).
 
-MASTER_KEK source (NEVER printed):
-  default        reads --key (SECRETSGATE_MASTER_KEK_PROD) from this repo's age archive
-                 (needs WAPPS_SECRETS_PASSPHRASE; use -c/--project to point at the archive)
-  --master-hex   supply the 64-hex value explicitly
+MASTER_KEK source (NEVER printed, NEVER echoed):
+  default        no-echo TTY prompt — paste the 64-hex value; input stays hidden
+  --master-hex   supply the 64-hex value explicitly (argv is visible via ps/shell
+                 history — prefer the prompt)
 
 Refused in agent mode — the MASTER_KEK must never reach an AI transcript.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if err := agentmode.Guard(agentmode.PolicyTTY, agentmode.IsAgent()); err != nil {
 			return err
 		}
-		if drSplitOutDir == "" {
-			return clierr.New(clierr.Internal, "dr split: --out-dir <dir> is required (0600 share files land there)")
-		}
-		if drSplitThreshold < 2 || drSplitParts < drSplitThreshold {
-			return clierr.Newf(clierr.Internal, "dr split: need parts >= threshold >= 2 (got parts=%d threshold=%d)", drSplitParts, drSplitThreshold)
-		}
-		masterHex := strings.TrimSpace(drSplitMasterHex)
-		if masterHex == "" {
-			vals, err := ArchiveValues(drSplitKey)
-			if err != nil {
-				return clierr.Wrapf(clierr.Internal, err, "read %s from archive", drSplitKey)
-			}
-			masterHex = strings.TrimSpace(vals[drSplitKey])
-			if masterHex == "" {
-				return clierr.Newf(clierr.NotAvailable, "dr split: %s not found in the archive — pass --master-hex, or check WAPPS_SECRETS_PASSPHRASE and -c/--project", drSplitKey)
-			}
-		}
-		master, err := hex.DecodeString(masterHex)
-		if err != nil || len(master) != 32 {
-			return clierr.Newf(clierr.Internal, "dr split: MASTER_KEK must be 64 hex chars (32 bytes)")
-		}
-		kid, err := cryptoid.KekKid(master)
-		if err != nil {
-			return clierr.Wrapf(clierr.Internal, err, "derive kid")
-		}
-		shares, err := cryptoid.ShamirSplit(master, drSplitParts, drSplitThreshold, rand.Reader)
-		if err != nil {
-			return clierr.Wrapf(clierr.Internal, err, "shamir split")
-		}
-		// Round-trip sağlaması: ilk {threshold} pay gerçekten MASTER_KEK'e geri dönmeli.
-		if back, cerr := cryptoid.ShamirCombine(shares[:drSplitThreshold]); cerr != nil || !bytes.Equal(back, master) {
-			return clierr.New(clierr.Internal, "dr split: round-trip check FAILED — shares would not reconstruct (aborted, nothing written)")
-		}
-		if err := os.MkdirAll(drSplitOutDir, 0o700); err != nil {
-			return clierr.Wrapf(clierr.Internal, err, "create out-dir")
-		}
-		w := cmd.OutOrStdout()
-		fmt.Fprintf(w, "MASTER_KEK kid: %s  (this is the key these shares reconstruct — verify against the live Worker)\n", kid)
-		for i, s := range shares {
-			p := filepath.Join(drSplitOutDir, fmt.Sprintf("wapps-master-share-%d-of-%d.hex", i+1, drSplitParts))
-			if werr := writeSecretFile0600(p, []byte(hex.EncodeToString(s)+"\n")); werr != nil {
-				return werr
-			}
-			fmt.Fprintf(w, "  wrote %s\n", p)
-		}
-		wipeBytes(master)      // best-effort bellek temizliği (masterHex string'i wipe edilemez)
-		wipeBytes(shares...)
-		fmt.Fprintf(w, "\n✓ %d shares written (any %d reconstruct). NOW:\n", drSplitParts, drSplitThreshold)
-		fmt.Fprintf(w, "  1) move each file to a SEPARATE offline place (paper safe / YubiKey / trusted person)\n")
-		fmt.Fprintf(w, "  2) delete %s afterwards. NEVER commit shares to git or store them together.\n", drSplitOutDir)
-		return nil
+		return runDrSplitCore(cmd.OutOrStdout())
 	},
+}
+
+// runDrSplitCore, split seremonisinin çekirdeğidir (TTY guard'ı RunE'de —
+// dr restore'daki restoreProjectFromSnapshot kalıbıyla aynı ayrım, test edilebilir).
+// MASTER_KEK kaynağı: --master-hex, yoksa no-echo prompt. Değer HİÇBİR çıktıya yazılmaz.
+func runDrSplitCore(w io.Writer) error {
+	if drSplitOutDir == "" {
+		return clierr.New(clierr.Internal, "dr split: --out-dir <dir> is required (0600 share files land there)")
+	}
+	if drSplitThreshold < 2 || drSplitParts < drSplitThreshold {
+		return clierr.Newf(clierr.Internal, "dr split: need parts >= threshold >= 2 (got parts=%d threshold=%d)", drSplitParts, drSplitThreshold)
+	}
+	masterHex := strings.TrimSpace(drSplitMasterHex)
+	if masterHex == "" {
+		// P1.7 varsayılan kaynak: no-echo TTY prompt. Guard TTY'yi zaten kanıtladı
+		// (non-TTY stdin → agent modu → RunE'de reddedildi).
+		v, _, perr := drSplitPromptMaster("MASTER_KEK (64-hex, input hidden): ")
+		if perr != nil {
+			return clierr.Wrapf(clierr.Internal, perr, "dr split: read MASTER_KEK from prompt")
+		}
+		masterHex = strings.TrimSpace(v)
+		if masterHex == "" {
+			return clierr.New(clierr.NotAvailable, "dr split: no MASTER_KEK provided — paste the 64-hex value at the prompt, or pass --master-hex")
+		}
+	}
+	master, err := hex.DecodeString(masterHex)
+	if err != nil || len(master) != 32 {
+		return clierr.Newf(clierr.Internal, "dr split: MASTER_KEK must be 64 hex chars (32 bytes)")
+	}
+	kid, err := cryptoid.KekKid(master)
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "derive kid")
+	}
+	shares, err := cryptoid.ShamirSplit(master, drSplitParts, drSplitThreshold, rand.Reader)
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "shamir split")
+	}
+	// Round-trip sağlaması: ilk {threshold} pay gerçekten MASTER_KEK'e geri dönmeli.
+	if back, cerr := cryptoid.ShamirCombine(shares[:drSplitThreshold]); cerr != nil || !bytes.Equal(back, master) {
+		return clierr.New(clierr.Internal, "dr split: round-trip check FAILED — shares would not reconstruct (aborted, nothing written)")
+	}
+	if err := os.MkdirAll(drSplitOutDir, 0o700); err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "create out-dir")
+	}
+	fmt.Fprintf(w, "MASTER_KEK kid: %s  (this is the key these shares reconstruct — verify against the live Worker)\n", kid)
+	for i, s := range shares {
+		p := filepath.Join(drSplitOutDir, fmt.Sprintf("wapps-master-share-%d-of-%d.hex", i+1, drSplitParts))
+		if werr := writeSecretFile0600(p, []byte(hex.EncodeToString(s)+"\n")); werr != nil {
+			return werr
+		}
+		fmt.Fprintf(w, "  wrote %s\n", p)
+	}
+	wipeBytes(master) // best-effort bellek temizliği (masterHex string'i wipe edilemez)
+	wipeBytes(shares...)
+	fmt.Fprintf(w, "\n✓ %d shares written (any %d reconstruct). NOW:\n", drSplitParts, drSplitThreshold)
+	fmt.Fprintf(w, "  1) move each file to a SEPARATE offline place (paper safe / YubiKey / trusted person)\n")
+	fmt.Fprintf(w, "  2) delete %s afterwards. NEVER commit shares to git or store them together.\n", drSplitOutDir)
+	return nil
 }
 
 var (
@@ -495,8 +509,7 @@ func init() {
 	drSplitCmd.Flags().IntVar(&drSplitParts, "parts", 3, "total Shamir shares to create")
 	drSplitCmd.Flags().IntVar(&drSplitThreshold, "threshold", 2, "shares required to reconstruct")
 	drSplitCmd.Flags().StringVar(&drSplitOutDir, "out-dir", "", "directory for the 0600 hex share files")
-	drSplitCmd.Flags().StringVar(&drSplitMasterHex, "master-hex", "", "supply the MASTER_KEK (64-hex) explicitly; NOTE: argv is visible via `ps`/shell history — prefer the archive default")
-	drSplitCmd.Flags().StringVar(&drSplitKey, "key", "SECRETSGATE_MASTER_KEK_PROD", "archive key holding the MASTER_KEK (unless --master-hex)")
+	drSplitCmd.Flags().StringVar(&drSplitMasterHex, "master-hex", "", "supply the MASTER_KEK (64-hex) explicitly; NOTE: argv is visible via `ps`/shell history — prefer the no-echo prompt default")
 	drCombineCmd.Flags().StringArrayVar(&drCombineShares, "share", nil, "hex Shamir share file (repeat ≥ threshold)")
 	drCombineCmd.Flags().StringVar(&drCombineOut, "out", "", "0600 file to write the reconstructed MASTER_KEK hex into")
 

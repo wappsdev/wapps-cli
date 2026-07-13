@@ -19,7 +19,6 @@ import (
 	"os"
 	"sort"
 
-	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/config"
 	"github.com/wappsdev/wapps-cli/internal/intent"
@@ -49,11 +48,18 @@ var openStore = openWorkerStore
 
 // openWorkerStore, gerçek üretim istemcisini kurar (SPEC §7.4):
 //   - BaseURL = WAPPS_SECRETS_GATE (yoksa OD-4 varsayılanı gw.meapps.dev);
+//   - Doer = session.HTTPClient() → WAPPS_MTLS_CERT/KEY doluysa client-cert'li
+//     taşıma (P1.9 CI mTLS); yanlış-konfig SERVICE_MISCONFIGURED (fail-closed);
 //   - Auth = session.Auth() → CI service-token env'i veya `wapps login` oturumu;
 //     geçerli kimlik yoksa SESSION_EXPIRED (istek ağ'a çıkmadan).
 func openWorkerStore(cfg *config.WappsYAML) (store.Store, error) {
+	doer, err := session.HTTPClient()
+	if err != nil {
+		return nil, err
+	}
 	return store.New(store.Config{
 		BaseURL: session.GateURL(),
+		Doer:    doer,
 		Auth:    session.Auth(),
 	}), nil
 }
@@ -87,11 +93,11 @@ func storeCommit(ctx context.Context, cfg *config.WappsYAML, sets map[string]str
 	return st.Import(ctx, cfg.Project, sets, opts)
 }
 
-// valuesToArchiveJSON, düz metin değer haritasını tofu-output-şekilli arşiv JSON'una
-// ({"KEY":{"value":"..."}}) çevirir; böylece store yolu, mevcut (legacy ile paylaşılan)
-// env/target yazıcılarını (execEnvAndValues, writeTofuOutputsAsEnv, applyTargets)
-// yeniden kullanır — çıktı biçimi iki backend'de birebir aynı kalır.
-func valuesToArchiveJSON(values map[string]string) ([]byte, error) {
+// valuesToArchiveMap, düz metin değer haritasını tofu-output-şekilli arşiv zarf
+// haritasına ({"KEY":{"value":"..."}}) çevirir. decryptArchive'in döndürdüğü tiple
+// birebir aynıdır; böylece store yolu, arşiv-tüketen makineyi (ör. Coolify sync'in
+// prefix-match/diff/push hattı) DEĞİŞTİRMEDEN besleyebilir (P1.6).
+func valuesToArchiveMap(values map[string]string) (map[string]json.RawMessage, error) {
 	envelopes := make(map[string]json.RawMessage, len(values))
 	for k, v := range values {
 		b, err := json.Marshal(map[string]string{"value": v})
@@ -99,6 +105,18 @@ func valuesToArchiveJSON(values map[string]string) ([]byte, error) {
 			return nil, fmt.Errorf("store: envelope %s: %w", k, err)
 		}
 		envelopes[k] = b
+	}
+	return envelopes, nil
+}
+
+// valuesToArchiveJSON, düz metin değer haritasını tofu-output-şekilli arşiv JSON'una
+// ({"KEY":{"value":"..."}}) çevirir; böylece store yolu, mevcut (legacy ile paylaşılan)
+// env/target yazıcılarını (execEnvAndValues, writeTofuOutputsAsEnv, applyTargets)
+// yeniden kullanır — çıktı biçimi iki backend'de birebir aynı kalır.
+func valuesToArchiveJSON(values map[string]string) ([]byte, error) {
+	envelopes, err := valuesToArchiveMap(values)
+	if err != nil {
+		return nil, err
 	}
 	return json.Marshal(envelopes)
 }
@@ -141,20 +159,9 @@ func runExecStore(args []string, prefix, intentName string, cfg *config.WappsYAM
 	if err != nil {
 		return fmt.Errorf("exec: %w", err)
 	}
-	mergedEnv := append(os.Environ(), injected...)
-	scrubVals := agentmode.FilterScrubbable(scrub, errW)
-	so := agentmode.NewScrubber(out, scrubVals)
-	se := agentmode.NewScrubber(errW, scrubVals)
-	exitCode, runErr := runner(args[0], args[1:], mergedEnv, so, se)
-	_ = so.Flush()
-	_ = se.Flush()
-	if runErr != nil {
-		return fmt.Errorf("exec: %w", runErr)
-	}
-	if exitCode != 0 {
-		os.Exit(exitCode)
-	}
-	return nil
+	// Ortak inject→scrub→run→flush→exit bloğu (P1.1) — legacy exec ile AYNI
+	// scrubber sözleşmesi ve exit-code yansıtması.
+	return runWithInjectedEnv(args, injected, scrub, out, errW, runner)
 }
 
 // runApplyStore, apply'ın backend:store yoludur: store'dan değerleri çeker ve

@@ -215,7 +215,13 @@ func decodeJSON(body []byte, dst any, ctxMsg string) error {
 
 // Keys, GET /v1/projects/{p}/keys — okunabilir anahtar listesi (filtreli, §4.3.3).
 func (w *WorkerStore) Keys(ctx context.Context, project string) (*KeysResult, error) {
-	r, err := w.do(ctx, http.MethodGet, "/v1/projects/"+url.PathEscape(project)+"/keys", nil, nil)
+	var headers map[string]string
+	if w.cfg.AcceptEpochReset {
+		// Seremoni okuması (P1.5): audit satırı epoch-reset olarak etiketlenir
+		// (§6.4 bilgilendirici etiket — yetkilendirme girdisi DEĞİL).
+		headers = map[string]string{intent.HeaderIntent: intent.IntentEpochReset}
+	}
+	r, err := w.do(ctx, http.MethodGet, "/v1/projects/"+url.PathEscape(project)+"/keys", nil, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -354,6 +360,28 @@ func (w *WorkerStore) Whoami(ctx context.Context) (*WhoamiResult, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// AuditHead, GET /v1/audit/head — global audit zincir head'i ({seq, hash}, §6.5).
+// Epoch-reset seremonisinin (P1.5) CANLI referansıdır: dönen hash, operatörün
+// kâğıt zarftaki değerle out-of-band karşılaştırdığı değerdir. Metadata
+// okumasıdır — plaintext yok, epoch pin'ine dokunmaz.
+func (w *WorkerStore) AuditHead(ctx context.Context) (seq uint64, hash string, err error) {
+	r, err := w.do(ctx, http.MethodGet, "/v1/audit/head", nil, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if r.status != http.StatusOK {
+		return 0, "", mapHTTPError(r, "audit head")
+	}
+	var out struct {
+		Seq  uint64 `json:"seq"`
+		Hash string `json:"hash"`
+	}
+	if err := decodeJSON(r.body, &out, "audit head"); err != nil {
+		return 0, "", err
+	}
+	return out.Seq, out.Hash, nil
 }
 
 // PolicyGet, GET /v1/policy (admin verb + write-AUD oturumu, §7.6).

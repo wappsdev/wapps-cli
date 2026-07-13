@@ -47,7 +47,11 @@ Execute the resulting worklist with wapps secrets rotate.`,
 		}
 		ctx, cancel := context.WithTimeout(cmdContext(cmd), 30*time.Second)
 		defer cancel()
-		res, err := openAdminStore().RotatePlan(ctx, rotatePlanIdentity, rotatePlanSince, rotatePlanAssumePolicy)
+		st, err := openAdminStore()
+		if err != nil {
+			return err
+		}
+		res, err := st.RotatePlan(ctx, rotatePlanIdentity, rotatePlanSince, rotatePlanAssumePolicy)
 		if err != nil {
 			return err
 		}

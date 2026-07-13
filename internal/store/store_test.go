@@ -79,8 +79,10 @@ func TestRead_EmptyKeysResolvesViaKeys(t *testing.T) {
 	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/projects/vaulter/keys":
-			writeJSON(w, 200, map[string]any{"project": "vaulter", "epoch": 3,
-				"keys": []map[string]any{{"keyName": "A", "keyVersion": 1}, {"keyName": "B", "keyVersion": 2}}})
+			writeJSON(w, 200, map[string]any{
+				"project": "vaulter", "epoch": 3,
+				"keys": []map[string]any{{"keyName": "A", "keyVersion": 1}, {"keyName": "B", "keyVersion": 2}},
+			})
 		case "/v1/projects/vaulter/read":
 			var body struct {
 				Keys []string `json:"keys"`
@@ -116,6 +118,138 @@ func TestRead_EpochDowngradeTripwire(t *testing.T) {
 	_, err := st.Read(context.Background(), "vaulter", []string{"A"})
 	if !clierr.Is(err, clierr.EpochDowngrade) {
 		t.Fatalf("want EPOCH_DOWNGRADE, got %v", err)
+	}
+}
+
+// TestRead_EpochResetNotAcceptedByDefault, AcceptEpochReset default'unun FALSE
+// olduğunu ve default config'de düşük epoch'un pin'i ASLA indirmediğini doğrular
+// (P1.5 not-by-default): EPOCH_DOWNGRADE sonrası pin aynen kalır.
+func TestRead_EpochResetNotAcceptedByDefault(t *testing.T) {
+	if (Config{}).AcceptEpochReset {
+		t.Fatal("AcceptEpochReset must default to false")
+	}
+	epoch := uint64(9)
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"epoch": epoch, "values": map[string]string{"A": "1"}})
+	}))
+	if _, err := st.Read(context.Background(), "vaulter", []string{"A"}); err != nil {
+		t.Fatal(err)
+	}
+	epoch = 4 // yeniden kurulmuş store senaryosu
+	if _, err := st.Read(context.Background(), "vaulter", []string{"A"}); !clierr.Is(err, clierr.EpochDowngrade) {
+		t.Fatalf("want EPOCH_DOWNGRADE by default, got %v", err)
+	}
+	// Pin İNDİRİLMEMİŞ olmalı.
+	pin, err := st.pinnedEpoch("vaulter")
+	if err != nil || pin != 9 {
+		t.Fatalf("pin must stay at 9 after refused downgrade, got %d (%v)", pin, err)
+	}
+}
+
+// TestRead_EpochResetAccepted, AcceptEpochReset:true'nun TEK meşru pin-indirme
+// yolu olduğunu doğrular (P1.5): pin sunulan epoch'a iner, kalıcılaşır ve
+// sonraki DEFAULT store aynı epoch'u kabul eder; daha da düşüğü yine reddeder.
+func TestRead_EpochResetAccepted(t *testing.T) {
+	epoch := uint64(9)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{
+			"project": "vaulter", "epoch": epoch,
+			"keys": []map[string]any{{"keyName": "A", "keyVersion": 1}},
+		})
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	pinPath := filepath.Join(t.TempDir(), "epochs.json")
+	newSt := func(accept bool) *WorkerStore {
+		return New(Config{BaseURL: srv.URL, EpochPinPath: pinPath, AcceptEpochReset: accept})
+	}
+
+	// Pin'i 9'a ilerlet.
+	if _, err := newSt(false).Keys(context.Background(), "vaulter"); err != nil {
+		t.Fatal(err)
+	}
+	// Store yeniden kuruldu: served=4. Accepting store pin'i İNDİRİR.
+	epoch = 4
+	res, err := newSt(true).Keys(context.Background(), "vaulter")
+	if err != nil {
+		t.Fatalf("accepting store must lower the pin, got %v", err)
+	}
+	if res.Epoch != 4 {
+		t.Fatalf("served epoch: %d", res.Epoch)
+	}
+	pin, err := newSt(false).pinnedEpoch("vaulter")
+	if err != nil || pin != 4 {
+		t.Fatalf("pin must be lowered+persisted to 4, got %d (%v)", pin, err)
+	}
+	// Sonraki DEFAULT store aynı epoch'u kabul eder...
+	if _, err := newSt(false).Keys(context.Background(), "vaulter"); err != nil {
+		t.Fatalf("default store must accept served==pinned after reset: %v", err)
+	}
+	// ...ama daha da düşüğü yine reddeder (tripwire geri devrede).
+	epoch = 2
+	if _, err := newSt(false).Keys(context.Background(), "vaulter"); !clierr.Is(err, clierr.EpochDowngrade) {
+		t.Fatalf("tripwire must re-arm after reset, got %v", err)
+	}
+}
+
+// TestKeys_EpochResetIntentHeader, accepting store'un Keys okumasının
+// X-Wapps-Intent: epoch-reset ile etiketlendiğini, default store'unkinin
+// etiketlenMEdiğini doğrular (§6.4, P1.5).
+func TestKeys_EpochResetIntentHeader(t *testing.T) {
+	var gotIntent string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIntent = r.Header.Get(intent.HeaderIntent)
+		writeJSON(w, 200, map[string]any{"project": "vaulter", "epoch": 1, "keys": []any{}})
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	pinDir := t.TempDir()
+
+	stDefault := New(Config{BaseURL: srv.URL, EpochPinPath: filepath.Join(pinDir, "a.json")})
+	if _, err := stDefault.Keys(context.Background(), "vaulter"); err != nil {
+		t.Fatal(err)
+	}
+	if gotIntent != "" {
+		t.Errorf("default Keys must carry NO intent header, got %q", gotIntent)
+	}
+
+	stAccept := New(Config{BaseURL: srv.URL, EpochPinPath: filepath.Join(pinDir, "b.json"), AcceptEpochReset: true})
+	if _, err := stAccept.Keys(context.Background(), "vaulter"); err != nil {
+		t.Fatal(err)
+	}
+	if gotIntent != intent.IntentEpochReset {
+		t.Errorf("ceremony Keys must carry X-Wapps-Intent: epoch-reset, got %q", gotIntent)
+	}
+}
+
+// TestAuditHead, GET /v1/audit/head istemcisini doğrular: rota, auth enjeksiyonu,
+// {seq,hash} çözümü ve 503 AUDIT_UNAVAILABLE eşlemesi (P1.5/P1.4).
+func TestAuditHead(t *testing.T) {
+	var gotAuth string
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/audit/head" {
+			t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
+		}
+		gotAuth = r.Header.Get("cf-access-token")
+		writeJSON(w, 200, map[string]any{"seq": 4217, "hash": "ab12cd34ef56aa77bb88cc99dd00ee11"})
+	}))
+	seq, hash, err := st.AuditHead(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq != 4217 || hash != "ab12cd34ef56aa77bb88cc99dd00ee11" {
+		t.Fatalf("audit head: seq=%d hash=%q", seq, hash)
+	}
+	if gotAuth != "test-session" {
+		t.Error("auth header not injected on audit head")
+	}
+
+	// Fail-closed: audit DO erişilemez → AUDIT_UNAVAILABLE (seremoni ilerleyemez).
+	stDown, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 503, map[string]any{"error": "AUDIT_UNAVAILABLE"})
+	}))
+	if _, _, err := stDown.AuditHead(context.Background()); !clierr.Is(err, clierr.AuditUnavailable) {
+		t.Fatalf("want AUDIT_UNAVAILABLE, got %v", err)
 	}
 }
 
@@ -207,11 +341,15 @@ func TestPolicyAndRotatePlanAndWhoami(t *testing.T) {
 	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/whoami":
-			writeJSON(w, 200, map[string]any{"principal": "human:a@wapps.co", "kind": "human",
-				"groups": []string{"developers@wapps.co"}, "policy_version": 3})
+			writeJSON(w, 200, map[string]any{
+				"principal": "human:a@wapps.co", "kind": "human",
+				"groups": []string{"developers@wapps.co"}, "policy_version": 3,
+			})
 		case r.URL.Path == "/v1/policy" && r.Method == http.MethodGet:
-			writeJSON(w, 200, map[string]any{"version": 3, "sha256": "abc",
-				"policy": map[string]any{"schema": "wapps-secrets/policy/v1", "version": 3, "rules": []any{}}})
+			writeJSON(w, 200, map[string]any{
+				"version": 3, "sha256": "abc",
+				"policy": map[string]any{"schema": "wapps-secrets/policy/v1", "version": 3, "rules": []any{}},
+			})
 		case r.URL.Path == "/v1/policy" && r.Method == http.MethodPut:
 			var doc PolicyDoc
 			_ = json.NewDecoder(r.Body).Decode(&doc)
@@ -223,8 +361,10 @@ func TestPolicyAndRotatePlanAndWhoami(t *testing.T) {
 			if r.URL.Query().Get("identity") != "human:x@wapps.co" || r.URL.Query().Get("assume_policy") != "1" {
 				t.Errorf("rotate-plan query: %s", r.URL.RawQuery)
 			}
-			writeJSON(w, 200, map[string]any{"identity": "human:x@wapps.co", "generated_at": "t",
-				"items": []map[string]any{{"project": "vaulter", "key": "DB_URL", "last_read": "t", "reads": 5}}})
+			writeJSON(w, 200, map[string]any{
+				"identity": "human:x@wapps.co", "generated_at": "t",
+				"items": []map[string]any{{"project": "vaulter", "key": "DB_URL", "last_read": "t", "reads": 5}},
+			})
 		default:
 			t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
 		}

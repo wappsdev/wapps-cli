@@ -53,7 +53,8 @@ gateway, whose scoped Coolify tokens intentionally cannot deploy via the direct
 Coolify API.
 
 Credentials (proxy token + Cloudflare Access service-token) resolve env-first,
-then the config-resolved archive (never printed):
+then the config-resolved server-decrypt store (backend: store .wapps.yaml;
+values never printed):
 
   DEPLOY_PROXY_TOKEN_<REPO>             (or DEPLOY_PROXY_TOKEN / PROXY_TOKEN)
   DEPLOY_PROXY_CF_ACCESS_CLIENT_ID      (or CF_ACCESS_CLIENT_ID)
@@ -138,14 +139,15 @@ func runDeploy(opts deployOptions, out, errW io.Writer) int {
 		return finish(deploypkg.ExitUsage, "error", err.Error())
 	}
 
-	// 2. Credentials (env → archive). exit 2 if unresolved.
-	creds, missing, archErr := resolveCreds(opts.repo, opts.ep)
+	// 2. Credentials (env → store). exit 2 if unresolved.
+	creds, missing, storeErr := resolveCreds(opts.repo, opts.ep)
 	if missing != "" {
-		msg := fmt.Sprintf("error: could not resolve %s (tried env, archive)", missing)
-		if archErr != nil {
-			// A present-but-undecryptable archive (wrong passphrase / corrupt)
-			// is distinct from a missing key — say so (the error names no value).
-			msg += fmt.Sprintf("\n  note: archive present but could not be read: %v", archErr)
+		msg := fmt.Sprintf("error: could not resolve %s (tried env, store)", missing)
+		if storeErr != nil {
+			// Store yapılandırılmış ama okunamadı (oturum dolmuş / ağ / grant
+			// reddi) — eksik anahtardan farklı bir durum; söyle (hata hiçbir
+			// değer içermez).
+			msg += fmt.Sprintf("\n  note: store configured but could not be read: %v", storeErr)
 		}
 		return finish(deploypkg.ExitCreds, "error", msg)
 	}
@@ -203,25 +205,26 @@ func runDeploy(opts deployOptions, out, errW io.Writer) int {
 		fmt.Sprintf("✓ %s deployed (%s)", opts.service, status))
 }
 
-// resolveCreds resolves the four values env-first then archive (tier-3 auto-tofu
-// is deferred — the archive, via P2, is the operator single-source; the env
-// covers CI). Returns the creds, the name of the first missing required key for
-// the exit-2 message (never a value) if any, and a non-nil archErr when the
-// archive was present but could not be decrypted/parsed (wrong passphrase /
-// corrupt) — distinct from a benign absent archive, so the caller can tell the
-// operator which it is. A genuinely broken archive does NOT abort resolution:
-// env-first means env may still supply every credential.
-func resolveCreds(repo, epOverride string) (creds deploypkg.Creds, missing string, archErr error) {
+// resolveCreds resolves the four values env-first then the server-decrypt store
+// (P1.7 re-point — the age archive is retired for deploy; the store is the
+// operator single-source, the env covers CI). Returns the creds, the name of
+// the first missing required key for the exit-2 message (never a value) if any,
+// and a non-nil storeErr when a store IS configured but could not be read
+// (expired session / network / grant denied) — distinct from a benign absent
+// config, so the caller can tell the operator which it is. A failing store does
+// NOT abort resolution: env-first means env may still supply every credential.
+func resolveCreds(repo, epOverride string) (creds deploypkg.Creds, missing string, storeErr error) {
 	suffix := strings.ToUpper(strings.ReplaceAll(repo, "-", "_"))
 	tokenKeys := []string{"DEPLOY_PROXY_TOKEN_" + suffix, "DEPLOY_PROXY_TOKEN", "PROXY_TOKEN"}
 	cfIDKeys := []string{"DEPLOY_PROXY_CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_ID"}
 	cfSecretKeys := []string{"DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET", "CF_ACCESS_CLIENT_SECRET"}
 	epKeys := []string{"DEPLOY_PROXY_EP"}
 
-	// One archive read for every candidate key. A decrypt/parse failure is kept
-	// (archErr) but does not block env-only resolution.
+	// One store read for every candidate key (missing candidates are simply
+	// absent). A read failure is kept (storeErr) but does not block env-only
+	// resolution.
 	all := append(append(append(append([]string{}, tokenKeys...), cfIDKeys...), cfSecretKeys...), epKeys...)
-	archive, archErr := secrets.ArchiveValues(all...)
+	stored, storeErr := secrets.StoreValues(all...)
 
 	resolve := func(keys []string) string {
 		for _, k := range keys { // env tier first, in priority order
@@ -229,8 +232,8 @@ func resolveCreds(repo, epOverride string) (creds deploypkg.Creds, missing strin
 				return v
 			}
 		}
-		for _, k := range keys { // then archive tier
-			if v := archive[k]; v != "" {
+		for _, k := range keys { // then store tier
+			if v := stored[k]; v != "" {
 				return v
 			}
 		}
@@ -258,7 +261,7 @@ func resolveCreds(repo, epOverride string) (creds deploypkg.Creds, missing strin
 	case creds.CFAccessSecret == "":
 		missing = "DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET"
 	}
-	return creds, missing, archErr
+	return creds, missing, storeErr
 }
 
 func knownRepos() string {

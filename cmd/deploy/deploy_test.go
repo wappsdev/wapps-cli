@@ -3,15 +3,16 @@ package deploy
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 	deploypkg "github.com/wappsdev/wapps-cli/internal/deploy"
 )
 
@@ -21,7 +22,7 @@ func clearDeployEnv(t *testing.T) {
 		"DEPLOY_PROXY_TOKEN_VAULTER", "DEPLOY_PROXY_TOKEN", "PROXY_TOKEN",
 		"DEPLOY_PROXY_CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_ID",
 		"DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET", "CF_ACCESS_CLIENT_SECRET",
-		"DEPLOY_PROXY_EP", "WAPPS_SECRETS_PASSPHRASE",
+		"DEPLOY_PROXY_EP", "WAPPS_SECRETS_GATE", "WAPPS_SESSION_TOKEN",
 	} {
 		os.Unsetenv(e)
 	}
@@ -74,43 +75,114 @@ func TestRunDeploy_MissingCreds_Exit2(t *testing.T) {
 	}
 }
 
-// U1: cred precedence — env wins over archive.
-func TestResolveCreds_EnvBeatsArchive(t *testing.T) {
-	clearDeployEnv(t)
-	// Seed an archive with one value, set a DIFFERENT env value; env must win.
-	projDir := t.TempDir()
-	pp := "deploy-pp"
-	if err := os.MkdirAll(filepath.Join(projDir, "secrets"), 0755); err != nil {
-		t.Fatal(err)
+// setupStoreGate, sahte bir secrets-gate + backend:store .wapps.yaml kurar
+// (P1.7: deploy'ın credential fallback'i artık store'dur). Gate'in aldığı
+// bulk-read gövdelerini döner; oturum out-of-band env token'ıyla sağlanır.
+func setupStoreGate(t *testing.T, keys []string, values map[string]string) *[]string {
+	t.Helper()
+	keysJSON := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		keysJSON = append(keysJSON, map[string]any{"keyName": k, "keyVersion": 1})
 	}
-	env := map[string]json.RawMessage{
-		"DEPLOY_PROXY_TOKEN_VAULTER":           json.RawMessage(`{"value":"tok-ARCHIVE"}`),
-		"DEPLOY_PROXY_CF_ACCESS_CLIENT_ID":     json.RawMessage(`{"value":"id-arch"}`),
-		"DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET": json.RawMessage(`{"value":"sec-arch"}`),
-	}
-	raw, _ := json.Marshal(env)
-	if err := ageutil.EncryptWriteAtomic(filepath.Join(projDir, "secrets", "all.enc.age"), raw, pp); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projDir, ".wapps.yaml"), []byte("version: 1\nsources:\n  - type: tofu\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-	t.Setenv("DEPLOY_PROXY_TOKEN_VAULTER", "tok-ENV")
-	other := t.TempDir()
-	t.Chdir(other)
-	secrets.SetConfigPath(filepath.Join(projDir, ".wapps.yaml"))
+	readBodies := &[]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/vaulter/keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{"project": "vaulter", "epoch": 1, "keys": keysJSON})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/projects/vaulter/read":
+			b, _ := io.ReadAll(r.Body)
+			*readBodies = append(*readBodies, string(b))
+			_ = json.NewEncoder(w).Encode(map[string]any{"epoch": 1, "values": values})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"NOT_FOUND"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
 
-	creds, missing, archErr := resolveCreds("vaulter", "")
-	if missing != "" || archErr != nil {
-		t.Fatalf("unexpected missing=%s archErr=%v", missing, archErr)
+	t.Setenv("WAPPS_SECRETS_GATE", srv.URL)
+	t.Setenv("WAPPS_SESSION_TOKEN", "fake-session-token")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // epoch-pin + oturum dosyaları izole
+
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, ".wapps.yaml"),
+		[]byte("version: 2\nbackend: store\nproject: vaulter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir()) // cwd ≠ proje: --project/-c çözümlemesi kanıtlanır
+	secrets.SetConfigPath(filepath.Join(projDir, ".wapps.yaml"))
+	return readBodies
+}
+
+// U1 (P1.7): cred precedence — env wins over the store; keys the env does not
+// supply resolve from the store. The bulk read must only request keys the
+// name-plane says exist (all-or-nothing NOT_FOUND trap).
+func TestResolveCreds_EnvBeatsStore(t *testing.T) {
+	clearDeployEnv(t)
+	present := []string{
+		"DEPLOY_PROXY_TOKEN_VAULTER",
+		"DEPLOY_PROXY_CF_ACCESS_CLIENT_ID",
+		"DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET",
+	}
+	readBodies := setupStoreGate(t, present, map[string]string{
+		"DEPLOY_PROXY_TOKEN_VAULTER":           "tok-STORE",
+		"DEPLOY_PROXY_CF_ACCESS_CLIENT_ID":     "id-store",
+		"DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET": "cf-sec",
+	})
+	t.Setenv("DEPLOY_PROXY_TOKEN_VAULTER", "tok-ENV")
+
+	creds, missing, storeErr := resolveCreds("vaulter", "")
+	if missing != "" || storeErr != nil {
+		t.Fatalf("unexpected missing=%s storeErr=%v", missing, storeErr)
 	}
 	if creds.Token != "tok-ENV" {
-		t.Errorf("env should beat archive for token, got %q", creds.Token)
+		t.Errorf("env should beat store for token, got %q", creds.Token)
 	}
-	// CF creds only in archive → resolved from archive.
-	if creds.CFAccessID != "id-arch" || creds.CFAccessSecret != "sec-arch" {
-		t.Errorf("CF creds should come from archive: %+v", creds)
+	// CF creds only in the store → resolved from the store.
+	if creds.CFAccessID != "id-store" || creds.CFAccessSecret != "cf-sec" {
+		t.Errorf("CF creds should come from the store: %+v", creds)
+	}
+	// Bulk read yalnızca store'da VAR olan adayları istemeli.
+	if len(*readBodies) != 1 {
+		t.Fatalf("expected exactly 1 bulk read, got %d", len(*readBodies))
+	}
+	var req struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal([]byte((*readBodies)[0]), &req); err != nil {
+		t.Fatalf("read body not JSON: %v", err)
+	}
+	sort.Strings(req.Keys)
+	wantKeys := append([]string{}, present...)
+	sort.Strings(wantKeys)
+	if len(req.Keys) != len(wantKeys) {
+		t.Fatalf("read keys: got %v, want %v", req.Keys, wantKeys)
+	}
+	for i := range wantKeys {
+		if req.Keys[i] != wantKeys[i] {
+			t.Fatalf("read keys: got %v, want %v", req.Keys, wantKeys)
+		}
+	}
+}
+
+// P1.7: store yapılandırılmış ama aranan anahtarlar yok → NOT_FOUND hatası değil,
+// normal exit-2 "missing" raporu; boş kesişimde value.read HİÇ yapılmaz.
+func TestResolveCreds_StoreWithoutKeys_ReportsMissing(t *testing.T) {
+	clearDeployEnv(t)
+	readBodies := setupStoreGate(t, nil, nil)
+
+	creds, missing, storeErr := resolveCreds("vaulter", "")
+	if storeErr != nil {
+		t.Fatalf("empty store must not be an error, got %v", storeErr)
+	}
+	if missing != "DEPLOY_PROXY_TOKEN_VAULTER" {
+		t.Errorf("missing: got %q", missing)
+	}
+	if creds.Token != "" {
+		t.Errorf("token must stay empty, got %q", creds.Token)
+	}
+	if len(*readBodies) != 0 {
+		t.Errorf("no value.read must happen on empty intersection, got %d", len(*readBodies))
 	}
 }
 
