@@ -106,10 +106,17 @@ type Error struct {
 	wrapped   error
 }
 
-// Error, insan-okunur özet döner.
+// Error, insan-okunur özet döner. Sarılmış bir hata varsa NEDENİ de basar:
+// "INTERNAL: read policy file /tmp/x.json" tek başına neyin yanlış olduğunu
+// söylemiyordu (dosya yok mu, izin mi, bozuk mu?) — operatörü kör bırakıyordu.
+// Neden, safelog'dan geçirilir: sarılan hata bir yola/sisteme ait olabilir ama
+// asla ham bir sır taşımamalı.
 func (e *Error) Error() string {
 	if e.Message == "" {
 		return string(e.Code)
+	}
+	if e.wrapped != nil {
+		return fmt.Sprintf("%s: %s: %s", e.Code, e.Message, safelog.Sprintf("%v", e.wrapped))
 	}
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
