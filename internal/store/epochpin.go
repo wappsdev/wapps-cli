@@ -121,7 +121,7 @@ func (w *WorkerStore) checkAndAdvanceEpochPin(project string, served uint64) err
 			return nil
 		}
 		return clierr.Newf(clierr.EpochDowngrade, "served epoch %d < pinned %d for %q", served, pinned, project).
-			WithRecovery("possible rollback attack — do NOT force; if the store was LEGITIMATELY rebuilt (F5), a human must run the §5.5 ceremony: wapps dr accept-epoch-reset --project " + project)
+			WithRecovery("possible rollback attack — do NOT force; if the store was LEGITIMATELY rebuilt, a human must run the paper-verified ceremony: wapps dr accept-epoch-reset --project " + project)
 	}
 	if served > pinned {
 		p.Pins[project] = served

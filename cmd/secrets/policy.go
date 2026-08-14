@@ -42,7 +42,7 @@ var openAdminStore = func() (*store.WorkerStore, error) {
 
 var policyCmd = &cobra.Command{
 	Use:   "policy",
-	Short: "Show / set / lint the gate's policy.json (admin, §7.3)",
+	Short: "Show / set / lint the gate's access policy (admin)",
 }
 
 var policyShowJSON bool
@@ -81,7 +81,7 @@ var policySetYes bool
 var policySetCmd = &cobra.Command{
 	Use:   "set <file>",
 	Short: "Lint + diff + CAS PUT /v1/policy (version = current+1)",
-	Long: `policy set validates <file> offline (schema §4.2/§4.4 + lint §7.3), fetches
+	Long: `policy set validates <file> offline (schema + lint), fetches
 the current policy for the version CAS, prints the rule diff old→new, asks for a
 TTY confirm, then PUTs with version = current+1. A concurrent admin edit loses
 the CAS (412 POLICY_CONFLICT) — refetch with policy show and retry.`,
@@ -141,7 +141,7 @@ func runPolicySet(cmd *cobra.Command, path string) error {
 
 var policyLintCmd = &cobra.Command{
 	Use:   "lint <file>",
-	Short: "Offline schema validation (§4.2/§4.4) + overlap analysis (§7.3 a–e)",
+	Short: "Offline schema validation + overlap analysis (warnings only)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		doc, err := readPolicyFile(args[0])

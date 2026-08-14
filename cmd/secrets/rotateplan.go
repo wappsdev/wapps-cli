@@ -24,7 +24,7 @@ var (
 
 var rotatePlanCmd = &cobra.Command{
 	Use:   "rotate-plan --identity <principal>",
-	Short: "Audit-ledger rotate-set oracle: what must rotate after an offboard (§6.3)",
+	Short: "What must be rotated after an offboard, derived from the audit ledger",
 	Long: `rotate-plan queries the gate's hash-chained audit ledger (GET
 /v1/admin/rotate-plan, admin verb + write-AUD session) for every (project, key)
 the identity read, wrote, imported, synced or rotation-wrote — the precise

@@ -111,7 +111,7 @@ func Validate(doc store.PolicyDoc, topology string) error {
 			return fmt.Errorf("policy: rule[%d]: exactly one of group/service/aud required", i)
 		}
 		if r.Aud != "" && topology == "primary" {
-			return fmt.Errorf("policy: rule[%d]: aud selectors are FALLBACK-only (§3.3); rejected in PRIMARY topology", i)
+			return fmt.Errorf("policy: rule[%d]: aud selectors are valid only in the FALLBACK topology; rejected in PRIMARY", i)
 		}
 		if r.Service != "" && !commonNameRE.MatchString(r.Service) {
 			return fmt.Errorf("policy: rule[%d].service not a valid common_name", i)

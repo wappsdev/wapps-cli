@@ -139,7 +139,7 @@ var (
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "CF Access browser login for the secrets gate (§7.2) — TTY only",
+	Short: "Log in to the secrets gate via CF Access SSO (TTY only)",
 	Long: `login runs the CF Access SSO for the secrets gate via cloudflared
 (edge token transfer — the CF Access CLI flow rejects a localhost callback), then
 caches the returned app token 0600 at ~/.config/wapps/session/<gate-host>.json.
@@ -278,7 +278,7 @@ func looksLikeJWT(s string) bool {
 
 var whoamiCmd = &cobra.Command{
 	Use:   "whoami",
-	Short: "Show the gate's view of this principal: groups + effective grants (§7.1)",
+	Short: "Show the gate's view of you: groups + effective grants",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		w := cmd.OutOrStdout()
 		// Taşıma: WAPPS_MTLS_CERT/KEY doluysa client-cert'li (P1.9).
@@ -346,7 +346,7 @@ var tokenCmd = &cobra.Command{
 
 var tokenExchangeCmd = &cobra.Command{
 	Use:   "exchange --project <p> --key K [--key K2] [--verb read]",
-	Short: "Exchange the CF Access service token for a ≤10-min scoped token (§5.3)",
+	Short: "Exchange a CF Access service token for a scoped token (≤10 min)",
 	Long: `token exchange swaps the pipeline's CF Access service-token pair
 (CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET) for a short-TTL machine token
 scoped to {project, keys[], verbs[]} ⊆ the service's policy rows, via

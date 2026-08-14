@@ -13,7 +13,7 @@ import (
 // bağlaması rotasyon executor'uyla birlikte gelir.
 var RotateCmd = &cobra.Command{
 	Use:   "rotate",
-	Short: "Manage value-rotation worklist runs (offboard/migration §8.6)",
+	Short: "Manage value-rotation worklist runs (offboard cleanup)",
 }
 
 var rotateSkipReason string

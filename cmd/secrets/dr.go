@@ -37,8 +37,8 @@ import (
 // DrCmd, `wapps dr` grup komutudur.
 var DrCmd = &cobra.Command{
 	Use:   "dr",
-	Short: "Disaster recovery against the B2 ciphertext replica (§8.4)",
-	Long: `Disaster recovery against the NON-Cloudflare, append-only B2 replica (SPEC §8.4).
+	Short: "Disaster recovery against the B2 ciphertext replica",
+	Long: `Disaster recovery against the NON-Cloudflare, append-only B2 replica.
 The replica holds ONLY ciphertext + metadata — MASTER_KEK never reaches B2, so the
 replica alone yields nothing. dr verify is a structural integrity check; dr restore
 is the true-disaster TTY ceremony (Shamir shares + snapshot → plaintext env files).`,
@@ -129,7 +129,7 @@ var drSnapshotDir string
 
 var drVerifyCmd = &cobra.Command{
 	Use:   "verify --snapshot <dir>",
-	Short: "Structural integrity check of the B2 replica snapshot (read-only, §8.4)",
+	Short: "Structural integrity check of the B2 replica snapshot (read-only)",
 	Long: `Verify the ciphertext replica: for every project, current pointer → manifest
 hash chain, manifest schema, and every referenced blob's content address. Uses NO
 secrets and NO Cloudflare — runnable against an air-gapped snapshot copy.
@@ -181,8 +181,8 @@ var (
 
 var drRestoreCmd = &cobra.Command{
 	Use:   "restore --project <p> --snapshot <dir> --share <file> --share <file> --out <env-file>",
-	Short: "TTY-only DR ceremony: Shamir shares + snapshot → 0600 env file (§8.4)",
-	Long: `TRUE-disaster restore (SPEC §8.4). TTY-ONLY — REFUSED under agent mode.
+	Short: "TTY-only DR ceremony: Shamir shares + snapshot → 0600 env file",
+	Long: `TRUE-disaster restore. TTY-ONLY — REFUSED under agent mode.
 Reconstructs MASTER_KEK from ANY 2-of-3 Shamir share files (hex), verifies the
 snapshot chain, derives the project KEK (HKDF §2.3), unwraps every DEK (WKW1 §2.4),
 opens every blob (WSB1 §2.1) and writes a 0600 env file. The assembled MASTER_KEK
@@ -271,7 +271,7 @@ func restoreProjectFromSnapshot(w io.Writer, snapshotDir, project string, shareP
 	}
 	fmt.Fprintf(w, "✓ RESTORED %s (epoch %d): %d value(s) → %s (0600; values never printed)\n",
 		project, ptr.Epoch, len(lines), outPath)
-	fmt.Fprintln(w, "NEXT (human half): re-provision the estate from this file, then ROTATE every restored value (rotate-plan doctrine §2.5).")
+	fmt.Fprintln(w, "NEXT (human half): re-provision the estate from this file, then ROTATE every restored value — see 'wapps rotate-plan'.")
 	return nil
 }
 

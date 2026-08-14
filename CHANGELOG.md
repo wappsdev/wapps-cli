@@ -2,6 +2,11 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [v0.21.1] - 2026-08-14
+
+### Fixed
+- Command help no longer cites spec sections. `wapps --help` carried things like `login … (§7.2)`, `whoami … (§7.1)`, `dr … (§8.4)`, `trust-repo … (§7.7)` — 25 such references across help text, long descriptions and error messages. They pointed at a SPEC document that is not in the repo and not linked anywhere, so a reader had no way to look any of them up; they read as a defect. The references stay in code comments, where they are provenance for a developer, and are gone from everything a user sees. Several `Short` lines were rewritten while they were being touched, e.g. `trust-repo` now says what it is *for* ("Pin this repo to its project so an agent cannot target another") instead of restating its mechanics, and `tofu` no longer advertises the internal form it wraps.
+
 ## [v0.21.0] - 2026-08-14
 
 ### Removed — BREAKING

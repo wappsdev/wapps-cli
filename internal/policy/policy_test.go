@@ -86,7 +86,7 @@ func TestValidate(t *testing.T) {
 		{"bad schema", store.PolicyDoc{Schema: "nope", Version: 1}, "schema"},
 		{"no selector", validDoc(store.Rule{Projects: []string{"*"}, Keys: []string{"*"}, Verbs: []string{"read"}}), "exactly one"},
 		{"two selectors", validDoc(store.Rule{Group: "g@x", Service: "svc", Projects: []string{"*"}, Keys: []string{"*"}, Verbs: []string{"read"}}), "exactly one"},
-		{"aud in primary", validDoc(store.Rule{Aud: "aud1", Projects: []string{"*"}, Keys: []string{"*"}, Verbs: []string{"read"}}), "FALLBACK-only"},
+		{"aud in primary", validDoc(store.Rule{Aud: "aud1", Projects: []string{"*"}, Keys: []string{"*"}, Verbs: []string{"read"}}), "only in the FALLBACK topology"},
 		{"bad service name", validDoc(store.Rule{Service: "bad name!", Projects: []string{"*"}, Keys: []string{"*"}, Verbs: []string{"read"}}), "common_name"},
 		{"deny-only keys", validDoc(store.Rule{Group: "g@x", Projects: []string{"*"}, Keys: []string{"!*"}, Verbs: []string{"read"}}), "positive"},
 		{"deny project glob", validDoc(store.Rule{Group: "g@x", Projects: []string{"!x"}, Keys: []string{"*"}, Verbs: []string{"read"}}), "invalid glob"},

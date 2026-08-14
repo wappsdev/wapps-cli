@@ -72,7 +72,7 @@ var hex12Re = regexp.MustCompile(`^[0-9a-f]{12}$`)
 
 var drAcceptEpochResetCmd = &cobra.Command{
 	Use:   "accept-epoch-reset --project <p>",
-	Short: "TTY-only ceremony: verify the audit head against the PAPER envelope, then lower the epoch pin (§5.5)",
+	Short: "TTY-only ceremony: verify the audit head against the paper envelope, then lower the epoch pin",
 	Long: `accept-epoch-reset is the ONLY legitimate way to lower a project's local epoch
 pin (rollback tripwire, internal/store/epochpin.go). It exists for ONE scenario:
 the store was LEGITIMATELY rebuilt (F5) and clients must re-accept it.
@@ -132,7 +132,7 @@ func runDrAcceptEpochReset(project string, isAgent bool, out, errW io.Writer) er
 
 	// (2) Out-of-band doğrulama: kâğıt zarftaki head hash'inin ilk 12 hex'i
 	// YAZILIR (ekrandan kopyalamak doğrulama DEĞİLDİR — zarfı açın).
-	fmt.Fprintln(errW, "Open the PAPER envelope (§5.3 kit). Do NOT copy from this screen —")
+	fmt.Fprintln(errW, "Open the paper envelope from the custodian kit. Do NOT copy from this screen —")
 	fmt.Fprintln(errW, "type the value recorded on paper at the last successful dr verify.")
 	typed, _, perr := epochResetPrompt(fmt.Sprintf("First %d hex chars of the PAPER head hash: ", headPrefixLen))
 	if perr != nil {
@@ -147,7 +147,7 @@ func runDrAcceptEpochReset(project string, isAgent bool, out, errW io.Writer) er
 		// (3) HARD ABORT: pin'e DOKUNULMAZ, accepting store hiç kurulmaz.
 		return clierr.New(clierr.EpochDowngrade,
 			"paper head hash does NOT match the live audit head — store substitution assumed; open an incident (risk register #8)").
-			WithRecovery("do NOT retry with a different value; verify custodian envelopes and open an incident (§5.5)")
+			WithRecovery("do NOT retry with a different value; verify the custodian envelopes and open an incident")
 	}
 
 	// (4) Eşleşme: TEK pin-indiren Keys() çağrısı (AcceptEpochReset:true;
@@ -162,7 +162,7 @@ func runDrAcceptEpochReset(project string, isAgent bool, out, errW io.Writer) er
 	}
 	fmt.Fprintf(out, "✓ epoch pin for %q reset to served epoch %d (audit head seq=%d verified against paper).\n",
 		project, res.Epoch, seq)
-	fmt.Fprintln(out, "NEXT: re-record the CURRENT head hash on paper and re-seal the envelopes (§5.5 verify→paper→seal loop).")
+	fmt.Fprintln(out, "NEXT: re-record the CURRENT head hash on paper and re-seal the envelopes (verify → paper → seal).")
 	return nil
 }
 

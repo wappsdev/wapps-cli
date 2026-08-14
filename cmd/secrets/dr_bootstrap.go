@@ -42,7 +42,7 @@ var bootstrapPrompt = promptValueNoEcho
 
 var drBootstrapCmd = &cobra.Command{
 	Use:   "bootstrap [--var NAME]... -- <command> [args...]",
-	Short: "TTY-only: prompt dashboard-mint bootstrap tokens (no-echo) and exec a command with them injected (§3.3)",
+	Short: "TTY-only: prompt for bootstrap tokens (no echo) and run a command with them injected",
 	Long: `Bootstrap/DR runbook verb for when the store itself is unreachable (e.g. a
 bricked Worker — flow F3). REFUSED in agent mode: bootstrap tokens must never
 cross an AI transcript.

@@ -16,7 +16,7 @@ import (
 
 var trustRepoCmd = &cobra.Command{
 	Use:   "trust-repo",
-	Short: "Pin this repo's .wapps.yaml → project binding (TTY only, §7.7)",
+	Short: "Pin this repo to its project so an agent cannot target another (TTY only)",
 	Long: `A .wapps.yaml names a project, but a repo file is attacker-writable
 content (confused-deputy seam). trust-repo pins the (repo → project) binding in
 the TRUSTED home dir (~/.config/wapps/repo-pins.json), NOT in the repo. An agent

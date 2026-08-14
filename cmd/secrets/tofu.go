@@ -26,7 +26,7 @@ import (
 // BYPASS etmemek için gate runTofu içinde AÇIKÇA uygulanır (F1 fix).
 var TofuCmd = &cobra.Command{
 	Use:   "tofu [args...]",
-	Short: "Run tofu with project secrets injected (clean wrapper over `secrets exec --prefix '' -- tofu`)",
+	Short: "Run tofu with the project's secrets injected as TF_VAR_*",
 	Long: `Resolve the project from the current directory's .wapps.yaml, inject its
 secrets as env vars (VERBATIM — the store holds TF_VAR_* / AWS_* names directly),
 and run tofu with the given args. Secrets never touch disk; the child's stdout/
