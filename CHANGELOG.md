@@ -2,6 +2,21 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [v0.21.0] - 2026-08-14
+
+### Removed — BREAKING
+- **The legacy git-age backend is gone.** `backend: legacy-git`, `dest:`, `WAPPS_SECRETS_PASSPHRASE`, the git-committed `secrets/all.enc.age` and everything that read or wrote it. `internal/ageutil` is deleted. A config still carrying `backend: legacy-git` now fails with a message naming the migration rather than silently writing to the gate; absent and `store` both mean the gate. `project:` is now required — it is the gate's address, and guessing it would mean guessing whose secrets to read.
+- Verbs removed with it: `migrate` (import/export/tombstone — the migration is done), `rotate-master` (rotated the shared passphrase), `verify` and `diff` (both compared against the archive), and the whole `wapps git` family (it existed only to report drift on `all.enc.age`). Dead config knobs `redact_in_logs` and `require_clean_git` are gone too — nothing had ever read them.
+- **The git auto-sync preflight is gone**, along with `--no-sync`. It existed to `git pull` the archive before a read. With no archive it was pure noise — it ran on *every* command and emitted `⚠ git fetch failed: … origin/main:secrets/all.enc.age` even on store-backed projects where no such file could exist. That warning is what made a working CLI look broken.
+
+### Added
+- `wapps secrets sync --dry-run` — reports which key **names** the declared sources would add (`+`) or change (`~`), then stops. This is what the retired `verify` was reaching for: `verify` compared one sha of the whole blob and could only say "drift / no drift", so on any repo with a file source it said "drift" forever. Values are compared but never printed.
+- **Read verbs no longer need a repo.** `list`, `get`, `rm` and `projects` need nothing but a project name, so `--project <name>` now accepts a name with no local checkout instead of erroring with `unknown project`. Refused in agent/CI context: the repo→project pin is what stops an agent in one repo from reading another project's secrets, and an agent typing `--project` is not authority — a human on a terminal is. Verbs that read local `targets:`/`sources:` (`apply`, `sync`, `exec`, `env`) still need a real config and now say so plainly.
+
+### Changed
+- Every user-facing string was rewritten. `wapps secrets` was still described as "Manage encrypted secret archive (age + Tofu state)"; `apply` as materializing "from the archive"; the root command advertised "age encryption" and "git auto-sync preflight". `docs/onboarding.md` still taught a two-step flow for obtaining and exporting a shared master passphrase. `SKILL.md` — which ships embedded in the binary and is what coding agents read — still documented both backends and told agents to check which one a repo used.
+- `internal/ageutil.WriteFileAtomic` became `internal/atomicfile.Write`. The helper has nothing to do with encryption: it is what keeps a half-written `.env.local` from silently breaking a dev server. It survives; the age crypto around it does not.
+
 ## [v0.20.0] - 2026-08-14
 
 ### Added
