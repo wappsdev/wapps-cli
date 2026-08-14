@@ -63,16 +63,35 @@ wapps login --write     # 15-minute admin session; kept separate from the read o
 You only need this when editing policy or removing a project. Logging in for
 admin does not evict your normal session.
 
-## Step 3 — Pin the repo
+## Step 3 — There is no step 3
 
-```bash
-cd ~/Projects/<repo>
-wapps secrets trust-repo
+The first time you run a secrets command in a repo, wapps asks once:
+
+```
+This repo is not bound to a project yet.
+  repo:    https://github.com/wappsdev/navlun.git
+  project: navlun-app
+Bind them? [y/N]:
 ```
 
-This records, in your home directory, that *this* repo maps to *that* project.
-It is why an agent working in one repo cannot read another project's secrets.
-TTY-only and one-time per repo — an agent can never do it for you.
+Answer `y` and it is recorded in your home directory — not in the repo — and
+never asked again. `wapps secrets trust-repo` still exists for the explicit or
+scripted form.
+
+**What the binding is for, stated plainly.** It stops a repo's own committed
+`.wapps.yaml` from unilaterally claiming a project: the config lives inside the
+repo, the binding lives outside it, so a config cannot authorize itself. Seeing
+*which* project is being claimed, before you answer, is the whole point.
+
+It does **not** confine an agent — an agent can `cd` into another checkout that
+is already bound. Real confinement is server-side scoping in `policy.json`. So:
+agents are never prompted (a prompt an agent can answer is not a guard) and a
+non-TTY session is never prompted either. Changing an *existing* binding also
+still requires an explicit `trust-repo` — a new binding is routine, changing one
+is not.
+
+One repo can hold several projects (a monorepo binds each `.wapps.yaml`
+separately) and one project can be reached from several repos.
 
 ## Daily use
 
@@ -143,12 +162,13 @@ You never have to `cd` first:
 ```bash
 wapps secrets list --project vaulter                        # registered project
 wapps secrets list --config ~/Projects/navlun/.wapps.yaml   # explicit path
+wapps secrets set KEY --project brand-new                   # no repo at all
 ```
 
 `--project` reads `~/.config/wapps/projects.yaml`, a name→directory map you
-maintain by hand. A name that isn't in it still works for read verbs — the gate
-only needs the name — but only for a human: that form is refused in agent/CI
-context, because the repo pin is what confines an agent to one project.
+maintain by hand. A name that isn't in it still works — for reads *and* writes.
+Projects are implicit server-side (the first write creates one), so no local
+checkout is needed to create or populate one. Refused in agent/CI context.
 
 Verbs that read local `targets:` or `sources:` (`apply`, `sync`, `exec`, `env`)
 always need a real `.wapps.yaml`.
@@ -195,7 +215,7 @@ whole control plane.
 |---|---|---|
 | `SESSION_EXPIRED` | read session lapsed | `wapps login` |
 | `AUD_MISMATCH` on a policy/admin command | no write-AUD session | `wapps login --write` |
-| `BINDING_UNPINNED` | repo not pinned to its project | `wapps secrets trust-repo` |
+| `BINDING_UNPINNED` | declined the bind prompt, or no TTY / agent context | answer `y` next time, or run `wapps secrets trust-repo` |
 | `GRANT_DENIED` | your groups don't grant that key | `wapps whoami`, then ask an admin |
 | `NOT_FOUND: no .wapps.yaml found` | verb needs a project config | run inside the project, or pass `--config` |
 | `AGENT_MODE_REFUSED` | value-printing or irreversible verb in an agent/CI context | run it yourself in a terminal |

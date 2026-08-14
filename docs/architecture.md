@@ -118,7 +118,7 @@ Read verbs that need nothing but the project name (`list`, `get`, `rm`,
 | Command | Direction | What it does |
 |---|---|---|
 | `init [--project-name N] [--force]` | — | Scaffold `.wapps.yaml`. Writes nothing else — there is no local store. |
-| `trust-repo` | — | Pin this repo → project in your home dir. TTY-only; what confines an agent to one project. |
+| `trust-repo` | — | Explicitly bind this repo's `.wapps.yaml` → project, in your home dir. Usually unnecessary: an unbound repo asks inline on first use. TTY-only. |
 | `sync [--dry-run]` | ingest | Read sources, merge, write to the store in ONE epoch. `--dry-run` reports which key names would be added/changed, without writing. |
 | `sync --target=coolify --app <uuid> [--force]` | materialize | Single-app: push the WHOLE key set to one app, destructive mirror. Dry-run unless `--force`. |
 | `sync --target=coolify --all-apps [--force]` | materialize | Multi-app: each `coolify_sync.apps` entry gets its prefix-matched subset (stripped), non-destructive by default. |

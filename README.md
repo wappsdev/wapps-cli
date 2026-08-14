@@ -31,7 +31,7 @@ go install github.com/wappsdev/wapps-cli@latest
 ```bash
 wapps doctor              # check deps + access
 wapps login               # CF Access SSO (needs cloudflared)
-wapps secrets trust-repo  # pin this repo to its project (one-time, TTY)
+# then just use it — an unbound repo asks once whether to bind itself
 ```
 
 ## Usage
