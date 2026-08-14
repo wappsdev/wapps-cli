@@ -66,7 +66,7 @@ func gatherStatus() StatusReport {
 // statusProject, store-backed .wapps.yaml'dan proje adını döner (yoksa "").
 func statusProject() string {
 	cfg, err := loadOrNil(wappsConfigPath())
-	if err != nil || cfg == nil || !cfg.IsStoreBackend() {
+	if err != nil || cfg == nil {
 		return ""
 	}
 	return cfg.Project

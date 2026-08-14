@@ -3,7 +3,7 @@ package secrets
 // projects_test.go, `wapps secrets projects` ailesinin sözleşmesini pinler:
 //   - list: store'dan gelen ADları satır başına bir tane basar, sunucu sırasını
 //     bozmaz (filtreleme SUNUCUDA yapılır — istemci kendi kendine eleme yapmaz);
-//   - list legacy-git'te NOT_AVAILABLE;
+//   - artık desteklenmeyen legacy-git config'i adıyla reddedilir;
 //   - rm: onaysız hiçbir şey silmez ve ajan modunda CONTROL_PLANE_REQUIRED.
 
 import (
@@ -50,9 +50,10 @@ func TestRunProjectsList_EmptyIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestRunProjectsList_LegacyBackend_Refused(t *testing.T) {
+// legacy-git config'i parse edilmez; projects list de o hatayı yüzeye çıkarır.
+func TestRunProjectsList_LegacyConfigRejected(t *testing.T) {
 	tmp := setupStoreProject(t, "")
-	legacy := "version: 2\nbackend: legacy-git\nproject: testproj\ndest: secrets/all.enc.age\n" +
+	legacy := "version: 2\nbackend: legacy-git\nproject: testproj\n" +
 		"sources:\n  - type: file\n    path: .env.shared\n"
 	if err := os.WriteFile(filepath.Join(tmp, ".wapps.yaml"), []byte(legacy), 0644); err != nil {
 		t.Fatalf("write legacy .wapps.yaml: %v", err)
@@ -61,11 +62,11 @@ func TestRunProjectsList_LegacyBackend_Refused(t *testing.T) {
 
 	var out bytes.Buffer
 	err := runProjectsList(&out)
-	if !clierr.Is(err, clierr.NotAvailable) {
-		t.Fatalf("legacy backend must refuse with NOT_AVAILABLE, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "legacy-git") {
+		t.Fatalf("legacy-git config must be rejected by name, got %v", err)
 	}
 	if f.projectsCalls != 0 {
-		t.Errorf("legacy path must never reach the store, got %d calls", f.projectsCalls)
+		t.Errorf("a rejected config must never reach the store, got %d calls", f.projectsCalls)
 	}
 }
 

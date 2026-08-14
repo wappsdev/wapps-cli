@@ -2,7 +2,6 @@ package config
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,10 +22,9 @@ func TestParse_RealV1Fixtures(t *testing.T) {
 				t.Skipf("fixture %s unavailable (%v)", path, err)
 				return
 			}
-			require.Equal(t, 1, cfg.Version, "real fixtures are v1")
-			require.Equal(t, BackendLegacyGit, cfg.Backend, "absent backend → legacy-git")
-			require.False(t, cfg.IsStoreBackend())
-			require.NotEmpty(t, cfg.Sources, "legacy-git requires sources")
+			require.Equal(t, 2, cfg.Version)
+			require.Equal(t, BackendStore, cfg.Backend, "absent backend → store")
+
 		})
 	}
 }
@@ -42,7 +40,6 @@ profiles:
 `)
 	cfg, err := Parse(data)
 	require.NoError(t, err)
-	require.True(t, cfg.IsStoreBackend())
 	require.Equal(t, "vaulter", cfg.Project)
 	keys, ok := cfg.ProfileKeys("deploy")
 	require.True(t, ok)
@@ -75,50 +72,7 @@ sources:
 `)
 	cfg, err := Parse(data)
 	require.NoError(t, err)
-	require.True(t, cfg.IsStoreBackend())
 	require.Len(t, cfg.Sources, 1)
-}
-
-func TestParse_V2LegacyGitExplicit(t *testing.T) {
-	// backend: legacy-git açıkça → bugünkü kurallar (sources ZORUNLU).
-	data := []byte(`
-version: 2
-backend: legacy-git
-sources:
-  - type: tofu
-`)
-	cfg, err := Parse(data)
-	require.NoError(t, err)
-	require.Equal(t, BackendLegacyGit, cfg.Backend)
-
-	// legacy-git + sources yok → hata.
-	_, err = Parse([]byte("version: 2\nbackend: legacy-git\n"))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "at least one source")
-}
-
-func TestParse_V2AbsentBackendDefaultsLegacy(t *testing.T) {
-	// version 2 ama backend absent → legacy-git (sources ZORUNLU).
-	data := []byte(`
-version: 2
-sources:
-  - type: tofu
-`)
-	cfg, err := Parse(data)
-	require.NoError(t, err)
-	require.Equal(t, BackendLegacyGit, cfg.Backend)
-}
-
-func TestParse_V1WithBackendRejected(t *testing.T) {
-	// backend v1'de yasak (§7.12: v2 alanları version 2 ZORUNLU).
-	data := []byte(`
-version: 1
-backend: store
-project: x
-`)
-	_, err := Parse(data)
-	require.Error(t, err)
-	require.True(t, strings.Contains(err.Error(), "version: 2"))
 }
 
 func TestParse_UnknownBackendRejected(t *testing.T) {
@@ -130,18 +84,4 @@ project: x
 	_, err := Parse(data)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown backend")
-}
-
-func TestParse_ProfilesOnlyUnderStore(t *testing.T) {
-	data := []byte(`
-version: 2
-backend: legacy-git
-sources:
-  - type: tofu
-profiles:
-  x: [A]
-`)
-	_, err := Parse(data)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "profiles are only valid under backend: store")
 }

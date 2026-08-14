@@ -1,127 +1,14 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/config"
 )
-
-func TestRunSync_LegacyPath_NoWappsYAML(t *testing.T) {
-	// chdir to a temp dir with NO .wapps.yaml — runSync should fall back to
-	// the legacy tofu-only path. Since we can't easily inject tofu.Output here,
-	// we just verify that without the required env, preflight fails as expected
-	// (which proves we took the legacy branch).
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-
-	err := runSync(context.Background(), func(string) string { return "" })
-	if err == nil {
-		t.Fatal("expected preflight error in legacy path with empty env")
-	}
-	if !strings.Contains(err.Error(), "AWS_ACCESS_KEY_ID") {
-		t.Errorf("expected legacy preflight error, got: %v", err)
-	}
-}
-
-func TestRunSync_ConfigPath_FileOnlyNoTofuPreflight(t *testing.T) {
-	// vaulter-api scenario: file source only, no tofu. Preflight should NOT
-	// fire (empty env is OK) and runSync should produce an encrypted archive
-	// from the .env.shared file alone.
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-
-	yaml := []byte(`
-version: 1
-dest: secrets/all.enc.age
-sources:
-  - type: file
-    path: .env.shared
-`)
-	if err := os.WriteFile(".wapps.yaml", yaml, 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	if err := os.WriteFile(".env.shared", []byte("STRIPE_KEY=sk_test\nDB_PASSWORD=hunter2\n"), 0644); err != nil {
-		t.Fatalf("write env: %v", err)
-	}
-	if err := os.MkdirAll("secrets", 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	envMap := map[string]string{
-		"WAPPS_SECRETS_PASSPHRASE": "test-pp-123",
-	}
-	err := runSync(context.Background(), func(k string) string { return envMap[k] })
-	if err != nil {
-		t.Fatalf("runSync should succeed with file-only config, got: %v", err)
-	}
-
-	// Verify archive contents.
-	enc, err := os.ReadFile("secrets/all.enc.age")
-	if err != nil {
-		t.Fatalf("read archive: %v", err)
-	}
-	dec, err := ageutil.Decrypt(enc, "test-pp-123")
-	if err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
-	var got map[string]json.RawMessage
-	if err := json.Unmarshal(dec, &got); err != nil {
-		t.Fatalf("parse archive json: %v\nraw: %s", err, dec)
-	}
-	if len(got) != 2 {
-		t.Errorf("expected 2 keys in archive, got %d: %v", len(got), got)
-	}
-	if string(got["STRIPE_KEY"]) != `{"value":"sk_test"}` {
-		t.Errorf("STRIPE_KEY envelope wrong: %s", got["STRIPE_KEY"])
-	}
-}
-
-func TestRunSync_ConfigPath_TofuSourceRequiresPreflight(t *testing.T) {
-	// vaulter scenario: tofu source present → preflight must fire and demand
-	// AWS_*/TF_VAR_state_passphrase even though we never actually call tofu.
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-
-	yaml := []byte(`
-version: 1
-sources:
-  - type: tofu
-`)
-	if err := os.WriteFile(".wapps.yaml", yaml, 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-
-	err := runSync(context.Background(), func(string) string { return "" })
-	if err == nil {
-		t.Fatal("expected preflight error when tofu source declared with empty env")
-	}
-	if !strings.Contains(err.Error(), "AWS_ACCESS_KEY_ID") {
-		t.Errorf("expected preflight to demand AWS_ACCESS_KEY_ID, got: %v", err)
-	}
-}
-
-func TestRunSync_ConfigPath_RejectsBadYAML(t *testing.T) {
-	// Broken .wapps.yaml should fail loudly, NOT silently fall back to legacy.
-	// Silent fallback would overwrite a good archive with the wrong sources.
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	if err := os.WriteFile(".wapps.yaml", []byte("version: 1\nsources:\n  - type: doppler\n"), 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-
-	err := runSync(context.Background(), func(string) string { return "" })
-	if err == nil {
-		t.Fatal("expected error on bad source type")
-	}
-	if !strings.Contains(err.Error(), "doppler") {
-		t.Errorf("error should pinpoint bad type, got: %v", err)
-	}
-}
 
 // hasTofuSource's dispatch behavior is covered end-to-end by
 // TestRunSync_ConfigPath_FileOnlyNoTofuPreflight (file-only → no preflight)
@@ -201,26 +88,67 @@ func TestPreflightTofuEnv_AllMissingListsAll(t *testing.T) {
 	}
 }
 
-func TestSyncWritesEncryptedArchive(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "test-pass-123")
+// --dry-run, emekliye ayrılan `verify`in yerini alır: hangi anahtarın YENİ,
+// hangisinin DEĞİŞMİŞ olduğunu ADIYLA söyler ve store'a hiçbir şey yazmaz.
+func TestRunSyncStore_DryRun_ReportsNamesAndWritesNothing(t *testing.T) {
+	setupStoreProject(t, "sources:\n  - type: file\n    path: .env.shared\n")
+	f := installFakeStore(t)
+	f.values["SAME"] = "identical-val"
+	f.values["DRIFTED"] = "old-value"
 
-	stubOutput := `{"jwt_key":{"value":"abc","sensitive":true,"type":"string"}}`
-	stubFn := func() ([]byte, error) { return []byte(stubOutput), nil }
-
-	if err := syncWithTofuOutput(stubFn, filepath.Join(tmp, "all.enc.age")); err != nil {
-		t.Fatalf("sync failed: %v", err)
+	if err := os.WriteFile(".env.shared", []byte("SAME=identical-val\nDRIFTED=new-value\nBRAND_NEW=x\n"), 0600); err != nil {
+		t.Fatalf("write source: %v", err)
 	}
 
-	enc, err := os.ReadFile(filepath.Join(tmp, "all.enc.age"))
+	var out bytes.Buffer
+	if err := runSyncStore(context.Background(), mustLoadCfg(t), os.Getenv, true, &out); err != nil {
+		t.Fatalf("dry-run sync: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "+ BRAND_NEW") {
+		t.Errorf("new key must be marked +:\n%s", got)
+	}
+	if !strings.Contains(got, "~ DRIFTED") {
+		t.Errorf("changed key must be marked ~:\n%s", got)
+	}
+	if strings.Contains(got, "SAME") {
+		t.Errorf("unchanged keys must not be listed:\n%s", got)
+	}
+	// Değerler ASLA basılmaz.
+	for _, v := range []string{"new-value", "old-value", "identical-val"} {
+		if strings.Contains(got, v) {
+			t.Errorf("dry-run leaked a value (%q):\n%s", v, got)
+		}
+	}
+	if len(f.importCalls) != 0 {
+		t.Errorf("--dry-run must not write, got %+v", f.importCalls)
+	}
+}
+
+// Kaynaklar store ile birebir aynıysa "in sync" der.
+func TestRunSyncStore_DryRun_InSync(t *testing.T) {
+	setupStoreProject(t, "sources:\n  - type: file\n    path: .env.shared\n")
+	f := installFakeStore(t)
+	f.values["A"] = "1"
+
+	if err := os.WriteFile(".env.shared", []byte("A=1\n"), 0600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	var out bytes.Buffer
+	if err := runSyncStore(context.Background(), mustLoadCfg(t), os.Getenv, true, &out); err != nil {
+		t.Fatalf("dry-run sync: %v", err)
+	}
+	if !strings.Contains(out.String(), "In sync") {
+		t.Errorf("identical sources must report in-sync:\n%s", out.String())
+	}
+}
+
+func mustLoadCfg(t *testing.T) *config.WappsYAML {
+	t.Helper()
+	cfg, err := requireStoreConfig("test")
 	if err != nil {
-		t.Fatalf("read encrypted: %v", err)
+		t.Fatalf("load config: %v", err)
 	}
-	dec, err := ageutil.Decrypt(enc, "test-pass-123")
-	if err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
-	if string(dec) != stubOutput {
-		t.Errorf("Want %s, got %s", stubOutput, dec)
-	}
+	return cfg
 }

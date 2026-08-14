@@ -7,74 +7,46 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/atomicfile"
 	"github.com/wappsdev/wapps-cli/internal/config"
 )
 
 var applyCmd = &cobra.Command{
 	Use:   "apply",
-	Short: "Materialize all declared consumption targets from the archive",
-	Long: `Decrypt the archive once and write every target declared in
-.wapps.yaml's 'targets:' block atomically. Idempotent: if a target file
-on disk already matches what would be written, the file is left alone
-(mtime unchanged). Errors if no targets are declared — use
+	Short: "Write every declared consumption target from the store",
+	Long: `Fetch the project's secrets once and write every target declared in
+.wapps.yaml's 'targets:' block atomically. Idempotent: if a target file on
+disk already matches what would be written, the file is left alone (mtime
+unchanged). Errors if no targets are declared — use
 'wapps secrets env --write <file>' for one-off writes.
 
-Designed to be safe to call from npm 'predev' / 'prebuild' scripts so
-'.env.local' is always up-to-date with the archive.`,
+Safe to call from npm 'predev' / 'prebuild' scripts so '.env.local' always
+matches the store.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runApply(cmd.OutOrStdout())
 	},
 }
 
 func runApply(stdoutW io.Writer) error {
-	// Backend yönlendirme (§7.12): backend:store ise target'lar store snapshot'ından
-	// materialize edilir; aksi halde aşağıdaki legacy age-arşiv yolu AYNEN korunur.
-	storeCfg, cerr := storeBackendConfig()
-	if cerr != nil {
-		return cerr
-	}
-	if storeCfg != nil {
-		return runApplyStore(storeCfg, stdoutW)
-	}
-
-	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return fmt.Errorf("apply: WAPPS_SECRETS_PASSPHRASE not set")
-	}
-
-	cfg, err := config.Load(wappsConfigPath())
+	cfg, err := requireStoreConfig("apply")
 	if err != nil {
-		return fmt.Errorf("apply: %w", err)
+		return err
 	}
-	if len(cfg.Targets) == 0 {
-		return fmt.Errorf("apply: no targets declared in %s — add a 'targets:' block or use 'wapps secrets env --write <file>' for one-off writes", wappsYAMLPath)
-	}
-
-	enc, err := os.ReadFile(cfg.ResolveDest())
-	if err != nil {
-		return fmt.Errorf("apply: read %s: %w", cfg.Dest, err)
-	}
-	dec, err := ageutil.Decrypt(enc, passphrase)
-	if err != nil {
-		return fmt.Errorf("apply: decrypt: %w", err)
-	}
-
-	return applyTargets(cfg, dec, stdoutW)
+	return runApplyStore(cfg, stdoutW)
 }
 
 // applyTargets writes every declared target idempotently. Exported via the
-// internal package boundary so set/import-env/sync can call it after archive
+// internal package boundary so set/import-env/sync can call it after a store
 // updates without duplicating logic.
 //
 // stdoutW receives one human-readable line per target (wrote / unchanged) so
 // the operator can see what the command did. Never prints values.
-func applyTargets(cfg *config.WappsYAML, decryptedArchive []byte, stdoutW io.Writer) error {
+func applyTargets(cfg *config.WappsYAML, valuesJSON []byte, stdoutW io.Writer) error {
 	for i, t := range cfg.Targets {
 		prefix := t.EffectivePrefix(cfg.DefaultPrefix)
 
 		var buf bytes.Buffer
-		if err := writeTofuOutputsAsEnv(decryptedArchive, prefix, &buf); err != nil {
+		if err := writeTofuOutputsAsEnv(valuesJSON, prefix, &buf); err != nil {
 			return fmt.Errorf("apply: targets[%d] %s: format: %w", i, t.Path, err)
 		}
 		want := buf.Bytes()
@@ -97,7 +69,7 @@ func applyTargets(cfg *config.WappsYAML, decryptedArchive []byte, stdoutW io.Wri
 			return fmt.Errorf("apply: targets[%d] %s: stat existing: %w", i, t.Path, err)
 		}
 
-		if err := ageutil.WriteFileAtomic(target, want, 0600); err != nil {
+		if err := atomicfile.Write(target, want, 0600); err != nil {
 			return fmt.Errorf("apply: targets[%d] %s: write: %w", i, t.Path, err)
 		}
 		fmt.Fprintf(stdoutW, "wrote %s\n", t.Path)
@@ -105,20 +77,18 @@ func applyTargets(cfg *config.WappsYAML, decryptedArchive []byte, stdoutW io.Wri
 	return nil
 }
 
-// applyTargetsAfterArchiveWrite is the post-write hook used by every
-// archive-mutating command (sync, set, import-env, rotate-master). It writes
-// all declared targets idempotently. When no targets are declared this is a
-// no-op so the same call works in both targets-enabled and legacy repos.
+// applyTargetsAfterWrite is the post-write hook used by the store-mutating
+// verbs (set, import-env, sync). It writes all declared targets idempotently;
+// with no targets declared it is a no-op.
 //
-// Returns a wrapped error that names the archive path so the operator knows
-// the archive write succeeded and a manual `wapps secrets apply` would retry
-// just the file materialization step.
-func applyTargetsAfterArchiveWrite(cfg *config.WappsYAML, decryptedArchive []byte, stdoutW io.Writer) error {
+// The error names the store write as already committed, so the operator knows
+// only the local file materialization needs retrying — not the secret write.
+func applyTargetsAfterWrite(cfg *config.WappsYAML, valuesJSON []byte, stdoutW io.Writer) error {
 	if cfg == nil || len(cfg.Targets) == 0 {
 		return nil
 	}
-	if err := applyTargets(cfg, decryptedArchive, stdoutW); err != nil {
-		return fmt.Errorf("archive saved to %s but apply failed: %w (run 'wapps secrets apply' to retry)", cfg.Dest, err)
+	if err := applyTargets(cfg, valuesJSON, stdoutW); err != nil {
+		return fmt.Errorf("the store write succeeded but writing local targets failed: %w (run 'wapps secrets apply' to retry)", err)
 	}
 	return nil
 }

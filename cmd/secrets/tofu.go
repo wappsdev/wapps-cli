@@ -19,7 +19,7 @@ import (
 // de gizler: cwd'den projeyi çözer, secret'ları VERBATIM enjekte eder, tofu'yu
 // çalıştırır.
 //
-// Mekanizma runExec ile AYNEN paylaşılır (store + legacy-git backend yönlendirmesi,
+// Mekanizma runExec ile AYNEN paylaşılır (store okuması,
 // scrubber, exit-code propagation). GÜVENLİK: TofuCmd root'a mount'lu olduğundan
 // SecretsCmd.PersistentPreRunE (agent-guard + trust-repo binding pin) ÇALIŞMAZ;
 // bu yüzden `wapps secrets exec`'in confused-deputy korumasını (SPEC §7.1)
@@ -60,14 +60,13 @@ contexts (a fresh CI container authenticates with a CF Access service-token pair
 
 // runTofu, TofuCmd'in test edilebilir çekirdeğidir. tofuArgs'ın başına "tofu"
 // eklenir ve exec-ailesinin ORTAK yolu (runExec) prefix="" (verbatim) + intent
-// "dev" ile çağrılır — böylece store/legacy-git yönlendirmesi, scrubber ve
+// "dev" ile çağrılır — böylece store okuması, scrubber ve
 // exit-code propagation runExec ile birebir paylaşılır (çift kod yok).
 func runTofu(tofuArgs []string, isAgent bool, out, errW io.Writer, runner execRunner) error {
 	// F1 fix: TofuCmd root'a mount'lu → SecretsCmd.PersistentPreRunE (agent guard +
 	// trust-repo binding pin) çalışmaz. `wapps secrets exec`'in confused-deputy
 	// korumasını BYPASS etmemek için gate'i BURADA açıkça uygula (SPEC §7.1). exec
 	// gibi ajan modunda SERBEST (PolicyAllow) ama store-backend pin AYNEN enforce edilir
-	// (legacy-git'te checkRepoBinding no-op).
 	if err := agentmode.Guard(agentmode.PolicyAllow, isAgent); err != nil {
 		return err
 	}

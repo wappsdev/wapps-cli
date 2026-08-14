@@ -6,8 +6,6 @@ package secrets
 // NOT_FOUND üretmez, boş kesişim value.read okuması yapmaz) kanıtlanır.
 
 import (
-	"os"
-	"path/filepath"
 	"sort"
 	"testing"
 
@@ -87,27 +85,6 @@ func TestStoreValues_NoConfig_NilNil(t *testing.T) {
 	}
 	if f.keysCalls != 0 || len(f.readCalls) != 0 {
 		t.Error("store must not be touched without a backend:store config")
-	}
-}
-
-// TestStoreValues_LegacyConfig_NilNil: legacy-git .wapps.yaml → (nil, nil);
-// deploy'ın arşiv yolu P1.7 ile emekli — legacy config'te fallback env'dir.
-func TestStoreValues_LegacyConfig_NilNil(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	SetConfigPath("")
-	t.Cleanup(func() { SetConfigPath("") })
-	if err := os.WriteFile(filepath.Join(tmp, ".wapps.yaml"), []byte("version: 1\nsources:\n  - type: tofu\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f := installFakeStore(t)
-
-	got, err := StoreValues("DEPLOY_PROXY_TOKEN_VAULTER")
-	if err != nil || got != nil {
-		t.Fatalf("want (nil, nil) for legacy config, got (%v, %v)", got, err)
-	}
-	if f.keysCalls != 0 || len(f.readCalls) != 0 {
-		t.Error("store must not be touched for a legacy-git config")
 	}
 }
 

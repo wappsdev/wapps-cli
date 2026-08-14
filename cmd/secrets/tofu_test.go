@@ -2,7 +2,7 @@ package secrets
 
 // tofu_test.go — `wapps tofu` birinci-sınıf sarımının (runTofu) davranış kanıtı.
 // runTofu, exec ailesinin ORTAK yolunu (runExec) prefix="" (VERBATIM) + intent
-// "dev" ile çağırır; bu testler o sözleşmeyi hem legacy-git hem store backend'de
+// "dev" ile çağırır; bu testler o sözleşmeyi
 // doğrular: (a) komut adı "tofu" + argüman passthrough AYNEN, (b) VERBATIM prefix
 // (çift-prefix YOK), (c) scrubber sızıntıyı *** yapar.
 
@@ -198,7 +198,7 @@ func TestRunTofu_StoreBackend_UnpinnedRefused(t *testing.T) {
 			name = "agent"
 		}
 		t.Run(name, func(t *testing.T) {
-			setupStoreProject(t, "") // boş pin deposu + CF env çifti boş
+			setupStoreProjectUnpinned(t, "") // boş pin deposu + CF env çifti boş
 			f := installFakeStore(t)
 			f.values["TF_VAR_region"] = "eu-central"
 
@@ -231,21 +231,6 @@ func TestRunTofu_AgentMode_ServiceTokenPasses(t *testing.T) {
 	r := &fakeRunner{returnCode: 0}
 	if err := runTofu([]string{"apply"}, true, io.Discard, io.Discard, r.runner); err != nil {
 		t.Fatalf("agent-mode tofu with service-token pair must pass gate, got %v", err)
-	}
-	if r.gotName != "tofu" {
-		t.Errorf("runner should have run tofu, got %q", r.gotName)
-	}
-}
-
-// TestRunTofu_LegacyBackend_GateNoop — legacy-git backend'de checkRepoBinding
-// no-op'tur; gate eklendikten sonra da legacy yol (pin GEREKTİRMEZ) ajan modunda
-// dahi serbest çalışır — mevcut legacy testleriyle birlikte F1 fix'inin legacy'yi
-// bozmadığını doğrular.
-func TestRunTofu_LegacyBackend_GateNoop(t *testing.T) {
-	execTestSetup(t, map[string]string{"TF_VAR_foo": "bar"})
-	r := &fakeRunner{returnCode: 0}
-	if err := runTofu([]string{"plan"}, true, io.Discard, io.Discard, r.runner); err != nil {
-		t.Fatalf("legacy-git tofu gate must be no-op, got %v", err)
 	}
 	if r.gotName != "tofu" {
 		t.Errorf("runner should have run tofu, got %q", r.gotName)

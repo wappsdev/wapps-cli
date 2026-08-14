@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/atomicfile"
 )
 
 const (
@@ -170,7 +170,7 @@ func writeCache(path string, e cacheEntry) error {
 	// Atomic write (temp + fsync + rename, unique temp name) so two wapps
 	// processes refreshing the cache concurrently can't leave a torn JSON
 	// file behind. Reuses the same helper the archive paths use.
-	return ageutil.WriteFileAtomic(path, data, 0644)
+	return atomicfile.Write(path, data, 0644)
 }
 
 func fetchLatest(opts Options) (string, error) {

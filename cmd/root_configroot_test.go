@@ -16,7 +16,6 @@ func resetRootFlags(t *testing.T) {
 	t.Cleanup(func() {
 		cfgFile = ""
 		projectName = ""
-		noSync = false
 		secrets.SetConfigPath("")
 	})
 }
@@ -66,7 +65,7 @@ func TestRootCmd_ConfigAndProjectMutuallyExclusive(t *testing.T) {
 	// Use a real subcommand so cobra runs full flag-group validation (which
 	// fires before PersistentPreRunE/RunE). With no subcommand, root just
 	// prints help and skips group validation.
-	rootCmd.SetArgs([]string{"secrets", "list", "--config", "/tmp/a/.wapps.yaml", "--project", "vaulter", "--no-sync"})
+	rootCmd.SetArgs([]string{"secrets", "list", "--config", "/tmp/a/.wapps.yaml", "--project", "vaulter"})
 	rootCmd.SetOut(new(strings.Builder))
 	rootCmd.SetErr(new(strings.Builder))
 	t.Cleanup(func() { rootCmd.SetArgs(nil) })
@@ -79,14 +78,21 @@ func TestRootCmd_ConfigAndProjectMutuallyExclusive(t *testing.T) {
 	}
 }
 
-func TestResolveProjectFlag_UnknownProjectError(t *testing.T) {
+// Kayıt defterinde olmayan bir --project artık HATA DEĞİL: store'un ihtiyacı
+// olan tek şey proje adıdır, o da doğrudan secrets paketine düşer. Böylece
+// `wapps secrets list --project navlun-app` yerel bir klasör olmadan çalışır.
+func TestResolveProjectFlag_UnknownProjectFallsBackToName(t *testing.T) {
 	resetRootFlags(t)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // empty → no registry
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // boş → kayıt defteri yok
 	projectName = "ghost"
 	cfgFile = ""
-	err := resolveProjectFlag()
-	if err == nil || !strings.Contains(err.Error(), `unknown project "ghost"`) {
-		t.Errorf("expected unknown-project error, got: %v", err)
+	t.Cleanup(func() { secrets.SetProjectName("") })
+
+	if err := resolveProjectFlag(); err != nil {
+		t.Fatalf("unknown project must not error, got: %v", err)
+	}
+	if cfgFile != "" {
+		t.Errorf("no local dir exists, so cfgFile must stay empty; got %q", cfgFile)
 	}
 }
 
@@ -100,7 +106,6 @@ func TestPersistentPreRun_SkipsWhenConfigRootNotRepo(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 	cfgFile = filepath.Join(projDir, ".wapps.yaml")
-	noSync = false
 
 	// Invoke the preflight directly with the root command (Name() == "wapps",
 	// no parent) so it proceeds past the doctor/git skips to the IsRepo guard.

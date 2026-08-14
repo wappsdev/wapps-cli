@@ -4,5 +4,5 @@ import "github.com/spf13/cobra"
 
 var SecretsCmd = &cobra.Command{
 	Use:   "secrets",
-	Short: "Manage encrypted secret archive (age + Tofu state)",
+	Short: "Read and write this project's secrets in the gate",
 }

@@ -37,7 +37,7 @@ func runTrustRepo(out io.Writer, in io.Reader, isAgent bool) error {
 	if err != nil {
 		return err
 	}
-	if cfg == nil || !cfg.IsStoreBackend() {
+	if cfg == nil {
 		return clierr.New(clierr.Internal, "trust-repo applies only to a backend: store .wapps.yaml")
 	}
 	repoID := repoIdentity(cfg)

@@ -9,26 +9,11 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 	"github.com/wappsdev/wapps-cli/internal/config"
 	"github.com/wappsdev/wapps-cli/internal/coolify"
 	"github.com/wappsdev/wapps-cli/internal/source"
 	"github.com/wappsdev/wapps-cli/internal/tofu"
 )
-
-// defaultArchiveRel is the archive path used when no .wapps.yaml declares one.
-const defaultArchiveRel = "secrets/all.enc.age"
-
-// resolveLegacyDest resolves the default archive path against an override dir
-// (when --config/--project pointed at a dir lacking a parseable .wapps.yaml),
-// or returns it cwd-relative when there's no override.
-func resolveLegacyDest() string {
-	root := overrideRoot()
-	if root == "" {
-		return defaultArchiveRel
-	}
-	return filepath.Join(root, defaultArchiveRel)
-}
 
 // wappsYAMLPath is the default config filename, used (cwd-relative) when no
 // --config/--project override has been supplied — the legacy behavior.
@@ -44,6 +29,15 @@ const wappsYAMLPath = ".wapps.yaml"
 // argument would churn every command + test for no behavioral gain. The seam is
 // test-settable; tests must SetConfigPath("") in cleanup to avoid leaking it.
 var configPathOverride string
+
+// projectOverride, --project ile verilen ve YEREL KAYIT DEFTERİNDE OLMAYAN bir
+// proje adıdır. Store'un ihtiyacı olan tek şey ad olduğundan (list/get/rm/
+// projects yerel dosyaya hiç bakmaz), böyle bir çağrı repo'suz çalışır.
+var projectOverride string
+
+// SetProjectName, cmd/root'tan çağrılır: --project bir dizine çözülemediğinde
+// adın kendisi buraya düşer.
+func SetProjectName(name string) { projectOverride = name }
 
 // SetConfigPath is called by cmd/root (PersistentPreRunE) with the resolved
 // absolute .wapps.yaml path, or "" for the cwd default.
@@ -74,12 +68,13 @@ var (
 	syncCoolifyAllApps bool
 	syncCoolifyURL     string
 	syncForce          bool
+	syncDryRun         bool
 	syncPrefix         string
 )
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sources → encrypted archive (or push archive to a target with --target)",
+	Short: "Push declared sources into the store (or to a target with --target)",
 	Long: `Without --target: read all sources declared in .wapps.yaml, merge
 them, and write an encrypted archive to dest.
 
@@ -125,74 +120,18 @@ func defaultCoolifyClient(baseURL, token string) coolifyAPI {
 	return coolify.New(baseURL, token)
 }
 
-// runSync is the testable entry point for `wapps secrets sync`. It picks
-// between two paths:
-//
-//   - Legacy (no .wapps.yaml): single tofu source, dest = secrets/all.enc.age.
-//     Preserves the v0.5.x behavior so existing repos continue to work.
-//   - Config-driven (.wapps.yaml present): one or more sources merged into the
-//     archive at the configured dest. Multi-repo rollout depends on this path.
+// runSync is the testable entry point for `wapps secrets sync`: it reads the
+// declared sources, merges them, and writes the result to the store in ONE
+// epoch. --dry-run reports which key NAMES would change instead of writing.
 //
 // lookup is os.Getenv in production; tests inject their own to drive specific
 // env states without polluting the parent process.
 func runSync(ctx context.Context, lookup func(string) string) error {
-	cfg, err := loadOrNil(wappsConfigPath())
+	cfg, err := requireStoreConfig("sync")
 	if err != nil {
 		return err
 	}
-
-	// Backend yönlendirme (§7.12): backend:store ise kaynaklar merge edilip TEK bir
-	// epoch+1 commit ile store'a yazılır; aksi halde aşağıdaki legacy yol AYNEN korunur.
-	if cfg != nil && cfg.IsStoreBackend() {
-		return runSyncStore(ctx, cfg, lookup)
-	}
-
-	if cfg == nil {
-		// Legacy single-tofu path.
-		if err := preflightTofuEnv(lookup); err != nil {
-			return err
-		}
-		return syncWithTofuOutput(tofu.Output, resolveLegacyDest())
-	}
-
-	// Config-driven path. Only preflight tofu env if at least one source needs it.
-	if hasTofuSource(cfg.Sources) {
-		if err := preflightTofuEnv(lookup); err != nil {
-			return err
-		}
-	}
-
-	// ResolvedSources joins each source's path/workdir to configRoot so a
-	// --project sync reads the right .env.shared / tofu dir, not cwd's.
-	merged, err := readAndMerge(ctx, cfg.ResolvedSources())
-	if err != nil {
-		return err
-	}
-
-	passphrase := lookup("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return fmt.Errorf("WAPPS_SECRETS_PASSPHRASE not set")
-	}
-
-	payload, err := json.Marshal(merged)
-	if err != nil {
-		return fmt.Errorf("secrets.sync: marshal merged: %w", err)
-	}
-
-	if err := ageutil.EncryptWriteAtomic(cfg.ResolveDest(), payload, passphrase); err != nil {
-		return fmt.Errorf("secrets.sync: %w", err)
-	}
-
-	// Auto-apply targets so 'sync' fully refreshes the dev environment in
-	// one command — sources → archive → consumption files.
-	if err := applyTargetsAfterArchiveWrite(cfg, payload, os.Stderr); err != nil {
-		return err
-	}
-
-	fmt.Printf("✓ Wrote %s (%d keys from %d sources)\n",
-		cfg.Dest, len(merged), len(cfg.Sources))
-	emitCommitHint(cfg.Dest)
-	return nil
+	return runSyncStore(ctx, cfg, lookup, syncDryRun, os.Stdout)
 }
 
 // loadOrNil returns nil when the config file doesn't exist, propagates parse
@@ -240,40 +179,12 @@ func readAndMerge(ctx context.Context, cfgs []source.Config) (map[string]json.Ra
 	return merged, nil
 }
 
-func emitCommitHint(dest string) {
-	// Split "+" + "%Y-%m-%d" emits the literal shell snippet "$(date +%Y-%m-%d)"
-	// for the user's shell to evaluate. Combined into one literal would trigger
-	// go vet's printf format-string check (treating %Y/%m/%d as Go format verbs).
-	dateFmt := "+" + "%Y-%m-%d"
-	fmt.Printf("Next: git add %s && git commit -m 'chore: secret sync $(date %s)'\n", dest, dateFmt)
-}
-
 // preflightTofuEnv is a thin shim that delegates to tofu.PreflightEnv so
 // both `wapps secrets sync` and `wapps doctor --for tofu` share one
 // implementation. Kept as a package-local function so the existing sync
 // tests don't have to import the tofu package.
 func preflightTofuEnv(lookup func(string) string) error {
 	return tofu.PreflightEnv(lookup)
-}
-
-func syncWithTofuOutput(outputFn func() ([]byte, error), destPath string) error {
-	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return fmt.Errorf("WAPPS_SECRETS_PASSPHRASE not set")
-	}
-
-	out, err := outputFn()
-	if err != nil {
-		return fmt.Errorf("secrets.sync: tofu output: %w", err)
-	}
-
-	if err := ageutil.EncryptWriteAtomic(destPath, out, passphrase); err != nil {
-		return fmt.Errorf("secrets.sync: %w", err)
-	}
-
-	fmt.Printf("✓ Wrote %s\n", destPath)
-	emitCommitHint(destPath)
-	return nil
 }
 
 func init() {
@@ -285,6 +196,8 @@ func init() {
 		"push to every app in .wapps.yaml's coolify_sync.apps (prefix-stripped, non-destructive)")
 	syncCmd.Flags().StringVar(&syncCoolifyURL, "coolify-url", "https://coolify.meapps.dev/api/v1",
 		"Coolify API base URL")
+	syncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false,
+		"show which keys would be added or changed (names only) without writing")
 	syncCmd.Flags().BoolVar(&syncForce, "force", false,
 		"with --target=coolify: apply the diff (default is dry-run only)")
 	syncCmd.Flags().StringVar(&syncPrefix, "prefix", "",

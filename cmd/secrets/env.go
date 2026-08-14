@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
 var (
@@ -21,8 +20,8 @@ var (
 
 var envCmd = &cobra.Command{
 	Use:   "env",
-	Short: "Dump all secrets as .envrc-style export lines",
-	Long: `Dump all secrets as 'export KEY=VALUE' lines.
+	Short: "Emit the project's secrets as .envrc-style export lines",
+	Long: `Emit the project's secrets as 'export KEY=VALUE' lines.
 
 By default writes to stdout (printable). Use --write <file> to write to a
 file silently (AI-safe path — no secret value reaches stdout, terminal,
@@ -53,47 +52,17 @@ by non-Tofu repos like vaulter-api).`,
 // workflows are unchanged. Empty string disables prefixing (vaulter-api
 // and other non-Tofu repos).
 func runEnv(writePath, prefix string, stdoutW io.Writer) error {
-	// Backend yönlendirme (§7.12): backend:store ise export satırları store
-	// snapshot'ından üretilir; aksi halde aşağıdaki legacy age-arşiv yolu AYNEN korunur.
-	storeCfg, cerr := storeBackendConfig()
-	if cerr != nil {
-		return cerr
-	}
-	if storeCfg != nil {
-		return runEnvStore(storeCfg, writePath, prefix, stdoutW)
-	}
-
-	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return fmt.Errorf("env: WAPPS_SECRETS_PASSPHRASE not set")
-	}
-
-	// Archive path comes from .wapps.yaml when present, otherwise legacy
-	// default. We don't need the full config here — just the dest path.
-	archivePath := resolveArchivePath()
-
-	enc, err := os.ReadFile(archivePath)
+	cfg, err := requireStoreConfig("env")
 	if err != nil {
-		return fmt.Errorf("env: read %s: %w", archivePath, err)
+		return err
 	}
-	dec, err := ageutil.Decrypt(enc, passphrase)
-	if err != nil {
-		return fmt.Errorf("env: decrypt: %w", err)
-	}
-
-	if writePath == "" {
-		// Legacy stdout path. Operator-driven, terminal-attached.
-		return writeTofuOutputsAsEnv(dec, prefix, stdoutW)
-	}
-
-	// AI-safe path: write to file, stdout stays empty.
-	return writeEnvFileAtomic(writePath, dec, prefix)
+	return runEnvStore(cfg, writePath, prefix, stdoutW)
 }
 
 // writeEnvFileAtomic emits env output to a temp file at writePath+".tmp",
 // then renames into place. Atomic so a power loss or signal mid-write
 // can't leave a partially-decrypted .env.local on disk.
-func writeEnvFileAtomic(writePath string, archiveDecrypted []byte, prefix string) error {
+func writeEnvFileAtomic(writePath string, valuesJSON []byte, prefix string) error {
 	tmp := writePath + ".tmp"
 	// Open with 0600 — env files contain plaintext secrets and must not be
 	// world-readable.
@@ -101,7 +70,7 @@ func writeEnvFileAtomic(writePath string, archiveDecrypted []byte, prefix string
 	if err != nil {
 		return fmt.Errorf("env: open temp %s: %w", tmp, err)
 	}
-	if err := writeTofuOutputsAsEnv(archiveDecrypted, prefix, f); err != nil {
+	if err := writeTofuOutputsAsEnv(valuesJSON, prefix, f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err
@@ -117,39 +86,9 @@ func writeEnvFileAtomic(writePath string, archiveDecrypted []byte, prefix string
 	return nil
 }
 
-// resolveArchivePath returns the archive path declared in .wapps.yaml if
-// the file exists, otherwise the legacy default. We deliberately do NOT
-// fail on broken .wapps.yaml here — env is a read-only operation and the
-// legacy default is a safe fallback for old repos. Sync/Set are the
-// commands that halt on broken config because they WRITE.
-func resolveArchivePath() string {
-	cfg, _ := loadOrNil(wappsConfigPath())
-	if cfg != nil && cfg.Dest != "" {
-		// Resolve against the .wapps.yaml dir (configRoot) so reads work from
-		// any cwd under --config/--project. When no override is set, configRoot
-		// == cwd → identical to the old cwd-relative behavior.
-		return cfg.ResolveDest()
-	}
-	// No/absent config: resolve the default against the override dir if one was
-	// given, else cwd-relative (legacy).
-	return resolveLegacyDest()
-}
-
-// archiveRelForGit returns the repo-relative archive path for `git show`, which
-// treats its argument as a pathspec (not a filesystem path). Always the raw
-// cfg.Dest (or the default) — never configRoot-resolved, since an absolute path
-// would make `git show <ref>:./<path>` fail. Used by diff's git-ref side.
-func archiveRelForGit() string {
-	cfg, _ := loadOrNil(wappsConfigPath())
-	if cfg != nil && cfg.Dest != "" {
-		return cfg.Dest
-	}
-	return defaultArchiveRel
-}
-
 // envName applies the source prefix to a key idempotently: a key that already
 // starts with the prefix is emitted verbatim, never double-prefixed. This keeps
-// a mixed archive correct — Tofu outputs are stored bare (e.g. coolify_uuid →
+// a mixed key set correct — Tofu outputs are stored bare (e.g. coolify_uuid →
 // TF_VAR_coolify_uuid) while file-source secrets carried in already prefixed
 // (e.g. TF_VAR_gemini_api_key) round-trip unchanged instead of becoming
 // TF_VAR_TF_VAR_gemini_api_key. An empty prefix emits every key as-is.
@@ -175,7 +114,7 @@ func writeTofuOutputsAsEnv(jsonInput []byte, prefix string, w io.Writer) error {
 		Value json.RawMessage `json:"value"`
 	}
 	if err := json.Unmarshal(jsonInput, &outputs); err != nil {
-		return fmt.Errorf("env: parse archive: %w", err)
+		return fmt.Errorf("env: parse values: %w", err)
 	}
 
 	keys := make([]string, 0, len(outputs))

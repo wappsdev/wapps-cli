@@ -6,8 +6,8 @@ package secrets
 //   1. backend:store → exec/apply/get/env/set/sync internal/store'a yönlenir
 //      (Read/Set/Import gözlenir; PLAINTEXT değerler enjekte edilir §2.7; agent-modu
 //      korunur), oturum yokluğu NET SESSION_EXPIRED clierr ile yüzeye çıkar.
-//   2. backend yok / legacy-git → legacy age-arşiv yolu DEĞİŞMEDEN çalışır (fake
-//      store ASLA çağrılmaz).
+//   2. .wapps.yaml yoksa verb'ler net bir hata verir (sessizce hiçbir yere
+//      yazmazlar).
 
 import (
 	"bytes"
@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wappsdev/wapps-cli/internal/binding"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/config"
 	"github.com/wappsdev/wapps-cli/internal/store"
@@ -173,7 +174,49 @@ func setupStoreProject(t *testing.T, extraYAML string) string {
 	if err := os.WriteFile(filepath.Join(tmp, ".wapps.yaml"), []byte(yaml), 0644); err != nil {
 		t.Fatalf("write .wapps.yaml: %v", err)
 	}
+	pinTestRepo(t, tmp, "testproj")
 	return tmp
+}
+
+// setupStoreProjectUnpinned, setupStoreProject ile aynıdır ama repo→proje
+// bağlamasını PİNLEMEZ — bağlama yokluğunun fail-closed olduğunu sınayan
+// testler içindir.
+func setupStoreProjectUnpinned(t *testing.T, extraYAML string) string {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WAPPS_SESSION_TOKEN", "")
+	t.Setenv("CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	SetConfigPath("")
+	t.Cleanup(func() { SetConfigPath("") })
+	yaml := "version: 2\nbackend: store\nproject: testproj\n" + extraYAML
+	if err := os.WriteFile(filepath.Join(tmp, ".wapps.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("write .wapps.yaml: %v", err)
+	}
+	return tmp
+}
+
+// pinTestRepo, repo→proje bağlamasını izole XDG home'una yazar. Gerçek bir
+// projede bunu insan `wapps secrets trust-repo` ile yapar; testlerde varsayılan
+// olarak PİNLİ başlamak doğrudur — bağlama YOKLUĞUNU sınayan testler kendi
+// kurulumunu yapar.
+func pinTestRepo(t *testing.T, repoDir, project string) {
+	t.Helper()
+	path, err := binding.DefaultPath()
+	if err != nil {
+		t.Fatalf("binding path: %v", err)
+	}
+	st, err := binding.Load(path)
+	if err != nil {
+		t.Fatalf("binding load: %v", err)
+	}
+	abs, _ := filepath.Abs(repoDir)
+	st.Pin(binding.Fingerprint(abs), binding.Pin{Repo: abs, Project: project, Backend: "store"})
+	if err := st.Save(path); err != nil {
+		t.Fatalf("binding save: %v", err)
+	}
 }
 
 // --- routing: reads ----------------------------------------------------------
@@ -279,70 +322,6 @@ func TestEnv_StoreBackend_RoutesToStore(t *testing.T) {
 	}
 }
 
-// list, backend:store'da anahtar ADLARINI metadata düzleminden (GET /keys) çeker:
-// passphrase/arşiv GEREKMEZ, Store.Read ASLA çağrılmaz (audit'e value.read düşmez),
-// çıktı legacy ile aynı biçimdedir (satır başına bir ad, sıralı).
-func TestList_StoreBackend_ListsNamesViaKeysMetadata(t *testing.T) {
-	setupStoreProject(t, "")
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "") // store yolu passphrase istememeli
-	f := installFakeStore(t)
-	f.values["DB_PASSWORD"] = "hunter2"
-	f.values["API_KEY"] = "abc"
-
-	var out bytes.Buffer
-	if err := runList(&out); err != nil {
-		t.Fatalf("runList (store): %v", err)
-	}
-	if f.keysCalls != 1 {
-		t.Fatalf("store Keys should be called exactly once, got %d", f.keysCalls)
-	}
-	if len(f.readCalls) != 0 {
-		t.Fatalf("list is metadata-plane: Store.Read must NEVER be called, got %d", len(f.readCalls))
-	}
-	if out.String() != "API_KEY\nDB_PASSWORD\n" {
-		t.Errorf("list output: got %q, want sorted names one per line", out.String())
-	}
-	// Değerler ASLA çıktıya sızmamalı.
-	if bytes.Contains(out.Bytes(), []byte("hunter2")) {
-		t.Error("list leaked a secret value")
-	}
-}
-
-// legacy backend'de list, age arşivinden okumaya devam eder (fake store'a gitmez).
-func TestList_LegacyBackend_DoesNotRouteToStore(t *testing.T) {
-	execTestSetup(t, map[string]string{"DB_PASSWORD": "hunter2"})
-	f := installFakeStore(t)
-
-	var out bytes.Buffer
-	if err := runList(&out); err != nil {
-		t.Fatalf("legacy runList: %v", err)
-	}
-	if f.keysCalls != 0 {
-		t.Fatalf("legacy backend must NOT route list to the store; keysCalls=%d", f.keysCalls)
-	}
-	if out.String() != "DB_PASSWORD\n" {
-		t.Errorf("legacy list output: got %q", out.String())
-	}
-}
-
-// diff, backend:store'da FAIL LOUD olur (NOT_AVAILABLE): git-ref karşılaştırması
-// store'da tanımsızdır; legacy arşive/passphrase'e DOKUNULMAZ — bayat bir legacy
-// arşivin sessizce diff'lenmesi (P2) bu şekilde imkansızlaşır.
-func TestDiff_StoreBackend_FailsLoudNotAvailable(t *testing.T) {
-	setupStoreProject(t, "")
-	installFakeStore(t)
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "irrelevant")
-
-	gitShow := func(ref, path string) ([]byte, error) {
-		t.Fatalf("diff must not touch git archive history in store mode (asked for %s:%s)", ref, path)
-		return nil, nil
-	}
-	err := runDiff("HEAD~1", gitShow, io.Discard)
-	if !clierr.Is(err, clierr.NotAvailable) {
-		t.Fatalf("want NOT_AVAILABLE, got: %v", err)
-	}
-}
-
 // TRANSCRIPT-LEAK KANARYASI (store yolu, §7.4.3): store'dan çekilmiş bir değeri
 // echo'layan alt-süreç, o değeri yakalanan stdout/stderr'e ASLA sızdıramaz —
 // scrubber onu *** yapar. Legacy exec'teki kanaryanın store-backend eşleniği.
@@ -381,36 +360,6 @@ func TestExec_StoreBackend_ScrubsChildOutput(t *testing.T) {
 }
 
 // --- routing: writes ---------------------------------------------------------
-
-func TestSet_StoreBackend_RoutesToSet(t *testing.T) {
-	setupStoreProject(t, "")
-	f := installFakeStore(t)
-
-	// Değer --from-file ile yakalanır (TTY gerekmez).
-	valFile := filepath.Join(t.TempDir(), "val")
-	if err := os.WriteFile(valFile, []byte("s3cr3t\n"), 0600); err != nil {
-		t.Fatalf("write val file: %v", err)
-	}
-
-	if err := runSet("DB_PASSWORD", setOptions{fromFile: valFile}); err != nil {
-		t.Fatalf("runSet (store) should succeed with the fake set: %v", err)
-	}
-	if len(f.setCalls) != 1 {
-		t.Fatalf("store Set should be called once, got %d", len(f.setCalls))
-	}
-	c := f.setCalls[0]
-	if c.project != "testproj" || c.key != "DB_PASSWORD" {
-		t.Errorf("Set target: got %s/%s", c.project, c.key)
-	}
-	// Sondaki newline soyulmuş olmalı.
-	if c.value != "s3cr3t" {
-		t.Errorf("Set value: got %q, want s3cr3t", c.value)
-	}
-	// Store yolunda age-arşivi YAZILMAMALI.
-	if _, statErr := os.Stat("secrets/all.enc.age"); !os.IsNotExist(statErr) {
-		t.Error("store set must not write the legacy archive")
-	}
-}
 
 func TestSync_StoreBackend_ImportsWithSyncIntent(t *testing.T) {
 	dir := setupStoreProject(t, "sources:\n  - type: file\n    path: .env.shared\n")
@@ -452,30 +401,6 @@ func TestExec_StoreBackend_BreakGlassAgentRefusedBeforeStore(t *testing.T) {
 }
 
 // --- legacy default is untouched -----------------------------------------------
-
-// backend YOK (version:1) → legacy age-arşiv yolu kullanılır; fake store ASLA
-// çağrılmaz. Enjekte edilen env, legacy arşivinden gelir.
-func TestExec_LegacyBackend_DoesNotRouteToStore(t *testing.T) {
-	execTestSetup(t, map[string]string{"DB_PASSWORD": "hunter2"})
-	f := installFakeStore(t)
-
-	r := &fakeRunner{returnCode: 0}
-	if err := runExec([]string{"printenv"}, "TF_VAR_", "dev", false, false, io.Discard, io.Discard, r.runner); err != nil {
-		t.Fatalf("legacy runExec: %v", err)
-	}
-	if len(f.readCalls) != 0 {
-		t.Fatalf("legacy backend must NOT route to the store; reads=%d", len(f.readCalls))
-	}
-	found := false
-	for _, e := range r.gotEnv {
-		if e == "TF_VAR_DB_PASSWORD=hunter2" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("legacy archive env missing; env=%v", r.gotEnv)
-	}
-}
 
 // --- real wiring: default openStore builds a real WorkerStore -------------------
 

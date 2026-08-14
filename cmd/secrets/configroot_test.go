@@ -1,184 +1,116 @@
 package secrets
 
+// configroot_test.go, "başka bir dizinden çağırabilme" sözleşmesini pinler:
+// cwd projeyle İLGİSİZ bir dizinken --config/--project ile verb'ler doğru
+// projeye gider ve yazdıkları dosyalar configRoot altına düşer — operatörün
+// bulunduğu rastgele dizine DEĞİL.
+//
+// (Eskiden bu dosya age-arşiv yolunun cwd bağımsızlığını sınıyordu; arşiv
+// kalkınca konu aynı kaldı, mekanizma store'a taşındı.)
+
 import (
 	"bytes"
-	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
-// setupForeignProject builds a project dir (with .wapps.yaml + seeded archive),
-// chdirs to an UNRELATED dir so cwd != configRoot, sets the passphrase, and
-// wires the package config override to the project's .wapps.yaml (simulating
-// what --config/--project do via root's PersistentPreRunE). Returns the project
-// dir. The override is reset in cleanup so it can't leak into sibling tests.
-//
-// yamlExtra is appended after the file source block (e.g. a targets: block).
-func setupForeignProject(t *testing.T, archive map[string]string, yamlExtra string) string {
+// setupForeignProject, bir proje dizini kurar, cwd'yi İLGİSİZ bir dizine
+// taşır ve paket config override'ını projenin .wapps.yaml'ına bağlar (root'un
+// PersistentPreRunE'unda --config/--project'in yaptığının aynısı). Store fake'i
+// verilen değerlerle doldurulur. Döndürdüğü şey proje dizinidir.
+func setupForeignProject(t *testing.T, values map[string]string, yamlExtra string) string {
 	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WAPPS_SESSION_TOKEN", "")
+	t.Setenv("CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
+
 	projDir := t.TempDir()
 	otherDir := t.TempDir()
-	pp := "cfgroot-pp"
 
-	if err := os.MkdirAll(filepath.Join(projDir, "secrets"), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	envelope := make(map[string]json.RawMessage)
-	for k, v := range archive {
-		b, _ := json.Marshal(map[string]string{"value": v})
-		envelope[k] = b
-	}
-	raw, _ := json.Marshal(envelope)
-	if err := ageutil.EncryptWriteAtomic(filepath.Join(projDir, "secrets", "all.enc.age"), raw, pp); err != nil {
-		t.Fatalf("seed archive: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(projDir, ".env.shared"), []byte(""), 0600); err != nil {
-		t.Fatalf("seed file source: %v", err)
-	}
-	yaml := "version: 1\nsources:\n  - type: file\n    path: .env.shared\n" + yamlExtra
+	yaml := "version: 2\nbackend: store\nproject: testproj\n" + yamlExtra
 	if err := os.WriteFile(filepath.Join(projDir, ".wapps.yaml"), []byte(yaml), 0644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-	t.Chdir(otherDir) // cwd is deliberately NOT the project dir
+	t.Chdir(otherDir) // cwd BİLEREK proje dizini değil
 	SetConfigPath(filepath.Join(projDir, ".wapps.yaml"))
 	t.Cleanup(func() { SetConfigPath("") })
+
+	f := installFakeStore(t)
+	for k, v := range values {
+		f.values[k] = v
+	}
 	return projDir
 }
 
-// Acceptance #1: list from a foreign cwd via --config → non-empty names.
+// Kabul #1: yabancı bir cwd'den list → adlar gelir.
 func TestList_ConfigRootDifferentCwd(t *testing.T) {
 	setupForeignProject(t, map[string]string{"alpha": "1", "beta": "2"}, "")
 
 	var buf bytes.Buffer
-	if err := listKeys(resolveArchivePath(), &buf); err != nil {
-		t.Fatalf("listKeys: %v", err)
+	if err := runList(&buf); err != nil {
+		t.Fatalf("runList: %v", err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, "alpha") || !strings.Contains(got, "beta") {
-		t.Errorf("list from foreign cwd missing keys, got:\n%s", got)
+	for _, want := range []string{"alpha", "beta"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("key %q missing from foreign-cwd list:\n%s", want, got)
+		}
 	}
 }
 
-// Acceptance #2: get from a foreign cwd via --config → value.
+// Kabul #2: yabancı bir cwd'den get → doğru değer.
 func TestGet_ConfigRootDifferentCwd(t *testing.T) {
-	setupForeignProject(t, map[string]string{"coolify_uuid": "u-123"}, "")
+	setupForeignProject(t, map[string]string{"DB_PASSWORD": "hunter2"}, "")
 
-	val, err := readKey(resolveArchivePath(), "coolify_uuid")
-	if err != nil {
-		t.Fatalf("readKey: %v", err)
+	var buf bytes.Buffer
+	if err := runGet("DB_PASSWORD", &buf); err != nil {
+		t.Fatalf("runGet: %v", err)
 	}
-	if val != "u-123" {
-		t.Errorf("got %q, want u-123", val)
+	if strings.TrimSpace(buf.String()) != "hunter2" {
+		t.Errorf("value: got %q, want hunter2", buf.String())
 	}
 }
 
-// Acceptance #4: exec from a foreign cwd injects the archive env into the
-// subprocess. We use a fake execRunner that captures the env handed to it.
+// Kabul #3: yabancı bir cwd'den exec → alt sürece env enjekte edilir.
 func TestExec_ConfigRootInjectsEnv(t *testing.T) {
-	setupForeignProject(t, map[string]string{"coolify_uuid": "u-123"}, "")
+	setupForeignProject(t, map[string]string{"API_KEY": "sk_live"}, "")
 
 	r := &fakeRunner{returnCode: 0}
-	if err := execCall([]string{"true"}, "", r.runner); err != nil {
+	if err := runExec([]string{"printenv"}, "TF_VAR_", "dev", false, false, io.Discard, io.Discard, r.runner); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 	found := false
-	for _, kv := range r.gotEnv {
-		if kv == "coolify_uuid=u-123" || kv == "TF_VAR_coolify_uuid=u-123" {
+	for _, e := range r.gotEnv {
+		if e == "TF_VAR_API_KEY=sk_live" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("exec env missing injected key; env=%v", r.gotEnv)
+		t.Errorf("foreign-cwd exec must inject the project's secrets; env=%v", r.gotEnv)
 	}
 }
 
-// Acceptance #5 (regression): in the project dir, NO override → legacy behavior
-// works byte-identically (configRoot == cwd).
-func TestList_NoOverrideLegacy(t *testing.T) {
-	projDir := t.TempDir()
-	pp := "legacy-pp"
-	if err := os.MkdirAll(filepath.Join(projDir, "secrets"), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	envelope := map[string]json.RawMessage{"x": json.RawMessage(`{"value":"y"}`)}
-	raw, _ := json.Marshal(envelope)
-	if err := ageutil.EncryptWriteAtomic(filepath.Join(projDir, "secrets", "all.enc.age"), raw, pp); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(projDir, ".wapps.yaml"), []byte("version: 1\nsources:\n  - type: tofu\n"), 0644); err != nil {
-		t.Fatalf("yaml: %v", err)
-	}
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-	t.Chdir(projDir)  // cwd IS the project dir
-	SetConfigPath("") // no override (legacy)
-	t.Cleanup(func() { SetConfigPath("") })
-
-	var buf bytes.Buffer
-	if err := listKeys(resolveArchivePath(), &buf); err != nil {
-		t.Fatalf("listKeys legacy: %v", err)
-	}
-	if !strings.Contains(buf.String(), "x") {
-		t.Errorf("legacy list broke, got:\n%s", buf.String())
-	}
-}
-
-// Acceptance #7-ish: an absolute dest in .wapps.yaml is read verbatim even
-// under --config (no Join applied).
-func TestRead_AbsoluteDestUnchanged(t *testing.T) {
-	projDir := t.TempDir()
-	otherDir := t.TempDir()
-	pp := "abs-pp"
-	// Archive lives at an absolute path OUTSIDE projDir/secrets.
-	absArchive := filepath.Join(otherDir, "external.enc.age")
-	envelope := map[string]json.RawMessage{"abskey": json.RawMessage(`{"value":"absval"}`)}
-	raw, _ := json.Marshal(envelope)
-	if err := ageutil.EncryptWriteAtomic(absArchive, raw, pp); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	yaml := "version: 1\ndest: " + absArchive + "\nsources:\n  - type: tofu\n"
-	if err := os.WriteFile(filepath.Join(projDir, ".wapps.yaml"), []byte(yaml), 0644); err != nil {
-		t.Fatalf("yaml: %v", err)
-	}
-	thirdDir := t.TempDir()
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-	t.Chdir(thirdDir)
-	SetConfigPath(filepath.Join(projDir, ".wapps.yaml"))
-	t.Cleanup(func() { SetConfigPath("") })
-
-	val, err := readKey(resolveArchivePath(), "abskey")
-	if err != nil {
-		t.Fatalf("readKey with absolute dest: %v", err)
-	}
-	if val != "absval" {
-		t.Errorf("got %q, want absval", val)
-	}
-}
-
-// apply target-location decision: a --config apply writes the target UNDER the
-// project dir, not the foreign cwd.
+// Kabul #4 (en önemlisi): apply, target'ı CONFIGROOT altına yazar — operatörün
+// içinde bulunduğu rastgele dizine düz metin sır dosyası saçılmaz.
 func TestApply_TargetWrittenUnderConfigRoot(t *testing.T) {
 	projDir := setupForeignProject(t, map[string]string{"FOO": "bar"},
-		"default_prefix: \"\"\ntargets:\n  - path: .env.local\n")
+		"targets:\n  - path: .env.local\n")
 
-	if err := runApply(&bytes.Buffer{}); err != nil {
+	if err := runApply(io.Discard); err != nil {
 		t.Fatalf("runApply: %v", err)
 	}
-	// Must land under projDir, NOT cwd.
-	data, err := os.ReadFile(filepath.Join(projDir, ".env.local"))
-	if err != nil {
-		t.Fatalf(".env.local should exist under projDir: %v", err)
+
+	underProject := filepath.Join(projDir, ".env.local")
+	if _, err := os.Stat(underProject); err != nil {
+		t.Fatalf("target must be written under configRoot: %v", err)
 	}
-	if !strings.Contains(string(data), "FOO='bar'") {
-		t.Errorf("target content wrong:\n%s", data)
-	}
-	// And must NOT be written to cwd.
-	if _, err := os.Stat(".env.local"); !os.IsNotExist(err) {
-		t.Error(".env.local leaked into cwd (should be under configRoot)")
+	cwd, _ := os.Getwd()
+	if _, err := os.Stat(filepath.Join(cwd, ".env.local")); err == nil {
+		t.Error("target leaked into cwd — plaintext secrets must never scatter outside the project")
 	}
 }

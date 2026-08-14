@@ -1,173 +1,91 @@
 package secrets
 
+// import_env_test.go, `wapps secrets import-env <file>` sözleşmesini pinler:
+// env dosyası parse edilir ve anahtarlar TEK atomik import'la store'a yazılır;
+// mevcut anahtarlar KORUNUR (merge, replace değil) ve üzerine yazılanlar adıyla
+// bildirilir.
+
 import (
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
 func TestRunImportEnv_HappyPath(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "test-pp"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
+	setupStoreProject(t, "")
+	f := installFakeStore(t)
+	// Mevcut bir anahtar: import MERGE etmeli, replace ETMEMELİ.
+	f.values["EXISTING"] = "keep"
 
-	yaml := []byte(`
-version: 1
-sources:
-  - type: file
-    path: .env.shared
-`)
-	if err := os.WriteFile(".wapps.yaml", yaml, 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	if err := os.MkdirAll("secrets", 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	// Pre-populate archive with one key so we can verify import MERGES rather
-	// than replaces.
-	pre := map[string]json.RawMessage{
-		"EXISTING": json.RawMessage(`{"value":"keep"}`),
-	}
-	preRaw, _ := json.Marshal(pre)
-	preEnc, _ := ageutil.Encrypt(preRaw, pp)
-	if err := os.WriteFile("secrets/all.enc.age", preEnc, 0600); err != nil {
-		t.Fatalf("write pre-archive: %v", err)
-	}
-
-	// Input env file.
 	input := []byte(`
 # comment lines are skipped
 STRIPE_KEY=sk_test_xyz
-DB_PASSWORD="hunter2"
-export OAUTH_CLIENT=client123
+export QUOTED="with spaces"
 `)
-	if err := os.WriteFile("import.env", input, 0644); err != nil {
-		t.Fatalf("write import: %v", err)
+	if err := os.WriteFile("in.env", input, 0600); err != nil {
+		t.Fatalf("write input: %v", err)
 	}
 
-	err := runImportEnv("import.env", func(k string) string {
-		if k == "WAPPS_SECRETS_PASSPHRASE" {
-			return pp
-		}
-		return ""
-	})
-	if err != nil {
+	if err := runImportEnv("in.env", os.Getenv); err != nil {
 		t.Fatalf("runImportEnv: %v", err)
 	}
 
-	// Decrypt + verify all 4 keys present (1 pre-existing + 3 imported).
-	enc, _ := os.ReadFile("secrets/all.enc.age")
-	dec, _ := ageutil.Decrypt(enc, pp)
-	var archive map[string]json.RawMessage
-	if err := json.Unmarshal(dec, &archive); err != nil {
-		t.Fatalf("parse archive: %v", err)
+	if len(f.importCalls) != 1 {
+		t.Fatalf("import must be ONE atomic call, got %d", len(f.importCalls))
 	}
-	wantKeys := []string{"EXISTING", "STRIPE_KEY", "DB_PASSWORD", "OAUTH_CLIENT"}
-	for _, k := range wantKeys {
-		if _, ok := archive[k]; !ok {
-			t.Errorf("missing %s after import", k)
-		}
+	got := f.importCalls[0].values
+	if got["STRIPE_KEY"] != "sk_test_xyz" {
+		t.Errorf("STRIPE_KEY: got %q", got["STRIPE_KEY"])
 	}
-	if string(archive["EXISTING"]) != `{"value":"keep"}` {
-		t.Errorf("EXISTING was clobbered: %s", archive["EXISTING"])
+	if got["QUOTED"] != "with spaces" {
+		t.Errorf("QUOTED: got %q", got["QUOTED"])
 	}
-	if string(archive["STRIPE_KEY"]) != `{"value":"sk_test_xyz"}` {
-		t.Errorf("STRIPE_KEY envelope: %s", archive["STRIPE_KEY"])
+	if _, sent := got["EXISTING"]; sent {
+		t.Error("import must only send the file's keys, not re-send untouched ones")
+	}
+	// Merge: dokunulmayan anahtar store'da kalır.
+	if f.values["EXISTING"] != "keep" {
+		t.Error("import must not drop existing keys")
 	}
 }
 
 func TestRunImportEnv_RequiresWappsYAML(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	if err := os.WriteFile("any.env", []byte("FOO=bar\n"), 0644); err != nil {
-		t.Fatalf("write env: %v", err)
-	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	SetConfigPath("")
+	t.Cleanup(func() { SetConfigPath("") })
 
-	err := runImportEnv("any.env", func(string) string { return "x" })
-	if err == nil {
-		t.Fatal("expected error: import-env requires .wapps.yaml")
+	if err := os.WriteFile("in.env", []byte("A=1\n"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
 	}
-	if !strings.Contains(err.Error(), ".wapps.yaml") {
-		t.Errorf("error should mention .wapps.yaml, got: %v", err)
-	}
-}
-
-func TestRunImportEnv_RejectsMalformedFile(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "test")
-
-	if err := os.WriteFile(".wapps.yaml", []byte(`
-version: 1
-sources:
-  - type: file
-    path: .env.shared
-`), 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	if err := os.WriteFile("broken.env", []byte("VALID=ok\nMISSING_EQUALS_SIGN\n"), 0644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	err := runImportEnv("broken.env", os.Getenv)
-	if err == nil {
-		t.Fatal("expected error on malformed env")
-	}
-	if !strings.Contains(err.Error(), "line 2") {
-		t.Errorf("error should pinpoint bad line, got: %v", err)
+	err := runImportEnv("in.env", os.Getenv)
+	if err == nil || !strings.Contains(err.Error(), ".wapps.yaml") {
+		t.Fatalf("missing config must be named in the error, got %v", err)
 	}
 }
 
 func TestRunImportEnv_MissingFile(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "test")
-
-	if err := os.WriteFile(".wapps.yaml", []byte(`
-version: 1
-sources:
-  - type: file
-    path: .env.shared
-`), 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
+	setupStoreProject(t, "")
+	installFakeStore(t)
 
 	err := runImportEnv("nope.env", os.Getenv)
-	if err == nil {
-		t.Fatal("expected error: input file missing")
+	if err == nil || !strings.Contains(err.Error(), "nope.env") {
+		t.Fatalf("missing input file must be named in the error, got %v", err)
 	}
 }
 
+// Boş/yalnız-yorum dosya: hata DEĞİL, ama store'a da hiçbir şey yazılmaz.
 func TestRunImportEnv_EmptyFileNoOpButNoError(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "test"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
+	setupStoreProject(t, "")
+	f := installFakeStore(t)
 
-	if err := os.WriteFile(".wapps.yaml", []byte(`
-version: 1
-sources:
-  - type: file
-    path: .env.shared
-`), 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
+	if err := os.WriteFile("empty.env", []byte("# only a comment\n\n"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
 	}
-	if err := os.WriteFile("blank.env", []byte("# only comments\n\n# blank\n"), 0644); err != nil {
-		t.Fatalf("write: %v", err)
+	if err := runImportEnv("empty.env", os.Getenv); err != nil {
+		t.Fatalf("empty input must not error: %v", err)
 	}
-
-	err := runImportEnv("blank.env", func(k string) string {
-		if k == "WAPPS_SECRETS_PASSPHRASE" {
-			return pp
-		}
-		return ""
-	})
-	if err != nil {
-		t.Errorf("empty-keys file should NOT error, got: %v", err)
+	if len(f.importCalls) != 0 {
+		t.Errorf("empty input must not write to the store, got %+v", f.importCalls)
 	}
 }

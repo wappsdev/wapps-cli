@@ -11,7 +11,7 @@ import (
 // Fresh container'da (pin yok) store-backed config → fail-closed BINDING_UNPINNED.
 // setupStoreProject XDG'yi izole eder (boş pin deposu) ve CF env çiftini boşlar.
 func TestAgentGate_RepoBinding_UnpinnedFailsClosed(t *testing.T) {
-	setupStoreProject(t, "")
+	setupStoreProjectUnpinned(t, "")
 
 	err := checkRepoBinding(false)
 	if !clierr.Is(err, clierr.BindingUnpinned) {
@@ -45,7 +45,7 @@ func TestAgentGate_RepoBinding_HalfPairStaysFailClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupStoreProject(t, "")
+			setupStoreProjectUnpinned(t, "")
 			t.Setenv("CF_ACCESS_CLIENT_ID", tt.id)
 			t.Setenv("CF_ACCESS_CLIENT_SECRET", tt.secret)
 

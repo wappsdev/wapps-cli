@@ -2,40 +2,21 @@ package secrets
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
-// envSetup writes an encrypted archive to <tmp>/secrets/all.enc.age and
-// returns the temp dir + passphrase the caller already set into env. Keeps
-// the runEnv tests succinct.
-func envSetup(t *testing.T, archive map[string]string) string {
+// envSetup, store fake'ini verilen değerlerle doldurur ve proje dizinini döner.
+// (Eskiden bir age arşivi tohumluyordu; arşiv kalkınca gövde değişti, testler
+// aynen kaldı — sınadıkları şey env BİÇİMLENDİRMESİ, değerin nereden geldiği değil.)
+func envSetup(t *testing.T, values map[string]string) string {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "env-test-pp"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-
-	envelope := make(map[string]json.RawMessage)
-	for k, v := range archive {
-		b, _ := json.Marshal(map[string]string{"value": v})
-		envelope[k] = b
-	}
-	raw, _ := json.Marshal(envelope)
-	enc, err := ageutil.Encrypt(raw, pp)
-	if err != nil {
-		t.Fatalf("encrypt seed: %v", err)
-	}
-	if err := os.MkdirAll("secrets", 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile("secrets/all.enc.age", enc, 0600); err != nil {
-		t.Fatalf("seed archive: %v", err)
+	tmp := setupStoreProject(t, "")
+	f := installFakeStore(t)
+	for k, v := range values {
+		f.values[k] = v
 	}
 	return tmp
 }
@@ -137,57 +118,6 @@ func TestRunEnv_WriteAtomic_NoTempLeftover(t *testing.T) {
 	}
 	if _, err := os.Stat(outPath + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("temp file should not persist after successful write")
-	}
-}
-
-func TestRunEnv_NoPassphraseErrors(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
-
-	err := runEnv("", "TF_VAR_", &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("expected error when passphrase missing")
-	}
-	if !strings.Contains(err.Error(), "WAPPS_SECRETS_PASSPHRASE") {
-		t.Errorf("error should name env var: %v", err)
-	}
-}
-
-func TestRunEnv_RespectsWappsYAMLDest(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "test"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-
-	// Custom dest path via .wapps.yaml — runEnv should follow it.
-	if err := os.MkdirAll("custom-secrets", 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	envelope := map[string]json.RawMessage{
-		"CUSTOM_KEY": json.RawMessage(`{"value":"custom"}`),
-	}
-	raw, _ := json.Marshal(envelope)
-	enc, _ := ageutil.Encrypt(raw, pp)
-	if err := os.WriteFile("custom-secrets/archive.age", enc, 0600); err != nil {
-		t.Fatalf("write archive: %v", err)
-	}
-	if err := os.WriteFile(".wapps.yaml", []byte(`
-version: 1
-dest: custom-secrets/archive.age
-sources:
-  - type: file
-    path: .env.shared
-`), 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-
-	var buf bytes.Buffer
-	if err := runEnv("", "", &buf); err != nil {
-		t.Fatalf("runEnv: %v", err)
-	}
-	if !strings.Contains(buf.String(), "export CUSTOM_KEY='custom'") {
-		t.Errorf("runEnv didn't read custom dest:\n%s", buf.String())
 	}
 }
 
@@ -295,7 +225,7 @@ func TestWriteTofuOutputsAsEnv_MalformedJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on malformed JSON input, got nil")
 	}
-	if !strings.Contains(err.Error(), "parse archive") {
-		t.Errorf("expected error to mention 'parse archive', got: %v", err)
+	if !strings.Contains(err.Error(), "parse values") {
+		t.Errorf("expected error to mention 'parse values', got: %v", err)
 	}
 }

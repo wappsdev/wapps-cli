@@ -1,18 +1,19 @@
 package secrets
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/spf13/cobra"
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 	"github.com/wappsdev/wapps-cli/internal/source"
+	"github.com/wappsdev/wapps-cli/internal/store"
 )
 
 var importEnvCmd = &cobra.Command{
 	Use:   "import-env <file>",
-	Short: "Bulk import KEY=VALUE pairs from an env file into the archive",
+	Short: "Bulk import KEY=VALUE pairs from an env file into the store",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runImportEnv(args[0], os.Getenv)
@@ -33,12 +34,9 @@ var importEnvCmd = &cobra.Command{
 //  4. Merge imported keys (later wins — typical "import overwrites" semantics)
 //  5. Re-encrypt + atomic write
 func runImportEnv(envFilePath string, lookup func(string) string) error {
-	cfg, err := loadOrNil(wappsConfigPath())
+	cfg, err := requireStoreConfig("import-env")
 	if err != nil {
 		return err
-	}
-	if cfg == nil {
-		return fmt.Errorf("secrets.import-env: .wapps.yaml required (import-env writes to cfg.Dest)")
 	}
 
 	data, err := os.ReadFile(envFilePath)
@@ -47,7 +45,7 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 	}
 
 	// Hand-off to source's parser keeps comment/quote/export handling
-	// consistent with what file source would produce on read.
+	// consistent with what a file source would produce on read.
 	imported, err := source.ParseEnvFileBytes(envFilePath, data)
 	if err != nil {
 		return fmt.Errorf("secrets.import-env: %w", err)
@@ -57,57 +55,53 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 		return nil
 	}
 
-	passphrase := lookup("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return fmt.Errorf("secrets.import-env: WAPPS_SECRETS_PASSPHRASE not set")
-	}
-
-	archive, err := decryptArchive(cfg.ResolveDest(), passphrase)
+	sets, err := mergedToSets(imported)
 	if err != nil {
 		return err
 	}
 
+	ctx := context.Background()
+	st, err := openStore(cfg)
+	if err != nil {
+		return err
+	}
+
+	// Hangi adların ÜZERİNE yazılacağını önceden söyleyebilmek için ad düzlemi
+	// (Keys — değer okumaz, audit'e value.read düşmez) ile kesişim alınır.
+	existing := map[string]bool{}
+	if kr, kerr := st.Keys(ctx, cfg.Project); kerr == nil {
+		for _, k := range kr.Keys {
+			existing[k.KeyName] = true
+		}
+	}
 	var overridden []string
-	for k, v := range imported {
-		if _, exists := archive[k]; exists {
+	for k := range sets {
+		if existing[k] {
 			overridden = append(overridden, k)
 		}
-		archive[k] = v
+	}
+	sort.Strings(overridden)
+
+	// TEK atomik epoch (POST /import) — yarım bir import diye bir şey yok.
+	if err := st.Import(ctx, cfg.Project, sets, store.WriteOpts{}); err != nil {
+		return err
 	}
 
-	payload, err := encryptAndWriteArchiveLookup(cfg.ResolveDest(), archive, passphrase)
+	// Auto-apply: bildirilen target'lar hemen yazılır ki tüketim tarafı
+	// (.env.local vb.) ikinci bir komut beklemeden import'u yansıtsın.
+	valuesJSON, err := valuesToArchiveJSON(sets)
 	if err != nil {
+		return fmt.Errorf("secrets.import-env: %w", err)
+	}
+	if err := applyTargetsAfterWrite(cfg, valuesJSON, os.Stderr); err != nil {
 		return err
 	}
 
-	// Auto-apply: targets declared in .wapps.yaml are written immediately so
-	// the consumption side (.env.local, etc.) reflects the import without a
-	// follow-up command. Reuses the payload bytes the encrypt step produced
-	// — same reasoning as set.go (avoid double-marshal key-order drift).
-	if err := applyTargetsAfterArchiveWrite(cfg, payload, os.Stderr); err != nil {
-		return err
-	}
-
-	fmt.Printf("✓ Imported %d keys from %s into %s\n", len(imported), envFilePath, cfg.Dest)
+	fmt.Printf("✓ Imported %d keys from %s into %s\n", len(sets), envFilePath, cfg.Project)
 	if len(overridden) > 0 {
-		fmt.Fprintf(os.Stderr, "⚠ overrode existing archive keys: %v\n", overridden)
+		fmt.Fprintf(os.Stderr, "⚠ overwrote existing keys: %v\n", overridden)
 	}
-	fmt.Printf("Next: review the merge, then 'wapps secrets sync' to confirm sources still reconcile cleanly\n")
 	return nil
-}
-
-// encryptAndWriteArchiveLookup wraps ageutil.EncryptWriteAtomic with the
-// import-env error context. Returns the marshaled payload bytes so callers
-// reuse them (see set.go's encryptAndWriteArchive for the same pattern).
-func encryptAndWriteArchiveLookup(path string, archive map[string]json.RawMessage, passphrase string) ([]byte, error) {
-	payload, err := json.Marshal(archive)
-	if err != nil {
-		return nil, fmt.Errorf("marshal archive: %w", err)
-	}
-	if err := ageutil.EncryptWriteAtomic(path, payload, passphrase); err != nil {
-		return nil, fmt.Errorf("import-env: %w", err)
-	}
-	return payload, nil
 }
 
 func init() {

@@ -22,7 +22,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/atomicfile"
 )
 
 // Schema, pin deposu şemasıdır.
@@ -106,7 +106,7 @@ func (s *Store) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("binding.Store.Save: mkdir: %w", err)
 	}
-	return ageutil.WriteFileAtomic(path, raw, 0o600)
+	return atomicfile.Write(path, raw, 0o600)
 }
 
 // Check, bir repo parmak izi + .wapps.yaml'ın verdiği proje için bağlamayı

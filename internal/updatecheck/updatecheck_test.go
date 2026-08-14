@@ -14,8 +14,8 @@ import (
 
 func TestParseSemver(t *testing.T) {
 	cases := []struct {
-		in        string
-		wantOK    bool
+		in            string
+		wantOK        bool
 		maj, min, pat int
 	}{
 		{"v0.12.0", true, 0, 12, 0},
@@ -26,10 +26,10 @@ func TestParseSemver(t *testing.T) {
 		{"dev", false, 0, 0, 0},
 		{"main-2978d52", false, 0, 0, 0},
 		{"", false, 0, 0, 0},
-		{"v1.2", false, 0, 0, 0},      // not a triple
-		{"v1.2.3.4", false, 0, 0, 0},  // too many parts
-		{"vX.Y.Z", false, 0, 0, 0},    // non-numeric
-		{"v1.-2.3", false, 0, 0, 0},   // negative
+		{"v1.2", false, 0, 0, 0},     // not a triple
+		{"v1.2.3.4", false, 0, 0, 0}, // too many parts
+		{"vX.Y.Z", false, 0, 0, 0},   // non-numeric
+		{"v1.-2.3", false, 0, 0, 0},  // negative
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -235,10 +235,10 @@ func TestMaybeNotify_GarbageTagFromServer_NoNotice(t *testing.T) {
 // somehow parses — is rendered as clean digits. Either way no ESC byte leaks.
 func TestMaybeNotify_NoTerminalEscapeInjection(t *testing.T) {
 	malicious := []string{
-		"v9.9.9\x1b[2J\x1b[H",            // clear screen + home
-		"v9.9.9\x1b]0;pwned\x07",         // set window title
-		"v9.9.9\r\nFAKE: type your pp",   // CRLF spoof line
-		"v\x1b[31m9.9.9",                 // color injection mid-version
+		"v9.9.9\x1b[2J\x1b[H",          // clear screen + home
+		"v9.9.9\x1b]0;pwned\x07",       // set window title
+		"v9.9.9\r\nFAKE: type your pp", // CRLF spoof line
+		"v\x1b[31m9.9.9",               // color injection mid-version
 	}
 	for _, tag := range malicious {
 		t.Run(tag, func(t *testing.T) {

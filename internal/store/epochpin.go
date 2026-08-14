@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/atomicfile"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 )
 
@@ -68,7 +68,7 @@ func (p *epochPins) save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("store.epochPins.save: mkdir: %w", err)
 	}
-	return ageutil.WriteFileAtomic(path, raw, 0o600)
+	return atomicfile.Write(path, raw, 0o600)
 }
 
 // epochPinPath, config'teki yolu veya varsayılanı döner.

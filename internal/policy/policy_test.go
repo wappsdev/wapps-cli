@@ -216,4 +216,3 @@ func TestLintOverriddenDenyCaseInsensitive(t *testing.T) {
 		t.Error("lint(a): a case-distinct override of a deny glob must still warn")
 	}
 }
-

@@ -44,14 +44,9 @@ var projectsListCmd = &cobra.Command{
 // runProjectsList, görünür proje adlarını satır başına bir tane basar —
 // `secrets list`in anahtar-adı çıktısıyla aynı biçim, aynı sözleşme.
 func runProjectsList(w io.Writer) error {
-	cfg, err := storeBackendConfig()
+	cfg, err := storeProject("projects")
 	if err != nil {
 		return err
-	}
-	if cfg == nil {
-		return clierr.New(clierr.NotAvailable,
-			"secrets.projects: only the store backend has projects").
-			WithRecovery("the legacy-git backend has one archive per repo, not a project namespace")
 	}
 	st, err := openStore(cfg)
 	if err != nil {

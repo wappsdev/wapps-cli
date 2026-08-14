@@ -1,9 +1,7 @@
 package secrets
 
-// store_backend.go, `.wapps.yaml` `backend:` anahtarı `store` olduğunda secrets
-// verb'lerini (exec/apply/get/env/set/sync) secrets-gate Worker istemcisine
-// (internal/store) yönlendirir. `backend` yoksa veya `legacy-git` ise (DEFAULT)
-// verb'ler eski age-arşiv yolunda kalır (byte-for-byte değişmez).
+// store_backend.go, secrets verb'lerini secrets-gate Worker istemcisine
+// (internal/store) bağlar. Tek yol budur: yerel şifreli arşiv YOKTUR.
 //
 // SERVER-DECRYPT v2 (SPEC §2.7/§7.4): Worker PLAINTEXT döner — istemcide yerel
 // KEK/unwrap/kimlik YOKTUR. CLI yalnızca çeker + enjekte eder (exec/apply child
@@ -26,22 +24,50 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/store"
 )
 
-// storeBackendConfig, geçerli .wapps.yaml `backend: store` ise cfg'i döner; aksi
-// halde (backend yok / legacy-git / config yok / bozuk-legacy) (nil, nil). Yalnızca
-// bir PARSE hatası yayılır (loudly fail-closed). Her verb bunu ilk adım olarak
-// çağırır: nil → legacy yol; non-nil → store yol.
+// storeBackendConfig, geçerli .wapps.yaml varsa cfg'i, yoksa (nil, nil) döner.
+// Yalnızca bir PARSE hatası yayılır (loudly fail-closed). Config'in YOKLUĞUNU
+// tolere eden çağrılar için (deploy'un env-first fallback'i gibi).
 func storeBackendConfig() (*config.WappsYAML, error) {
 	cfg, err := loadOrNil(wappsConfigPath())
 	if err != nil {
 		return nil, err
 	}
-	if cfg == nil || !cfg.IsStoreBackend() {
+	if cfg == nil {
 		return nil, nil
 	}
 	return cfg, nil
 }
 
-// openStore, backend:store verb'lerinin okuma/yazma için kullandığı internal/store
+// requireStoreConfig, yerel .wapps.yaml'ı yükler ve store için kullanılabilir
+// olduğunu doğrular. Bir config GEREKTİREN verb'ler (apply/sync/exec/env —
+// targets veya sources okurlar) bunu çağırır; yalnızca proje ADI yeten verb'ler
+// (list/get/rm/projects) çağırmaz.
+//
+// verb, hata mesajını konumlandırmak içindir ("apply: ...").
+func requireStoreConfig(verb string) (*config.WappsYAML, error) {
+	cfg, err := loadOrNil(wappsConfigPath())
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, clierr.Newf(clierr.NotFound, "%s: no .wapps.yaml found", verb).
+			WithRecovery("run this from a project directory, or pass --config <path>/.wapps.yaml (see 'wapps secrets init')")
+	}
+	return cfg, nil
+}
+
+// storeProject, YALNIZCA proje adına ihtiyaç duyan verb'ler (list/get/rm/
+// projects) içindir: gate'e gitmek için yerel bir .wapps.yaml, dizin ya da repo
+// GEREKMEZ. --project bir dizine çözülmediyse adın kendisiyle sentetik bir
+// config üretilir; aksi halde normal yerel config yüklenir.
+func storeProject(verb string) (*config.WappsYAML, error) {
+	if projectOverride != "" {
+		return &config.WappsYAML{Project: projectOverride}, nil
+	}
+	return requireStoreConfig(verb)
+}
+
+// openStore, store verb'lerinin okuma/yazma için kullandığı internal/store
 // istemcisini kurar. PAKET-DÜZEYİ SEAM (üretimde openWorkerStore; testte çağrıları
 // gözleyen bir fake ile değiştirilir).
 var openStore = openWorkerStore
@@ -64,7 +90,7 @@ func openWorkerStore(cfg *config.WappsYAML) (store.Store, error) {
 	}), nil
 }
 
-// storeValues, backend:store'da verilen anahtarları (boşsa principal'ın
+// storeValues, verilen anahtarları (boşsa principal'ın
 // OKUNABİLİR tüm kümesi) Worker'dan PLAINTEXT çeker (SPEC §7.4 read: bulk POST
 // /read; all-or-nothing). Değerler yalnızca süreç belleğinde yaşar.
 func storeValues(ctx context.Context, cfg *config.WappsYAML, keys []string) (map[string]string, error) {
@@ -79,7 +105,7 @@ func storeValues(ctx context.Context, cfg *config.WappsYAML, keys []string) (map
 	return res.Values, nil
 }
 
-// storeCommit, backend:store'da bir dizi anahtarı TEK atomik epoch'ta yazar
+// storeCommit, bir dizi anahtarı TEK atomik epoch'ta yazar
 // (POST /import; writer DO serileştirir, §7.6). opts, bilgilendirici audit
 // etiketlerini taşır (sync → key.sync, §6.4).
 func storeCommit(ctx context.Context, cfg *config.WappsYAML, sets map[string]string, opts store.WriteOpts) error {
@@ -93,10 +119,9 @@ func storeCommit(ctx context.Context, cfg *config.WappsYAML, sets map[string]str
 	return st.Import(ctx, cfg.Project, sets, opts)
 }
 
-// valuesToArchiveMap, düz metin değer haritasını tofu-output-şekilli arşiv zarf
-// haritasına ({"KEY":{"value":"..."}}) çevirir. decryptArchive'in döndürdüğü tiple
-// birebir aynıdır; böylece store yolu, arşiv-tüketen makineyi (ör. Coolify sync'in
-// prefix-match/diff/push hattı) DEĞİŞTİRMEDEN besleyebilir (P1.6).
+// valuesToArchiveMap, düz metin değer haritasını tofu-output-şekilli zarf
+// haritasına ({"KEY":{"value":"..."}}) çevirir — env yazıcıları, target yazıcısı
+// ve Coolify diff hattı bu biçimi bekler.
 func valuesToArchiveMap(values map[string]string) (map[string]json.RawMessage, error) {
 	envelopes := make(map[string]json.RawMessage, len(values))
 	for k, v := range values {
@@ -109,10 +134,8 @@ func valuesToArchiveMap(values map[string]string) (map[string]json.RawMessage, e
 	return envelopes, nil
 }
 
-// valuesToArchiveJSON, düz metin değer haritasını tofu-output-şekilli arşiv JSON'una
-// ({"KEY":{"value":"..."}}) çevirir; böylece store yolu, mevcut (legacy ile paylaşılan)
-// env/target yazıcılarını (execEnvAndValues, writeTofuOutputsAsEnv, applyTargets)
-// yeniden kullanır — çıktı biçimi iki backend'de birebir aynı kalır.
+// valuesToArchiveJSON, aynı dönüşümün JSON hâlidir (execEnvAndValues,
+// writeTofuOutputsAsEnv ve applyTargets bunu tüketir).
 func valuesToArchiveJSON(values map[string]string) ([]byte, error) {
 	envelopes, err := valuesToArchiveMap(values)
 	if err != nil {
@@ -139,7 +162,7 @@ func mergedToSets(merged map[string]json.RawMessage) (map[string]string, error) 
 
 // --- verb store yolları -----------------------------------------------------
 
-// runExecStore, exec'in backend:store yoludur: store'dan değerleri çeker ve
+// runExecStore, exec'in çekirdeğidir: store'dan değerleri çeker ve
 // alt-süreci — legacy ile AYNI scrubber sözleşmesiyle (§7.4.3) — enjekte
 // edilmiş env ile çalıştırır. intentName yalnızca doğrulanır (v2'de deploy'un
 // ayrı bir tazelik yolu yoktur — her okuma taze, sunucudan).
@@ -164,7 +187,7 @@ func runExecStore(args []string, prefix, intentName string, cfg *config.WappsYAM
 	return runWithInjectedEnv(args, injected, scrub, out, errW, runner)
 }
 
-// runApplyStore, apply'ın backend:store yoludur: store'dan değerleri çeker ve
+// runApplyStore, apply'ın çekirdeğidir: store'dan değerleri çeker ve
 // bildirilen consumption target'larını (legacy ile aynı idempotent yazıcı) yazar.
 func runApplyStore(cfg *config.WappsYAML, stdoutW io.Writer) error {
 	if len(cfg.Targets) == 0 {
@@ -181,7 +204,7 @@ func runApplyStore(cfg *config.WappsYAML, stdoutW io.Writer) error {
 	return applyTargets(cfg, archiveJSON, stdoutW)
 }
 
-// runListStore, list'in backend:store yoludur: anahtar ADLARINI metadata
+// runListStore, list'in çekirdeğidir: anahtar ADLARINI metadata
 // düzleminden çeker (GET /keys, SPEC §7.4 — Store.Read ÇAĞRILMAZ, audit'e
 // value.read düşmez; liste Worker'da principal'ın read grant'ına filtrelenir
 // §4.3.3). Çıktı legacy list ile birebir aynı: satır başına bir ad, sıralı.
@@ -205,7 +228,7 @@ func runListStore(cfg *config.WappsYAML, w io.Writer) error {
 	return nil
 }
 
-// getStore, get'in backend:store yoludur: yalnızca istenen anahtarı çeker
+// getStore, get'in çekirdeğidir: yalnızca istenen anahtarı çeker
 // (blast-radius min) ve düz metin değeri döner (RunE agent-modu red'i AYNI kalır).
 func getStore(cfg *config.WappsYAML, key string) (string, error) {
 	values, err := storeValues(context.Background(), cfg, []string{key})
@@ -219,7 +242,7 @@ func getStore(cfg *config.WappsYAML, key string) (string, error) {
 	return v, nil
 }
 
-// runEnvStore, env'in backend:store yoludur: store'dan değerleri çeker ve export
+// runEnvStore, env'in çekirdeğidir: store'dan değerleri çeker ve export
 // satırlarını stdout'a (veya --write dosyasına, AI-safe) yazar.
 func runEnvStore(cfg *config.WappsYAML, writePath, prefix string, stdoutW io.Writer) error {
 	values, err := storeValues(context.Background(), cfg, nil)
@@ -236,7 +259,7 @@ func runEnvStore(cfg *config.WappsYAML, writePath, prefix string, stdoutW io.Wri
 	return writeEnvFileAtomic(writePath, archiveJSON, prefix)
 }
 
-// runSetStore, set'in backend:store yoludur: değeri (legacy ile aynı --from-file /
+// runSetStore, set'in çekirdeğidir: değeri (legacy ile aynı --from-file /
 // no-echo prompt kuralıyla) yakalar ve tek-anahtar PUT ile yazar (git drift
 // preflight'ı YOK — store yazımları CAS'ı sunucuda çözer, git değil).
 func runSetStore(key string, cfg *config.WappsYAML, opts setOptions) error {
@@ -255,10 +278,10 @@ func runSetStore(key string, cfg *config.WappsYAML, opts setOptions) error {
 	return nil
 }
 
-// runSyncStore, sync'in backend:store yoludur: kaynakları (sources) okur+merge eder
+// runSyncStore, sync'in çekirdeğidir: kaynakları (sources) okur+merge eder
 // ve tüm anahtarları TEK bir atomik import'ta store'a yazar. X-Wapps-Intent: sync
 // etiketi audit satırlarını key.sync yapar (§6.4 — rotate-plan oracle'ı için).
-func runSyncStore(ctx context.Context, cfg *config.WappsYAML, lookup func(string) string) error {
+func runSyncStore(ctx context.Context, cfg *config.WappsYAML, lookup func(string) string, dryRun bool, out io.Writer) error {
 	if hasTofuSource(cfg.Sources) {
 		if err := preflightTofuEnv(lookup); err != nil {
 			return err
@@ -275,10 +298,60 @@ func runSyncStore(ctx context.Context, cfg *config.WappsYAML, lookup func(string
 	if len(sets) == 0 {
 		return fmt.Errorf("secrets.sync: no source keys to commit to the store")
 	}
+
+	if dryRun {
+		return reportSyncPlan(ctx, cfg, sets, out)
+	}
+
 	if err := storeCommit(ctx, cfg, sets, store.WriteOpts{Sync: true}); err != nil {
 		return err
 	}
-	fmt.Printf("✓ Committed %d keys to the store for %s\n", len(sets), cfg.Project)
+	fmt.Fprintf(out, "✓ Committed %d keys to the store for %s\n", len(sets), cfg.Project)
+	return nil
+}
+
+// reportSyncPlan, `sync --dry-run`ın çıktısıdır: kaynaklardan gelen anahtarlar
+// store'a göre YENİ mi, DEĞİŞMİŞ mi, AYNI mı — hepsi ADLARIYLA.
+//
+// Bu, emekliye ayrılan `verify` verb'ünün sorusunun ("tofu çıktısı store ile
+// uyumlu mu, sync etmem gerekiyor mu?") daha iyi cevabıdır: verify tüm bloğun
+// sha'sını karşılaştırıp yalnızca "drift var/yok" diyordu; bu, HANGİ anahtarın
+// ayrıştığını söylüyor.
+//
+// Değer KARŞILAŞTIRILIR ama ASLA basılmaz — çıktı yalnızca adlardır, yani
+// `list` ile aynı AI-safe sınıfta kalır.
+func reportSyncPlan(ctx context.Context, cfg *config.WappsYAML, sets map[string]string, out io.Writer) error {
+	current, err := storeValues(ctx, cfg, nil)
+	if err != nil {
+		return err
+	}
+	var added, changed, same []string
+	for k, v := range sets {
+		cur, exists := current[k]
+		switch {
+		case !exists:
+			added = append(added, k)
+		case cur != v:
+			changed = append(changed, k)
+		default:
+			same = append(same, k)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(changed)
+
+	for _, k := range added {
+		fmt.Fprintf(out, "+ %s\n", k)
+	}
+	for _, k := range changed {
+		fmt.Fprintf(out, "~ %s\n", k)
+	}
+	if len(added) == 0 && len(changed) == 0 {
+		fmt.Fprintf(out, "✓ In sync — %d keys match the store\n", len(same))
+		return nil
+	}
+	fmt.Fprintf(out, "\n%d new, %d changed, %d unchanged. Re-run without --dry-run to commit.\n",
+		len(added), len(changed), len(same))
 	return nil
 }
 

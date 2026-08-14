@@ -123,4 +123,3 @@ func asBool(m map[string]interface{}, key string) bool {
 	}
 	return false
 }
-

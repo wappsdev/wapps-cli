@@ -69,29 +69,15 @@ func runSyncCoolify(opts coolifyOptions) error {
 		return fmt.Errorf("sync --target=coolify: .wapps.yaml required (need dest path for archive)")
 	}
 
-	// Arşiv haritasını backend'e göre üret (P1.6): store yolunda değerler Worker'dan
-	// PLAINTEXT çekilir ve decryptArchive ile AYNI zarf şekline sarılır — aşağıdaki
-	// prefix-match/diff/push makinesi iki backend'de de DEĞİŞMEDEN çalışır.
-	// legacy-git yolunda passphrase + age arşivi zorunluluğu aynen korunur.
-	var archive map[string]json.RawMessage
-	if cfg.IsStoreBackend() {
-		values, verr := storeValues(context.Background(), cfg, nil)
-		if verr != nil {
-			return verr
-		}
-		archive, err = valuesToArchiveMap(values)
-		if err != nil {
-			return fmt.Errorf("sync --target=coolify: %w", err)
-		}
-	} else {
-		passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
-		if passphrase == "" {
-			return fmt.Errorf("sync --target=coolify: WAPPS_SECRETS_PASSPHRASE not set")
-		}
-		archive, err = decryptArchive(cfg.ResolveDest(), passphrase)
-		if err != nil {
-			return err
-		}
+	// Değerler store'dan PLAINTEXT çekilir ve zarf şekline sarılır — aşağıdaki
+	// prefix-match/diff/push makinesi bu biçimi bekliyor.
+	values, verr := storeValues(context.Background(), cfg, nil)
+	if verr != nil {
+		return verr
+	}
+	archive, err := valuesToArchiveMap(values)
+	if err != nil {
+		return fmt.Errorf("sync --target=coolify: %w", err)
 	}
 
 	client := opts.newClient(opts.apiURL, opts.apiToken)

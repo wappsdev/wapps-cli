@@ -406,9 +406,9 @@ func TestValidateUUID_RejectsPathTraversal(t *testing.T) {
 func TestValidateUUID_AcceptsCanonicalAndLaxShapes(t *testing.T) {
 	for _, good := range []string{
 		"12345678-1234-1234-1234-123456789abc", // canonical UUID
-		"app-1",                                 // lax test fixture
-		"abc123",                                // lax alnum
-		"my-app-prod",                           // lax slug
+		"app-1",                                // lax test fixture
+		"abc123",                               // lax alnum
+		"my-app-prod",                          // lax slug
 	} {
 		t.Run(good, func(t *testing.T) {
 			if err := validateUUID("test", good); err != nil {

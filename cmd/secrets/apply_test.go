@@ -2,46 +2,20 @@ package secrets
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 )
 
-// applySetup writes archive + .wapps.yaml with given targets and returns tmp dir.
-// yamlExtra is appended after sources block (e.g., "targets:\n  - path: .env.local").
-func applySetup(t *testing.T, archive map[string]string, yamlExtra string) string {
+// applySetup, store fake'ini doldurur ve targets bildiren bir .wapps.yaml yazar.
+// Testlerin konusu TARGET YAZIMI (idempotency, mod, prefix) — değerin kaynağı değil.
+func applySetup(t *testing.T, values map[string]string, yamlExtra string) string {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "apply-test-pp"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-
-	envelope := make(map[string]json.RawMessage)
-	for k, v := range archive {
-		b, _ := json.Marshal(map[string]string{"value": v})
-		envelope[k] = b
-	}
-	raw, _ := json.Marshal(envelope)
-	enc, err := ageutil.Encrypt(raw, pp)
-	if err != nil {
-		t.Fatalf("encrypt seed: %v", err)
-	}
-	if err := os.MkdirAll("secrets", 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile("secrets/all.enc.age", enc, 0600); err != nil {
-		t.Fatalf("seed archive: %v", err)
-	}
-	if err := os.WriteFile(".env.shared", []byte(""), 0600); err != nil {
-		t.Fatalf("seed file source: %v", err)
-	}
-	yaml := "version: 1\nsources:\n  - type: file\n    path: .env.shared\n" + yamlExtra
-	if err := os.WriteFile(".wapps.yaml", []byte(yaml), 0644); err != nil {
-		t.Fatalf("write yaml: %v", err)
+	tmp := setupStoreProject(t, yamlExtra)
+	f := installFakeStore(t)
+	for k, v := range values {
+		f.values[k] = v
 	}
 	return tmp
 }
@@ -122,20 +96,6 @@ func TestRunApply_NoTargets_Errors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no targets") {
 		t.Errorf("error should explain missing targets, got: %v", err)
-	}
-}
-
-func TestRunApply_NoPassphrase_Errors(t *testing.T) {
-	applySetup(t, map[string]string{"FOO": "bar"},
-		"targets:\n  - path: .env.local\n")
-	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
-
-	err := runApply(&bytes.Buffer{})
-	if err == nil {
-		t.Fatal("expected error when passphrase missing")
-	}
-	if !strings.Contains(err.Error(), "WAPPS_SECRETS_PASSPHRASE") {
-		t.Errorf("error should name env var: %v", err)
 	}
 }
 

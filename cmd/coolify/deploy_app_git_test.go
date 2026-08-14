@@ -4,10 +4,10 @@ import "testing"
 
 func TestShouldDeferDeploy(t *testing.T) {
 	cases := []struct {
-		name           string
-		instantDeploy  bool
-		buildArgs      []string
-		wantDefer      bool
+		name          string
+		instantDeploy bool
+		buildArgs     []string
+		wantDefer     bool
 	}{
 		{
 			name:          "no build args, instant deploy → no defer",

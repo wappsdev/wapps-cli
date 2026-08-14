@@ -8,11 +8,8 @@ import (
 	"github.com/spf13/cobra"
 	coolifycmd "github.com/wappsdev/wapps-cli/cmd/coolify"
 	deploycmd "github.com/wappsdev/wapps-cli/cmd/deploy"
-	gitcmd "github.com/wappsdev/wapps-cli/cmd/git"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
 	skillcmd "github.com/wappsdev/wapps-cli/cmd/skill"
-	"github.com/wappsdev/wapps-cli/internal/config"
-	"github.com/wappsdev/wapps-cli/internal/git"
 	"github.com/wappsdev/wapps-cli/internal/projects"
 	skillpkg "github.com/wappsdev/wapps-cli/internal/skill"
 	"github.com/wappsdev/wapps-cli/internal/updatecheck"
@@ -28,7 +25,6 @@ import (
 var Version = "dev"
 
 var (
-	noSync      bool
 	verbose     bool
 	cfgFile     string
 	projectName string
@@ -41,14 +37,15 @@ var (
 var rootCmd = &cobra.Command{
 	Use:     "wapps",
 	Version: Version,
-	Short:   "wapps umbrella CLI — Tofu monorepo helper for Coolify + age secrets + git auto-sync",
-	Long: `wapps is the umbrella CLI for the wappsdev/infra-tofu monorepo.
+	Short:   "wapps umbrella CLI — secrets, Tofu, Coolify and deploys for the wappsdev estate",
+	Long: `wapps is the umbrella CLI for the wappsdev estate.
 
 It wraps:
-  - age encryption (secret archive sync)
-  - Coolify v4 REST API (gap shim for SierraJC Tofu provider)
-  - git auto-sync preflight (pull latest secrets/all.enc.age before any read)
-  - doctor (end-to-end dependency check)`,
+  - the secrets gate (server-side decryption; values never touch git)
+  - Tofu (wapps tofu — project secrets injected as TF_VAR_*)
+  - Coolify v4 REST API (gap shim for the SierraJC Tofu provider)
+  - deploys through the company deploy-proxy
+  - doctor (end-to-end dependency + access check)`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Record a `skill ...` invocation up front (before any early return) so
 		// the post-command skill auto-refresh stays quiet for it. Cobra-resolved,
@@ -61,7 +58,7 @@ It wraps:
 		// Resolve --project → cfgFile first, then hand the resolved config path
 		// to the secrets package so its loaders + path resolution use the
 		// config dir (configRoot), not cwd. This runs even under --no-sync (it
-		// gates config resolution, not git).
+		// gates config resolution).
 		if err := resolveProjectFlag(); err != nil {
 			return err
 		}
@@ -73,53 +70,6 @@ It wraps:
 			secrets.SetConfigPath(abs)
 		}
 
-		if noSync {
-			return nil
-		}
-		// Skip auto-sync for `doctor` (preflight) and `git status` (introspection)
-		if cmd.Name() == "doctor" {
-			return nil
-		}
-		if cmd.Parent() != nil && cmd.Parent().Name() == "git" {
-			return nil
-		}
-		// Skip auto-sync for `skill` — it installs local files, never touches
-		// the repo's encrypted secrets, so a git preflight would be pure noise.
-		if skillCmdInvoked {
-			return nil
-		}
-
-		// git preflight runs against configRoot (the .wapps.yaml dir) when
-		// --config/--project is set, else cwd. The archive path stays
-		// repo-relative (git.fileSha prefixes "./" itself).
-		repoPath := "."
-		archiveRel := "secrets/all.enc.age"
-		if cfgFile != "" {
-			repoPath = filepath.Dir(cfgFile)
-			if cfg, err := config.Load(cfgFile); err == nil && cfg.Dest != "" {
-				archiveRel = cfg.Dest
-			}
-		}
-		// Robust outside a git repo (spec Fix 3): skip the preflight cleanly when
-		// the target dir isn't a work tree, rather than relying on the soft-fail
-		// warning. Covers --config pointing at a non-repo and bare cwd usage.
-		if !git.IsRepo(repoPath) {
-			return nil
-		}
-
-		drift, err := git.HasDrift(repoPath, archiveRel)
-		if err != nil {
-			// Non-fatal: warn and proceed (offline / fetch failure cases)
-			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ git fetch failed: %v (continuing; use --no-sync to silence)\n", err)
-			return nil
-		}
-		if drift {
-			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ Remote has newer %s — pulling...\n", archiveRel)
-			if err := git.Pull(repoPath); err != nil {
-				return fmt.Errorf("auto pull failed: %w. Resolve manually or use --no-sync", err)
-			}
-			fmt.Fprintln(cmd.ErrOrStderr(), "✓ Pulled latest")
-		}
 		return nil
 	},
 }
@@ -138,7 +88,13 @@ func resolveProjectFlag() error {
 	}
 	dir, err := projects.Resolve(projectName)
 	if err != nil {
-		return err
+		// Kayıt defterinde YOKSA bu bir hata DEĞİLDİR: store'un ihtiyacı olan tek
+		// şey proje ADI. list/get/rm/projects yerel dosyaya hiç bakmadığından
+		// `--project navlun-app` her dizinden çalışır. Yerel dosya GEREKTİREN
+		// verb'ler (apply/sync/exec/env — targets/sources okurlar) kendi net
+		// "no .wapps.yaml found" hatasını verir.
+		secrets.SetProjectName(projectName)
+		return nil
 	}
 	cfgFile = filepath.Join(dir, ".wapps.yaml")
 	return nil
@@ -198,7 +154,6 @@ func maybeAutoRefreshSkill() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().BoolVar(&noSync, "no-sync", false, "Skip git auto-sync preflight")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to a .wapps.yaml; secrets resolve against its dir (default: ./.wapps.yaml)")
 	rootCmd.PersistentFlags().StringVarP(&projectName, "project", "p", "", "Registered project name (see ~/.config/wapps/projects.yaml); resolves to that project's .wapps.yaml")
@@ -207,7 +162,6 @@ func init() {
 	rootCmd.AddCommand(secrets.DrCmd)     // §8.4 disaster recovery (dr verify/restore — B2 replica + Shamir shares)
 	rootCmd.AddCommand(secrets.RotateCmd) // rotasyon worklist yönetimi (rotate skip — kayıtlı SKIP kaçış kapısı)
 	rootCmd.AddCommand(secrets.TofuCmd)   // birinci-sınıf `wapps tofu` (secrets exec --prefix '' -- tofu sarımı)
-	rootCmd.AddCommand(gitcmd.GitCmd)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
 	rootCmd.AddCommand(skillcmd.SkillCmd)
 	rootCmd.AddCommand(deploycmd.DeployCmd)

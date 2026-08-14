@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
+	"github.com/wappsdev/wapps-cli/internal/atomicfile"
 )
 
 // FileSourceHeader is prepended to env files written by `wapps secrets set`.
@@ -27,7 +27,7 @@ const FileSourceHeader = "# wapps-managed file, do not edit manually (use 'wapps
 //   - File mode 0600 (secrets file — owner read/write only).
 //
 // Single-quote escaping: values are wrapped in single quotes with embedded
-// single quotes escaped via the shell-standard '\''  (close-escape-open)
+// single quotes escaped via the shell-standard '\”  (close-escape-open)
 // sequence. This matches the cmd/secrets/env output convention so the file
 // can be source'd directly when needed for ad-hoc debugging.
 //
@@ -92,7 +92,7 @@ func writeAll(path string, kv map[string]string) error {
 	// (concurrent-writer safe) for free. Earlier versions used os.WriteFile +
 	// os.Rename which skipped fsync; a power loss between rename and the
 	// kernel's data flush could leave the file present but empty.
-	if err := ageutil.WriteFileAtomic(path, buf.Bytes(), 0600); err != nil {
+	if err := atomicfile.Write(path, buf.Bytes(), 0600); err != nil {
 		return fmt.Errorf("WriteFileSource: %w", err)
 	}
 	return nil

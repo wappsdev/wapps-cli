@@ -104,7 +104,10 @@ type CoolifySync struct {
 	Apps        []CoolifyApp `yaml:"apps"`
 }
 
-// Backend değerleri (SPEC §7.12). ABSENT backend → legacy-git.
+// Backend değerleri. Store TEK backend'dir; `backend:` alanı yalnızca mevcut
+// dosyaları kırmamak için okunur (absent == store). `legacy-git` artık AÇIK bir
+// hatadır — sessizce store'a düşmek, operatörün git'e commit edilen bir arşiv
+// sandığı yerde sunucuya yazması demek olurdu.
 const (
 	BackendStore     = "store"
 	BackendLegacyGit = "legacy-git"
@@ -124,13 +127,10 @@ type WappsYAML struct {
 	Project  string              `yaml:"project,omitempty"`
 	Profiles map[string][]string `yaml:"profiles,omitempty"`
 
-	Dest            string          `yaml:"dest"`
-	DefaultPrefix   string          `yaml:"default_prefix"`
-	Sources         []source.Config `yaml:"sources"`
-	Targets         []Target        `yaml:"targets"`
-	CoolifySync     *CoolifySync    `yaml:"coolify_sync,omitempty"`
-	RedactInLogs    bool            `yaml:"redact_in_logs"`
-	RequireCleanGit bool            `yaml:"require_clean_git"`
+	DefaultPrefix string          `yaml:"default_prefix"`
+	Sources       []source.Config `yaml:"sources"`
+	Targets       []Target        `yaml:"targets"`
+	CoolifySync   *CoolifySync    `yaml:"coolify_sync,omitempty"`
 
 	// configRoot is the absolute directory of the loaded .wapps.yaml. Set by
 	// Load (not Parse). Empty for Parse-constructed configs (no file on disk,
@@ -147,13 +147,6 @@ func (c *WappsYAML) ConfigRoot() string { return c.configRoot }
 // (absolute paths and the empty-configRoot case pass through). Used for paths
 // that don't have a dedicated helper, e.g. the single file-source path in `set`.
 func (c *WappsYAML) Resolve(p string) string { return resolveRel(c.configRoot, p) }
-
-// ResolveDest returns the archive path resolved against configRoot. Dest is
-// already defaulted to "secrets/all.enc.age" by applyDefaultsAndValidate, so
-// this only ever joins (relative) or passes through (absolute) — the default
-// interacts here lazily and Dest itself is never mutated (display/commit hints
-// keep the raw repo-relative value).
-func (c *WappsYAML) ResolveDest() string { return resolveRel(c.configRoot, c.Dest) }
 
 // ResolvedSources returns a copy of Sources with Path (file source env-file)
 // and Workdir (tofu .tf dir) joined to configRoot. Callers pass these to
@@ -181,7 +174,6 @@ func (c *WappsYAML) ResolvedSources() []source.Config {
 }
 
 const (
-	defaultDest    = "secrets/all.enc.age"
 	defaultVersion = 1
 )
 
@@ -240,44 +232,24 @@ func applyDefaultsAndValidate(y *WappsYAML) error {
 		return fmt.Errorf("config: backend/project/profiles require version: 2 (got version %d)", y.Version)
 	}
 
-	// Backend: ABSENT → legacy-git.
-	backend := y.Backend
-	if backend == "" {
-		backend = BackendLegacyGit
-	}
-	if backend != BackendStore && backend != BackendLegacyGit {
-		return fmt.Errorf("config: unknown backend %q (allowed: store, legacy-git)", backend)
-	}
-	y.Backend = backend
-
-	if len(y.Profiles) > 0 && backend != BackendStore {
-		return fmt.Errorf("config: profiles are only valid under backend: store")
+	// Backend: absent == store (tek backend). legacy-git AÇIK hata.
+	switch y.Backend {
+	case "", BackendStore:
+		y.Backend = BackendStore
+	case BackendLegacyGit:
+		return fmt.Errorf("config: backend: legacy-git was removed — the git-committed age archive is gone; drop the 'backend:' and 'dest:' lines and set 'project: <name>' (values live in the gate)")
+	default:
+		return fmt.Errorf("config: unknown backend %q (the only backend is 'store')", y.Backend)
 	}
 
-	if y.Dest == "" {
-		y.Dest = defaultDest
+	// project ZORUNLU: gate'in adresi o. sources OPSİYONEL (yalnızca tofu-sync
+	// girdilerini bildirmek için, §8.6.5).
+	if y.Project == "" {
+		return fmt.Errorf("config: 'project: <name>' is required — it names the project in the secrets gate")
 	}
-
-	if backend == BackendStore {
-		// backend:store → project ZORUNLU (repo→proje bağlaması, §7.7). sources
-		// OPSİYONEL (yalnızca tofu-sync girdilerini bildirmek için, §8.6.5).
-		if y.Project == "" {
-			return fmt.Errorf("config: backend: store requires a non-empty project (the repo→project binding)")
-		}
-		for i, cfg := range y.Sources {
-			if _, err := source.New(cfg); err != nil {
-				return fmt.Errorf("config: sources[%d]: %w", i, err)
-			}
-		}
-	} else {
-		// legacy-git: bugünkü kurallar DEĞİŞMEDEN (non-empty sources ZORUNLU).
-		if len(y.Sources) == 0 {
-			return fmt.Errorf("config: at least one source required (got empty sources list)")
-		}
-		for i, cfg := range y.Sources {
-			if _, err := source.New(cfg); err != nil {
-				return fmt.Errorf("config: sources[%d]: %w", i, err)
-			}
+	for i, cfg := range y.Sources {
+		if _, err := source.New(cfg); err != nil {
+			return fmt.Errorf("config: sources[%d]: %w", i, err)
 		}
 	}
 
@@ -289,9 +261,6 @@ func applyDefaultsAndValidate(y *WappsYAML) error {
 	}
 	return nil
 }
-
-// IsStoreBackend, config'in store backend'i mi olduğunu döner (SPEC §7.12).
-func (c *WappsYAML) IsStoreBackend() bool { return c.Backend == BackendStore }
 
 // ProfileKeys, adlandırılmış bir profilin anahtar listesini döner (§7.6). Profil
 // yoksa (nil, false). Boş profil adı → tüm granted anahtarlar (nil, true).

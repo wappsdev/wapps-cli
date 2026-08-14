@@ -42,23 +42,15 @@ var rmCmd = &cobra.Command{
 	},
 }
 
-// runRm, rm'in test edilebilir çekirdeğidir. Yalnızca backend:store'da çalışır:
-// legacy-git arşivinde silme, arşiv+dosya-kaynağı+git commit'ini birlikte
-// yürütmeyi gerektirir ve o backend zaten emekliye ayrılıyor — yarım bir yol
-// açmak yerine açıkça reddediyoruz.
+// runRm, rm'in test edilebilir çekirdeğidir.
 func runRm(key string, yes bool, in io.Reader, out io.Writer) error {
 	if key == "" {
 		return clierr.New(clierr.Internal, "secrets.rm: KEY argument is required")
 	}
 
-	cfg, err := storeBackendConfig()
+	cfg, err := storeProject("rm")
 	if err != nil {
 		return err
-	}
-	if cfg == nil {
-		return clierr.New(clierr.NotAvailable,
-			"secrets.rm: only the store backend supports key removal").
-			WithRecovery("this project is on the legacy-git backend — remove the key from the file source and re-run 'wapps secrets sync'")
 	}
 
 	if !yes {

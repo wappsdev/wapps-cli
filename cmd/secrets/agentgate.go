@@ -18,7 +18,7 @@ import (
 // kayıt: yeni bir verb bu haritada YOKSA fail-closed REFUSED sayılır
 // ("unannotated new verbs default to REFUSED"). Bir verb yazarı, verb'ünü
 // buraya açıkça eklemek zorundadır. Alt-komut aileleri (policy show/set/lint,
-// migrate ...) SecretsCmd'nin ALTINDAKİ ilk seviye adıyla anahtarlanır
+// projects list/rm) SecretsCmd'nin ALTINDAKİ ilk seviye adıyla anahtarlanır
 // (gateKey) — böylece "policy set", data-plane "set" iznini MİRAS ALAMAZ.
 var agentPolicy = map[string]string{
 	// data-plane yazımlar + okumalar → ajan serbest (policy.json sunucuda yetkilendirir).
@@ -30,8 +30,6 @@ var agentPolicy = map[string]string{
 	"rotate":     agentmode.PolicyAllow,
 	"init":       agentmode.PolicyAllow,
 	"list":       agentmode.PolicyAllow,
-	"diff":       agentmode.PolicyAllow,
-	"verify":     agentmode.PolicyAllow,
 	"env":        agentmode.PolicyAllow, // print-form RunE'de reddedilir (§7.1)
 	"status":     agentmode.PolicyAllow,
 	// projects: AİLE gate'i list içindir (yalnızca proje ADları — `list` ile aynı
@@ -49,8 +47,6 @@ var agentPolicy = map[string]string{
 	// op'larıdır (write-AUD 15 dk WebAuthn oturumu) → ajan CONTROL_PLANE_REQUIRED.
 	"policy":      agentmode.PolicyControl,
 	"rotate-plan": agentmode.PolicyControl,
-	// migrate import/export/tombstone insan-eli admin op'larıdır (SPEC §7.1);
-	// haritada YOK → fail-closed REFUSED.
 }
 
 // bindingExempt, repo→proje bağlama kontrolünden muaf verb'ler: trust-repo
@@ -64,7 +60,7 @@ var bindingExempt = map[string]bool{
 }
 
 func init() {
-	// Cobra'nın parent PersistentPreRunE'unu (root: config resolve + git preflight)
+	// Cobra'nın parent PersistentPreRunE'unu (root: config resolve)
 	// EZMEDEN, SecretsCmd'nin kendi hook'unu da çalıştır: zincirdeki TÜM
 	// PersistentPreRunE'lar root→leaf sırayla koşar.
 	cobra.EnableTraverseRunHooks = true
@@ -107,16 +103,27 @@ func secretsPreRunE(cmd *cobra.Command, _ []string) error {
 	return checkRepoBinding(isAgent)
 }
 
-// checkRepoBinding, store-backed bir config için repo→proje bağlamasının GÜVENİLEN
-// home-dir'de pinli olduğunu doğrular (SPEC §7.1 trust-repo). legacy-git
-// config'lerde no-op.
+// checkRepoBinding, bir config için repo→proje bağlamasının GÜVENİLEN home-dir'de
+// pinli olduğunu doğrular (SPEC §7.1 trust-repo).
 //   - pinsiz → BINDING_UNPINNED (ajan asla pinleyemez; insan trust-repo çalıştırır)
 //   - farklı proje → hard fail (re-pin bir insan ister)
 //   - service principal (CI) → pin kontrolü ATLANIR (aşağıya bak)
-func checkRepoBinding(_ bool) error {
+func checkRepoBinding(isAgent bool) error {
+	// Bare `--project <ad>` (kayıt defterinde olmayan): ortada bağlanacak bir
+	// repo YOKTUR. Bir İNSAN için bu, hedefi komut satırında açıkça adlandırmaktır
+	// — pinin koruduğu confused-deputy durumu değil. Bir AJAN için öyle değildir:
+	// pin tam olarak "A repo'sundaki ajan B projesini okumasın" içindir, ve ajanın
+	// --project yazabilmesi onu yetkili yapmaz → ajan modunda fail-closed.
+	if projectOverride != "" {
+		if isAgent {
+			return clierr.Newf(clierr.BindingUnpinned,
+				"--project %q names a project with no local repo; an agent may not target a project this way", projectOverride)
+		}
+		return nil
+	}
 	cfg, err := loadOrNil(wappsConfigPath())
-	if err != nil || cfg == nil || !cfg.IsStoreBackend() {
-		return nil // config yok / bozuk-legacy / legacy-git → bağlama kontrolü yok
+	if err != nil || cfg == nil {
+		return nil // config yok → bağlama kontrolü yok
 	}
 	// Service principal (P1.8): CF Access service-token ÇİFTİ env'de doluysa
 	// repo-pin kontrolü atlanır. Fresh CI container'da trust-repo (TTY) imkânsız —

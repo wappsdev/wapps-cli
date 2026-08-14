@@ -3,7 +3,7 @@ package secrets
 // rm_test.go, `wapps secrets rm <KEY>` sözleşmesini pinler:
 //   - store'a DELETE gider (doğru proje + anahtar), çıktı yalnızca ADı taşır;
 //   - onay verilmeden HİÇBİR silme olmaz (fail-closed);
-//   - legacy-git backend'de reddedilir (store'a hiç dokunulmaz);
+//   - artık desteklenmeyen legacy-git config'i adıyla reddedilir;
 //   - gate hatası (ör. anahtar zaten yok) aynen yüzeye çıkar, başarı basılmaz;
 //   - ajan modunda yapısal olarak reddedilir (merkezi agentPolicy kaydı).
 
@@ -83,11 +83,11 @@ func TestRunRm_WithoutConfirmation_DeletesNothing(t *testing.T) {
 	}
 }
 
-// legacy-git backend'de rm yoktur: store'a hiç gidilmez, kurtarma yolu söylenir.
-func TestRunRm_LegacyBackend_Refused(t *testing.T) {
+// legacy-git config'i artık PARSE bile edilmez: sessizce store'a düşmek yerine
+// göç talimatı veren açık bir hata döner.
+func TestRunRm_LegacyConfigRejectedWithMigrationHint(t *testing.T) {
 	tmp := setupStoreProject(t, "")
-	// backend satırını legacy'ye çevir (setupStoreProject store yazmıştı).
-	legacy := "version: 2\nbackend: legacy-git\nproject: testproj\ndest: secrets/all.enc.age\n" +
+	legacy := "version: 2\nbackend: legacy-git\nproject: testproj\n" +
 		"sources:\n  - type: file\n    path: .env.shared\n"
 	if err := os.WriteFile(filepath.Join(tmp, ".wapps.yaml"), []byte(legacy), 0644); err != nil {
 		t.Fatalf("write legacy .wapps.yaml: %v", err)
@@ -96,11 +96,11 @@ func TestRunRm_LegacyBackend_Refused(t *testing.T) {
 
 	var out bytes.Buffer
 	err := runRm("SOME_KEY", true, strings.NewReader(""), &out)
-	if !clierr.Is(err, clierr.NotAvailable) {
-		t.Fatalf("legacy backend must refuse with NOT_AVAILABLE, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "legacy-git") {
+		t.Fatalf("legacy-git config must be rejected by name, got %v", err)
 	}
 	if len(f.deleteCalls) != 0 {
-		t.Errorf("legacy path must never reach the store, got %+v", f.deleteCalls)
+		t.Errorf("a rejected config must never reach the store, got %+v", f.deleteCalls)
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 )
 
@@ -22,7 +21,7 @@ var (
 
 var execCmd = &cobra.Command{
 	Use:   "exec -- <command> [args...]",
-	Short: "Run a command with archive secrets injected as env vars",
+	Short: "Run a command with the project's secrets injected as env vars",
 	Long: `Decrypt secrets and exec the given command with each secret exported
 as an env var. wapps forwards the subprocess's stdout and stderr THROUGH A
 STREAMING SCRUBBER that redacts any injected secret value to *** (§7.4.3), then
@@ -64,49 +63,19 @@ func runExec(args []string, prefix, intent string, breakGlass, isAgent bool, out
 		return clierr.New(clierr.BreakGlassRefused, "--break-glass refused in agent mode")
 	}
 
-	// Backend yönlendirme: `.wapps.yaml` backend:store ise exec, PLAINTEXT
-	// değerleri secrets-gate Worker'ından çeker (server-decrypt SPEC §2.7 —
-	// her okuma sunucudan taze; ayrı bir deploy tazelik yolu yoktur).
-	// backend yoksa / legacy-git ise aşağıdaki legacy age-arşiv yolu AYNEN korunur.
-	storeCfg, cerr := storeBackendConfig()
+	// FIX #4 (korundu): --intent deploy, §7.3.4 fresh-or-fail (receipt/witness/
+	// epoch) güvenlik yüzeyini VAAT EDER ama o yol hâlâ bağlanmadı. Sessiz
+	// no-op yerine FAIL LOUD — deploy güvenlik yüzeyi işlevsel sanılmasın.
+	if intent == "deploy" || breakGlass {
+		return clierr.New(clierr.NotAvailable,
+			"deploy intent not yet wired to the store; --intent deploy is unavailable in this build (use --intent dev)")
+	}
+
+	cfg, cerr := requireStoreConfig("exec")
 	if cerr != nil {
 		return cerr
 	}
-	if storeCfg != nil {
-		return runExecStore(args, prefix, intent, storeCfg, out, errW, runner)
-	}
-
-	// FIX #4: exec --intent deploy + --break-glass, §7.3.4 fresh-or-fail (receipt/
-	// witness/epoch) deploy güvenlik yüzeyini VAAT EDER — ama runExec LEGACY age
-	// arşivini doğrudan çözer (receipt/witness/epoch KONTROLÜ YOK). Sessiz no-op yerine
-	// FAIL LOUD: deploy intent'i store'a bağlanmadan çalışan bu build'de KULLANILAMAZ.
-	// Arşivi OKUMADAN ÖNCE reddet ki deploy güvenlik yüzeyi işlevsel sanılmasın.
-	if intent == "deploy" || breakGlass {
-		return clierr.New(clierr.NotAvailable,
-			"deploy intent not yet wired to the store; --intent deploy is unavailable in this build (use --intent dev; §7.3.4 fresh-or-fail deploy path lands with the store client)")
-	}
-
-	passphrase := os.Getenv("WAPPS_SECRETS_PASSPHRASE")
-	if passphrase == "" {
-		return fmt.Errorf("exec: WAPPS_SECRETS_PASSPHRASE not set")
-	}
-
-	archivePath := resolveArchivePath()
-	enc, err := os.ReadFile(archivePath)
-	if err != nil {
-		return fmt.Errorf("exec: read %s: %w", archivePath, err)
-	}
-	dec, err := ageutil.Decrypt(enc, passphrase)
-	if err != nil {
-		return fmt.Errorf("exec: decrypt: %w", err)
-	}
-
-	injected, values, err := execEnvAndValues(dec, prefix)
-	if err != nil {
-		return fmt.Errorf("exec: %w", err)
-	}
-
-	return runWithInjectedEnv(args, injected, values, out, errW, runner)
+	return runExecStore(args, prefix, intent, cfg, out, errW, runner)
 }
 
 // runWithInjectedEnv, exec-ailesi verb'lerin ORTAK inject→scrub→run→flush→exit
@@ -140,7 +109,7 @@ func runWithInjectedEnv(args, injected, scrubValues []string, out, errW io.Write
 	return nil
 }
 
-// buildExecEnv converts the decrypted archive JSON into "KEY=VALUE" entries.
+// buildExecEnv converts the envelope JSON into "KEY=VALUE" entries.
 func buildExecEnv(archiveDecrypted []byte, prefix string) ([]string, error) {
 	env, _, err := execEnvAndValues(archiveDecrypted, prefix)
 	return env, err

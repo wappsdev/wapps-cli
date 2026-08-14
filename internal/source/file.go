@@ -102,7 +102,7 @@ func parseEnvFile(path string, data []byte) (map[string]json.RawMessage, error) 
 }
 
 // unquote strips a matching pair of single or double quotes wrapping the
-// value. KEY="value with spaces" → "value with spaces". KEY='it''s' → "it''s"
+// value. KEY="value with spaces" → "value with spaces". KEY='it”s' → "it”s"
 // (we don't try to decode shell-style escape sequences; operators who want
 // embedded quotes should use json:value form or a tofu source).
 func unquote(s string) string {

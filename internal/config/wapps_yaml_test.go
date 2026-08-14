@@ -12,7 +12,7 @@ import (
 func TestLoad_RecordsConfigRoot(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".wapps.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\nsources:\n  - type: file\n    path: .env.shared\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nproject: testproj\nsources:\n  - type: file\n    path: .env.shared\n"), 0644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	cfg, err := Load(path)
@@ -26,32 +26,12 @@ func TestLoad_RecordsConfigRoot(t *testing.T) {
 }
 
 func TestParse_NoConfigRoot(t *testing.T) {
-	cfg, err := Parse([]byte("version: 1\nsources:\n  - type: tofu\n"))
+	cfg, err := Parse([]byte("version: 2\nproject: testproj\nsources:\n  - type: tofu\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	if cfg.ConfigRoot() != "" {
 		t.Errorf("Parse-built config should have empty ConfigRoot, got %q", cfg.ConfigRoot())
-	}
-	// With empty configRoot, ResolveDest returns the raw relative dest (no Join).
-	if got := cfg.ResolveDest(); got != "secrets/all.enc.age" {
-		t.Errorf("ResolveDest with empty configRoot = %q, want raw default", got)
-	}
-}
-
-func TestResolveDest_RelativeJoined(t *testing.T) {
-	cfg, _ := Parse([]byte("version: 1\ndest: secrets/all.enc.age\nsources:\n  - type: tofu\n"))
-	cfg.configRoot = "/p/vaulter"
-	if got := cfg.ResolveDest(); got != "/p/vaulter/secrets/all.enc.age" {
-		t.Errorf("ResolveDest = %q, want joined", got)
-	}
-}
-
-func TestResolveDest_AbsoluteUnchanged(t *testing.T) {
-	cfg, _ := Parse([]byte("version: 1\ndest: /abs/secrets/all.enc.age\nsources:\n  - type: tofu\n"))
-	cfg.configRoot = "/p/vaulter"
-	if got := cfg.ResolveDest(); got != "/abs/secrets/all.enc.age" {
-		t.Errorf("absolute dest must pass through unchanged, got %q", got)
 	}
 }
 
@@ -71,7 +51,7 @@ func TestResolveTargetPath(t *testing.T) {
 }
 
 func TestResolvedSources_JoinsPathAndWorkdir(t *testing.T) {
-	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: tofu\n    workdir: .\n  - type: file\n    path: .env.shared\n"))
+	cfg, _ := Parse([]byte("version: 2\nproject: testproj\nsources:\n  - type: tofu\n    workdir: .\n  - type: file\n    path: .env.shared\n"))
 	cfg.configRoot = "/p/vaulter"
 	got := cfg.ResolvedSources()
 	if got[0].Workdir != "/p/vaulter" {
@@ -87,7 +67,7 @@ func TestResolvedSources_JoinsPathAndWorkdir(t *testing.T) {
 }
 
 func TestResolvedSources_AbsoluteUnchanged(t *testing.T) {
-	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: file\n    path: /abs/.env\n"))
+	cfg, _ := Parse([]byte("version: 2\nproject: testproj\nsources:\n  - type: file\n    path: /abs/.env\n"))
 	cfg.configRoot = "/p"
 	if got := cfg.ResolvedSources(); got[0].Path != "/abs/.env" {
 		t.Errorf("absolute source path must pass through, got %q", got[0].Path)
@@ -97,7 +77,7 @@ func TestResolvedSources_AbsoluteUnchanged(t *testing.T) {
 // A tofu source with an omitted workdir must resolve to configRoot, not stay
 // empty (which would make tofu run in cwd). Regression for the review finding.
 func TestResolvedSources_OmittedTofuWorkdirDefaultsToConfigRoot(t *testing.T) {
-	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: tofu\n"))
+	cfg, _ := Parse([]byte("version: 2\nproject: testproj\nsources:\n  - type: tofu\n"))
 	cfg.configRoot = "/p/vaulter"
 	got := cfg.ResolvedSources()
 	if got[0].Workdir != "/p/vaulter" {
@@ -107,7 +87,7 @@ func TestResolvedSources_OmittedTofuWorkdirDefaultsToConfigRoot(t *testing.T) {
 
 // A file source must NOT gain a workdir (it rejects one) — empty stays empty.
 func TestResolvedSources_FileSourceWorkdirStaysEmpty(t *testing.T) {
-	cfg, _ := Parse([]byte("version: 1\nsources:\n  - type: file\n    path: .env.shared\n"))
+	cfg, _ := Parse([]byte("version: 2\nproject: testproj\nsources:\n  - type: file\n    path: .env.shared\n"))
 	cfg.configRoot = "/p/vaulter"
 	got := cfg.ResolvedSources()
 	if got[0].Workdir != "" {
@@ -118,7 +98,8 @@ func TestResolvedSources_FileSourceWorkdirStaysEmpty(t *testing.T) {
 func TestParse_VaulterExample(t *testing.T) {
 	// Matches the design-doc example for infra-tofu/projects/vaulter.
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 dest: secrets/all.enc.age
 sources:
   - type: tofu
@@ -127,18 +108,13 @@ sources:
   - type: file
     path: .env.shared
     prefix: ""
-redact_in_logs: true
-require_clean_git: true
 `)
 	got, err := Parse(data)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if got.Version != 1 {
+	if got.Version != 2 {
 		t.Errorf("Version: %d", got.Version)
-	}
-	if got.Dest != "secrets/all.enc.age" {
-		t.Errorf("Dest: %q", got.Dest)
 	}
 	if len(got.Sources) != 2 {
 		t.Fatalf("expected 2 sources, got %d", len(got.Sources))
@@ -149,18 +125,13 @@ require_clean_git: true
 	if got.Sources[1].Type != "file" || got.Sources[1].Path != ".env.shared" {
 		t.Errorf("source[1]: %+v", got.Sources[1])
 	}
-	if !got.RedactInLogs {
-		t.Errorf("RedactInLogs should be true")
-	}
-	if !got.RequireCleanGit {
-		t.Errorf("RequireCleanGit should be true")
-	}
 }
 
 func TestParse_VaulterApiExample(t *testing.T) {
 	// File-only source (non-Tofu repo).
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: file
     path: .env.shared
@@ -169,25 +140,8 @@ sources:
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if got.Dest != "secrets/all.enc.age" {
-		t.Errorf("Dest should default to secrets/all.enc.age, got %q", got.Dest)
-	}
 	if len(got.Sources) != 1 || got.Sources[0].Type != "file" {
 		t.Errorf("sources: %+v", got.Sources)
-	}
-}
-
-func TestParse_VersionDefaultsTo1(t *testing.T) {
-	data := []byte(`
-sources:
-  - type: tofu
-`)
-	got, err := Parse(data)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if got.Version != 1 {
-		t.Errorf("Version should default to 1, got %d", got.Version)
 	}
 }
 
@@ -207,23 +161,10 @@ sources:
 	}
 }
 
-func TestParse_RejectsEmptySources(t *testing.T) {
-	data := []byte(`
-version: 1
-sources: []
-`)
-	_, err := Parse(data)
-	if err == nil {
-		t.Fatal("expected error for empty sources")
-	}
-	if !strings.Contains(err.Error(), "at least one source") {
-		t.Errorf("error should explain requirement, got: %v", err)
-	}
-}
-
 func TestParse_RejectsUnknownSourceType(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: doppler
 `)
@@ -241,7 +182,8 @@ sources:
 
 func TestParse_RejectsTofuWithPathField(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
     path: .env.shared
@@ -254,7 +196,8 @@ sources:
 
 func TestParse_RejectsFileWithoutPath(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: file
 `)
@@ -276,7 +219,8 @@ func TestParse_MalformedYAML(t *testing.T) {
 
 func TestParse_DefaultPrefix(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 default_prefix: ""
 sources:
   - type: file
@@ -293,7 +237,8 @@ sources:
 
 func TestParse_TargetsBasic(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: file
     path: .env.shared
@@ -345,7 +290,8 @@ func TestTarget_EffectivePrefix(t *testing.T) {
 
 func TestParse_RejectsTargetWithoutPath(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: file
     path: .env.shared
@@ -363,7 +309,8 @@ targets:
 
 func TestParse_RejectsDuplicateTargetPath(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: file
     path: .env.shared
@@ -382,7 +329,8 @@ targets:
 
 func TestParse_RejectsTargetPathTraversal(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: file
     path: .env.shared
@@ -400,7 +348,8 @@ targets:
 
 func TestParse_EmptyTargetsIsOK(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: file
     path: .env.shared
@@ -416,7 +365,8 @@ sources:
 
 func TestParse_CoolifySync_Basic(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 coolify_sync:
@@ -449,7 +399,8 @@ coolify_sync:
 
 func TestParse_CoolifySync_AbsentIsNil(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 `)
@@ -464,7 +415,8 @@ sources:
 
 func TestParse_CoolifySync_RejectsMissingUUID(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 coolify_sync:
@@ -479,7 +431,8 @@ coolify_sync:
 
 func TestParse_CoolifySync_RejectsMissingPrefix(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 coolify_sync:
@@ -494,7 +447,8 @@ coolify_sync:
 
 func TestParse_CoolifySync_RejectsDuplicateUUID(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 coolify_sync:
@@ -513,7 +467,8 @@ coolify_sync:
 func TestParse_CoolifySync_RejectsOverlappingPrefix(t *testing.T) {
 	// "ROYCO_" is a prefix of "ROYCO_API_" → ambiguous routing, must error.
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 coolify_sync:
@@ -532,7 +487,8 @@ coolify_sync:
 func TestParse_CoolifySync_OverlapErrorRegardlessOfOrder(t *testing.T) {
 	// Same overlap but declared in the opposite order — must still error.
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 coolify_sync:
@@ -550,7 +506,8 @@ coolify_sync:
 
 func TestParse_CoolifySync_NonOverlappingOK(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
 coolify_sync:
@@ -567,7 +524,8 @@ coolify_sync:
 
 func TestParse_MultiTofuMultiFile(t *testing.T) {
 	data := []byte(`
-version: 1
+version: 2
+project: testproj
 sources:
   - type: tofu
     workdir: ./projects/vaulter

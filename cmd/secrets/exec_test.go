@@ -2,44 +2,25 @@ package secrets
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"strings"
 	"testing"
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 )
 
-// execTestSetup writes an encrypted archive into ./secrets/all.enc.age in
-// a temp cwd and seeds WAPPS_SECRETS_PASSPHRASE. Returns the passphrase
+// execTestSetup seeds the store fake and sets up a project dir in
+// a temp cwd. Returns "" (kept for call-site compatibility).
 // so the test can decrypt the archive in assertions if needed.
-func execTestSetup(t *testing.T, archive map[string]string) string {
+func execTestSetup(t *testing.T, values map[string]string) string {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "exec-test-pp"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-
-	envelope := make(map[string]json.RawMessage)
-	for k, v := range archive {
-		b, _ := json.Marshal(map[string]string{"value": v})
-		envelope[k] = b
+	setupStoreProject(t, "")
+	f := installFakeStore(t)
+	for k, v := range values {
+		f.values[k] = v
 	}
-	raw, _ := json.Marshal(envelope)
-	enc, err := ageutil.Encrypt(raw, pp)
-	if err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
-	if err := os.MkdirAll("secrets", 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile("secrets/all.enc.age", enc, 0o600); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	return pp
+	return ""
 }
 
 // fakeRunner captures the call arguments so tests can assert env contents
@@ -204,20 +185,6 @@ func TestRunExec_InjectedOverridesInheritedEnvOnCollision(t *testing.T) {
 	}
 }
 
-func TestRunExec_NoPassphraseErrors(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
-
-	err := execCall([]string{"true"}, "TF_VAR_", (&fakeRunner{}).runner)
-	if err == nil {
-		t.Fatal("expected error: passphrase required")
-	}
-	if !strings.Contains(err.Error(), "WAPPS_SECRETS_PASSPHRASE") {
-		t.Errorf("error should name env var, got: %v", err)
-	}
-}
-
 func TestRunExec_EmptyArgsErrors(t *testing.T) {
 	err := execCall(nil, "TF_VAR_", (&fakeRunner{}).runner)
 	if err == nil {
@@ -282,37 +249,12 @@ func TestRunExec_BreakGlassRefusedInAgentMode(t *testing.T) {
 	}
 }
 
-// TestRunExec_DeployIntentFailsLoudBeforeArchiveRead (FIX #4): --intent deploy,
-// §7.3.4 fresh-or-fail'i VAAT eder ama store'a bağlı DEĞİL — legacy arşivi doğrudan
-// çözmek deploy güvenlik yüzeyini işlevsel gösterirdi. Fail loud: arşivi OKUMADAN
-// clierr döndür, alt-süreci ÇALIŞTIRMA.
-func TestRunExec_DeployIntentFailsLoudBeforeArchiveRead(t *testing.T) {
-	// Kasıtlı olarak arşiv YOK + passphrase YOK: deploy kontrolü bunlara ULAŞMADAN
-	// önce reddetmeli (arşiv asla okunmaz).
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
-
-	r := &fakeRunner{returnCode: 0}
-	err := runExec([]string{"tofu", "apply"}, "TF_VAR_", "deploy", false, false, io.Discard, io.Discard, r.runner)
-	if err == nil {
-		t.Fatal("expected a hard error for --intent deploy")
-	}
-	if !clierr.Is(err, clierr.NotAvailable) {
-		t.Fatalf("wrong code (want NOT_AVAILABLE): %v", err)
-	}
-	if r.gotName != "" {
-		t.Fatalf("subprocess must never run under an unwired deploy intent, got: %q", r.gotName)
-	}
-}
-
 // TestRunExec_BreakGlassFailsLoudEvenNonAgent (FIX #4): --break-glass yalnızca
 // deploy-intent CF-outage override'ıdır; deploy bağlı olmadığından, ajan-dışı bir
 // terminalde bile arşivi okumadan reddedilmeli (sessiz no-op yerine fail loud).
 func TestRunExec_BreakGlassFailsLoudEvenNonAgent(t *testing.T) {
 	tmp := t.TempDir()
 	t.Chdir(tmp)
-	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
 
 	r := &fakeRunner{returnCode: 0}
 	err := runExec([]string{"true"}, "TF_VAR_", "dev", true /*breakGlass*/, false /*isAgent*/, io.Discard, io.Discard, r.runner)

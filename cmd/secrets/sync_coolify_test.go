@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wappsdev/wapps-cli/internal/ageutil"
 	"github.com/wappsdev/wapps-cli/internal/coolify"
 )
 
@@ -48,30 +47,10 @@ func (f *fakeCoolify) DeleteAppEnv(_, envUUID string) error {
 
 func setupCoolifyTest(t *testing.T, archive map[string]string, current []coolify.EnvEntry) (*fakeCoolify, coolifyOptions) {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "test-pp"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-
-	if err := os.WriteFile(".wapps.yaml", []byte(`
-version: 1
-sources:
-  - type: file
-    path: .env.shared
-`), 0o644); err != nil {
-		t.Fatalf("yaml: %v", err)
-	}
-	if err := os.MkdirAll("secrets", 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	envelope := make(map[string]json.RawMessage)
+	setupStoreProject(t, "")
+	sf := installFakeStore(t)
 	for k, v := range archive {
-		b, _ := json.Marshal(map[string]string{"value": v})
-		envelope[k] = b
-	}
-	raw, _ := json.Marshal(envelope)
-	if err := ageutil.EncryptWriteAtomic("secrets/all.enc.age", raw, pp); err != nil {
-		t.Fatalf("seed: %v", err)
+		sf.values[k] = v
 	}
 
 	fake := &fakeCoolify{listResult: current}
@@ -178,7 +157,6 @@ func TestRunSyncCoolify_RequiresToken(t *testing.T) {
 func TestRunSyncCoolify_RequiresWappsYAML(t *testing.T) {
 	tmp := t.TempDir()
 	t.Chdir(tmp)
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "x")
 	opts := coolifyOptions{
 		appUUID:   "app-1",
 		apiToken:  "tok",
@@ -193,19 +171,6 @@ func TestRunSyncCoolify_RequiresWappsYAML(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), ".wapps.yaml") {
 		t.Errorf("error should mention config file: %v", err)
-	}
-}
-
-func TestRunSyncCoolify_RequiresPassphrase(t *testing.T) {
-	_, opts := setupCoolifyTest(t, map[string]string{"K": "v"}, nil)
-	os.Unsetenv("WAPPS_SECRETS_PASSPHRASE")
-
-	err := runSyncCoolify(opts)
-	if err == nil {
-		t.Fatal("expected error: passphrase required")
-	}
-	if !strings.Contains(err.Error(), "WAPPS_SECRETS_PASSPHRASE") {
-		t.Errorf("error should name env var: %v", err)
 	}
 }
 
@@ -600,26 +565,10 @@ func (f *multiAppFake) DeleteAppEnv(uuid, envUUID string) error {
 // and returns the fake + base opts pointing at it.
 func setupMultiApp(t *testing.T, archive map[string]string, yamlCoolifySync string) (*multiAppFake, coolifyOptions) {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	pp := "test-pp"
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", pp)
-
-	yaml := "version: 1\nsources:\n  - type: file\n    path: .env.shared\n" + yamlCoolifySync
-	if err := os.WriteFile(".wapps.yaml", []byte(yaml), 0o644); err != nil {
-		t.Fatalf("yaml: %v", err)
-	}
-	if err := os.MkdirAll("secrets", 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	envelope := make(map[string]json.RawMessage)
+	setupStoreProject(t, yamlCoolifySync)
+	sf := installFakeStore(t)
 	for k, v := range archive {
-		b, _ := json.Marshal(map[string]string{"value": v})
-		envelope[k] = b
-	}
-	raw, _ := json.Marshal(envelope)
-	if err := ageutil.EncryptWriteAtomic("secrets/all.enc.age", raw, pp); err != nil {
-		t.Fatalf("seed: %v", err)
+		sf.values[k] = v
 	}
 
 	fake := newMultiAppFake()
@@ -890,11 +839,10 @@ func TestRunSyncCoolifyAllApps_NoAppsConfigured_Errors(t *testing.T) {
 
 // TestRunSyncCoolify_StoreBackend_PushesStoreValues, P1.6'nın çekirdeği:
 // backend:store'da arşiv/passphrase OLMADAN değerler fake store'dan çekilir ve
-// mevcut diff/push makinesiyle Coolify'a itilir. WAPPS_SECRETS_PASSPHRASE boş —
+// mevcut diff/push makinesiyle Coolify'a itilir.
 // store yolu onu ASLA istememeli (retirement günü kırılmaması bunun kanıtı).
 func TestRunSyncCoolify_StoreBackend_PushesStoreValues(t *testing.T) {
 	setupStoreProject(t, "")
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "") // store yolu passphrase istememeli
 	f := installFakeStore(t)
 	f.values["DB_PASSWORD"] = "new-value" // CHANGE
 	f.values["NEW_KEY"] = "v"             // ADD
@@ -940,9 +888,6 @@ func TestRunSyncCoolify_StoreBackend_PushesStoreValues(t *testing.T) {
 		t.Errorf("single-app mirror must still delete STALE (e2), got: %+v", fake.deletes)
 	}
 	// Store yolunda diskte arşiv OLUŞMAMALI.
-	if _, statErr := os.Stat("secrets/all.enc.age"); !os.IsNotExist(statErr) {
-		t.Error("store-backed coolify sync must not touch a legacy archive")
-	}
 }
 
 // Store okuma hatası (örn. SESSION_EXPIRED) → Coolify istemcisi HİÇ kurulmaz,
@@ -985,7 +930,6 @@ func TestRunSyncCoolifyAllApps_StoreBackend_PrefixStripPreserved(t *testing.T) {
     - uuid: royco-uuid
       archive_prefix: "ROYCO_API_"
 `)
-	t.Setenv("WAPPS_SECRETS_PASSPHRASE", "")
 	f := installFakeStore(t)
 	f.values["KREEVA_WEB_TOKEN"] = "kt"
 	f.values["ROYCO_API_DB"] = "rdb"
@@ -1016,24 +960,5 @@ func TestRunSyncCoolifyAllApps_StoreBackend_PrefixStripPreserved(t *testing.T) {
 				t.Errorf("tofu output leaked to %s: %+v", uuid, u)
 			}
 		}
-	}
-}
-
-// Legacy (backend yok) coolify sync store'a ASLA gitmez — arşiv+passphrase yolu
-// byte-for-byte korunur (fake store kurulu olsa bile Read çağrılmaz).
-func TestRunSyncCoolify_LegacyBackend_DoesNotRouteToStore(t *testing.T) {
-	_, opts := setupCoolifyTest(
-		t,
-		map[string]string{"DB_PASSWORD": "secret"},
-		[]coolify.EnvEntry{{UUID: "e1", Key: "DB_PASSWORD", Value: "old"}},
-	)
-	f := installFakeStore(t)
-	opts.force = false // dry-run yeterli — yönlendirme kanıtı Read sayısında
-
-	if err := runSyncCoolify(opts); err != nil {
-		t.Fatalf("legacy runSyncCoolify: %v", err)
-	}
-	if len(f.readCalls) != 0 {
-		t.Fatalf("legacy coolify sync must NOT route to the store; reads=%d", len(f.readCalls))
 	}
 }
