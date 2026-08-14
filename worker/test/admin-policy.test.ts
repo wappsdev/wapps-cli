@@ -167,3 +167,80 @@ describe("rotate-plan — audit ledger as rotate-set oracle (§6.3)", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("DELETE /v1/admin/projects/{p} — proje silme (§7.6)", () => {
+  // Test projesine veri koyar (writer'ın read/write grant'iyle).
+  async function seedProject(project: string, key = "K1"): Promise<void> {
+    const res = await callGate(`/v1/projects/${project}/keys/${key}`, {
+      method: "PUT",
+      headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))),
+      body: JSON.stringify({ value: "v" }),
+    });
+    expect(res.status).toBe(200);
+  }
+  function del(jwt: string, project: string, confirm: string): Promise<Response> {
+    return callGate(`/v1/admin/projects/${project}`, {
+      method: "DELETE",
+      headers: authHeader(jwt),
+      body: JSON.stringify({ confirm }),
+    });
+  }
+
+  it("admin siler: veri gider, epoch sıfırlanır, silme SENKRON audit'lenir", async () => {
+    await seedProject("vaulter");
+    const res = await del(await adminJwt(), "vaulter", "vaulter");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { project: string; deleted_objects: number; pointer_events_kept: boolean };
+    expect(body.project).toBe("vaulter");
+    expect(body.deleted_objects).toBeGreaterThan(0);
+    expect(body.pointer_events_kept).toBe(true);
+
+    // Proje artık listede yok.
+    const list = await callGate("/v1/projects", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))) });
+    expect(((await list.json()) as { projects: string[] }).projects).toEqual([]);
+
+    // settleAudit GEREKMEZ: silme audit'i SENKRON yazılır (auditAppendSync) ve
+    // yazılamazsa silme hiç olmaz — yanıt döndüyse satır zaten defterdedir.
+    const rows = await allAuditRows();
+    expect(rows.some((r) => r.verb === "project.delete" && r.decision === "allow" && r.project === "vaulter")).toBe(true);
+
+    // Aynı adla yeniden yazım TEMİZ epoch 1'den başlar (epoch R2 pointer'ında).
+    await seedProject("vaulter", "K2");
+    const keys = await callGate("/v1/projects/vaulter/keys", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))) });
+    const parsed = (await keys.json()) as { epoch: number; keys: { keyName: string }[] };
+    expect(parsed.epoch).toBe(1);
+    expect(parsed.keys.map((k) => k.keyName)).toEqual(["K2"]);
+  });
+
+  it("confirm gövdesi proje adını tekrarlamazsa 400 — hiçbir şey silinmez", async () => {
+    await seedProject("vaulter");
+    const res = await del(await adminJwt(), "vaulter", "vaulterr");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("CONFIRM_MISMATCH");
+
+    const list = await callGate("/v1/projects", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))) });
+    expect(((await list.json()) as { projects: string[] }).projects).toEqual(["vaulter"]);
+  });
+
+  it("per-key `delete` grant'i YETMEZ: admin olmayan write-AUD principal 403 alır", async () => {
+    await seedProject("vaulter");
+    // boss admins@ grubunda (verbs ["*"]) → admin. writer değil: read/write/rotate.
+    const res = await del(await signer.makeJWT(validClaimsWrite("writer@wapps.dev")), "vaulter", "vaulter");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("GRANT_DENIED");
+
+    const list = await callGate("/v1/projects", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))) });
+    expect(((await list.json()) as { projects: string[] }).projects).toEqual(["vaulter"]);
+  });
+
+  it("verisi olmayan proje → 404 (sessiz başarı DEĞİL)", async () => {
+    const res = await del(await adminJwt(), "ghost", "ghost");
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("NOT_FOUND");
+  });
+
+  it("geçersiz proje segmenti → 422", async () => {
+    const res = await del(await adminJwt(), "Not_Valid", "Not_Valid");
+    expect(res.status).toBe(422);
+  });
+});

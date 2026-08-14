@@ -100,6 +100,44 @@ export async function headEtag(bucket: R2Bucket, key: string): Promise<string | 
   return h ? h.etag : null;
 }
 
+/** R2 batch-delete üst sınırı (tek `bucket.delete(keys[])` çağrısı). */
+const DELETE_BATCH = 1000;
+/** Silme turu üst sınırı (~1M obje) — ilerlemeyen döngüye karşı emniyet. */
+const DELETE_MAX_ROUNDS = 1000;
+
+/**
+ * deleteProjectObjects, bir projenin TÜM veri objelerini siler (`secrets/<p>/`:
+ * blob'lar + manifest'ler + current pointer) ve silinen obje sayısını döner.
+ *
+ * `pointer-events/<p>/` KASITLI OLARAK BIRAKILIR: o akış append-only escrow/DR
+ * kaydıdır (§8.3) — audit defteri gibi, projenin var olduğunun kanıtı. Silinmesi
+ * "hiç olmamış gibi" bir geçmiş üretirdi; bu sistemin tamper-evident sözleşmesine
+ * aykırı. GC (gc.ts) yetim pointer-event'leri kendi politikasıyla ele alır.
+ *
+ * Epoch sıfırlaması BEDAVA gelir: writer DO epoch'u DO storage'ında DEĞİL, R2
+ * `current` pointer'ında tutar — pointer gidince aynı adla yeniden yazılan proje
+ * temiz bir şekilde epoch 1'den başlar.
+ */
+export async function deleteProjectObjects(bucket: R2Bucket, project: string): Promise<number> {
+  const prefix = `secrets/${project}/`;
+  let deleted = 0;
+  // Cursor KULLANILMAZ: sildikçe listeyi baştan tazeliyoruz — bir cursor,
+  // altından objeler silinince zaten geçersizleşir. Her tur bir sayfa (≤1000)
+  // götürür; boş sayfa gelince iş bitmiştir.
+  for (let round = 0; round < DELETE_MAX_ROUNDS; round++) {
+    const l = await bucket.list({ prefix });
+    if (l.objects.length === 0) return deleted;
+    const keys = l.objects.map((o) => o.key);
+    for (let i = 0; i < keys.length; i += DELETE_BATCH) {
+      await bucket.delete(keys.slice(i, i + DELETE_BATCH));
+    }
+    deleted += keys.length;
+  }
+  // Bir tur boş sayfa döndürmediyse silme ilerlemiyor demektir (R2 sessiz hata
+  // veya eşzamanlı yazım seli): sonsuz döngü yerine gürültülü hata.
+  throw new Error(`deleteProjectObjects(${project}): not converging after ${DELETE_MAX_ROUNDS} rounds`);
+}
+
 /** deriveProjects, R2'deki `secrets/<project>/` öneklerinden proje adlarını çıkarır. */
 export async function deriveProjects(bucket: R2Bucket): Promise<string[]> {
   const seen = new Set<string>();

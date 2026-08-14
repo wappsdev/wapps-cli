@@ -54,6 +54,10 @@ type fakeStore struct {
 	importCalls []importCall
 	setCalls    []setCall
 	deleteCalls []deleteKeyCall
+	// projects/projectsErr, GET /v1/projects fake'i (proje listeleme testleri).
+	projects      []string
+	projectsCalls int
+	projectsErr   error
 	values      map[string]string
 	readErr     error
 	writeErr    error
@@ -75,6 +79,14 @@ func (f *fakeStore) Whoami(_ context.Context) (*store.WhoamiResult, error) {
 		return f.whoami, nil
 	}
 	return &store.WhoamiResult{Principal: "test-admin", IsRootAdmin: true}, nil
+}
+
+func (f *fakeStore) Projects(_ context.Context) (*store.ProjectsResult, error) {
+	f.projectsCalls++
+	if f.projectsErr != nil {
+		return nil, f.projectsErr
+	}
+	return &store.ProjectsResult{Projects: f.projects}, nil
 }
 
 func (f *fakeStore) Keys(_ context.Context, project string) (*store.KeysResult, error) {

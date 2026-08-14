@@ -213,6 +213,44 @@ func decodeJSON(body []byte, dst any, ctxMsg string) error {
 
 // --- Metadata + okuma (§7.6) --------------------------------------------------
 
+// Projects, GET /v1/projects — principal'ın GÖREBİLDİĞİ proje adları (filtreli).
+func (w *WorkerStore) Projects(ctx context.Context) (*ProjectsResult, error) {
+	r, err := w.do(ctx, http.MethodGet, "/v1/projects", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.status != http.StatusOK {
+		return nil, mapHTTPError(r, "list projects")
+	}
+	var out ProjectsResult
+	if err := decodeJSON(r.body, &out, "list projects"); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ProjectDelete, DELETE /v1/admin/projects/{p} — projenin TÜM verisini kaldırır.
+// Gövdedeki `confirm` proje adını TEKRAR etmelidir (sunucu eşleşmezse 400 verir);
+// istemci onu buradan doldurur ki yanlış-hedef bir çağrı ağa çıkmasın.
+func (w *WorkerStore) ProjectDelete(ctx context.Context, project string) (*ProjectDeleteResult, error) {
+	body, err := json.Marshal(map[string]string{"confirm": project})
+	if err != nil {
+		return nil, clierr.Wrapf(clierr.Internal, err, "encode project delete request")
+	}
+	r, err := w.do(ctx, http.MethodDelete, "/v1/admin/projects/"+url.PathEscape(project), body, nil)
+	if err != nil {
+		return nil, err
+	}
+	if r.status != http.StatusOK {
+		return nil, mapHTTPError(r, "delete project "+project)
+	}
+	var out ProjectDeleteResult
+	if err := decodeJSON(r.body, &out, "delete project "+project); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Keys, GET /v1/projects/{p}/keys — okunabilir anahtar listesi (filtreli, §4.3.3).
 func (w *WorkerStore) Keys(ctx context.Context, project string) (*KeysResult, error) {
 	var headers map[string]string

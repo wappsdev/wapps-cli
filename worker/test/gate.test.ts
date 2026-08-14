@@ -381,3 +381,48 @@ describe("canary: error paths never leak values (gate 6, C2)", () => {
     expect(misconfig.status).toBe(503);
   });
 });
+
+describe("GET /v1/projects — proje enumerasyonu (kayıt defteri YOK)", () => {
+  it("yalnızca proje-metadata read grant'i tutulan projeleri döner, sıralı", async () => {
+    // Proje = R2 öneki: ilk yazımla doğar. İkisi de developers'ın projects:["*"]
+    // kapsamında → writer ikisini de görür.
+    await putKey("A_KEY", "v");
+    const other = await callGate("/v1/projects/lumira/keys/B_KEY", {
+      method: "PUT",
+      headers: authHeader(await writerJwt()),
+      body: JSON.stringify({ value: "v" }),
+    });
+    expect(other.status).toBe(200);
+
+    const res = await callGate("/v1/projects", { headers: authHeader(await writerJwt()) });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { projects: string[] }).projects).toEqual(["lumira", "vaulter"]);
+  });
+
+  it("grant'i olmayan principal BOŞ liste alır — proje ADI da sızmaz", async () => {
+    await putKey("A_KEY", "v");
+    const res = await callGate("/v1/projects", { headers: authHeader(await signer.makeJWT(validClaims("stranger@wapps.dev"))) });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { projects: string[] }).projects).toEqual([]);
+  });
+
+  it("service principal yalnızca kendi projesini görür (svc-woodpecker → vaulter)", async () => {
+    await putKey("A_KEY", "v");
+    const other = await callGate("/v1/projects/lumira/keys/B_KEY", {
+      method: "PUT",
+      headers: authHeader(await writerJwt()),
+      body: JSON.stringify({ value: "v" }),
+    });
+    expect(other.status).toBe(200);
+
+    const res = await callGate("/v1/projects", { headers: authHeader(await signer.makeJWT(serviceTokenClaims("svc-woodpecker"))) });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { projects: string[] }).projects).toEqual(["vaulter"]);
+  });
+
+  it("boş store → 200 + [] (hata DEĞİL)", async () => {
+    const res = await callGate("/v1/projects", { headers: authHeader(await writerJwt()) });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { projects: string[] }).projects).toEqual([]);
+  });
+});

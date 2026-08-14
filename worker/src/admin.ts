@@ -27,7 +27,7 @@ import {
   putPolicy,
   rulesFor,
 } from "./policy.js";
-import { deriveProjects, getObject, keyCurrent, keyManifest } from "./storage.js";
+import { deleteProjectObjects, deriveProjects, getObject, keyCurrent, keyManifest, validProject } from "./storage.js";
 import { parseCurrentPointer, parseManifest } from "./manifest.js";
 import { ensureSchema } from "./schema.js";
 import { auditAppendSync, auditReadAsync, AuditRow, ipOf, rayOf } from "./audit.js";
@@ -263,6 +263,53 @@ export async function handleAdmin(
       if (res.status !== HTTP.OK) failed++;
     }
     return jsonOK({ projects: results, failed });
+  }
+
+  // DELETE /v1/admin/projects/{p}: bir projenin TÜM verisini kaldırır.
+  //
+  // Neden admin rotası: bir projeyi silmek, o projedeki her anahtarı silmenin
+  // toplamıdır ve proje ÖRTÜK bir namespace olduğundan (kayıt defteri yok, ilk
+  // yazımda doğar) yanlış ada yapılan bir silme sessizce başka bir şeyi götürür.
+  // Bu yüzden per-key `delete` grant'i YETMEZ: global `admin` verb'i + write-AUD
+  // (15 dk WebAuthn) ister ve gövdede proje adının TEKRAR yazılmasını şart koşar.
+  if (parts[2] === "projects" && parts.length === 4 && request.method === "DELETE") {
+    const project = parts[3];
+    if (!validProject(project)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid project segment");
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+    }
+    // Çift-yazım onayı: istemci yanlış projeyi hedeflediyse burada durur.
+    if (body.confirm !== project) {
+      return jsonError(HTTP.BAD_REQUEST, "CONFIRM_MISMATCH", "body.confirm must repeat the project name", { key: project });
+    }
+    // Var olmayan projeyi silmek SESSİZ BAŞARI değildir (rm <KEY> ile aynı çizgi).
+    const existing = await deriveProjects(env.SECRETS_BUCKET);
+    if (!existing.includes(project)) {
+      return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "project has no data in the store", { key: project });
+    }
+
+    // AUDIT ÖNCE, silme SONRA — bilinçli sıra. Sistem zaten "audit defteri
+    // erişilemezse plaintext verme" diyor (§6.4); geri alınamaz bir silme için
+    // aynı kural DAHA da geçerlidir. Audit düşerse hiçbir şey silinmez; tersi
+    // sırada ledger düşseydi veri kaydsız yok olurdu. Tamamlanmamış bir silme
+    // niyet kaydı bırakır — kayıtsız yok olmaktan her zaman iyidir.
+    try {
+      await auditAppendSync(env.AUDIT_LOG, {
+        ...adminRow(actx.authz.id, principal, "project.delete", request),
+        project,
+        intent: "project_purge",
+      });
+    } catch {
+      return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit ledger unavailable — project deletion refused");
+    }
+
+    const deleted = await deleteProjectObjects(env.SECRETS_BUCKET, project);
+    // pointer-events/<p>/ KORUNUR (append-only DR/escrow izi, §8.3).
+    return jsonOK({ project, deleted_objects: deleted, pointer_events_kept: true });
   }
 
   // POST /v1/admin/scheduler/arm (P2.4): SchedulerDO alarm bootstrap'ı — one-shot,

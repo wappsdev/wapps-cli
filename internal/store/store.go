@@ -19,6 +19,9 @@ import (
 
 // Store, verb'lerin kullandığı v2 istemci arayüzüdür (SPEC §7.4).
 type Store interface {
+	// Projects, principal'ın GÖREBİLDİĞİ proje adlarını döner (GET /projects —
+	// liste Worker'da proje-metadata read grant'ına filtrelenir).
+	Projects(ctx context.Context) (*ProjectsResult, error)
 	// Keys, projenin OKUNABİLİR anahtar metadata'sını döner (GET /keys —
 	// liste Worker'da principal'ın read grant'ına filtrelenir, §4.3.3).
 	Keys(ctx context.Context, project string) (*KeysResult, error)
@@ -31,6 +34,19 @@ type Store interface {
 	Import(ctx context.Context, project string, values map[string]string, opts WriteOpts) error
 	// Delete, bir anahtarı siler (DELETE /keys/{KEY}; silme = manifest'te yokluk).
 	Delete(ctx context.Context, project, key string) error
+}
+
+// ProjectsResult, GET /v1/projects yanıtı: principal'ın görebildiği proje ADları.
+type ProjectsResult struct {
+	Projects []string `json:"projects"`
+}
+
+// ProjectDeleteResult, DELETE /v1/admin/projects/{p} yanıtı. PointerEventsKept
+// her zaman true'dur: append-only DR/escrow izi (§8.3) silinmez.
+type ProjectDeleteResult struct {
+	Project           string `json:"project"`
+	DeletedObjects    int    `json:"deleted_objects"`
+	PointerEventsKept bool   `json:"pointer_events_kept"`
 }
 
 // KeyInfo, bir anahtarın metadata'sı (ASLA değer).

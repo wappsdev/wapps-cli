@@ -19,6 +19,7 @@ import {
   keyCurrent,
   keyManifest,
   getObject,
+  deriveProjects,
   validProject,
   validKeyName,
   mapPool,
@@ -184,6 +185,15 @@ export default {
       // secret içermez; kâğıt zarfa da yazılır). Okumanın kendisi audit'lenir.
       if (parts[1] === "audit" && parts.length === 3 && parts[2] === "head" && request.method === "GET") {
         return await handleAuditHead(request, env, ctx, rctx);
+      }
+
+      // --- GET /v1/projects (proje ENUMERASYONU, §7.6) ------------------------------
+      // Proje adları R2 önekinden türetilir (kayıt defteri YOK — bir proje ilk
+      // anahtar yazıldığında var olur). Liste, principal'ın proje-metadata `read`
+      // grant'ı (key=null, §4.3.3) tuttuğu projelere FİLTRELENİR: `wapps secrets
+      // list`in ad-görünür/değer-asla çizgisi proje düzeyinde de aynen geçerli.
+      if (parts[1] === "projects" && parts.length === 2 && request.method === "GET") {
+        return await handleProjectsList(request, env, ctx, rctx);
       }
 
       // --- projects/{p}/... --------------------------------------------------------
@@ -370,6 +380,34 @@ function etagResponse(bodyStr: string, ifNoneMatch: string | null): Response | {
     return new Response(null, { status: HTTP.NOT_MODIFIED, headers: { ETag: etag } });
   }
   return { etag };
+}
+
+// --- GET /v1/projects (proje enumerasyonu; liste FİLTRELİ) ---------------------------
+
+/**
+ * handleProjectsList, store'daki proje ADlarını döner.
+ *
+ * Kayıt defteri YOKTUR: proje, R2'de `secrets/<ad>/` öneki var olduğu için
+ * vardır (ilk yazımda doğar). deriveProjects bu önekleri türetir; liste sonra
+ * principal'ın proje-metadata `read` grant'ı (key=null, §4.3.3) tuttuklarına
+ * indirgenir — görmediğin projenin ADI da sana görünmez.
+ *
+ * DEĞER içermez, anahtar ADI bile içermez (onun için /keys var) → async audit,
+ * `key.list` gibi metadata sınıfı.
+ */
+async function handleProjectsList(request: Request, env: Env, ctx: ExecutionContext, rctx: RequestCtx): Promise<Response> {
+  const all = await deriveProjects(env.SECRETS_BUCKET);
+  const visible = all.filter((p) => can(rctx, p, null, "read").allowed).sort();
+  auditReadAsync(ctx, env.AUDIT_LOG, {
+    principal: rctx.authz.id,
+    principal_type: ptypeOf(rctx.principal),
+    verb: "project.list",
+    decision: "allow",
+    ip: ipOf(request),
+    cf_ray: rayOf(request),
+  });
+  // Hiç görünür proje olmaması bir HATA değildir (boş store / dar grant): 200 + [].
+  return jsonOK({ projects: visible });
 }
 
 // --- GET /v1/projects/{p}/keys (metadata; liste FİLTRELİ, §4.3.3) --------------------
