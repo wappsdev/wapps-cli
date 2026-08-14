@@ -7,7 +7,7 @@
 // (4) fail-soft: obje-başına hata → alert, throw yok, diğer objeler devam.
 
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
-import { fetchMock } from "cloudflare:test";
+import { fetchMock } from "./fetchmock.js";
 import { utf8, sha256Hex } from "../src/crypto/encoding.js";
 import { EscrowConfig } from "../src/escrow.js";
 import {

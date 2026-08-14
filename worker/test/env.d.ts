@@ -1,8 +1,10 @@
-// cloudflare:test ortam tipini Worker Env'i ile genişletir (SECRETS_BUCKET,
-// PROJECT_WRITER, ACCESS_* / GENESIS_TRUST_SHA256) — testlerde env binding'leri
-// tiplensin diye.
-import type { Env } from "../src/auth.js";
+// Worker Env'ini test ortamına tanıtır. vitest-pool-workers 0.14+ `cloudflare:test`
+// içindeki `ProvidedEnv` interface'ini BIRAKTI: `env` artık `Cloudflare.Env`
+// tipindedir, yani augment edilecek yer global Cloudflare namespace'i.
+import type { Env as WorkerEnv } from "../src/auth.js";
 
-declare module "cloudflare:test" {
-  interface ProvidedEnv extends Env {}
+declare global {
+  namespace Cloudflare {
+    interface Env extends WorkerEnv {}
+  }
 }

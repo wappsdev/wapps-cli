@@ -5,7 +5,8 @@
 // başarısız denemeden sonra alert A4 (deterministik birim testi).
 
 import { beforeAll, beforeEach, afterEach, describe, it, expect } from "vitest";
-import { env, fetchMock, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { env, runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { fetchMock } from "./fetchmock.js";
 import {
   ensureJwks,
   resetWorld,

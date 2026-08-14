@@ -2,7 +2,8 @@
 // JWKS + get-identity + Discord webhook'unu fetchMock ile servis eder, policy'yi
 // R2'ye doğrudan seed'ler. ZK trust/imza fixture'ları pivotla SİLİNDİ (§0.2).
 
-import { env, fetchMock, createExecutionContext, waitOnExecutionContext, runInDurableObject } from "cloudflare:test";
+import { env, createExecutionContext, waitOnExecutionContext, runInDurableObject } from "cloudflare:test";
+import { fetchMock } from "./fetchmock.js";
 import worker from "../src/index.js";
 import { AUDIT_DO_NAME } from "../src/audit.js";
 import { bytesToB64, utf8, sha256Hex } from "../src/crypto/encoding.js";

@@ -14,10 +14,10 @@
     "@noble/hashes": "^1.8.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "~0.12.21",
-    "@cloudflare/workers-types": "~4.20260702.1",
+    "@cloudflare/vitest-pool-workers": "~0.21.3",
+    "@cloudflare/workers-types": "~5.20260814.1",
     "typescript": "~5.9.3",
-    "vitest": "~3.2.0",
-    "wrangler": "~4.72.0"
+    "vitest": "~4.1.0",
+    "wrangler": "~4.123.0"
   }
 }
