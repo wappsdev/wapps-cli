@@ -5,63 +5,69 @@
 
 `wapps` is a team secret manager built on three principles:
 
-- **Git-native.** The source of truth is an age-encrypted archive committed to
-  the repo (`secrets/all.enc.age`). No SaaS, no central server. Sharing a
-  secret = `git push`; receiving one = `git pull`.
-- **AI-safe.** No command prints a secret *value* to stdout on the default
-  path. Agents (Claude Code, Cursor) apply secrets without ever seeing them.
-  The one exception (`get`) is operator-only and documented as such.
-- **Single passphrase.** One master passphrase per team (`WAPPS_SECRETS_PASSPHRASE`),
-  distributed out-of-band (Signal E2E), held in Apple Passwords / 1Password.
+- **Nothing encrypted in the repo.** The source of truth is a server-side store
+  (Cloudflare R2 behind a thin Worker gate). Values are decrypted **on the
+  server**, per request, per key — the client holds no key material. Sharing a
+  secret is a write to the gate, not a `git push`.
+- **AI-safe.** No command prints a secret *value* to stdout on the default path.
+  Agents apply secrets without ever seeing them. The value-printing verb (`get`)
+  and the irreversible ones (`rm`, `projects rm`) are structurally refused in an
+  agent/CI context.
+- **Identity, not a shared passphrase.** Access follows your Google Workspace
+  group via Cloudflare Access. There is no team-wide secret to distribute or
+  rotate, and every read and write is audited by principal.
 
 ---
 
 ## 1. Data model
 
-Everything flows through one encrypted archive. There are two directions:
-**ingest** (sources → archive) and **materialize** (archive → consumers).
+There are two directions: **ingest** (sources → store) and **materialize**
+(store → consumers). The store sits in the middle and is remote.
 
 ```
-   INGEST (sync)                ARCHIVE                 MATERIALIZE
- ┌───────────────┐                                  ┌──────────────────────┐
- │ tofu output   │──┐                                │ targets:  .env.local │  ← apply / env --write
- │ (tofu source) │  │      ┌──────────────────────┐  │           apps/api/.env│
- └───────────────┘  ├─────▶│  secrets/all.enc.age │──┤                       │
- ┌───────────────┐  │      │  (age, committed)    │  │ coolify:  app envs    │  ← sync --target=coolify
- │ .env.shared   │──┘      └──────────────────────┘  │           (per app)   │
- │ (file source) │              ▲        │            └──────────────────────┘
- └───────────────┘              │        │
-                                │        └─▶ exec -- <cmd>  (env injected, no file)
-              set / import-env ─┘            get / list / diff  (read)
+   INGEST                        THE GATE                   MATERIALIZE
+ ┌───────────────┐                                     ┌──────────────────────┐
+ │ tofu output   │──┐                                   │ targets: .env.local  │ ← apply / env --write
+ │ (tofu source) │  │      ┌───────────────────────┐    │          apps/api/.env│
+ └───────────────┘  ├─────▶│  gw.meapps.dev        │────┤                      │
+ ┌───────────────┐  │      │  R2 + server-decrypt  │    │ coolify: app envs    │ ← sync --target=coolify
+ │ .env.shared   │──┘      │  policy.json authz    │    │          (per app)   │
+ │ (file source) │         └───────────────────────┘    └──────────────────────┘
+ └───────────────┘              ▲          │
+                                │          └─▶ exec -- <cmd>  (env injected, no file)
+              set / import-env ─┘              get / list      (read)
 ```
 
-- **Sources** are *inputs* — where archive contents come from. Declared in
-  `.wapps.yaml` `sources:`. Two kinds: `tofu` (shells out to `tofu output
-  -json`) and `file` (parses a `.env`-style file).
-- **The archive** is the single encrypted blob. Its internal shape mirrors
-  `tofu output -json`: `{"KEY": {"value": ..., "type": ..., "sensitive": ...}}`.
-  Non-string values (lists, maps, numbers, bools) round-trip as JSON.
+- **Sources** are *inputs* — where values come from when you run `sync`. Declared
+  in `.wapps.yaml` `sources:`. Two kinds: `tofu` (shells out to `tofu output
+  -json`) and `file` (parses a `.env`-style file). They are not storage.
+- **The store** holds each key as its own encrypted blob, referenced by a
+  per-project manifest chain. Each write produces a new **epoch** (epoch+1,
+  chained by hash), serialized by a per-project Durable Object. Values move as
+  plaintext over TLS inside Cloudflare Access; the client never unwraps anything.
 - **Consumers** are *outputs* — where plaintext is materialized. Three kinds:
   `targets:` (local files like `.env.local`), Coolify app envs, and ephemeral
   subprocess env (`exec`).
 
-The key mental model: **`set`/`import-env`/`sync` write the archive; `apply`/
-`env`/`exec`/`sync --target` read it.** Writing the archive never auto-leaks
-plaintext anywhere except declared `targets:` (and only because the operator
-declared them).
+The mental model: **`set`/`import-env`/`sync` write the store; `apply`/`env`/
+`exec`/`sync --target` read it.** A write never materializes plaintext anywhere
+except the `targets:` the operator declared.
 
----
+Values only ever exist in process memory on the client. Nothing is cached to
+disk — there is no offline mode, and a transport failure is a loud
+`NETWORK_REQUIRED`, not a silent stale read.
 
 ## 2. `.wapps.yaml` — full schema
 
-Lives at the repo root. Read from the current working directory.
+Lives at the repo root. Read from the current working directory unless
+`--config`/`--project` points elsewhere.
 
 ```yaml
-version: 1                          # only 1 supported; omitted → defaults to 1
-dest: secrets/all.enc.age           # archive path (default shown)
+version: 2                          # 1 and 2 parse; 2 is what init writes
+project: vaulter                    # REQUIRED — names the project in the gate
 default_prefix: ""                  # prefix used by `apply` targets (default "")
 
-sources:                            # INPUT — at least one required
+sources:                            # INPUT — optional (only `sync` reads these)
   - type: tofu
     workdir: .                      # dir holding .tf files
     prefix: "TF_VAR_"               # reserved (applied at env-emit time)
@@ -73,6 +79,9 @@ targets:                            # OUTPUT (local files) — optional
   - path: terraform.tfvars.json
     prefix: "TF_VAR_"               # per-target override (nil = use default)
 
+profiles:                           # optional named key subsets
+  ci: [DEPLOY_TOKEN, DB_URL]
+
 coolify_sync:                       # OUTPUT (Coolify multi-app) — optional
   delete_unmanaged: false           # default: never delete Coolify-only keys
   exclude_keys:                     # stripped names never pushed/diffed
@@ -81,23 +90,24 @@ coolify_sync:                       # OUTPUT (Coolify multi-app) — optional
     - uuid: vaesbm45up4jyk7hhk77ka74
       name: kreeva-web              # comment-only, for readability
       archive_prefix: "KREEVA_WEB_" # matched keys pushed with prefix STRIPPED
-
-redact_in_logs: true                # policy knobs
-require_clean_git: true
 ```
 
 Validation runs at load time (typos fail loudly, not silently):
-- `version != 1` → error.
-- empty `sources` → error.
+- `version` other than 1 or 2 → error.
+- missing `project` → error. It is the gate's address; guessing it would be
+  guessing whose secrets to read.
+- `backend: legacy-git` → error naming the migration. The field is still parsed
+  so old files produce that message instead of silently writing to the gate;
+  absent or `store` both mean the gate.
 - source field mismatch (e.g. `tofu` with `path`) → error.
 - `targets[].path`: required, no duplicates, no `..` (path traversal).
 - `coolify_sync.apps[]`: `uuid` + `archive_prefix` required, no duplicate
   uuid, **no overlapping prefixes** (`ROYCO_` vs `ROYCO_API_` is an error —
   explicit beats silent misrouting of a secret to the wrong app).
 
-A repo with no `.wapps.yaml` falls back to legacy single-tofu mode for `sync`
-(reads `tofu output`, writes `secrets/all.enc.age`). `set`/`import-env`/
-`apply` require the file.
+`sources:` and `targets:` are the only reason a verb needs this file at all.
+Read verbs that need nothing but the project name (`list`, `get`, `rm`,
+`projects`) accept a bare `--project <name>` and work with no local checkout.
 
 ---
 
@@ -107,68 +117,62 @@ A repo with no `.wapps.yaml` falls back to legacy single-tofu mode for `sync`
 
 | Command | Direction | What it does |
 |---|---|---|
-| `init [--with-file-source] [--force]` | — | Scaffold `.wapps.yaml` + `secrets/` + gitignore. Idempotent. |
-| `sync` | ingest | Read sources, merge, write archive. Auto-applies `targets:` after. |
-| `sync --target=coolify --app <uuid> [--force]` | materialize | Single-app: push WHOLE archive to one app, destructive mirror. Dry-run unless `--force`. |
+| `init [--project-name N] [--force]` | — | Scaffold `.wapps.yaml`. Writes nothing else — there is no local store. |
+| `trust-repo` | — | Pin this repo → project in your home dir. TTY-only; what confines an agent to one project. |
+| `sync [--dry-run]` | ingest | Read sources, merge, write to the store in ONE epoch. `--dry-run` reports which key names would be added/changed, without writing. |
+| `sync --target=coolify --app <uuid> [--force]` | materialize | Single-app: push the WHOLE key set to one app, destructive mirror. Dry-run unless `--force`. |
 | `sync --target=coolify --all-apps [--force]` | materialize | Multi-app: each `coolify_sync.apps` entry gets its prefix-matched subset (stripped), non-destructive by default. |
-| `set <KEY>` | ingest | Capture one secret (no-echo prompt). Writes archive + file source + targets. Git drift preflight. |
-| `import-env <file>` | ingest | Bulk-import a `.env` into the archive. Auto-applies targets. |
+| `set <KEY> [--from-file F]` | ingest | Capture one secret (no-echo prompt) and PUT it. Server resolves CAS. |
+| `import-env <file>` | ingest | Bulk-import a `.env` in one atomic epoch. Reports which names it overwrote. |
+| `rm <KEY>` | ingest | Remove a key. Irreversible → needs a `delete` grant (not `write`), a typed `yes`, and is refused in agent mode. |
 | `apply` | materialize | Write every `targets:` file atomically. Idempotent (byte-equal → no mtime touch). |
-| `env [--write <f>] [--prefix P]` | materialize | Emit `export` lines. `--write` → file (silent); no flag → stdout (operator). |
-| `exec -- <cmd>` | materialize | Run a subprocess with archive env injected. No file, no stdout leak. |
-| `get <KEY>` | read | Print one value to stdout. **Operator-only** (breaks AI-safe rule by design). |
-| `list` | read | Print key names (no values). |
-| `diff [ref]` | read | Added/changed/removed key names vs a git ref (default `HEAD~1`). Values never printed. |
-| `rotate-master` | admin | Re-encrypt archive under a new passphrase + JSONL audit log. |
-| `verify` | read | Drift check: Tofu output sha vs archive sha. |
+| `env [--write <f>] [--prefix P]` | materialize | Emit `export` lines. `--write` → file (silent); no flag → stdout (operator-only). |
+| `exec -- <cmd>` | materialize | Run a subprocess with the project's env injected. No file, no stdout leak. |
+| `get <KEY>` | read | Print one value to stdout. **Operator-only** (breaks the AI-safe rule by design). |
+| `list` | read | Print key names (no values). Filtered server-side to what you may read. |
+| `projects list` | read | Which projects exist in the store, filtered to what you may see. Names only. |
+| `projects rm <P>` | admin | Remove a project and all its data. Needs the global `admin` verb + write-AUD. |
+| `policy show \| set \| lint` | admin | Read/edit `policy.json` (the authz document). Write-AUD; refused in agent mode. |
+| `rotate-plan` | admin | Audit-ledger oracle: what must rotate after an offboard. |
+| `status` | read | Machine-readable gate/session state. Safe in every mode. |
 
 ### Other top-level
 
 | Command | What it does |
 |---|---|
-| `doctor [--for tofu]` | Dependency + access preflight. `--for tofu` checks only the sync env. |
+| `login [--write] [--check]` | CF Access SSO. `--write` targets the admin app (15 min, separate session). `--check` prints both sessions, never token bytes. |
+| `whoami` | The gate's view of you: groups + effective grants. The fastest answer to "why was that denied?". |
+| `doctor [--for tofu]` | Dependency + access preflight. |
+| `tofu <args>` | Run tofu with the project's secrets injected as `TF_VAR_*`. |
+| `deploy <service>` | Deploy through the company deploy-proxy. |
+| `dr <...>` | Disaster recovery against the B2 ciphertext replica. |
 | `coolify <...>` | Coolify v4 API shim (deploy-app, deploy-app-git, set-labels, update-env, import-app). |
-| `git <...>` | git status + manual sync. |
+| `skill install` | Install the AI-safe `wapps-secrets` skill for coding agents. |
 | `--version` | Print version (ldflag-injected on releases, `dev`/`main-<sha>` locally). |
 
-Persistent flags: `--no-sync` (skip git auto-sync preflight), `--verbose`,
-`--config`/`-c`, `--project`/`-p`.
+Persistent flags: `--verbose`, `--config`/`-c`, `--project`/`-p`.
 
 ### Running from any cwd (`--config` / `--project`)
 
-By default `wapps secrets` reads `./.wapps.yaml` and resolves the archive
-relative to **cwd** — so you must `cd` into the project. Two flags lift that:
+Two flags mean you never have to `cd` into a project:
 
 - `--config <path>/.wapps.yaml` — load that config and resolve all its relative
-  paths (`dest`, `targets`, `sources`) against **its own directory**
-  (configRoot), not cwd. So `wapps secrets get X --config /abs/vaulter/.wapps.yaml`
-  works from anywhere.
-- `--project <name>` / `-p` — sugar over `--config`: looks `<name>` up in
+  paths (`targets`, `sources`) against **its own directory** (configRoot), not
+  cwd. This is what stops a `--project` run from writing a plaintext `.env.local`
+  into whatever directory you happened to be in.
+- `--project <name>` / `-p` — looks `<name>` up in
   `~/.config/wapps/projects.yaml` (a `name: dir` map) and uses
   `<dir>/.wapps.yaml`. Mutually exclusive with `--config`.
 
-```yaml
-# ~/.config/wapps/projects.yaml  (honors XDG_CONFIG_HOME)
-projects:
-  vaulter:  /Users/me/Documents/Projects/infra-tofu/projects/vaulter
-  vibe-pro: /Users/me/Documents/Projects/infra-tofu/projects/vibe-pro
-  lab:      /Users/me/Documents/Projects/infra-tofu/projects/lab
-```
+If the name is **not** in the registry it is still accepted for the read verbs
+that need nothing but a project name (`list`, `get`, `rm`, `projects`) — the gate
+only needs the name, so no local checkout is required. That form is refused in
+agent/CI context: the repo→project pin exists precisely to stop an agent in one
+repo from reaching another project, and an agent typing `--project` is not
+authority. A human on a terminal is.
 
-```bash
-wapps secrets get coolify_token --project vaulter
-wapps secrets list --config /abs/vaulter/.wapps.yaml
-wapps secrets exec --project vaulter -- terraform plan
-```
-
-Resolution rule: a relative path joins configRoot; an absolute path is used
-verbatim. With no flag, configRoot == cwd → byte-identical to the legacy
-behavior. The git preflight and `apply` target writes also follow configRoot
-(so `--project vaulter apply` writes `vaulter/.env.local`, never `cwd/.env.local`).
-Two read commands stay cwd-bound for their non-archive side: `diff`'s git-ref
-comparison (`git show` is a cwd pathspec) and `verify`'s `tofu output`.
-
----
+Verbs that read `targets:`/`sources:` (`apply`, `sync`, `exec`, `env`) always
+need a real config and say so plainly when there isn't one.
 
 ## 4. The two Coolify sync modes
 
@@ -229,10 +233,13 @@ The whole point is that secrets don't leak through the tool. Layers:
   flagged operator-only.
 - **Key-only diffs.** `diff` compares sha256 of canonical value JSON
   in-process; only key names reach stdout. `list` prints names, never values.
-- **Atomic writes everywhere.** Every archive write and every materialized
-  file goes through `ageutil.WriteFileAtomic` (temp + fsync + rename, unique
-  temp name). A power loss or two concurrent processes can never leave a torn
-  or half-written archive/file.
+- **Atomic writes everywhere.** Every materialized file goes through
+  `atomicfile.Write` (temp + fsync + rename, unique temp name). A power loss or
+  two concurrent processes can never leave a torn `.env.local` — a half-written
+  env file breaks a dev server silently.
+- **Atomic writes server-side too.** A store write is one epoch or none: the
+  per-project Durable Object serializes commits and the manifest chain advances
+  by hash, so there is no half-applied `import`.
 - **Redaction primitives.** `internal/safelog` provides an explicit `Wrap()`
   marker so secret-bearing values are redacted in error/log output.
 - **Error-body discipline.** The Coolify client truncates HTTP error bodies
@@ -242,8 +249,12 @@ The whole point is that secrets don't leak through the tool. Layers:
   concatenation (closes a URL-injection vector from `.wapps.yaml`).
 - **Update notice can't inject escapes.** The version notice is reconstructed
   from parsed integers, never echoed from the GitHub response.
-- **Git drift preflight.** `set` refuses to write if the archive is behind
-  origin, preventing two operators racing into a non-fast-forward push.
+- **No client-side key material.** The gate decrypts; the CLI holds no KEK, does
+  no unwrapping, and verifies no signatures. Losing a laptop leaks a session, not
+  the estate.
+- **Audit-before-destroy.** An irreversible server-side op writes its audit row
+  *before* acting. If the ledger is unavailable, the delete does not happen —
+  the same fail-closed rule the gate already applies to plaintext reads.
 
 ---
 
@@ -251,11 +262,15 @@ The whole point is that secrets don't leak through the tool. Layers:
 
 | Path | Git | Why |
 |---|---|---|
-| `secrets/all.enc.age` | **committed** | The encrypted source of truth. |
-| `.wapps.yaml` | **committed** | Declares sources/targets/coolify mapping. |
-| `secrets/rotation.log` | gitignored | Passphrase fingerprints (sensitive). |
+| `.wapps.yaml` | **committed** | Names the project; declares sources/targets/coolify mapping. |
 | `.env.local`, `targets:` files | gitignored | Plaintext, regenerated by `apply`. |
 | `.env.shared` (file source) | team choice | Plaintext input; gitignore unless the team wants it versioned. |
+
+**No secret ciphertext is committed, ever.** There is no encrypted archive to
+share, pull, or leave behind in history — a repo carries only the project's
+*name*. This is the single biggest change from the pre-v0.21 design, where a
+a git-committed encrypted archive under one shared passphrase was the source
+of truth.
 
 A file source (`.env.shared`) is an *input* the operator edits via
 `set`/`import-env` — distinct from a consumption *target* (`.env.local`) that
@@ -279,20 +294,28 @@ change on the next `apply`.
 
 ```
 cmd/
-  root.go            umbrella command, git auto-sync preflight, update notice
+  root.go            umbrella command, config resolution, update notice
+  login.go           CF Access SSO (read + --write admin session)
   doctor.go          dependency/access preflight
   secrets/           the secrets subcommands (one file per command)
   coolify/           Coolify v4 API shim subcommands
-  git/               git status + manual sync
+  deploy/            deploy-proxy client
 internal/
-  ageutil/           Encrypt/Decrypt + atomic write helpers
+  store/             the gate client — the ONLY read/write abstraction
+  session/           CF Access sessions, gate URLs, mTLS transport
   config/            .wapps.yaml parse + validation
   source/            Source interface, tofu + file adapters, Merge
+  policy/            client-side policy.json validation + lint
+  rotation/          rotation worklist engine + ledger
+  binding/           repo→project pin store
+  agentmode/         agent/CI detection + per-verb gating
+  clierr/            typed CLI errors with recovery lines
+  atomicfile/        all-or-nothing file writes (targets)
   coolify/           Coolify v4 REST client (typed HTTPError, UUID validation)
   tofu/              tofu output + preflight env check
   safelog/           explicit redaction (Wrap)
-  git/               drift detection, pull
   updatecheck/       daily release-available check (cached, best-effort)
+worker/              the gate itself (TypeScript, Cloudflare Worker)
 ```
 
 Testability pattern throughout: external effects (HTTP, subprocess, clock,

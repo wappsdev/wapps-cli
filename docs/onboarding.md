@@ -1,385 +1,206 @@
 # wapps-cli — Operator Onboarding
 
-Welcome. This guide walks you through using `wapps-cli` for team secrets
-the first time. Budget: 10 minutes including the install. If you hit
-something not covered here, run `wapps doctor` first — the error is
-usually a missing env var with a copy-pasteable recovery snippet.
+Welcome. This walks you through using `wapps-cli` for team secrets the first
+time. Budget: 10 minutes including the install. If you hit something not covered
+here, run `wapps doctor` first — its errors carry a copy-pasteable recovery line.
 
 ## What wapps does for you
 
-- One CLI to read, write, and distribute team secrets via git
-- Encrypted-at-rest (age) — `secrets/all.enc.age` lives in the repo
-- Multiple sources merge into one archive: Tofu output, `.env.shared`, etc.
-- AI-safe: agents (Claude Code, Cursor) use apply-only commands, never
-  see raw values
+- One CLI to read and write team secrets, from any directory
+- **Values never enter a repo.** They live in Cloudflare (R2 behind a thin gate)
+  and are decrypted server-side, per request, per key
+- Access follows your **Google Workspace group** — no shared passphrase to
+  distribute, rotate, or lose
+- Every read and write is **audited** (who, when, which key — never the value)
+- **AI-safe:** agents use apply-only commands and never see a raw value
 
-No SaaS account. No central server. The only shared secret is the
-master passphrase (one per team, distributed via Signal E2E).
+There is no shared secret to hand you. Your Google account *is* your access.
 
 ## Step 1 — Install
 
 ```bash
 brew tap wappsdev/tap
 brew install wapps
+brew install cloudflared   # required by `wapps login`
+```
+
+Verify:
+
+```bash
 wapps --version
+wapps doctor        # checks binaries + gate reachability + session
 ```
 
-If you're not on macOS, build from source:
+## Step 2 — Log in
 
 ```bash
-go install github.com/wappsdev/wapps-cli@latest
+wapps login
 ```
 
-### Staying current
+This opens Cloudflare Access SSO in your browser. Sign in with your `@wapps.co`
+Google account. The session token is cached at
+`~/.config/wapps/session/<gate-host>.json` (mode 0600) and is **never printed**.
 
-Released binaries check GitHub once a day (cached in
-`~/.cache/wapps/version-check.json`) and print a one-line notice on stderr
-when a newer version is out:
-
-```
-⚡ wapps v0.13.0 is available (you have v0.12.0). Upgrade: brew upgrade wapps
-```
-
-The check only runs in interactive terminals — it's silent in CI, scripts,
-and piped output. Local `go build` binaries (version `dev` or `main-<sha>`)
-never nag. To disable entirely, set `WAPPS_NO_UPDATE_CHECK=1`.
-
-## Step 2 — Get the master passphrase
-
-Ask the operator who runs your team's rotations (currently the founder).
-They will send you the passphrase via **Signal end-to-end encrypted
-message**. Save it to **Apple Passwords** as a new entry titled
-`Wapps Master`.
-
-Never paste the passphrase into:
-- Slack / Teams / Discord
-- Email
-- A chat with any AI assistant
-- Issue trackers / PR descriptions
-- Any file outside Apple Passwords / 1Password
-
-## Step 3 — Export the passphrase
-
-In every shell session where you'll run `wapps`:
+Check it any time:
 
 ```bash
-export WAPPS_SECRETS_PASSPHRASE="$(security find-generic-password -w -s 'Wapps Master')"
+wapps login --check     # subject + remaining TTL, no token bytes
+wapps whoami            # your groups + the grants they give you
 ```
 
-If you don't use the macOS keychain CLI:
+`whoami` is the fastest way to understand *why* a read was denied — it prints
+the policy rules that matched you.
+
+### Admin operations need a second login
+
+Control-plane verbs (`secrets policy`, `secrets projects rm`, `rotate-plan`)
+sit behind a separate, short-lived Access application:
 
 ```bash
-# Paste the value once (typing it visibly won't hit shell history if your
-# shell is in zsh's "histignorespace" mode — set HISTCONTROL=ignorespace
-# and prefix the command with a space).
- export WAPPS_SECRETS_PASSPHRASE='paste-here'
+wapps login --write     # 15-minute admin session; kept separate from the read one
 ```
 
-Add to your shell rc (`.zshrc` etc.) for persistence. Never commit it
-to a dotfile in git.
+You only need this when editing policy or removing a project. Logging in for
+admin does not evict your normal session.
 
-## Step 4 — Verify your local setup
+## Step 3 — Pin the repo
 
 ```bash
-wapps doctor
+cd ~/Projects/<repo>
+wapps secrets trust-repo
 ```
 
-Resolves the following:
-- ✓ tofu, age, git, jq, gh binaries
-- ✓ R2 env vars (for repos that use Tofu sources)
-- ✓ Coolify API reachable
-- ✓ git remote configured
+This records, in your home directory, that *this* repo maps to *that* project.
+It is why an agent working in one repo cannot read another project's secrets.
+TTY-only and one-time per repo — an agent can never do it for you.
 
-If you only care about Tofu-source repos (no Coolify):
+## Daily use
+
+### Start the dev server
+
+If the repo declares `targets:`, the `predev` script handles it and `pnpm dev` is
+all you need. Manually:
 
 ```bash
-wapps doctor --for tofu
+wapps secrets apply     # writes .env.local etc. — atomic, 0600, idempotent
+pnpm dev
 ```
 
-### Running from any directory
-
-You don't have to `cd` into the project. Point at its config or register a
-short name:
-
-```bash
-# By config path (works from anywhere):
-wapps secrets get coolify_token --config /abs/.../vaulter/.wapps.yaml
-
-# By registered project name (cleaner) — add it once to
-# ~/.config/wapps/projects.yaml:
-#   projects:
-#     vaulter: /Users/you/Documents/Projects/infra-tofu/projects/vaulter
-wapps secrets get coolify_token --project vaulter
-wapps secrets list --project vaulter
-wapps secrets exec --project vaulter -- terraform plan
-```
-
-All relative paths in that `.wapps.yaml` resolve against its own directory, so
-the archive is found no matter where you run from. `--config` and `--project`
-are mutually exclusive. In the project dir with no flag, everything works
-exactly as before.
-
-## Step 5 — Use secrets in your dev loop
-
-You'll touch one of three commands daily:
-
-### Read into an env file (for `next dev`, `pnpm start`, etc.)
-
-For repos with `targets:` declared in `.wapps.yaml` (recommended):
-
-```bash
-wapps secrets apply
-```
-
-Writes every consumption file declared in `targets:` (e.g., `.env.local`,
-`apps/api/.env`) idempotently — files unchanged keep their mtime, so file
-watchers don't spuriously reload. Run as part of `predev` / `prebuild`:
-
-```jsonc
-// package.json
-{
-  "scripts": {
-    "predev": "wapps secrets apply",
-    "dev": "next dev"
-  }
-}
-```
-
-For one-off writes (no `targets:` block, ad-hoc paths):
+No declared target? Either write one file, or skip the file entirely:
 
 ```bash
 wapps secrets env --write .env.local --prefix ''
+wapps secrets exec -- pnpm dev
 ```
 
-Atomic write, mode 0600. Stdout is silent. The `--prefix ''` is needed
-because the CLI default is `TF_VAR_` (preserved for Tofu workflows);
-`targets:` declarations don't need this — they default to plain.
-
-### Run a one-shot command with creds injected
+### Run tofu
 
 ```bash
-wapps secrets exec -- ./scripts/deploy.sh
-wapps secrets exec -- pnpm db:migrate
+wapps tofu plan
+wapps tofu apply
 ```
 
-Env injected into the child process. No values touch your terminal or
-shell history.
+Secrets are injected as `TF_VAR_*` from the project resolved via the cwd
+`.wapps.yaml`.
 
-### Sync (after pulling new tofu outputs or editing `.env.shared`)
+### Add or change a secret
 
 ```bash
-wapps secrets sync
+wapps secrets set DB_PASSWORD
 ```
 
-Rebuilds the encrypted archive from sources. If `targets:` is declared,
-all consumption files are auto-refreshed in the same command. Commit the
-resulting `secrets/all.enc.age` change.
-
-### See what changed since a git ref
+Masked prompt; the value goes straight to the gate and is audited. Nothing to
+commit. For a value you cannot type (a long PEM, a generated token), avoid argv
+and shell history:
 
 ```bash
-wapps secrets diff             # vs HEAD~1 (default)
-wapps secrets diff main        # vs main branch
-wapps secrets diff v0.10.0     # vs a tag
+umask 077
+printf %s "$VALUE" > /tmp/v && wapps secrets set DB_PASSWORD --from-file /tmp/v && rm /tmp/v
 ```
 
-Shows added / changed / removed keys only — values never reach stdout
-(change detection uses sha256 hashes in-process). Useful after `git pull`
-to see what teammates added.
-
-## Step 6 — Add a new secret
-
-You generated a fresh token (Stripe, GitHub, whatever). Capture it
-**immediately** — every minute it sits in your clipboard is a minute it
-might leak.
+### See what would change
 
 ```bash
-wapps secrets set NEW_TOKEN_NAME
-# masked prompt appears — paste the value, press enter
+wapps secrets sync --dry-run
 ```
 
-This updates `secrets/all.enc.age`, `.env.shared` (the file source
-declared in `.wapps.yaml`), AND every declared target (e.g.,
-`.env.local`) — all in one atomic operation. Commit the archive + file
-source:
+Reports which key **names** the declared `sources:` would add or change, without
+writing. Re-run without the flag to commit.
+
+### Remove a key
 
 ```bash
-git add secrets/all.enc.age .env.shared
-git commit -m "chore: capture NEW_TOKEN_NAME"
-git push
+wapps secrets rm STALE_KEY
 ```
 
-Don't commit the targets — they're consumption files, regenerated from
-the archive on every `apply` / `predev`. Add them to `.gitignore`.
+Irreversible, so it asks you to type `yes`, and it needs a `delete` grant —
+a `write` grant is deliberately not enough.
 
-Your teammates run `git pull && npm run dev` (or equivalent) and the
-`predev` script rematerializes their `.env.local` from the new archive.
+## Working from another directory
 
-### Bulk import from an existing `.env` file
+You never have to `cd` first:
 
 ```bash
-wapps secrets import-env legacy.env
+wapps secrets list --project vaulter                        # registered project
+wapps secrets list --config ~/Projects/navlun/.wapps.yaml   # explicit path
 ```
 
-Merges every key from `legacy.env` into the archive. Override warnings
-go to stderr.
+`--project` reads `~/.config/wapps/projects.yaml`, a name→directory map you
+maintain by hand. A name that isn't in it still works for read verbs — the gate
+only needs the name — but only for a human: that form is refused in agent/CI
+context, because the repo pin is what confines an agent to one project.
 
-## Step 7 — Bootstrap a new repo
+Verbs that read local `targets:` or `sources:` (`apply`, `sync`, `exec`, `env`)
+always need a real `.wapps.yaml`.
 
-For a fresh repo (e.g., adding wapps to `vaulter-api`):
-
-```bash
-cd vaulter-api/
-wapps secrets init --with-file-source
-# creates .wapps.yaml, secrets/, secrets/.gitignore
-```
-
-The template uses a `file` source by default with `--with-file-source`,
-or `tofu` source without it. Edit `.wapps.yaml` if you need both.
-
-Then populate via either `wapps secrets set <KEY>` (one at a time) or
-`wapps secrets import-env <file>` (bulk).
-
-### `.wapps.yaml` reference
+## `.wapps.yaml` reference
 
 ```yaml
-version: 1
-dest: secrets/all.enc.age      # encrypted archive location
-default_prefix: ""             # prefix for `apply` (default empty)
+version: 2
+project: vaulter            # the project in the gate — required
 
-sources:                       # where archive contents come from
+default_prefix: TF_VAR_     # prefix for emitted env var names (default)
+
+targets:                    # `apply` materializes these; gitignore them
+  - path: .env.local
+    prefix: ""              # per-target override
+
+sources:                    # optional: inputs `sync` pushes INTO the gate
   - type: tofu
     workdir: .
   - type: file
     path: .env.shared
-
-targets:                       # where to materialize plaintext after archive write
-  - path: .env.local           # uses default_prefix
-  - path: apps/api/.env
-  - path: terraform.tfvars.json
-    prefix: "TF_VAR_"          # per-target override
-
-redact_in_logs: true
-require_clean_git: true
 ```
 
-`sources:` is the input direction (where archive contents come from).
-`targets:` is the output direction (where to materialize plaintext after
-archive write). `set` / `import-env` / `sync` auto-write all declared
-targets on success.
+`sources:` are inputs, not storage — `sync` reads them and writes the values to
+the gate. `targets:` are outputs your runtime consumes. Both resolve relative to
+the `.wapps.yaml` directory, never to your cwd, so a `--project` run can never
+scatter a plaintext `.env.local` into whatever directory you happened to be in.
 
-## Step 8 — Server-side env (Coolify deploys)
+## For agents
 
-After you've updated the archive, sync it to your Coolify app:
+Install the skill so Claude Code / Cursor know the apply-only rules:
 
 ```bash
-# Dry-run first — see what would change without applying.
-wapps secrets sync --target=coolify --app <APP_UUID>
-
-# Apply if the diff looks right.
-wapps secrets sync --target=coolify --app <APP_UUID> --force
+wapps skill install
 ```
 
-You need `COOLIFY_API_TOKEN` set. Single-app `--force` is destructive — it
-deletes Coolify-only keys that aren't in the archive. The dry-run output
-shows exactly what will happen.
+Agents get `apply`, `env --write`, `exec`, `list`, `sync`. They are structurally
+refused `get` (prints values), `rm` and `projects rm` (irreversible), and the
+whole control plane.
 
-### Multi-app archives (`--all-apps`)
+## Troubleshooting
 
-When one archive holds secrets for several apps (prefixed per app, e.g.
-`KREEVA_WEB_*`, `ROYCO_API_*`), declare a `coolify_sync` block and push them
-all at once. Each app gets only its prefix-matched keys, with the prefix
-**stripped**:
-
-```yaml
-# .wapps.yaml
-coolify_sync:
-  delete_unmanaged: false        # default: never delete Coolify-only keys
-  apps:
-    - uuid: vaesbm45up4jyk7hhk77ka74
-      name: kreeva-web            # comment-only, for readability
-      archive_prefix: "KREEVA_WEB_"   # KREEVA_WEB_VITE_API_URL → VITE_API_URL
-    - uuid: wpv0glv7usj90t268ntfggby
-      name: royco-api
-      archive_prefix: "ROYCO_API_"
-```
+| Symptom | Cause | Fix |
+|---|---|---|
+| `SESSION_EXPIRED` | read session lapsed | `wapps login` |
+| `AUD_MISMATCH` on a policy/admin command | no write-AUD session | `wapps login --write` |
+| `BINDING_UNPINNED` | repo not pinned to its project | `wapps secrets trust-repo` |
+| `GRANT_DENIED` | your groups don't grant that key | `wapps whoami`, then ask an admin |
+| `NOT_FOUND: no .wapps.yaml found` | verb needs a project config | run inside the project, or pass `--config` |
+| `AGENT_MODE_REFUSED` | value-printing or irreversible verb in an agent/CI context | run it yourself in a terminal |
 
 ```bash
-wapps secrets sync --target=coolify --all-apps           # per-app dry-run
-wapps secrets sync --target=coolify --all-apps --force   # apply
+wapps doctor          # full dependency + access check
+wapps login --check   # both sessions at a glance
 ```
-
-Notes:
-- **Coolify-managed envs are skipped automatically.** Vars Coolify generates
-  (`SERVICE_FQDN_*`, `SERVICE_URL_*`, marked `is_coolify=true`) are read-only;
-  sync never tries to push/change/delete them. The dry-run prints
-  `(skipped N Coolify-managed keys)`.
-- **Pipeline-owned keys** (e.g. `SENTRY_RELEASE` that CI rewrites each deploy)
-  can be deny-listed so they don't show perpetual drift:
-  ```yaml
-  coolify_sync:
-    exclude_keys: [SENTRY_RELEASE]
-  ```
-- **Non-destructive by default.** Unlike single-app `--force`, multi-app
-  leaves Coolify-only keys alone unless you set `delete_unmanaged: true`.
-- **Unmapped keys are skipped silently** — Tofu outputs (`lab_01_*`) and
-  keys for apps not in the block never get pushed.
-- **Prefixes must be mutually exclusive** — `ROYCO_` and `ROYCO_API_`
-  together is a config-load error (a key could route to either app).
-- A prefix matching zero archive keys warns and skips that app (non-fatal).
-- One app failing (e.g. a stale UUID → 404) doesn't stop the others; the
-  command exits non-zero so you notice.
-
-## Working with AI tools
-
-Claude Code, Cursor, and Aider use the `.claude/skills/wapps-secrets/`
-skill and `.cursorrules` to learn the apply-only pattern. **You don't
-need to explain it to them** — they'll automatically pick the right
-command.
-
-If you see a secret value appear in your AI agent's chat output, treat
-it as a leak:
-1. Rotate the affected secret in the originating system (Stripe console, etc.)
-2. Run `wapps secrets rotate-master` to rotate the team passphrase
-3. File an issue so we can patch the leak path
-
-## Rotation drill (once a quarter)
-
-The team passphrase is rotated periodically. The flow:
-
-```bash
-# Operator running the rotation:
-export WAPPS_SECRETS_PASSPHRASE='current-passphrase'
-export WAPPS_SECRETS_PASSPHRASE_NEW='new-passphrase-from-password-manager'
-wapps secrets rotate-master
-git add secrets/all.enc.age && git commit -m "chore: rotate master passphrase"
-git push
-
-# Then via Signal E2E, distribute the new passphrase to each operator.
-# Each operator updates their Apple Passwords entry + shell export.
-```
-
-Audit trail lives in `secrets/rotation.log` (gitignored — pp
-fingerprints are sensitive). Schema is versioned (`schema_version: 1`).
-
-## Common errors
-
-**"WAPPS_SECRETS_PASSPHRASE not set"**
-You forgot Step 3. Run the export, or add to your shell rc.
-
-**"secrets.sync preflight: required environment not set"**
-For Tofu-source repos. The error includes a copy-pasteable recovery
-snippet — read it.
-
-**"archive has drift or uncommitted changes — run 'git pull' first"**
-Someone else pushed a `secrets/all.enc.age` change. `git pull` and retry.
-
-**"file source missing required field 'path'"**
-Edit `.wapps.yaml` and add `path: .env.shared` (or your chosen file).
-
-## Where to learn more
-
-- `wapps --help` — every command has built-in docs
-- `wapps secrets --help` — secrets subcommands
-- `.claude/skills/wapps-secrets/SKILL.md` — AI integration details
-- Source: github.com/wappsdev/wapps-cli

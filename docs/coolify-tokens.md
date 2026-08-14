@@ -107,12 +107,12 @@ follow-up.
 ## Usage
 
 ```bash
-# From anywhere, creds resolved from the vaulter archive (after P2 mirror):
-export WAPPS_SECRETS_PASSPHRASE="$(security find-generic-password -w -s 'Wapps Master')"
+# From anywhere — creds resolved from the vaulter project in the gate
+# (needs a live session: `wapps login`):
 wapps deploy migrator --repo vaulter --project vaulter --wait
 wapps deploy gateway  --repo vaulter --project vaulter --wait
 
-# CI / quick shell run, creds from env (no archive needed):
+# CI / quick shell run, creds from env (no gate read needed):
 DEPLOY_PROXY_TOKEN_VAULTER=… DEPLOY_PROXY_CF_ACCESS_CLIENT_ID=… \
 DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET=… wapps deploy migrator --repo vaulter --wait
 
