@@ -24,10 +24,10 @@ var execCmd = &cobra.Command{
 	Short: "Run a command with the project's secrets injected as env vars",
 	Long: `Decrypt secrets and exec the given command with each secret exported
 as an env var. wapps forwards the subprocess's stdout and stderr THROUGH A
-STREAMING SCRUBBER that redacts any injected secret value to *** (§7.4.3), then
+STREAMING SCRUBBER that redacts any injected secret value to ***, then
 exits with the subprocess's exit code.
 
-AI-safe contract (§7.4): wapps itself prints no secret values — only the
+AI-safe contract: wapps itself prints no secret values — only the
 subprocess does, and even that output is scrubbed of injected values. Use this
 from agent contexts that need credentialed commands without putting values in
 the agent transcript.
@@ -36,7 +36,7 @@ the agent transcript.
   wapps secrets exec --prefix '' -- ./scripts/deploy.sh`,
 	Args:               cobra.MinimumNArgs(1),
 	DisableFlagParsing: false,
-	// Ajan modunda exec SERBEST'tir; yalnızca --break-glass reddedilir (§7.4.2).
+	// Ajan modunda exec SERBEST'tir; yalnızca --break-glass reddedilir.
 	Annotations: map[string]string{agentmode.AnnotationKey: agentmode.PolicyAllow},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runExec(args, execPrefix, execIntent, execBreakGlass, agentmode.IsAgent(),
@@ -166,8 +166,8 @@ func init() {
 	execCmd.Flags().StringVar(&execPrefix, "prefix", "TF_VAR_",
 		"prefix prepended to each env var name (default 'TF_VAR_' for Tofu; pass '' for plain)")
 	execCmd.Flags().BoolVar(&execBreakGlass, "break-glass", false,
-		"deploy-intent only: TTY-only CF-outage override; HARD-REFUSED in agent mode (§7.3.4)")
+		"deploy-intent only: TTY-only CF-outage override; HARD-REFUSED in agent mode")
 	execCmd.Flags().StringVar(&execIntent, "intent", "dev",
-		"freshness intent: dev (tolerate cache) | deploy (fresh-or-fail) (§7.3.4)")
+		"freshness intent: dev (tolerate cache) | deploy (fresh-or-fail)")
 	SecretsCmd.AddCommand(execCmd)
 }

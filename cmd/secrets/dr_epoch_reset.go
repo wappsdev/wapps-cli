@@ -77,7 +77,7 @@ var drAcceptEpochResetCmd = &cobra.Command{
 pin (rollback tripwire, internal/store/epochpin.go). It exists for ONE scenario:
 the store was LEGITIMATELY rebuilt (F5) and clients must re-accept it.
 
-The ceremony (§5.5, risk register #8):
+The ceremony:
   1. fetches the LIVE audit-chain head from the gate,
   2. asks you to TYPE the first 12 hex chars of the head hash FROM THE PAPER
      ENVELOPE (typing the paper value IS the out-of-band verification),

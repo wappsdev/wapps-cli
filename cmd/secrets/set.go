@@ -46,7 +46,7 @@ func runSet(key string, opts setOptions) error {
 	if key == "" {
 		return fmt.Errorf("secrets.set: KEY argument is required")
 	}
-	cfg, err := requireStoreConfig("set")
+	cfg, err := storeProject("set")
 	if err != nil {
 		return err
 	}
@@ -84,6 +84,6 @@ func promptValueNoEcho(prompt string) (string, bool, error) {
 
 func init() {
 	setCmd.Flags().StringVar(&setFromFile, "from-file", "",
-		"read the value from this file instead of prompting (§7.9.3 umask-077 temp-file pattern)")
+		"read the value from this file instead of prompting (keeps it out of argv and shell history)")
 	SecretsCmd.AddCommand(setCmd)
 }

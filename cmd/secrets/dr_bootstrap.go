@@ -59,7 +59,7 @@ prints ***. Nothing is ever written to disk, the store, or shell history.
   wapps dr bootstrap -- tofu apply
   wapps dr bootstrap --var TF_VAR_extra_token -- tofu apply -target=module.gate
 
-On success it prints the differentiated burn checklist (§3.3): burn ceremony/
+On success it prints the differentiated burn checklist: burn ceremony/
 temp tokens NOW, burn a rotated-out token only AFTER its successor is in the
 store, and do NOT burn standing tokens self-hosted in the store.`,
 	Args: cobra.MinimumNArgs(1),

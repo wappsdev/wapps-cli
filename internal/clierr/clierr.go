@@ -145,6 +145,18 @@ func Wrapf(code Code, err error, format string, args ...interface{}) *Error {
 	return e
 }
 
+// RecoveryOf, bir hata zincirindeki ilk *Error'ün kurtarma satırını döner
+// (yoksa ""). Execute() bunu hatanın ALTINA basar: kayıt defterindeki "ne
+// yapmalı" metinleri, Error() onları içermediği için bugüne dek hiç
+// görünmüyordu.
+func RecoveryOf(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Recovery
+	}
+	return ""
+}
+
 // WithRecovery, kurtarma metnini override eder (ör. CAS çakışmasında yazarları
 // isimlendirmek için). Zincirleme için *Error döner.
 func (e *Error) WithRecovery(recovery string) *Error {

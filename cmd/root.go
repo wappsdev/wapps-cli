@@ -10,6 +10,7 @@ import (
 	deploycmd "github.com/wappsdev/wapps-cli/cmd/deploy"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
 	skillcmd "github.com/wappsdev/wapps-cli/cmd/skill"
+	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/projects"
 	skillpkg "github.com/wappsdev/wapps-cli/internal/skill"
 	"github.com/wappsdev/wapps-cli/internal/updatecheck"
@@ -101,6 +102,14 @@ func resolveProjectFlag() error {
 }
 
 func Execute() {
+	// SilenceErrors/SilenceUsage: cobra hatayı KENDİSİ basıyordu, sonra aşağıdaki
+	// blok bir kez daha basıyordu — kullanıcı aynı satırı iki kez, kurtarma
+	// satırını ise HİÇ görmüyordu. Basma işi tek yerde toplandı. Usage dökümü de
+	// susturuldu: bir binding/oturum hatasına 20 satır bayrak listesi eklemek
+	// gerçek mesajı gömüyor (`--help` elbette çalışmaya devam eder).
+	rootCmd.SilenceErrors = true
+	rootCmd.SilenceUsage = true
+
 	err := rootCmd.Execute()
 
 	// Best-effort "newer release available" notice, printed AFTER the command's
@@ -112,7 +121,14 @@ func Execute() {
 	maybeAutoRefreshSkill()
 
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// KURTARMA SATIRI: clierr kayıt defteri her kod için "ne yapmalı"yı
+		// taşıyor ama Error() onu içermediğinden bugüne dek hiç basılmamıştı.
+		// Hatanın yarısı buydu: kullanıcı neyin yanlış olduğunu görüyor, nasıl
+		// düzelteceğini görmüyordu.
+		if rec := clierr.RecoveryOf(err); rec != "" {
+			fmt.Fprintf(os.Stderr, "  → %s\n", rec)
+		}
 		os.Exit(1)
 	}
 }

@@ -1,7 +1,9 @@
 package secrets
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/binding"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/config"
+	"golang.org/x/term"
 )
 
 // agentPolicy, her secrets verb'ünün ajan-modu sınıfıdır (SPEC §7.1). MERKEZİ
@@ -112,8 +115,12 @@ func checkRepoBinding(isAgent bool) error {
 	// --project yazabilmesi onu yetkili yapmaz → ajan modunda fail-closed.
 	if projectOverride != "" {
 		if isAgent {
+			// Kurtarma satırı override ediliyor: ortada pinlenecek bir repo YOK,
+			// o yüzden registry'nin "trust-repo çalıştır" varsayılanı burada
+			// anlamsız olurdu.
 			return clierr.Newf(clierr.BindingUnpinned,
-				"--project %q names a project with no local repo; an agent may not target a project this way", projectOverride)
+				"--project %q names a project with no local repo; an agent may not target a project this way", projectOverride).
+				WithRecovery("a human must run this in a terminal, or work inside the project's repo")
 		}
 		return nil
 	}
@@ -149,23 +156,87 @@ func checkRepoBinding(isAgent bool) error {
 	if err != nil {
 		return clierr.Wrapf(clierr.Internal, err, "load repo pins")
 	}
-	if cerr := store.Check(fp, cfg.Project); cerr != nil {
-		if errors.Is(cerr, binding.ErrMismatch) {
-			return clierr.Newf(clierr.BindingUnpinned, "repo is pinned to a different project than %q; re-pin required", cfg.Project)
-		}
+	cerr := store.Check(fp, cfg.Project)
+	if cerr == nil {
+		return nil
+	}
+	if errors.Is(cerr, binding.ErrMismatch) {
+		// UYUŞMAZLIK satır içi çözülmez. Bu, config'in PİNLİ OLANDAN BAŞKA bir
+		// projeyi talep etmesi demek — pinin var olma sebebinin ta kendisi.
+		// Yeni bir bağlama (aşağısı) sıradan ve zararsızdır; bir bağlamayı
+		// DEĞİŞTİRMEK ise kasıtlı bir karar ister: açıkça trust-repo.
+		return clierr.Newf(clierr.BindingUnpinned,
+			"repo is pinned to a different project than %q; re-pin required", cfg.Project).
+			WithRecovery("if this is intended, run: wapps secrets trust-repo")
+	}
+
+	// Buradan sonrası PİNSİZ durumu: bağlama henüz hiç kurulmamış.
+	//
+	// Ajan/CI → fail-closed. Pinin gerçekten iş gördüğü yer burasıdır: uydurulmuş
+	// ya da ele geçmiş bir .wapps.yaml, kendi başına bir proje talep edemesin.
+	// Bir ajanın o dosyayı yazabiliyor olması, onu yetkili yapmaz.
+	if isAgent {
 		return clierr.Newf(clierr.BindingUnpinned, "repo→project binding for %q is not pinned", cfg.Project)
 	}
+	// İnsan ama TTY yok (pipe/script) → soramayız, o yüzden sormuş gibi yapmayız.
+	if !stdinIsTTY() {
+		return clierr.Newf(clierr.BindingUnpinned, "repo→project binding for %q is not pinned", cfg.Project)
+	}
+	// İnsan, terminalde: bu dizine gelip komutu yazmış olması niyet beyanıdır.
+	// Ayrı bir komut öğretmek yerine BURADA soruyoruz — güvenlik aynı (onaylayan
+	// yine bir insan), sürtünme repo başına tek tuş. Projeyi ADIYLA gösteriyoruz:
+	// korunan şey tam olarak bu, hangi projenin talep edildiğini görebilmek.
+	if !bindPrompt(repoID, cfg.Project) {
+		return clierr.Newf(clierr.BindingUnpinned, "not pinned; binding declined for %q", cfg.Project)
+	}
+	store.Pin(fp, binding.Pin{Repo: repoID, Project: cfg.Project, Backend: cfg.Backend})
+	if serr := store.Save(path); serr != nil {
+		return clierr.Wrapf(clierr.Internal, serr, "save repo pin")
+	}
+	fmt.Fprintf(os.Stderr, "✓ bound this repo to project %q (change it later with: wapps secrets trust-repo)\n", cfg.Project)
 	return nil
 }
 
-// repoIdentity, bir repo'nun kararlı kimliğini döner: git remote 'origin' URL'i
-// (birden çok checkout aynı pini paylaşır), yoksa mutlak config-root yolu.
+// bindPrompt, pinsiz bir bağlamayı satır içi onaylatır. PAKET SEAM'i: testler
+// stdin'e takılmasın diye değiştirilir.
+var bindPrompt = func(repoID, project string) bool {
+	fmt.Fprintf(os.Stderr, "This repo is not bound to a project yet.\n")
+	fmt.Fprintf(os.Stderr, "  repo:    %s\n", repoID)
+	fmt.Fprintf(os.Stderr, "  project: %s\n", project)
+	fmt.Fprintf(os.Stderr, "Bind them? [y/N]: ")
+	sc := bufio.NewScanner(os.Stdin)
+	if !sc.Scan() {
+		return false
+	}
+	a := strings.ToLower(strings.TrimSpace(sc.Text()))
+	return a == "y" || a == "yes"
+}
+
+// stdinIsTTY, satır içi soru sorulabilir mi (PAKET SEAM'i: testte false).
+var stdinIsTTY = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
+// repoIdentity, bağlanan birimin kararlı kimliğini döner. Bu birim REPO DEĞİL,
+// "şu .wapps.yaml"dır: origin URL'i + config'in repo kökine göre yolu.
+//
+// Neden yol da dahil: eskiden kimlik yalnızca origin URL'iydi, yani bir
+// monorepo'daki BÜTÜN projeler tek parmak izine çakışıyordu. infra-tofu beş
+// proje barındırıyor (vaulter, lab, vibe-pro, platform, secrets-gate); biri
+// pinlenince diğer dördü "repo is pinned to a different project" ile
+// ERİŞİLEMEZ hale geliyordu. Yolu eklemek ilişkiyi çok-çoka çevirir: bir proje
+// birden çok repo'dan, bir repo birden çok projeden kullanılabilir.
+//
+// Config repo KÖKÜNDEYSE kimlik çıplak URL olarak kalır — böylece tek-projeli
+// repo'ların mevcut pinleri geçerliliğini korur (yeniden pinleme gerekmez) ve
+// aynı repo'nun farklı checkout'ları pini paylaşmaya devam eder.
 func repoIdentity(cfg *config.WappsYAML) string {
 	root := cfg.ConfigRoot()
 	if root == "" {
 		root = "."
 	}
 	if url := gitRemoteURL(root); url != "" {
+		if sub := gitRepoSubpath(root); sub != "" {
+			return url + "#" + sub
+		}
 		return url
 	}
 	abs, err := filepath.Abs(root)
@@ -173,6 +244,15 @@ func repoIdentity(cfg *config.WappsYAML) string {
 		return root
 	}
 	return abs
+}
+
+// gitRepoSubpath, dir'in git kökine göre yolunu döner ("" = kökün kendisi).
+func gitRepoSubpath(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-prefix").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSpace(string(out)), "/")
 }
 
 // serviceTokenPairSet, CF Access service-token çiftinin (CF_ACCESS_CLIENT_ID +

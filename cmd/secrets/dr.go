@@ -133,7 +133,7 @@ var drVerifyCmd = &cobra.Command{
 	Long: `Verify the ciphertext replica: for every project, current pointer → manifest
 hash chain, manifest schema, and every referenced blob's content address. Uses NO
 secrets and NO Cloudflare — runnable against an air-gapped snapshot copy.
-(Live-B2 lag comparison alerts run in the Worker's nightly reconcile, §8.3.)`,
+(Live-B2 lag comparison alerts run in the Worker's nightly reconcile.)`,
 	RunE: runDrVerify,
 }
 
