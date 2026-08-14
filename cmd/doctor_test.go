@@ -38,9 +38,13 @@ func TestDoctorReportsAllChecks(t *testing.T) {
 	_ = rootCmd.Execute()
 	output := buf.String()
 
+	// `age` ve "git remote" (infra-tofu monorepo kontrolü) v0.21.0'de düştü:
+	// biri artık çağrılmıyor, diğerinin sorduğu soru sırlar git'ten çıkınca
+	// anlamsızlaştı. Yerlerine gate oturumu geldi — sır okumayı gerçekten
+	// kapılayan şey o.
 	wantChecks := []string{
-		"opentofu", "age", "git", "jq", "gh", "cloudflared",
-		"R2 access", "Coolify API", "git remote",
+		"opentofu", "git", "jq", "gh", "cloudflared",
+		"tofu state backend", "Coolify API", "secrets-gate session",
 	}
 	for _, check := range wantChecks {
 		if !strings.Contains(output, check) {

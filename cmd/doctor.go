@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/wappsdev/wapps-cli/internal/session"
 	"os"
 	"os/exec"
 	"strings"
@@ -77,13 +79,16 @@ func runDoctorTofu(out interface{ Write(p []byte) (int, error) }) error {
 }
 
 // runDoctorFull preserves the original doctor behavior — full dependency
-// check covering CLI tools, R2 env, Coolify reachability, git remote.
-// Kept verbatim so existing operators see no change.
+// check covering CLI tools, the secrets-gate session, R2 env and Coolify
+// reachability.
 func runDoctorFull(out interface{ Write(p []byte) (int, error) }) error {
 	allOK := true
 
 	// CLI tools
-	for _, tool := range []string{"opentofu", "age", "git", "jq", "gh", "cloudflared"} {
+	// `age` was dropped with the encrypted archive — nothing shells out to it
+	// any more, and reporting it as missing sent operators to install a binary
+	// this CLI no longer uses.
+	for _, tool := range []string{"opentofu", "git", "jq", "gh", "cloudflared"} {
 		binName := tool
 		if tool == "opentofu" {
 			binName = "tofu"
@@ -96,12 +101,15 @@ func runDoctorFull(out interface{ Write(p []byte) (int, error) }) error {
 		}
 	}
 
-	// R2 access — env vars set?
+	// Tofu STATE backend creds. Deliberately labelled as tofu's, not "R2
+	// access": reading a secret needs no R2 credentials on the client — the gate
+	// holds them. Only `tofu` (whose state lives in R2) needs these, so an
+	// unset value here says nothing about whether secrets work.
 	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
-		fmt.Fprintln(out, "✗ R2 access: AWS_ACCESS_KEY_ID not set")
+		fmt.Fprintln(out, "✗ tofu state backend: AWS_ACCESS_KEY_ID not set (only needed for tofu, not for secrets)")
 		allOK = false
 	} else {
-		fmt.Fprintln(out, "✓ R2 access env vars set")
+		fmt.Fprintln(out, "✓ tofu state backend creds set")
 	}
 
 	// Coolify API reachable. COOLIFY_URL is the BASE url (matches getEndpoint
@@ -132,13 +140,25 @@ func runDoctorFull(out interface{ Write(p []byte) (int, error) }) error {
 		}
 	}
 
-	// Git remote
-	gitOut, err := exec.Command("git", "remote", "-v").Output()
-	if err != nil || !strings.Contains(string(gitOut), "wappsdev/infra-tofu") {
-		fmt.Fprintln(out, "✗ git remote: not in infra-tofu repo or missing origin")
+	// Secrets-gate session. This is what actually gates every secret read now,
+	// so it replaces the old "are you inside the infra-tofu monorepo?" check —
+	// that question stopped meaning anything once secrets left git.
+	host := session.GateHost()
+	if st, ok := session.Load(host); !ok {
+		fmt.Fprintf(out, "✗ no secrets-gate session for %s — run 'wapps login'\n", host)
+		allOK = false
+	} else if st.Expired(time.Now()) {
+		fmt.Fprintf(out, "✗ secrets-gate session for %s expired — run 'wapps login'\n", host)
 		allOK = false
 	} else {
-		fmt.Fprintln(out, "✓ git remote configured")
+		fmt.Fprintf(out, "✓ secrets-gate session live (%s)\n", st.TTL(time.Now()).Round(time.Second))
+	}
+	// Admin session is OPTIONAL: most work never touches the control plane, so
+	// its absence is reported without failing the run.
+	if a, ok := session.Load(session.AdminSessionKey()); ok && !a.Expired(time.Now()) {
+		fmt.Fprintf(out, "✓ admin (write-AUD) session live (%s)\n", a.TTL(time.Now()).Round(time.Second))
+	} else {
+		fmt.Fprintln(out, "· no admin session — 'wapps login --write' when editing policy")
 	}
 
 	if !allOK {
