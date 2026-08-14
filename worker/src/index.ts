@@ -89,8 +89,18 @@ export default {
     const parts = url.pathname.split("/").filter((p) => p !== "");
     if (parts[0] !== "v1") return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
 
-    // Rota sınıfı → gereken AUD (§7.6): /v1/admin/* + /v1/policy = write.
-    const isWriteApp = parts[1] === "admin" || parts[1] === "policy";
+    // Rota sınıfı → gereken AUD (§7.6): write-AUD YALNIZCA /v1/admin/* altındadır.
+    //
+    // TARİHÇE (bu bir düzeltmedir): policy rotaları eskiden /v1/policy'deydi ve
+    // Worker onlara write-AUD şart koşuyordu — ama CF Access'te WRITE uygulaması
+    // `gw.meapps.dev/v1/admin` path'ini kaplıyor, READ uygulaması ise host'un
+    // tamamını. Daha-spesifik path kazandığından /v1/policy'ye giden istek edge'de
+    // HER ZAMAN read-AUD assertion'ı alıyordu; Worker write bekliyordu → kalıcı,
+    // kaçışı olmayan AUD_MISMATCH. Yani `wapps secrets policy show/set` canlıda
+    // hiçbir zaman çalışamadı. Access app'leri elle kurulmuş (tofu
+    // manage_access_apps=false), o yüzden çözüm rotayı zaten write-AUD ile korunan
+    // önekin ALTINA almaktır: /v1/admin/policy.
+    const isWriteApp = parts[1] === "admin";
     const routeAud: "read" | "write" = isWriteApp ? "write" : "read";
 
     try {

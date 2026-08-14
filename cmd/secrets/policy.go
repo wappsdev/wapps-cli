@@ -35,7 +35,9 @@ var openAdminStore = func() (*store.WorkerStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.New(store.Config{BaseURL: session.GateURL(), Doer: doer, Auth: session.Auth()}), nil
+	// AuthAdmin: kontrol düzlemi WRITE-AUD oturumu ister (read oturumu yetmez —
+	// kenarda /v1/admin ayrı bir Access uygulamasıdır, §3.2).
+	return store.New(store.Config{BaseURL: session.GateURL(), Doer: doer, Auth: session.AuthAdmin()}), nil
 }
 
 var policyCmd = &cobra.Command{

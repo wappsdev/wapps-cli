@@ -50,7 +50,7 @@ func TestRunLogin_CachesToken0600(t *testing.T) {
 	cmd := loginCmd
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
-	if err := runLogin(cmd); err != nil {
+	if err := runLogin(cmd, false); err != nil {
 		t.Fatalf("runLogin: %v", err)
 	}
 	if strings.Contains(out.String(), tok) {
@@ -85,7 +85,7 @@ func TestRunLogin_RejectsNonJWT(t *testing.T) {
 
 	cmd := loginCmd
 	cmd.SetOut(new(bytes.Buffer))
-	if err := runLogin(cmd); !clierr.Is(err, clierr.Internal) {
+	if err := runLogin(cmd, false); !clierr.Is(err, clierr.Internal) {
 		t.Fatalf("want INTERNAL on non-JWT token, got %v", err)
 	}
 	if _, ok := session.Load("gate.test.example"); ok {
@@ -208,5 +208,60 @@ func TestLoginCheck_PrintsSubjectNoToken(t *testing.T) {
 	}
 	if strings.Contains(got, tok) || strings.Contains(got, "c2ln") {
 		t.Errorf("--check must not print token bytes; got %q", got)
+	}
+}
+
+// TestRunLogin_Write_UsesAdminAppAndSeparateSlot, --write akışını pinler:
+// SSO WRITE app'in URL'ine (<gate>/v1/admin) karşı koşar ve token AYRI bir
+// oturum anahtarına yazılır — read oturumu EZİLMEZ.
+func TestRunLogin_Write_UsesAdminAppAndSeparateSlot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("WAPPS_SESSION_TOKEN", "")
+	t.Setenv("WAPPS_SECRETS_GATE", "https://gate.test.example")
+
+	exp := time.Now().Add(15 * time.Minute).Unix()
+	readTok := fakeJWT("a@wapps.co", time.Now().Add(6*time.Hour).Unix())
+	adminTok := fakeJWT("a@wapps.co", exp)
+
+	// Önce normal (read) login — sonra --write bunu ezmemeli.
+	prev := cloudflaredLogin
+	cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) { return readTok, nil }
+	cmd := loginCmd
+	cmd.SetOut(new(bytes.Buffer))
+	if err := runLogin(cmd, false); err != nil {
+		t.Fatalf("read login: %v", err)
+	}
+
+	var gotGate string
+	cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
+		gotGate = gate
+		return adminTok, nil
+	}
+	t.Cleanup(func() { cloudflaredLogin = prev })
+
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	if err := runLogin(cmd, true); err != nil {
+		t.Fatalf("write login: %v", err)
+	}
+	// SSO, WRITE app'in kapsadığı path'e karşı koşmalı — host kökü read app'tir.
+	if gotGate != "https://gate.test.example/v1/admin" {
+		t.Errorf("write SSO target = %q, want the admin app URL", gotGate)
+	}
+	if strings.Contains(out.String(), adminTok) {
+		t.Error("login output must never contain token bytes")
+	}
+
+	// İki oturum yan yana yaşar.
+	r, rok := session.Load("gate.test.example")
+	if !rok || r.Token != readTok {
+		t.Errorf("read session must survive --write login, got ok=%v", rok)
+	}
+	a, aok := session.Load(session.AdminSessionKey())
+	if !aok || a.Token != adminTok || a.ExpiresAt != exp {
+		t.Fatalf("admin session mismatch: %+v ok=%v", a, aok)
+	}
+	if session.AdminSessionKey() == session.GateHost() {
+		t.Error("admin session key must differ from the read session key")
 	}
 }

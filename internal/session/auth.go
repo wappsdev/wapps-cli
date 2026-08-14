@@ -43,6 +43,29 @@ func GateHost() string {
 	return u.Host
 }
 
+// AdminAPIPath, CF Access WRITE uygulamasının kapsadığı path önekidir.
+//
+// Kenar kurulumu iki AYRI Access uygulamasıdır (infra-tofu projects/secrets-gate,
+// access.tf): READ app host'un TAMAMINI kaplar, WRITE app ise
+// `<host>/v1/admin`i — daha spesifik path kazanır. Bu yüzden write-AUD'lu bir
+// assertion YALNIZCA bu önek altındaki isteklerde üretilebilir; SSO da bu URL'e
+// karşı çalıştırılmalıdır. (Worker tarafı da buna göre hizalandı: policy rotaları
+// /v1/policy'den /v1/admin/policy'ye taşındı — eskisi kalıcı AUD_MISMATCH'ti.)
+const AdminAPIPath = "/v1/admin"
+
+// AdminGateURL, WRITE (admin) Access uygulamasının SSO URL'idir.
+func AdminGateURL() string {
+	return GateURL() + AdminAPIPath
+}
+
+// AdminSessionKey, write-AUD oturumunun saklama anahtarıdır. Read oturumundan
+// AYRI tutulur: iki farklı uygulamanın iki farklı token'ı ve süresi vardır
+// (read saatler, write 15 dk) — birini diğerinin üstüne yazmak, uzun read
+// oturumunu 15 dakikada bir kaybettirirdi.
+func AdminSessionKey() string {
+	return GateHost() + "-admin"
+}
+
 // HeaderAccessToken, CF Access app-token header adıdır (cloudflared paritesi).
 const HeaderAccessToken = "cf-access-token"
 
@@ -88,9 +111,19 @@ func HTTPClient() (*http.Client, error) {
 	return &http.Client{Transport: transport}, nil
 }
 
-// Auth, store.Config.Auth için üretim enjektörünü döner.
+// Auth, store.Config.Auth için üretim enjektörünü döner (read-AUD oturumu).
 func Auth() func(*http.Request) error {
-	host := GateHost()
+	return authFor(GateHost(), "run 'wapps login'")
+}
+
+// AuthAdmin, kontrol-düzlemi çağrıları için write-AUD oturumunu enjekte eder.
+// Read oturumu geçerliyken bile bu ayrı oturum gerekir — kenar, /v1/admin
+// altındaki isteklere WRITE app'in AUD'unu basar.
+func AuthAdmin() func(*http.Request) error {
+	return authFor(AdminSessionKey(), "run 'wapps login --write' (admin app: 15 min + WebAuthn)")
+}
+
+func authFor(host, recovery string) func(*http.Request) error {
 	return func(req *http.Request) error {
 		// 1) CI service-token yolu (§7.2 sonu): login verb'i gerekmez.
 		id, secret := os.Getenv("CF_ACCESS_CLIENT_ID"), os.Getenv("CF_ACCESS_CLIENT_SECRET")
@@ -105,7 +138,8 @@ func Auth() func(*http.Request) error {
 		// 2) İnsan oturumu.
 		s, ok := Load(host)
 		if !ok || s.Expired(time.Now()) {
-			return clierr.New(clierr.SessionExpired, "no valid CF Access session for the secrets gate")
+			return clierr.New(clierr.SessionExpired, "no valid CF Access session for the secrets gate").
+				WithRecovery(recovery)
 		}
 		req.Header.Set(HeaderAccessToken, s.Token)
 		return nil

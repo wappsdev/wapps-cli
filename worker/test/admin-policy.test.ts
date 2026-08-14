@@ -40,7 +40,7 @@ async function adminJwt(): Promise<string> {
 
 describe("policy GET/PUT (§4.1/§4.4)", () => {
   it("root admin (ADMIN_EMAILS) reads policy regardless of policy.json (§4.5)", async () => {
-    const res = await callGate("/v1/policy", { headers: authHeader(await adminJwt()) });
+    const res = await callGate("/v1/admin/policy", { headers: authHeader(await adminJwt()) });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { version: number; policy: { rules: unknown[] } };
     expect(body.version).toBe(1);
@@ -48,12 +48,12 @@ describe("policy GET/PUT (§4.1/§4.4)", () => {
   });
 
   it("policy-group admin (admins@) also holds the admin verb", async () => {
-    const res = await callGate("/v1/policy", { headers: authHeader(await signer.makeJWT(validClaimsWrite("boss@wapps.dev"))) });
+    const res = await callGate("/v1/admin/policy", { headers: authHeader(await signer.makeJWT(validClaimsWrite("boss@wapps.dev"))) });
     expect(res.status).toBe(200);
   });
 
   it("non-admin human on the write app → GRANT_DENIED; deny is audited", async () => {
-    const res = await callGate("/v1/policy", { headers: authHeader(await signer.makeJWT(validClaimsWrite("writer@wapps.dev"))) });
+    const res = await callGate("/v1/admin/policy", { headers: authHeader(await signer.makeJWT(validClaimsWrite("writer@wapps.dev"))) });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toBe("GRANT_DENIED");
     const rows = await allAuditRows();
@@ -66,7 +66,7 @@ describe("policy GET/PUT (§4.1/§4.4)", () => {
       version: 2,
       rules: [...defaultRules(), { group: "contractors@wapps.co", projects: ["lumira"], keys: ["PUB_*"], verbs: ["read"] }],
     };
-    const put = await callGate("/v1/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(newDoc) });
+    const put = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(newDoc) });
     expect(put.status).toBe(200);
     expect(((await put.json()) as { version: number }).version).toBe(2);
 
@@ -77,20 +77,20 @@ describe("policy GET/PUT (§4.1/§4.4)", () => {
     expect(w!.intent).toContain("v1:");
     expect(w!.intent).toContain("->v2:");
 
-    const get = await callGate("/v1/policy", { headers: authHeader(await adminJwt()) });
+    const get = await callGate("/v1/admin/policy", { headers: authHeader(await adminJwt()) });
     expect(((await get.json()) as { version: number }).version).toBe(2);
   });
 
   it("PUT with wrong version → 412 POLICY_CONFLICT (CAS)", async () => {
     const doc = { schema: SCHEMA_POLICY, version: 5, rules: defaultRules() };
-    const res = await callGate("/v1/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
+    const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
     expect(res.status).toBe(412);
     expect(((await res.json()) as { error: string }).error).toBe("POLICY_CONFLICT");
   });
 
   it("PUT invalid rule → 422 POLICY_INVALID naming the rule index (§4.4)", async () => {
     const doc = { schema: SCHEMA_POLICY, version: 2, rules: [...defaultRules(), { group: "x@y.z", projects: ["*"], keys: ["!ALL"], verbs: ["read"] }] };
-    const res = await callGate("/v1/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
+    const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
     expect(res.status).toBe(422);
     const body = (await res.json()) as { error: string; rule_index: number };
     expect(body.error).toBe("POLICY_INVALID");
@@ -104,28 +104,40 @@ describe("policy GET/PUT (§4.1/§4.4)", () => {
     const normalized = validatePolicy(newDoc, "primary", [ADMIN_EMAIL]);
     await env.SECRETS_BUCKET.put(keyPolicyVersion(2), utf8(JSON.stringify(normalized)));
 
-    const put = await callGate("/v1/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(newDoc) });
+    const put = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(newDoc) });
     expect(put.status).toBe(200); // retry wedge'i iyileştirir: pointer CAS'ine idempotent devam
-    const get = await callGate("/v1/policy", { headers: authHeader(await adminJwt()) });
+    const get = await callGate("/v1/admin/policy", { headers: authHeader(await adminJwt()) });
     expect(((await get.json()) as { version: number }).version).toBe(2);
   });
 
   it("occupied version slot with DIFFERENT content → still 412 POLICY_CONFLICT", async () => {
     await env.SECRETS_BUCKET.put(keyPolicyVersion(2), utf8(`{"other":true}`));
     const doc = { schema: SCHEMA_POLICY, version: 2, rules: defaultRules() };
-    const res = await callGate("/v1/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
+    const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
     expect(res.status).toBe(412);
     expect(((await res.json()) as { error: string }).error).toBe("POLICY_CONFLICT");
   });
 
   it("PRIMARY topology: aud selector REJECTED on PUT (§3.3/§4.4)", async () => {
     const doc = { schema: SCHEMA_POLICY, version: 2, rules: [{ aud: "someaud", projects: ["*"], keys: ["*"], verbs: ["read"] }] };
-    const res = await callGate("/v1/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
+    const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
     expect(res.status).toBe(422);
   });
 
-  it("admin routes REQUIRE the write AUD (read-AUD JWT → AUD_MISMATCH)", async () => {
+  // REGRESYON KİLİDİ: policy rotaları /v1/admin ALTINDA kalmalı. Eski /v1/policy
+  // konumu canlıda kalıcı AUD_MISMATCH'ti — CF Access WRITE app'i yalnızca
+  // <host>/v1/admin'i kaplar, host kökü READ app'indir. Rota oraya geri taşınırsa
+  // `wapps secrets policy show/set` sessizce yine erişilemez hale gelir.
+  it("eski /v1/policy konumu ARTIK YOK (write-AUD app'i o path'i kaplamıyor)", async () => {
+    // read-AUD ile sorulur: /v1/policy artık read-AUD sınıfındadır (isWriteApp
+    // yalnızca /v1/admin), yani AUD'u GEÇER ve rota tablosunda karşılığı
+    // olmadığı için 404'e düşer — orada bir policy yüzeyi kalmadığının kanıtı.
     const res = await callGate("/v1/policy", { headers: authHeader(await signer.makeJWT(validClaims(ADMIN_EMAIL))) });
+    expect(res.status).toBe(404);
+  });
+
+  it("admin routes REQUIRE the write AUD (read-AUD JWT → AUD_MISMATCH)", async () => {
+    const res = await callGate("/v1/admin/policy", { headers: authHeader(await signer.makeJWT(validClaims(ADMIN_EMAIL))) });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toBe("AUD_MISMATCH");
   });

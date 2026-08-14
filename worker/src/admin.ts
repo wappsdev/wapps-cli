@@ -1,8 +1,9 @@
-// Admin/control-plane rotaları (SPEC §7.6 write-AUD path kümesi: /v1/admin/* +
-// /v1/policy). ZK tasarımın pending-ops töre kuyruğu SİLİNDİ (§0.2) — policy
-// düzenlemeleri DOĞRUDAN admin yazımlarıdır (§4.5). Rotalar:
-//   GET  /v1/policy                 → aktif policy (admin verb)
-//   PUT  /v1/policy                 → CAS'lı policy yazımı (§4.1/§4.4), audit + A9
+// Admin/control-plane rotaları (SPEC §7.6 write-AUD path kümesi: /v1/admin/*).
+// ZK tasarımın pending-ops töre kuyruğu SİLİNDİ (§0.2) — policy düzenlemeleri
+// DOĞRUDAN admin yazımlarıdır (§4.5). Rotalar:
+//   GET  /v1/admin/policy           → aktif policy (admin verb)
+//   PUT  /v1/admin/policy           → CAS'lı policy yazımı (§4.1/§4.4), audit + A9
+//   DELETE /v1/admin/projects/{p}   → projenin TÜM verisini kaldırır
 //   GET  /v1/admin/rotate-plan      → audit ledger = rotate-set oracle (§6.3)
 //   POST /v1/admin/token/revoke     → minted-token jti revoke (§5.3)
 //   POST /v1/admin/rewrap-kek       → MASTER_KEK rotasyonu re-wrap turu (§2.5)
@@ -59,7 +60,7 @@ export interface AdminContext {
   topology: Topology;
 }
 
-/** handleAdmin, /v1/policy + /v1/admin/* rotalarını sürer. Çağıran write-AUD'u zaten doğruladı. */
+/** handleAdmin, /v1/admin/* rotalarını sürer. Çağıran write-AUD'u zaten doğruladı. */
 export async function handleAdmin(
   request: Request,
   env: Env,
@@ -68,7 +69,7 @@ export async function handleAdmin(
   principal: Principal,
   actx: AdminContext,
 ): Promise<Response> {
-  const denyVerb = parts[1] === "policy" ? (request.method === "PUT" ? "policy.write" : "policy.read") : `admin.${parts[2] ?? ""}`;
+  const denyVerb = parts[2] === "policy" ? (request.method === "PUT" ? "policy.write" : "policy.read") : `admin.${parts[2] ?? ""}`;
 
   // Minted machine-token'lar admin rotalarında REDDEDİLİR (§5.3: minted scope,
   // service satırıyla KESİŞİR — asla genişletmez; MINTABLE_VERBS 'admin' içermez,
@@ -102,8 +103,10 @@ export async function handleAdmin(
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "admin verb required", { dimension: "verb" });
   }
 
-  // --- /v1/policy -------------------------------------------------------------
-  if (parts[1] === "policy" && parts.length === 2) {
+  // --- /v1/admin/policy ---------------------------------------------------------
+  // (Eskiden /v1/policy'ydi; CF Access WRITE app'i yalnızca /v1/admin path'ini
+  // kapsadığından orası kalıcı AUD_MISMATCH veriyordu — bkz. index.ts rota notu.)
+  if (parts[2] === "policy" && parts.length === 3) {
     if (request.method === "GET") {
       auditReadAsync(ctx, env.AUDIT_LOG, adminRow(actx.authz.id, principal, "policy.read", request));
       return jsonOK({ version: actx.policy.version, sha256: actx.policy.sha256, policy: actx.policy.doc });

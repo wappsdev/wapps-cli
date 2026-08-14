@@ -54,10 +54,10 @@ func policyGateDoc() map[string]any {
 	}
 }
 
-// TestPolicyShow, GET /v1/policy'nin çözülüp basıldığını doğrular.
+// TestPolicyShow, GET /v1/admin/policy'nin çözülüp basıldığını doğrular.
 func TestPolicyShow(t *testing.T) {
 	installFakeGate(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/policy" || r.Method != http.MethodGet {
+		if r.URL.Path != "/v1/admin/policy" || r.Method != http.MethodGet {
 			t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
 		}
 		gateJSON(w, 200, policyGateDoc())

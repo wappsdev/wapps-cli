@@ -422,9 +422,9 @@ func (w *WorkerStore) AuditHead(ctx context.Context) (seq uint64, hash string, e
 	return out.Seq, out.Hash, nil
 }
 
-// PolicyGet, GET /v1/policy (admin verb + write-AUD oturumu, §7.6).
+// PolicyGet, GET /v1/admin/policy (admin verb + write-AUD oturumu, §7.6).
 func (w *WorkerStore) PolicyGet(ctx context.Context) (*PolicyResult, error) {
-	r, err := w.do(ctx, http.MethodGet, "/v1/policy", nil, nil)
+	r, err := w.do(ctx, http.MethodGet, "/v1/admin/policy", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -438,13 +438,13 @@ func (w *WorkerStore) PolicyGet(ctx context.Context) (*PolicyResult, error) {
 	return &out, nil
 }
 
-// PolicyPut, PUT /v1/policy — CAS'lı policy yazımı (version = current+1, §4.1).
+// PolicyPut, PUT /v1/admin/policy — CAS'lı policy yazımı (version = current+1, §4.1).
 func (w *WorkerStore) PolicyPut(ctx context.Context, doc PolicyDoc) (version uint64, sha256 string, err error) {
 	body, merr := json.Marshal(doc)
 	if merr != nil {
 		return 0, "", clierr.Wrapf(clierr.Internal, merr, "encode policy")
 	}
-	r, err := w.do(ctx, http.MethodPut, "/v1/policy", body, nil)
+	r, err := w.do(ctx, http.MethodPut, "/v1/admin/policy", body, nil)
 	if err != nil {
 		return 0, "", err
 	}

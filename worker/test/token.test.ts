@@ -245,12 +245,12 @@ describe("minted token on ADMIN routes — rejected (§5.3 scope-escalation guar
     // admin/["*"] verse bile minted principal admin rotasında RED (scope kesişimi —
     // MINTABLE_VERBS admin içermez, scope asla genişlemez).
     const writeSvcJwt = await signer.makeJWT(serviceTokenClaims("svc-ci", { aud: [AUD_WRITE] }));
-    const denied = await callGate("/v1/policy", { headers: authHeader(writeSvcJwt, { Authorization: `Bearer ${token}` }) });
+    const denied = await callGate("/v1/admin/policy", { headers: authHeader(writeSvcJwt, { Authorization: `Bearer ${token}` }) });
     expect(denied.status).toBe(403);
     expect(((await denied.json()) as { error: string }).error).toBe("GRANT_DENIED");
 
     // Kontrast: minted token OLMADAN service principal admin satırıyla GEÇER (§5.1).
-    const ok = await callGate("/v1/policy", { headers: authHeader(writeSvcJwt) });
+    const ok = await callGate("/v1/admin/policy", { headers: authHeader(writeSvcJwt) });
     expect(ok.status).toBe(200);
 
     // Deny, minted_token intent'iyle audit'lendi.

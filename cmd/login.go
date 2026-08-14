@@ -132,7 +132,10 @@ func isolatedEnv(tmpHome string) []string {
 	return out
 }
 
-var loginCheck bool
+var (
+	loginCheck bool
+	loginWrite bool
+)
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
@@ -145,6 +148,12 @@ Every store call then presents it as the cf-access-token header.
 Agent/CI contexts never run login: CI uses a CF Access service token via
 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (no browser, no session file).
 
+--write runs the SSO against the WRITE (admin) Access application instead. The
+edge protects <gate>/v1/admin with a separate, short-lived app (15 min + WebAuthn)
+that issues a different AUD; control-plane verbs (secrets policy, projects rm,
+rotate-plan) need it and the read session cannot stand in. The two sessions are
+cached separately, so logging in for admin does not evict the read session.
+
 --check prints the current session subject + remaining TTL (never token bytes).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if loginCheck {
@@ -154,43 +163,67 @@ CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (no browser, no session file).
 		if err := agentmode.Guard(agentmode.PolicyTTY, agentmode.IsAgent()); err != nil {
 			return err
 		}
-		return runLogin(cmd)
+		return runLogin(cmd, loginWrite)
 	},
 }
 
-// runLoginCheck, oturum öznesi + kalan TTL basar (token baytları ASLA).
+// runLoginCheck, oturum öznesi + kalan TTL basar (token baytları ASLA). İKİ
+// oturumu da gösterir: read (veri düzlemi) ve write/admin (kontrol düzlemi).
+// Eksik bir admin oturumu HATA DEĞİLDİR — çoğu iş onsuz görülür; ama kontrol
+// düzlemi verb'leri AUD_MISMATCH verdiğinde eksikliği burada görebilmek gerekir.
 func runLoginCheck(cmd *cobra.Command) error {
-	host := session.GateHost()
-	s, ok := session.Load(host)
+	w := cmd.OutOrStdout()
+	readHost := session.GateHost()
+	s, ok := session.Load(readHost)
 	if !ok {
-		return clierr.New(clierr.SessionExpired, "no session cached for "+host)
+		return clierr.New(clierr.SessionExpired, "no session cached for "+readHost)
 	}
 	now := time.Now()
 	if s.Expired(now) {
-		return clierr.New(clierr.SessionExpired, "session for "+host+" has expired")
+		return clierr.New(clierr.SessionExpired, "session for "+readHost+" has expired")
 	}
-	w := cmd.OutOrStdout()
+	printSession(w, "gate", readHost, s, now)
+
+	fmt.Fprintln(w)
+	if a, aok := session.Load(session.AdminSessionKey()); aok && !a.Expired(now) {
+		printSession(w, "admin", session.AdminGateURL(), a, now)
+	} else {
+		fmt.Fprintf(w, "admin:    no valid write-AUD session (control-plane verbs will fail)\n")
+		fmt.Fprintf(w, "          get one with: wapps login --write\n")
+	}
+	return nil
+}
+
+// printSession, bir oturumun öznesini + kalan TTL'ini basar (token baytları ASLA).
+func printSession(w io.Writer, label, target string, s session.State, now time.Time) {
 	subject := "(unknown subject)"
 	if c, err := session.ParseClaims(s.Token); err == nil && c.Email != "" {
 		subject = c.Email
 	}
-	fmt.Fprintf(w, "gate:     %s\n", host)
+	fmt.Fprintf(w, "%-9s %s\n", label+":", target)
 	fmt.Fprintf(w, "subject:  %s\n", subject)
 	if s.ExpiresAt == 0 {
 		fmt.Fprintln(w, "expires:  unknown (out-of-band token)")
 	} else {
 		fmt.Fprintf(w, "expires:  in %s\n", s.TTL(now).Round(time.Second))
 	}
-	return nil
 }
 
-// runLogin, SSO'yu cloudflared'e delege eder ve token'ı önbelleğe yazar.
-func runLogin(cmd *cobra.Command) error {
+// runLogin, SSO'yu cloudflared'e delege eder ve token'ı önbelleğe yazar. write
+// true ise hedef WRITE (admin) uygulamasıdır: SSO <gate>/v1/admin'e karşı koşar
+// ve token AYRI bir oturum anahtarına yazılır (read oturumu ezilmez).
+func runLogin(cmd *cobra.Command, write bool) error {
 	gate := session.GateURL()
 	host := session.GateHost()
+	label := host
+	if write {
+		gate = session.AdminGateURL()
+		host = session.AdminSessionKey()
+		label = gate + " (admin: 15 min + WebAuthn)"
+	}
 	w := cmd.OutOrStdout()
 
-	fmt.Fprintf(w, "Opening CF Access SSO for %s via cloudflared…\n", host)
+	fmt.Fprintf(w, "Opening CF Access SSO for %s via cloudflared…\n", label)
 	token, err := cloudflaredLogin(cmd, gate)
 	if err != nil {
 		return err
@@ -360,6 +393,7 @@ func lookupServiceCreds() (string, bool) {
 
 func init() {
 	loginCmd.Flags().BoolVar(&loginCheck, "check", false, "print session subject + remaining TTL (no token bytes)")
+	loginCmd.Flags().BoolVar(&loginWrite, "write", false, "log in to the WRITE (admin) Access app — required by control-plane verbs")
 	tokenExchangeCmd.Flags().StringVar(&tokenProject, "project", "", "project scope for the minted token")
 	tokenExchangeCmd.Flags().StringArrayVar(&tokenKeys, "key", nil, "exact key name in scope (repeatable)")
 	tokenExchangeCmd.Flags().StringArrayVar(&tokenVerbs, "verb", []string{"read"}, "verb in scope (read|write|rotate)")

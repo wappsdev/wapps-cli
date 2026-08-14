@@ -58,9 +58,9 @@ type fakeStore struct {
 	projects      []string
 	projectsCalls int
 	projectsErr   error
-	values      map[string]string
-	readErr     error
-	writeErr    error
+	values        map[string]string
+	readErr       error
+	writeErr      error
 	// importNoop true ise Import çağrıyı KAYDEDER ama f.values'a yazmaz —
 	// migrate import'un round-trip verify başarısızlık yolunu simüle eder.
 	importNoop bool

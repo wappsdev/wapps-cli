@@ -345,12 +345,12 @@ func TestPolicyAndRotatePlanAndWhoami(t *testing.T) {
 				"principal": "human:a@wapps.co", "kind": "human",
 				"groups": []string{"developers@wapps.co"}, "policy_version": 3,
 			})
-		case r.URL.Path == "/v1/policy" && r.Method == http.MethodGet:
+		case r.URL.Path == "/v1/admin/policy" && r.Method == http.MethodGet:
 			writeJSON(w, 200, map[string]any{
 				"version": 3, "sha256": "abc",
 				"policy": map[string]any{"schema": "wapps-secrets/policy/v1", "version": 3, "rules": []any{}},
 			})
-		case r.URL.Path == "/v1/policy" && r.Method == http.MethodPut:
+		case r.URL.Path == "/v1/admin/policy" && r.Method == http.MethodPut:
 			var doc PolicyDoc
 			_ = json.NewDecoder(r.Body).Decode(&doc)
 			if doc.Version != 4 {
