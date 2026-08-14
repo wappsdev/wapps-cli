@@ -36,10 +36,10 @@ func TestGlobMatch(t *testing.T) {
 	}
 }
 
-// TestExpandVerbs, "*" = dört verb; rotate ⊃ write (§4.2 pinli semantik).
+// TestExpandVerbs, "*" = beş verb; rotate ⊃ write; delete İMA EDİLMEZ (§4.2).
 func TestExpandVerbs(t *testing.T) {
 	all := ExpandVerbs([]string{"*"})
-	for _, v := range []string{"read", "write", "rotate", "admin"} {
+	for _, v := range []string{"read", "write", "rotate", "delete", "admin"} {
 		if !all[v] {
 			t.Errorf("[\"*\"] must expand to %s", v)
 		}
@@ -50,6 +50,19 @@ func TestExpandVerbs(t *testing.T) {
 	}
 	if rot["admin"] || rot["read"] {
 		t.Error("rotate must not grant admin/read")
+	}
+	// Silme geri alınamaz: hiçbir verb onu ima etmez, açıkça verilmeli.
+	if rot["delete"] {
+		t.Error("rotate must NOT grant delete (delete is never implied)")
+	}
+	if ExpandVerbs([]string{"write"})["delete"] {
+		t.Error("write must NOT grant delete (delete is never implied)")
+	}
+	if !ExpandVerbs([]string{"delete"})["delete"] {
+		t.Error("explicit delete grant must expand to delete")
+	}
+	if ExpandVerbs([]string{"delete"})["write"] {
+		t.Error("delete must not back-grant write")
 	}
 }
 

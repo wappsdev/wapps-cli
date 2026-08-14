@@ -40,6 +40,11 @@ beforeEach(async () => {
 async function writerJwt(): Promise<string> {
   return signer.makeJWT(validClaims("writer@wapps.dev"));
 }
+// deleterJwt, `delete` grant'i TAŞIYAN principal'dır (admins → verbs ["*"]).
+// writer (developers: read/write/rotate) silme YAPAMAZ — §4.2 rev4.
+async function deleterJwt(): Promise<string> {
+  return signer.makeJWT(validClaims("boss@wapps.dev"));
+}
 async function putKey(key: string, value: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}): Promise<Response> {
   return callGate(`/v1/projects/vaulter/keys/${key}`, {
     method: "PUT",
@@ -102,7 +107,7 @@ describe("write → read plaintext round-trip (§2.7/§7.4)", () => {
     expect(imp.status).toBe(200);
     expect(((await imp.json()) as { epoch: number }).epoch).toBe(1);
 
-    const del = await callGate("/v1/projects/vaulter/keys/K_TWO", { method: "DELETE", headers: authHeader(await writerJwt()) });
+    const del = await callGate("/v1/projects/vaulter/keys/K_TWO", { method: "DELETE", headers: authHeader(await deleterJwt()) });
     expect(del.status).toBe(200);
 
     const rd = await readKeys(["K_TWO"]);
@@ -111,9 +116,30 @@ describe("write → read plaintext round-trip (§2.7/§7.4)", () => {
     const names = ((await list.json()) as { keys: { keyName: string }[] }).keys.map((k) => k.keyName);
     expect(names.sort()).toEqual(["K_ONE", "K_THREE"]);
 
-    // Silinmiş anahtarı tekrar silmek → 404.
-    const del2 = await callGate("/v1/projects/vaulter/keys/K_TWO", { method: "DELETE", headers: authHeader(await writerJwt()) });
+    // Silinmiş anahtarı tekrar silmek → 404 (sessiz başarı DEĞİL: adı konmuş yokluk).
+    const del2 = await callGate("/v1/projects/vaulter/keys/K_TWO", { method: "DELETE", headers: authHeader(await deleterJwt()) });
     expect(del2.status).toBe(404);
+  });
+
+  // §4.2 rev4: silme AYRI bir `delete` grant'i ister. write/rotate tutan bir
+  // principal yazabilir ama KALDIRAMAZ — yazma geri alınabilir, silme değil.
+  it("delete, write grant'iyle YAPILAMAZ — ayrı bir `delete` verb'ü ister (§4.2 rev4)", async () => {
+    expect((await putKey("K_KEEP", "v")).status).toBe(200);
+
+    const denied = await callGate("/v1/projects/vaulter/keys/K_KEEP", { method: "DELETE", headers: authHeader(await writerJwt()) });
+    expect(denied.status).toBe(403);
+    const body = (await denied.json()) as { error: string; dimension?: string };
+    expect(body.error).toBe("GRANT_DENIED");
+    expect(body.dimension).toBe("verb"); // selector geçti, verb'te takıldı
+
+    // Anahtar hâlâ orada: reddedilen silme hiçbir şeye dokunmadı.
+    const list = await callGate("/v1/projects/vaulter/keys", { headers: authHeader(await writerJwt()) });
+    const names = ((await list.json()) as { keys: { keyName: string }[] }).keys.map((k) => k.keyName);
+    expect(names).toContain("K_KEEP");
+
+    // `delete` grant'i taşıyan principal aynı çağrıyı yapabilir.
+    const ok = await callGate("/v1/projects/vaulter/keys/K_KEEP", { method: "DELETE", headers: authHeader(await deleterJwt()) });
+    expect(ok.status).toBe(200);
   });
 
   it("mixed-case anahtar adları (POSIX env-var) yazılıp okunur — farklı-case = farklı kimlik", async () => {

@@ -3,7 +3,7 @@
 //   - Kural şekli: { group | service | aud (tam olarak biri), projects[], keys[]
 //     (baş '!' = DENY glob), verbs[] } (§4.2).
 //   - Değerlendirme (§4.3): kurallar-arası ALLOW BİRLEŞİMİ; deny-glob yalnızca
-//     KENDİ kuralı içinde kazanır; deny-by-default; rotate ⊃ write; key=null
+//     KENDİ kuralı içinde kazanır; deny-by-default; rotate ⊃ write (delete HARİÇ); key=null
 //     proje-metadata op'ları; liste yanıtları okunabilir anahtarlara FİLTRELENİR.
 //   - Depolama (§4.1): policy/versions/<n>.json (immutable, onlyIf-absent) +
 //     policy/current pointer (If-Match CAS). İzolat-içi parse cache ≤60 s.
@@ -13,7 +13,12 @@ import { sha256Hex, utf8 } from "./crypto/encoding.js";
 import { getObject, keyPolicyCurrent, keyPolicyVersion } from "./storage.js";
 
 export const SCHEMA_POLICY = "wapps-secrets/policy/v1";
-export const POLICY_VERBS = ["read", "write", "rotate", "admin"] as const;
+// `delete`, write'tan AYRI bir verb'dür (§4.2 rev4): bir anahtarı kaldırmak
+// geri alınamaz (silme = manifest'te yokluk) ve yazmadan ağırdır. write ⊅ delete
+// ve rotate ⊅ delete — silme YALNIZCA açıkça `delete` (veya "*") veren bir
+// kuralla gelir. Yeni verb'ün eklenmesi mevcut policy.json'ları geriye dönük
+// KIRMAZ: delete rotası bugüne dek hiç bir CLI yüzeyinden çağrılmıyordu.
+export const POLICY_VERBS = ["read", "write", "rotate", "delete", "admin"] as const;
 export type PolicyVerb = (typeof POLICY_VERBS)[number];
 
 /** PolicyRule, §4.2 kural şekli. Tam olarak bir selector (group|service|aud). */
@@ -99,7 +104,11 @@ export function keyGlobMatch(glob: string, key: string): boolean {
 
 // --- Verb genişletmesi (§4.2) --------------------------------------------------
 
-/** expandVerbs, rule.verbs'i efektif verb kümesine açar: "*" = dördü; rotate ⊃ write. */
+/**
+ * expandVerbs, rule.verbs'i efektif verb kümesine açar: "*" = beşi; rotate ⊃ write.
+ * `delete` HİÇBİR verb tarafından İMA EDİLMEZ (rotate ⊃ write zinciri delete'e
+ * uzanmaz) — yalnızca açıkça yazılarak ya da "*" ile gelir.
+ */
 export function expandVerbs(verbs: string[]): Set<PolicyVerb> {
   const out = new Set<PolicyVerb>();
   for (const v of verbs) {

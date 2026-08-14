@@ -15,8 +15,9 @@ import (
 // SchemaPolicy, §4.2 şema tanımlayıcısı.
 const SchemaPolicy = "wapps-secrets/policy/v1"
 
-// policyVerbs, kapalı verb kümesi (§4.2).
-var policyVerbs = map[string]bool{"read": true, "write": true, "rotate": true, "admin": true}
+// policyVerbs, kapalı verb kümesi (§4.2). `delete` write'tan AYRIDIR ve hiçbir
+// verb tarafından ima EDİLMEZ — worker/src/policy.ts ile birebir aynı küme.
+var policyVerbs = map[string]bool{"read": true, "write": true, "rotate": true, "delete": true, "admin": true}
 
 var commonNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
@@ -64,7 +65,8 @@ func globMatchAt(g, s string) bool {
 	return gi == len(g)
 }
 
-// ExpandVerbs, rule.verbs'i efektif kümeye açar: "*" = dördü; rotate ⊃ write (§4.2).
+// ExpandVerbs, rule.verbs'i efektif kümeye açar: "*" = beşi; rotate ⊃ write
+// (§4.2). `delete` ima edilmez — açıkça yazılmalı ya da "*" ile gelmeli.
 func ExpandVerbs(verbs []string) map[string]bool {
 	out := map[string]bool{}
 	for _, v := range verbs {
@@ -220,8 +222,9 @@ func deniedByRule(r store.Rule, key string) bool {
 //	(a) bir kuralda deny'lanan anahtar deseni, ÖRTÜŞEN bir principal kümesine
 //	    başka bir kuralla allow ediliyor (deny kural-KAPSAMLI olduğundan yazarın
 //	    görmesi gerekir, §4.3.2);
-//	(b) *_PROD_* eşleyebilen anahtarlara admin-dışı GRUP kurallarıyla write/rotate
-//	    VEYA plaintext read grant'i (read, server-decrypt modelde DAHA tehlikeli verb);
+//	(b) *_PROD_* eşleyebilen anahtarlara admin-dışı GRUP kurallarıyla
+//	    write/rotate/delete VEYA plaintext read grant'i (read, server-decrypt
+//	    modelde DAHA tehlikeli verb; delete ise geri alınamaz);
 //	(c) erişilemez (tamamen gölgelenmiş / yinelenen) kurallar — sezgisel: aynı
 //	    selector'lü bir kuralın verb+project+key yüzeyi bir başkasının alt kümesi;
 //	(d) verbs ["*"] taşıyan service satırları;
@@ -262,7 +265,7 @@ func Lint(doc store.PolicyDoc) []Warning {
 		}
 
 		// (b) *_PROD_* anahtarlarına admin-dışı grup grant'i (read dahil).
-		if r.Group != "" && !verbs["admin"] && (verbs["read"] || verbs["write"] || verbs["rotate"]) {
+		if r.Group != "" && !verbs["admin"] && (verbs["read"] || verbs["write"] || verbs["rotate"] || verbs["delete"]) {
 			for _, g := range r.Keys {
 				if strings.HasPrefix(g, "!") {
 					continue

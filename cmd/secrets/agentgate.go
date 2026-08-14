@@ -36,6 +36,9 @@ var agentPolicy = map[string]string{
 	"status":     agentmode.PolicyAllow,
 	// gizli-değer basan yüzey → ajan reddedilir.
 	"get": agentmode.PolicyRefuseAgent,
+	// GERİ ALINAMAZ yıkıcı yüzey → ajan reddedilir. Sunucu tarafı zaten ayrı bir
+	// `delete` grant'i istiyor (§4.2 rev4); bu, istemci tarafındaki ikinci kilit.
+	"rm": agentmode.PolicyRefuseAgent,
 	// TTY-only pin verb'ü.
 	"trust-repo": agentmode.PolicyTTY,
 	// Kontrol düzlemi (SPEC §7.1): policy düzenleme + rotate-plan admin

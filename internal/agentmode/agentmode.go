@@ -95,8 +95,8 @@ const AnnotationKey = "wapps_agent_policy"
 const (
 	// PolicyAllow, verb ajan modunda serbesttir (exec/apply/env --write/set/...).
 	PolicyAllow = "allow"
-	// PolicyRefuseAgent, gizli-değer basan yüzey → ajan modunda AGENT_MODE_REFUSED
-	// (get, env-print). İnsan terminalde çalıştırabilir.
+	// PolicyRefuseAgent, ajan modunda AGENT_MODE_REFUSED olan yüzey: gizli-değer
+	// BASAN (get, env-print) ya da GERİ ALINAMAZ (rm). İnsan terminalde çalıştırabilir.
 	PolicyRefuseAgent = "refuse_agent"
 	// PolicyControl, control-plane verb → ajan modunda CONTROL_PLANE_REQUIRED.
 	PolicyControl = "control"
@@ -124,8 +124,10 @@ func Guard(policy string, isAgent bool) error {
 	case PolicyRefuseAgent:
 		fallthrough
 	default:
-		// Boş/bilinmeyen → fail-closed (yeni annotation'sız verb REFUSED).
+		// Boş/bilinmeyen → fail-closed (yeni annotation'sız verb REFUSED). Mesaj
+		// üç durumu da kapsar: değer basan yüzey, geri alınamaz yüzey, ve
+		// annotation'ı unutulmuş yeni verb.
 		return clierr.New(clierr.AgentModeRefused,
-			"plaintext-printing surface refused in agent mode")
+			"surface refused in agent mode (prints secret values or is irreversible)")
 	}
 }

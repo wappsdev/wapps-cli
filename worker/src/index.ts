@@ -739,11 +739,13 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
 
 async function handleDelete(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
   if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
-  const d = can(rctx, project, keyName, "write");
+  // Silme AYRI bir verb ister (§4.2 rev4): `write` bir anahtarı kaldırmaya
+  // YETMEZ. Yazma geri alınabilir (eski değer yeniden set edilir), silme değil.
+  const d = can(rctx, project, keyName, "delete");
   if (!d.allowed) {
     auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.delete", project, keyName, d.reason ?? null));
     await countDenyBurst(ctx, env, rctx.authz.id);
-    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "delete denied", { key: keyName, dimension: d.reason });
   }
   const op: WriteOp = { op: "delete", key: keyName };
   return dispatchWrite(request, env, ctx, project, rctx, op, "key.delete");

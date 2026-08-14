@@ -41,12 +41,19 @@ type setCall struct {
 	opts                store.WriteOpts
 }
 
+// deleteKeyCall, store.Delete çağrısını gözler (rm testleri). Ad, Coolify
+// sync testlerindeki deleteCall ile çakışmasın diye ayrık tutulur.
+type deleteKeyCall struct {
+	project, key string
+}
+
 // fakeStore, store.Store'un çağrı-gözleyen bir uygulamasıdır.
 type fakeStore struct {
 	keysCalls   int
 	readCalls   []readCall
 	importCalls []importCall
 	setCalls    []setCall
+	deleteCalls []deleteKeyCall
 	values      map[string]string
 	readErr     error
 	writeErr    error
@@ -119,7 +126,14 @@ func (f *fakeStore) Import(_ context.Context, project string, values map[string]
 	return nil
 }
 
-func (f *fakeStore) Delete(_ context.Context, _, _ string) error { return f.writeErr }
+func (f *fakeStore) Delete(_ context.Context, project, key string) error {
+	f.deleteCalls = append(f.deleteCalls, deleteKeyCall{project: project, key: key})
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	delete(f.values, key)
+	return nil
+}
 
 // installFakeStore, openStore seam'ini fake ile değiştirir + temizlikte geri alır.
 func installFakeStore(t *testing.T) *fakeStore {

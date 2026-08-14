@@ -64,12 +64,22 @@ describe("glob (pinned §4.2)", () => {
 });
 
 describe("expandVerbs (§4.2)", () => {
-  it("* = dört verb; rotate ⊃ write", () => {
-    expect([...expandVerbs(["*"])].sort()).toEqual(["admin", "read", "rotate", "write"]);
+  it("* = beş verb; rotate ⊃ write", () => {
+    expect([...expandVerbs(["*"])].sort()).toEqual(["admin", "delete", "read", "rotate", "write"]);
     const r = expandVerbs(["rotate"]);
     expect(r.has("rotate")).toBe(true);
     expect(r.has("write")).toBe(true); // rotate-only grant düz yazmaya DA izin verir (pinli)
     expect(r.has("read")).toBe(false);
+  });
+
+  // delete HİÇBİR verb tarafından ima edilmez: silme geri alınamaz, açık grant ister.
+  it("delete ima EDİLMEZ — ne write ne rotate onu verir", () => {
+    expect(expandVerbs(["write"]).has("delete")).toBe(false);
+    expect(expandVerbs(["rotate"]).has("delete")).toBe(false);
+    expect(expandVerbs(["admin"]).has("delete")).toBe(false);
+    const d = expandVerbs(["delete"]);
+    expect(d.has("delete")).toBe(true);
+    expect(d.has("write")).toBe(false); // geri-grant yok
   });
 });
 

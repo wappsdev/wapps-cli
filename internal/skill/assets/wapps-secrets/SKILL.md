@@ -56,6 +56,11 @@ Anthropic / OpenAI / your IDE host. Avoid them:
    do NOT repeat the value in chat — apologize and ask the operator to rotate it.
 ❌ Passing secrets as positional args to a subprocess (they land in `ps aux` /
    shell history). Use `exec --` (env injection) instead.
+❌ `wapps secrets rm <KEY>` — removes a key from the store, irreversibly. The CLI
+   refuses it in agent/CI context (`AGENT_MODE_REFUSED`) and the gate requires a
+   separate `delete` grant that agents don't hold. If a key is orphaned (the
+   service account / provider it pointed at is gone), TELL the operator which key
+   and why — they run `rm` themselves.
 
 ## Common flows
 
