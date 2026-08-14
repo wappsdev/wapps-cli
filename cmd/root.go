@@ -159,9 +159,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&projectName, "project", "p", "", "Registered project name (see ~/.config/wapps/projects.yaml); resolves to that project's .wapps.yaml")
 	rootCmd.MarkFlagsMutuallyExclusive("config", "project")
 	rootCmd.AddCommand(secrets.SecretsCmd)
-	rootCmd.AddCommand(secrets.DrCmd)     // §8.4 disaster recovery (dr verify/restore — B2 replica + Shamir shares)
-	rootCmd.AddCommand(secrets.RotateCmd) // rotasyon worklist yönetimi (rotate skip — kayıtlı SKIP kaçış kapısı)
-	rootCmd.AddCommand(secrets.TofuCmd)   // birinci-sınıf `wapps tofu` (secrets exec --prefix '' -- tofu sarımı)
+	rootCmd.AddCommand(secrets.DrCmd)       // §8.4 disaster recovery (dr verify/restore — B2 replica + Shamir shares)
+	rootCmd.AddCommand(secrets.RotateCmd)   // rotasyon worklist yönetimi (rotate skip — kayıtlı SKIP kaçış kapısı)
+	rootCmd.AddCommand(secrets.ProjectsCmd) // proje kavramı sırlardan bağımsız → kökte
+	rootCmd.AddCommand(secrets.TofuCmd)     // birinci-sınıf `wapps tofu` (secrets exec --prefix '' -- tofu sarımı)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
 	rootCmd.AddCommand(skillcmd.SkillCmd)
 	rootCmd.AddCommand(deploycmd.DeployCmd)

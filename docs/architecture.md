@@ -130,8 +130,8 @@ Read verbs that need nothing but the project name (`list`, `get`, `rm`,
 | `exec -- <cmd>` | materialize | Run a subprocess with the project's env injected. No file, no stdout leak. |
 | `get <KEY>` | read | Print one value to stdout. **Operator-only** (breaks the AI-safe rule by design). |
 | `list` | read | Print key names (no values). Filtered server-side to what you may read. |
-| `projects list` | read | Which projects exist in the store, filtered to what you may see. Names only. |
-| `projects rm <P>` | admin | Remove a project and all its data. Needs the global `admin` verb + write-AUD. |
+| `wapps projects list` | read | Which projects exist in the store, filtered to what you may see. Names only. |
+| `wapps projects rm <P>` | admin | Remove a project and all its data. Needs the global `admin` verb + write-AUD. |
 | `policy show \| set \| lint` | admin | Read/edit `policy.json` (the authz document). Write-AUD; refused in agent mode. |
 | `rotate-plan` | admin | Audit-ledger oracle: what must rotate after an offboard. |
 | `status` | read | Machine-readable gate/session state. Safe in every mode. |

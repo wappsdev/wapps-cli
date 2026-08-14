@@ -1,6 +1,6 @@
 package secrets
 
-// projects_test.go, `wapps secrets projects` ailesinin sözleşmesini pinler:
+// projects_test.go, `wapps projects` ailesinin sözleşmesini pinler:
 //   - list: store'dan gelen ADları satır başına bir tane basar, sunucu sırasını
 //     bozmaz (filtreleme SUNUCUDA yapılır — istemci kendi kendine eleme yapmaz);
 //   - artık desteklenmeyen legacy-git config'i adıyla reddedilir;
@@ -98,12 +98,21 @@ func TestRunProjectsRm_ConfirmPromptNamesTheProject(t *testing.T) {
 	}
 }
 
-// projects ailesi list için serbest; rm YAPRAĞI control-plane olarak reddedilir.
+// projects KÖKTE mount'lu → SecretsCmd.PersistentPreRunE çalışmaz, gating her
+// yaprağın kendi RunE'undadır. Bu test o kaymayı yakalar: list ajana serbest
+// (yalnızca adlar), rm kontrol düzlemi.
 func TestProjects_AgentGate(t *testing.T) {
-	if agentPolicy["projects"] != agentmode.PolicyAllow {
-		t.Fatalf("projects family must be %q (list is names-only), got %q", agentmode.PolicyAllow, agentPolicy["projects"])
+	if _, underSecrets := agentPolicy["projects"]; underSecrets {
+		t.Error("projects is mounted at root; a secrets agentPolicy entry would be dead config")
+	}
+	if err := agentmode.Guard(agentmode.PolicyAllow, true); err != nil {
+		t.Errorf("projects list must stay agent-allowed (names only), got %v", err)
 	}
 	if err := agentmode.Guard(agentmode.PolicyControl, true); !clierr.Is(err, clierr.ControlPlaneRequired) {
 		t.Fatalf("projects rm must be CONTROL_PLANE_REQUIRED in agent mode, got %v", err)
+	}
+	// Kök mount'un gerçekten yapıldığını da pinle — aksi halde komut kaybolur.
+	if ProjectsCmd.Name() != "projects" || ProjectsCmd.Parent() != nil && ProjectsCmd.Parent().Name() == "secrets" {
+		t.Error("ProjectsCmd must be the root-mounted family, not a secrets subcommand")
 	}
 }

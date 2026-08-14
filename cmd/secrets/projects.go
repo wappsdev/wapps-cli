@@ -1,7 +1,18 @@
 package secrets
 
-// projects.go, `wapps secrets projects` ailesi: store'daki PROJELERİ listeler
-// ve (admin) bir projenin tamamını kaldırır.
+// projects.go, `wapps projects` ailesi: store'daki PROJELERİ listeler ve
+// (admin) bir projenin tamamını kaldırır.
+//
+// KÖKTE mount'ludur, `secrets` altında DEĞİL: bir proje sırlardan bağımsız bir
+// kavramdır (kökteki `--project` bayrağı da öyle) ve ileride sır dışı yüzeyler
+// de aynı adı kullanacak. Uygulaması burada kalır çünkü store plumbing'i
+// (openStore/openAdminStore seam'leri) bu pakete ait — dr/rotate/tofu ile aynı
+// düzen.
+//
+// Kök mount'un sonucu: SecretsCmd.PersistentPreRunE (ajan-guard + repo pin)
+// ÇALIŞMAZ, o yüzden her yaprak kendi guard'ını çağırır. İkisi de GLOBAL
+// op'tur — bir repo→proje bağlamasına bağlı değildirler, tıpkı policy ve
+// rotate-plan gibi — bu yüzden checkRepoBinding çağrılmaz.
 //
 // Neden gerekliydi: proje ÖRTÜK bir namespace'ti — kayıt defteri yok, ilk
 // anahtar yazıldığında doğuyor — ve onu görecek hiçbir yüzey yoktu. Yerel
@@ -27,16 +38,22 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 )
 
-var projectsCmd = &cobra.Command{
+// ProjectsCmd, kökte mount'lu `wapps projects` ailesidir.
+var ProjectsCmd = &cobra.Command{
 	Use:   "projects",
-	Short: "List store projects / remove one entirely",
+	Short: "List the projects in the secrets gate / remove one entirely",
 }
 
 var projectsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "GET /v1/projects — project names you can see (names only, never values)",
+	Short: "Project names you can see (names only, never values)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Kök mount → guard burada. Yalnızca ADlar döner, `secrets list` ile
+		// aynı sınıf, ajan serbest.
+		if err := agentmode.Guard(agentmode.PolicyAllow, agentmode.IsAgent()); err != nil {
+			return err
+		}
 		return runProjectsList(cmd.OutOrStdout())
 	},
 }
@@ -74,8 +91,7 @@ var projectsRmCmd = &cobra.Command{
 		"record that the project existed, and deleting it would forge a clean history.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Kontrol düzlemi: ailenin gate'i `read` sınıfıdır (list için), bu YAPRAK
-		// ayrıca reddedilir. env'in print-formu / get ile aynı yaprak-içi kalıp.
+		// Kontrol düzlemi op'u → ajan CONTROL_PLANE_REQUIRED alır.
 		if err := agentmode.Guard(agentmode.PolicyControl, agentmode.IsAgent()); err != nil {
 			return err
 		}
@@ -118,6 +134,5 @@ func runProjectsRm(project string, yes bool, in io.Reader, out io.Writer) error 
 
 func init() {
 	projectsRmCmd.Flags().BoolVar(&projectsRmYes, "yes", false, "skip the interactive confirm (still refused in agent mode)")
-	projectsCmd.AddCommand(projectsListCmd, projectsRmCmd)
-	SecretsCmd.AddCommand(projectsCmd)
+	ProjectsCmd.AddCommand(projectsListCmd, projectsRmCmd)
 }

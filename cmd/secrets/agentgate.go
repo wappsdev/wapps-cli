@@ -32,10 +32,6 @@ var agentPolicy = map[string]string{
 	"list":       agentmode.PolicyAllow,
 	"env":        agentmode.PolicyAllow, // print-form RunE'de reddedilir (§7.1)
 	"status":     agentmode.PolicyAllow,
-	// projects: AİLE gate'i list içindir (yalnızca proje ADları — `list` ile aynı
-	// sınıf). Yıkıcı yaprak `projects rm` kendi RunE'unda CONTROL_PLANE_REQUIRED
-	// ile ayrıca reddedilir (get/env'in yaprak-içi red kalıbı).
-	"projects": agentmode.PolicyAllow,
 	// gizli-değer basan yüzey → ajan reddedilir.
 	"get": agentmode.PolicyRefuseAgent,
 	// GERİ ALINAMAZ yıkıcı yüzey → ajan reddedilir. Sunucu tarafı zaten ayrı bir

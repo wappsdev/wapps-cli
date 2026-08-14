@@ -53,7 +53,7 @@ the policy rules that matched you.
 
 ### Admin operations need a second login
 
-Control-plane verbs (`secrets policy`, `secrets projects rm`, `rotate-plan`)
+Control-plane verbs (`secrets policy`, `projects rm`, `rotate-plan`)
 sit behind a separate, short-lived Access application:
 
 ```bash

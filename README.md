@@ -43,7 +43,7 @@ wapps secrets exec -- pnpm dev            # inject secrets into a subprocess
 wapps tofu plan                           # tofu with TF_VAR_* injected
 wapps secrets set <KEY>                   # masked prompt → straight to the gate
 wapps secrets sync --dry-run              # what would change, by name
-wapps secrets projects list                # which projects exist
+wapps projects list                       # which projects exist
 wapps deploy gateway --wait               # deploy through the proxy
 ```
 
