@@ -28,7 +28,7 @@ var rotatePlanCmd = &cobra.Command{
 	Long: `rotate-plan queries the gate's hash-chained audit ledger (GET
 /v1/admin/rotate-plan, admin verb + write-AUD session) for every (project, key)
 the identity read, wrote, imported, synced or rotation-wrote — the precise
-rotate set for offboarding (§6.2 step 3).
+rotate set for offboarding.
 
   --identity        human:<email> | service:<common_name>
   --since           RFC3339 lower bound (optional)

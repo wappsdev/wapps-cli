@@ -40,7 +40,7 @@ Equivalent to (but cleaner than):
   wapps secrets exec --prefix '' -- tofu <args...>
 
 Project resolution is cwd-based (run it from the project's .wapps.yaml dir, as you
-would tofu). AI-safe (§7.4): wapps prints no secret values — safe from agent/CI
+would tofu). AI-safe: wapps prints no secret values — safe from agent/CI
 contexts (a fresh CI container authenticates with a CF Access service-token pair).`,
 	Args:               cobra.ArbitraryArgs,
 	DisableFlagParsing: true, // tofu bayrakları (-target, -var, -input=false...) tofu'ya AYNEN geçer

@@ -184,8 +184,8 @@ var drRestoreCmd = &cobra.Command{
 	Short: "TTY-only DR ceremony: Shamir shares + snapshot → 0600 env file",
 	Long: `TRUE-disaster restore. TTY-ONLY — REFUSED under agent mode.
 Reconstructs MASTER_KEK from ANY 2-of-3 Shamir share files (hex), verifies the
-snapshot chain, derives the project KEK (HKDF §2.3), unwraps every DEK (WKW1 §2.4),
-opens every blob (WSB1 §2.1) and writes a 0600 env file. The assembled MASTER_KEK
+snapshot chain, derives the project KEK, unwraps every DEK, opens every blob and
+writes a 0600 env file. The assembled MASTER_KEK
 and the plaintext values are NEVER printed and never persisted beyond --out.
 Works with zero Cloudflare availability.`,
 	RunE: runDrRestore,
