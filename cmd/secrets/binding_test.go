@@ -169,3 +169,44 @@ func TestRepoIdentity_MonorepoProjectsDoNotCollide(t *testing.T) {
 		}
 	}
 }
+
+// Worktree'ler ana repo ile AYNI pini paylaşmalı. navlun'un 25 worktree'si var;
+// her biri ayrı kimlik alsaydı 25 kez bağlama sorusu ve ajan tarafında 25 ayrı
+// BINDING_UNPINNED olurdu.
+func TestRepoIdentity_WorktreeSharesMainRepoPin(t *testing.T) {
+	main := t.TempDir()
+	git := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git(main, "init", "-q")
+	git(main, "config", "user.email", "t@t.t")
+	git(main, "config", "user.name", "t")
+	yaml := "version: 2\nproject: navlun-app\n"
+	if err := os.WriteFile(filepath.Join(main, ".wapps.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(main, "add", ".")
+	git(main, "commit", "-qm", "init")
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(main, "worktree", "add", "-q", wt)
+
+	mainID := repoIdentity(mustCfg(t, filepath.Join(main, ".wapps.yaml")))
+	wtID := repoIdentity(mustCfg(t, filepath.Join(wt, ".wapps.yaml")))
+
+	if mainID != wtID {
+		t.Fatalf("a worktree must share the main repo's identity:\n  main = %q\n  wt   = %q", mainID, wtID)
+	}
+}
+
+func mustCfg(t *testing.T, path string) *config.WappsYAML {
+	t.Helper()
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}

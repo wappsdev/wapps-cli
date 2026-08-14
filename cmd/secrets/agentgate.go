@@ -233,17 +233,44 @@ func repoIdentity(cfg *config.WappsYAML) string {
 	if root == "" {
 		root = "."
 	}
+	sub := gitRepoSubpath(root)
+	// origin varsa kimlik ona bağlanır: aynı repo'nun her checkout'u pini paylaşır.
 	if url := gitRemoteURL(root); url != "" {
-		if sub := gitRepoSubpath(root); sub != "" {
+		if sub != "" {
 			return url + "#" + sub
 		}
 		return url
+	}
+	// origin YOKSA (yerel repo) ANA repo kökü kullanılır — worktree'nin kendi
+	// kökü DEĞİL. Aksi halde her worktree ayrı bir kimlik alırdı: navlun'un 25
+	// worktree'si 25 kez bağlama sorusu ve ajan tarafında 25 ayrı
+	// BINDING_UNPINNED demek olurdu. git --git-common-dir worktree'den de ana
+	// repo'dan da aynı .git'i gösterir, o yüzden hepsi tek pinde buluşur.
+	if main := gitMainRepoRoot(root); main != "" {
+		if sub != "" {
+			return main + "#" + sub
+		}
+		return main
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return root
 	}
 	return abs
+}
+
+// gitMainRepoRoot, ANA çalışma ağacının kökünü döner (worktree'den çağrılsa
+// bile). git repo'su değilse "".
+func gitMainRepoRoot(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if gitDir == "" {
+		return ""
+	}
+	return filepath.Dir(gitDir)
 }
 
 // gitRepoSubpath, dir'in git kökine göre yolunu döner ("" = kökün kendisi).
