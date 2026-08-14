@@ -2,6 +2,19 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [v0.20.0] - 2026-08-14
+
+### Added
+- `wapps secrets rm <KEY>` — removes a key from the store. Until now no verb could remove one: `set` only writes, `rotate` changes a value, `migrate tombstone` works at archive level. When the thing a secret pointed at disappeared (deleted service account, retired provider, revoked integration) the entry stayed in the store forever, and bootstrap scripts that correctly refuse a "credential exists but account doesn't" state had no way out. Store backend only (legacy-git refuses with `NOT_AVAILABLE` + the sync-based recovery hint). Contract mirrors the `get`/`list` split — **name visible, value never**: refused in agent mode (`AGENT_MODE_REFUSED`, deletion is irreversible), requires typing `yes` unless `--yes`, prints only the key name, and a missing key is a named `NOT_FOUND` rather than a silent success. The gate route (`DELETE /v1/projects/{p}/keys/{KEY}`), its `key.delete` audit row, and the Go client `store.Delete` already existed and had no caller.
+
+### Changed
+- **policy.json gained a `delete` verb** (`worker/src/policy.ts` + the client-side mirror in `internal/policy`). `POLICY_VERBS` is now `read · write · rotate · delete · admin`. Deletion previously rode on `write`; it no longer does, and **no verb implies it** — the `rotate ⊃ write` chain does not extend to `delete`, so removal comes only from an explicit `delete` (or `"*"`) grant. Rationale: a write is recoverable (re-set the old value), a delete is not. Existing policy documents keep working unchanged — the delete route had no CLI caller before this release — but **a principal that should be able to run `wapps secrets rm` needs `delete` added to its rule**; `"*"` rules (e.g. admins) get it automatically. Policy lint rule (b) now also flags non-admin group rules that can `delete` a `*_PROD_*`-matching key.
+
+### Fixed
+- `npm install` works again in `worker/`. There was no lockfile, and the floating `^` ranges had drifted into a conflict: `wrangler: ^4.90.0` resolved to 4.123.0, which peer-requires `@cloudflare/workers-types@^5`, while `@cloudflare/vitest-pool-workers@^0.9.0` pulled its own `wrangler@4.44.0` (types `^4`) — `ERESOLVE`, so the worker test suite could not be installed at all in a fresh checkout. Pinned to the last coherent vitest-3 set (`vitest-pool-workers ~0.12.21`, `wrangler ~4.72.0` — the exact version pool-workers bundles, so the tree holds one wrangler —, `workers-types ~4.20260702.1`, `typescript ~5.9.3`) and **`package-lock.json` is now committed** so the ranges cannot drift again. 179 tests pass, `tsc --noEmit` clean. Not upgraded to vitest 4 / workers-types v5: `cloudflare:test` dropped the `fetchMock` export that this suite's JWKS / get-identity / Discord / B2 mocking is built on, so that upgrade is a test-harness rewrite, tracked separately.
+
+> Note: no changelog entries were ever written for v0.17.0 – v0.19.0 (store pivot, `wapps login`, `wapps tofu`); `git log` is the source for that range.
+
 ## [v0.16.1] - 2026-07-01
 
 ### Fixed
