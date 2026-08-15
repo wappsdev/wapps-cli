@@ -33,7 +33,7 @@ from agent contexts that need credentialed commands without putting values in
 the agent transcript.
 
   wapps secrets exec -- pnpm dev
-  wapps secrets exec --prefix '' -- ./scripts/deploy.sh`,
+  wapps secrets exec -- ./scripts/deploy.sh`,
 	Args:               cobra.MinimumNArgs(1),
 	DisableFlagParsing: false,
 	// Ajan modunda exec SERBEST'tir; yalnızca --break-glass reddedilir.
@@ -163,8 +163,8 @@ func valueToShellString(raw json.RawMessage) (string, error) {
 }
 
 func init() {
-	execCmd.Flags().StringVar(&execPrefix, "prefix", "TF_VAR_",
-		"prefix prepended to each env var name (default 'TF_VAR_' for Tofu; pass '' for plain)")
+	execCmd.Flags().StringVar(&execPrefix, "prefix", "",
+		"prefix prepended to each env var name (default: none — keys are stored under their final name)")
 	execCmd.Flags().BoolVar(&execBreakGlass, "break-glass", false,
 		"deploy-intent only: TTY-only CF-outage override; HARD-REFUSED in agent mode")
 	execCmd.Flags().StringVar(&execIntent, "intent", "dev",

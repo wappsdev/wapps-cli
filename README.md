@@ -40,7 +40,7 @@ wapps login               # CF Access SSO (needs cloudflared)
 wapps secrets list                        # key names (never values)
 wapps secrets apply                       # write declared targets (.env.local, …)
 wapps secrets exec -- pnpm dev            # inject secrets into a subprocess
-wapps tofu plan                           # tofu with TF_VAR_* injected
+wapps tofu plan                           # tofu with the project's secrets injected
 wapps secrets set <KEY>                   # masked prompt → straight to the gate
 wapps secrets sync --dry-run              # what would change, by name
 wapps projects list                       # which projects exist

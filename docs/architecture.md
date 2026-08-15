@@ -70,7 +70,7 @@ default_prefix: ""                  # prefix used by `apply` targets (default ""
 sources:                            # INPUT — optional (only `sync` reads these)
   - type: tofu
     workdir: .                      # dir holding .tf files
-    prefix: "TF_VAR_"               # reserved (applied at env-emit time)
+    prefix: "TF_VAR_"               # reserved (applied at env-emit time)  [rarely needed]
   - type: file
     path: .env.shared               # required for file sources
 
@@ -143,7 +143,7 @@ Read verbs that need nothing but the project name (`list`, `get`, `rm`,
 | `login [--write] [--check]` | CF Access SSO. `--write` targets the admin app (15 min, separate session). `--check` prints both sessions, never token bytes. |
 | `whoami` | The gate's view of you: groups + effective grants. The fastest answer to "why was that denied?". |
 | `doctor [--for tofu]` | Dependency + access preflight. |
-| `tofu <args>` | Run tofu with the project's secrets injected as `TF_VAR_*`. |
+| `tofu <args>` | Run tofu with the project's secrets injected verbatim (Tofu inputs are stored already named `TF_VAR_*`). |
 | `deploy <service>` | Deploy through the company deploy-proxy. |
 | `dr <...>` | Disaster recovery against the B2 ciphertext replica. |
 | `coolify <...>` | Coolify v4 API shim (deploy-app, deploy-app-git, set-labels, update-env, import-app). |

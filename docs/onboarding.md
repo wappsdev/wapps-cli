@@ -108,7 +108,7 @@ pnpm dev
 No declared target? Either write one file, or skip the file entirely:
 
 ```bash
-wapps secrets env --write .env.local --prefix ''
+wapps secrets env --write .env.local
 wapps secrets exec -- pnpm dev
 ```
 
@@ -119,8 +119,10 @@ wapps tofu plan
 wapps tofu apply
 ```
 
-Secrets are injected as `TF_VAR_*` from the project resolved via the cwd
-`.wapps.yaml`.
+Secrets are injected verbatim from the project resolved via the cwd
+`.wapps.yaml`. Tofu inputs are stored already carrying their `TF_VAR_` name, so
+nothing is prepended — a key is injected under exactly the name it is stored
+under.
 
 ### Add or change a secret
 
@@ -179,7 +181,8 @@ always need a real `.wapps.yaml`.
 version: 2
 project: vaulter            # the project in the gate — required
 
-default_prefix: TF_VAR_     # prefix for emitted env var names (default)
+default_prefix: ""          # prepended to emitted names; default none, since
+                            # keys are stored under their final env-var name
 
 targets:                    # `apply` materializes these; gitignore them
   - path: .env.local

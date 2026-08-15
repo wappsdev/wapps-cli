@@ -25,9 +25,11 @@ var envCmd = &cobra.Command{
 
 By default writes to stdout (printable). Use --write <file> to write to a
 file silently (AI-safe path — no secret value reaches stdout, terminal,
-or LLM transcript). Use --prefix to control the env var prefix (default
-TF_VAR_ preserves Tofu workflow; pass --prefix '' for plain emit needed
-by non-Tofu repos like vaulter-api).`,
+or LLM transcript).
+
+Keys are emitted under the name they are stored with. --prefix prepends
+something to every key; it is idempotent, so a key that already starts with
+the prefix is emitted unchanged.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// env'in print-form'u (--write yok) gizli DÜZ METİN basar → ajan modunda
 		// YAPISAL red; env --write FILE serbest kalır (§7.4.2).
@@ -48,9 +50,9 @@ by non-Tofu repos like vaulter-api).`,
 // in eng review D9) requires this — agents call `env --write` so that
 // secret values never reach stdout/transcript/log.
 //
-// prefix: prepended to every key on emit. Defaults to "TF_VAR_" so Tofu
-// workflows are unchanged. Empty string disables prefixing (vaulter-api
-// and other non-Tofu repos).
+// prefix: prepended to every key on emit. Varsayılan BOŞ: anahtarlar store'da
+// nihai env-var adıyla durur (TF_VAR_cloudflare_api_token, AWS_ACCESS_KEY_ID),
+// dolayısıyla eklenecek bir şey yoktur.
 func runEnv(writePath, prefix string, stdoutW io.Writer) error {
 	cfg, err := requireStoreConfig("env")
 	if err != nil {
@@ -162,7 +164,7 @@ func writeTofuOutputsAsEnv(jsonInput []byte, prefix string, w io.Writer) error {
 func init() {
 	envCmd.Flags().StringVar(&envWritePath, "write", "",
 		"write env output to this file (0600, atomic) instead of stdout; AI-safe path that never prints values")
-	envCmd.Flags().StringVar(&envPrefix, "prefix", "TF_VAR_",
-		"prefix prepended to each KEY (default 'TF_VAR_' for Tofu workflows; pass '' for plain emit)")
+	envCmd.Flags().StringVar(&envPrefix, "prefix", "",
+		"prefix prepended to each KEY (default: none — keys are stored under their final name)")
 	SecretsCmd.AddCommand(envCmd)
 }

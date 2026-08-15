@@ -33,7 +33,7 @@ without ever printing values to your tool output:
 | `wapps secrets apply` | Writes every `targets:` declared in `.wapps.yaml` (atomic, 0600, idempotent). No values printed. | Repo declares targets — preferred over `env --write`. Used in `predev` scripts. |
 | `wapps secrets env --write <path>` | Writes one env file to disk (0600, atomic). Stdout stays empty. | One-off / ad-hoc path not declared in `targets:`. |
 | `wapps secrets exec -- <cmd>` | Injects secrets as env vars into the subprocess. Stdout from `wapps` is silent. | A one-shot command that needs creds: `wapps secrets exec -- ./scripts/deploy.sh` |
-| `wapps tofu <args>` (wapps ≥ v0.19.0) | Runs `tofu <args>` with the project's secrets injected verbatim (project resolved from cwd `.wapps.yaml`). Same scrubber + binding-pin as `exec`. | Any tofu run: `wapps tofu plan`, `wapps tofu apply`. Preferred over `secrets exec --prefix '' -- tofu …`. |
+| `wapps tofu <args>` (wapps ≥ v0.19.0) | Runs `tofu <args>` with the project's secrets injected verbatim (project resolved from cwd `.wapps.yaml`). Same scrubber + binding-pin as `exec`. | Any tofu run: `wapps tofu plan`, `wapps tofu apply`. Preferred over `secrets exec -- tofu …`. |
 
 After `env --write`, the file on disk DOES contain plaintext secrets. **Do NOT
 read it with the Read tool** — that would put values back into your transcript.
@@ -77,7 +77,7 @@ pnpm dev                # pnpm/next/rails picks up .env.local
 One-off, no declared target:
 
 ```bash
-wapps secrets env --write .env.local --prefix ''
+wapps secrets env --write .env.local
 pnpm dev
 # or no file at all:
 wapps secrets exec -- pnpm dev
@@ -102,7 +102,7 @@ wapps tofu plan
 wapps tofu apply
 ```
 
-This replaces the older `wapps secrets exec --prefix '' -- tofu …` form. Non-tofu
+This replaces the older `wapps secrets exec -- tofu …` form. Non-tofu
 wrappers (e.g. `wapps secrets exec -- ./scripts/drift-check.sh`) stay on `exec`.
 
 ## Adding / changing a secret (operator action)

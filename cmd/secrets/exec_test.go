@@ -3,6 +3,7 @@ package secrets
 import (
 	"bytes"
 	"errors"
+	"github.com/spf13/cobra"
 	"io"
 	"strings"
 	"testing"
@@ -477,5 +478,31 @@ func TestBuildExecEnv_MalformedJSONErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parse archive") {
 		t.Errorf("error should mention parse, got: %v", err)
+	}
+}
+
+// Bayrak VARSAYILANLARI: `env` ve `exec` hiçbir şey eklemez.
+//
+// Eskiden `TF_VAR_` idi ve bu bir kalıntıydı: araç bir Tofu monorepo yardımcısı
+// olarak doğduğunda sırlar `tofu output`tan ÇIPLAK adlarla geliyordu. Artık
+// anahtarlar store'da NİHAİ env-var adıyla duruyor (TF_VAR_cloudflare_api_token,
+// AWS_ACCESS_KEY_ID), yani eklenecek bir şey yok — ve `wapps tofu` zaten
+// --prefix "" geçiyordu, yani varsayılanı var olma sebebi olan yol bile
+// kullanmıyordu.
+func TestPrefixFlagDefaults_AreEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{"exec", execCmd},
+		{"env", envCmd},
+	} {
+		f := tc.cmd.Flags().Lookup("prefix")
+		if f == nil {
+			t.Fatalf("%s has no --prefix flag", tc.name)
+		}
+		if f.DefValue != "" {
+			t.Errorf("%s --prefix default = %q, want empty (keys are stored under their final name)", tc.name, f.DefValue)
+		}
 	}
 }

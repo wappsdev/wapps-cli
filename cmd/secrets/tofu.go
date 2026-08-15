@@ -13,8 +13,9 @@ import (
 //
 // NEDEN ayrı bir komut: exec-tabanlı form üç ayrı parça istiyordu ve kafa
 // karıştırıyordu — `--project` (aslında cwd `.wapps.yaml`'dan çözülür, gereksiz),
-// `--prefix ""` (GEREKLİ ama tuzak: store anahtarları zaten TAM isimle durur
-// (`TF_VAR_*`, `AWS_*`); exec'in default `TF_VAR_` prefix'i onlara çift-prefix
+// `--prefix ""` (artık exec'in VARSAYILANI ile aynı; v0.23.0 öncesinde exec
+// `TF_VAR_` ekliyordu ve store anahtarları zaten TAM isimle durduğu için
+// (`TF_VAR_*`, `AWS_*`) bu çift-prefix
 // ekleyip apply'ı bozardı), ve `secrets exec --` boilerplate'i. Bu sarım üçünü
 // de gizler: cwd'den projeyi çözer, secret'ları VERBATIM enjekte eder, tofu'yu
 // çalıştırır.
@@ -37,7 +38,7 @@ stderr pass through the same scrubber as 'secrets exec' (injected values -> ***)
   wapps tofu apply
 
 Equivalent to (but cleaner than):
-  wapps secrets exec --prefix '' -- tofu <args...>
+  wapps secrets exec -- tofu <args...>
 
 Project resolution is cwd-based (run it from the project's .wapps.yaml dir, as you
 would tofu). AI-safe: wapps prints no secret values — safe from agent/CI
