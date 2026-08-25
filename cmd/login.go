@@ -36,7 +36,7 @@ import (
 var loginTimeout = 5 * time.Minute
 
 // cloudflaredLogin, CF Access SSO'yu cloudflared'e delege eder ve app token'ını
-// (JWT) döner (test seam'i). cloudflared kurulu değilse NOT_AVAILABLE. Interaktif
+// (JWT) döner (test seam'i). cloudflared kurulu değilse ACTION_UNAVAILABLE. Interaktif
 // çıktı (SSO URL'i vb.) kullanıcının KENDİ terminaline gider — chat/transcript'e DEĞİL.
 //
 // Token'ın TEK kalıcı kopyası session.Save'in yazdığıdır (§7.2): cloudflared, İZOLE
@@ -46,7 +46,7 @@ var loginTimeout = 5 * time.Minute
 var cloudflaredLogin = func(cmd *cobra.Command, gate string) (string, error) {
 	cfPath, lerr := exec.LookPath("cloudflared")
 	if lerr != nil {
-		return "", clierr.New(clierr.NotAvailable,
+		return "", clierr.New(clierr.ActionUnavailable,
 			"wapps login needs cloudflared for the CF Access SSO flow (edge token transfer).\n"+
 				"  install: brew install cloudflared\n"+
 				"  then re-run: wapps login").

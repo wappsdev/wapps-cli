@@ -52,7 +52,7 @@ with the rotation executor.`,
 		// Motor hazır (internal/rotation.RunLedger.SkipKey); eksik olan CLI↔canlı
 		// rotasyon-ledger bağlaması (rotasyon executor'uyla birlikte gelir).
 		// Sessiz no-op yerine net biçimde reddet.
-		return clierr.Newf(clierr.NotAvailable,
+		return clierr.Newf(clierr.ActionUnavailable,
 			"rotate skip (%s %s) is a control-plane admin op; the SKIP engine is ready (internal/rotation) but the CLI↔live rotation-ledger wiring lands with the rotation executor", args[0], args[1])
 	},
 }

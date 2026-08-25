@@ -139,7 +139,7 @@ secrets and NO Cloudflare — runnable against an air-gapped snapshot copy.
 
 func runDrVerify(cmd *cobra.Command, _ []string) error {
 	if drSnapshotDir == "" {
-		return clierr.New(clierr.NotAvailable,
+		return clierr.New(clierr.ActionUnavailable,
 			"dr verify runs against a local snapshot copy of the B2 replica: sync it first (rclone/b2 CLI, read-only key) and pass --snapshot <dir>")
 	}
 	projects, err := snapshotProjects(drSnapshotDir)
@@ -203,11 +203,11 @@ func runDrRestore(cmd *cobra.Command, _ []string) error {
 		return clierr.New(clierr.Internal, "dr restore: --out <env-file> is required (values are NEVER printed)")
 	}
 	if len(drRestoreShares) < 2 {
-		return clierr.New(clierr.NotAvailable,
+		return clierr.New(clierr.ActionUnavailable,
 			"dr restore needs ≥2 Shamir share files (--share PATH --share PATH); the assembled MASTER_KEK is NEVER persisted")
 	}
 	if !drRestoreConfirm {
-		return clierr.New(clierr.NotAvailable,
+		return clierr.New(clierr.ActionUnavailable,
 			"dr restore is a disaster ceremony; re-run with --confirm once the air-gapped machine holds ≥2 shares and the snapshot copy")
 	}
 	return restoreProjectFromSnapshot(cmd.OutOrStdout(), drSnapshotDir, drRestoreProject, drRestoreShares, drRestoreOut)
@@ -405,7 +405,7 @@ func runDrSplitCore(w io.Writer) error {
 		}
 		masterHex = strings.TrimSpace(v)
 		if masterHex == "" {
-			return clierr.New(clierr.NotAvailable, "dr split: no MASTER_KEK provided — paste the 64-hex value at the prompt, or pass --master-hex")
+			return clierr.New(clierr.ActionUnavailable, "dr split: no MASTER_KEK provided — paste the 64-hex value at the prompt, or pass --master-hex")
 		}
 	}
 	master, err := hex.DecodeString(masterHex)
@@ -464,7 +464,7 @@ Refused in agent mode.`,
 			return err
 		}
 		if len(drCombineShares) < 2 {
-			return clierr.New(clierr.NotAvailable, "dr combine needs >=2 --share files")
+			return clierr.New(clierr.ActionUnavailable, "dr combine needs >=2 --share files")
 		}
 		if drCombineOut == "" {
 			return clierr.New(clierr.Internal, "dr combine: --out <file> is required (the key is NEVER printed)")

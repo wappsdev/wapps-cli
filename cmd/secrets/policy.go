@@ -125,7 +125,7 @@ func runPolicySet(cmd *cobra.Command, path string) error {
 			return cerr
 		}
 		if !ok {
-			return clierr.New(clierr.NotAvailable, "policy set aborted (not confirmed)")
+			return clierr.New(clierr.ActionUnavailable, "policy set aborted (not confirmed)")
 		}
 	} else {
 		fmt.Fprintln(w, "(--yes)")

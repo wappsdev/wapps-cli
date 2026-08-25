@@ -76,7 +76,7 @@ func (w *WorkerStore) do(ctx context.Context, method, path string, body []byte, 
 		return nil, clierr.Wrapf(clierr.NetworkRequired, err, "secrets gate response truncated")
 	}
 	if len(raw) > maxBody {
-		return nil, clierr.Newf(clierr.NotAvailable, "secrets gate response exceeds %d bytes; request fewer keys", maxBody)
+		return nil, clierr.Newf(clierr.ActionUnavailable, "secrets gate response exceeds %d bytes; request fewer keys", maxBody)
 	}
 	return &httpResp{status: resp.StatusCode, body: raw, header: resp.Header}, nil
 }
@@ -135,7 +135,7 @@ func mapHTTPError(r *httpResp, ctxMsg string) error {
 	case http.StatusRequestEntityTooLarge: // 413 — VALUE_TOO_LARGE (per-değer 64KB) VE
 		// RESPONSE_TOO_LARGE (agregat bulk-read yanıtı) aynı statüyü paylaşır → koda göre ayır.
 		if we.Error == "RESPONSE_TOO_LARGE" {
-			return clierr.Newf(clierr.NotAvailable, "%s: read response too large", ctxMsg).
+			return clierr.Newf(clierr.ActionUnavailable, "%s: read response too large", ctxMsg).
 				WithRecovery("this bulk read exceeds the gate's response cap — request fewer keys at a time")
 		}
 		return clierr.Newf(clierr.BlobTooLarge, "%s: %s", ctxMsg, safeCode(we.Error))

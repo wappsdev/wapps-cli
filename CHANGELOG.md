@@ -2,6 +2,22 @@
 
 All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates ISO 8601 (YYYY-MM-DD).
 
+## [Unreleased]
+
+### Changed — BREAKING
+- **`NOT_AVAILABLE` is now `ACTION_UNAVAILABLE`.** The name was a homonym across the estate: wapps-memory emits `NOT_AVAILABLE` with `retryable: true` meaning *the service is impaired, back off and retry*, while this table emitted the same name with `retryable: false`. Nothing ever broke, because no caller derives retryability from a code **name** — every one of them reads the `retryable` field, which is the actual shared contract. But the name sat in the overlap, so a reader who learned it in one service and met it in the other was told the opposite thing.
+
+  Both flags were right; the **name** was wrong here. A census of all 11 call sites found that none of them describe a service's health — they are a missing flag (`dr verify/restore/split/combine`), an unconfirmed prompt (`policy set`), a capability this build lacks (`exec --intent deploy`, `rotate skip`), an uninstalled `cloudflared`, or a response over the gate's cap. `mapHTTPError` confirms it from the other direction: a server **503 never becomes this code** — it maps to `AUDIT_UNAVAILABLE`, `IDENTITY_UNAVAILABLE` or `SERVICE_MISCONFIGURED`, and the first two are `retryable: true`. wapps-memory's concept already existed in this table under those names; `NOT_AVAILABLE` was its homonym, not its twin. `ACTION_UNAVAILABLE` says what is actually meant: not *the service* is unavailable, but *this invocation* cannot proceed.
+
+  Agents matching the literal string `"NOT_AVAILABLE"` on stderr must switch to `"ACTION_UNAVAILABLE"`. Behaviour, exit codes and `retryable: false` are unchanged.
+
+### Fixed
+- **This code's recovery line described a refusal it was never used for.** It read "this action needs a live Cloudflare Access session; run it from a human terminal", which matched none of its call sites — and 9 of the 11 emitted it verbatim, since only `login` and the bulk-read cap override it. An agent refused for `dr combine needs >=2 --share files` was told to go find a terminal. The line now names the real next step, and says why retrying cannot help.
+
+### Added
+- **The code table is now guarded against silent gaps** (`internal/clierr/vocabulary_test.go`). `registry` is a map, and Go returns the zero value for a missing key: `New(unregisteredCode)` produced an empty `recovery` and `retryable: false` with no warning, so a half-finished rename failed *quietly*. wapps-memory gets this from the type system (`Record<ErrorCode, CodeSpec>` will not compile with a key missing); the Go equivalent is `AllCodes` plus a test asserting every declared code has a registry entry and a non-empty recovery. It was verified to fail on exactly that mistake before being relied on.
+- **The estate overlap is pinned** (`sharedWithEstate`). The four names this table shares with wapps-memory — `RATE_LIMITED`, `NOT_FOUND`, `SERVICE_MISCONFIGURED`, `INTERNAL` — must agree on `retryable`, and `NOT_AVAILABLE` may not be reintroduced here. The reciprocal half lives in `services/memory/test/cross-repo-vocabulary.test.ts`, so a change on either side fails in its own repository.
+
 ## [v0.21.1] - 2026-08-14
 
 ### Fixed

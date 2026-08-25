@@ -67,7 +67,7 @@ func runExec(args []string, prefix, intent string, breakGlass, isAgent bool, out
 	// epoch) güvenlik yüzeyini VAAT EDER ama o yol hâlâ bağlanmadı. Sessiz
 	// no-op yerine FAIL LOUD — deploy güvenlik yüzeyi işlevsel sanılmasın.
 	if intent == "deploy" || breakGlass {
-		return clierr.New(clierr.NotAvailable,
+		return clierr.New(clierr.ActionUnavailable,
 			"deploy intent not yet wired to the store; --intent deploy is unavailable in this build (use --intent dev)")
 	}
 

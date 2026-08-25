@@ -102,7 +102,7 @@ func TestPolicySet_CASVersionAndConfirm(t *testing.T) {
 	cmd.SetIn(strings.NewReader("no\n"))
 	policySetYes = false
 	err := runPolicySet(cmd, file)
-	if !clierr.Is(err, clierr.NotAvailable) {
+	if !clierr.Is(err, clierr.ActionUnavailable) {
 		t.Fatalf("unconfirmed set must abort, got %v", err)
 	}
 	if putDoc != nil {

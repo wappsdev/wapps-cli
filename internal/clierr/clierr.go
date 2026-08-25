@@ -12,6 +12,27 @@
 // katman registry'lerinin (kripto §3.10, trust §4.11, storage §5.7, Worker §6,
 // lifecycle §8) birleşimidir; burada CLI-yüzeyi kod kümesi tanımlanır.
 //
+// ESTATE'LE ORTAK ADLAR — ve NOT_AVAILABLE'ın neden burada OLMADIĞI.
+//
+// wapps-memory/wapps-broker aynı ZARFI konuşur ({error,message,recovery,
+// retryable}) ama kendi kod TABLOLARINI taşır. Kesişen adlar, iki tarafta AYNI
+// şeyi söylemek zorundadır; sözleşme sharedWithEstate'te (vocabulary_test.go)
+// yazılı ve orada doğrulanır.
+//
+// Bu tabloda bir zamanlar NOT_AVAILABLE vardı ve wapps-memory'nin
+// NOT_AVAILABLE'ıyla ZIT şey söylüyordu: orada retryable:true ("servis sakat,
+// geri çekil ve tekrar dene"), burada false. İki bayrak da KENDİ anlamı için
+// doğruydu — yanlış olan ADdı. Ölçüldü: bu kodun 11 çağrı yerinden HİÇBİRİ bir
+// servisin sağlığından bahsetmiyordu (eksik bayrak, verilmemiş onay, bu build'e
+// bağlanmamış özellik, kurulu olmayan cloudflared, kapasiteyi aşan yanıt).
+// Dahası mapHTTPError bir sunucu 503'ünü ASLA bu koda çevirmiyor — onu
+// AUDIT_UNAVAILABLE / IDENTITY_UNAVAILABLE / SERVICE_MISCONFIGURED'e çeviriyor,
+// ve o kodların ikisi retryable:true. Yani wapps-memory'nin kavramı bu tabloda
+// ZATEN vardı, başka adlarla; NOT_AVAILABLE onun EŞ SESLİSİYDİ.
+//
+// Bu yüzden ad ACTION_UNAVAILABLE oldu: "SERVİS kullanılamıyor" değil, "BU
+// ÇAĞRI yürütülemez". Böylece NOT_AVAILABLE estate'te tek bir anlam taşıyor.
+
 // GÜVENLİK: mesaj/kurtarma metni ASLA bir gizli DEĞER, wrap veya DEK içermez.
 // Dışarıdan gelen (Worker/HTML/hata gövdesi) metin ham geçirilmez —
 // internal/safelog ile sanitize edilir ve kısaltılır (ham HTML/error body asla).
@@ -46,8 +67,11 @@ const (
 	ArchiveMigrated      Code = "ARCHIVE_MIGRATED"
 	TokenExchangeFailed  Code = "TOKEN_EXCHANGE_FAILED"
 	BlobTooLarge         Code = "BLOB_TOO_LARGE"
-	NotAvailable         Code = "NOT_AVAILABLE"
-	Internal             Code = "INTERNAL"
+	// ActionUnavailable: BU ÇAĞRI yürütülemez — eksik bir bayrak, verilmemiş bir
+	// onay, ya da bu build'in taşımadığı bir yetenek. SERVİSİN sağlığıyla ilgisi
+	// YOKTUR; bu yüzden adı NOT_AVAILABLE DEĞİL (bkz. dosya başındaki not).
+	ActionUnavailable Code = "ACTION_UNAVAILABLE"
+	Internal          Code = "INTERNAL"
 
 	// Server-decrypt v2 kodları (SPEC §7.5 registry). ZK-only kodlar
 	// (SIG_INVALID, WITNESS_*, CACHE_STALE, OFFLINE_WRITE_BLOCKED, IDENTITY_MISSING,
@@ -62,6 +86,19 @@ const (
 	IdentityUnavailable Code = "IDENTITY_UNAVAILABLE"
 	ServiceMisconfig    Code = "SERVICE_MISCONFIGURED"
 )
+
+// AllCodes, sözlüğün KAPALI kümesidir — registry kapsamını (vocabulary_test.go)
+// makineye doğrulatan liste. wapps-memory'de bunu tip sistemi yapıyor
+// (Record<ErrorCode, CodeSpec> eksik anahtarda DERLENMEZ); Go'da bir map'in
+// eksik anahtarı sessizce sıfır değer döndüğü için karşılığı bu liste + test.
+var AllCodes = []Code{
+	BindingUnpinned, AgentModeRefused, EpochDowngrade, CASConflict, GrantDenied,
+	RateLimited, BlobHashMismatch, ControlPlaneRequired, BreakGlassRefused,
+	LegacyArchiveRetired, LegacyWriteBlocked, ArchiveMigrated, TokenExchangeFailed,
+	BlobTooLarge, ActionUnavailable, Internal,
+	SessionExpired, NetworkRequired, NotFound, PolicyInvalid, PolicyConflict,
+	AuditUnavailable, IdentityUnavailable, ServiceMisconfig,
+}
 
 // spec, bir kodun varsayılan kurtarma metnini ve retryable bayrağını tutar
 // (SPEC §7.5 tablosu, normatif metinler). Verb'ler ek bağlam ekleyebilir.
@@ -86,7 +123,7 @@ var registry = map[Code]spec{
 	ArchiveMigrated:      {"run wapps secrets exec in this repo; the git archive is retired", false},
 	TokenExchangeFailed:  {"verify the pipeline's CF Access service-token pair; an admin can re-issue it at the edge", false},
 	BlobTooLarge:         {"store a pointer/reference instead; the store caps values at 64KB", false},
-	NotAvailable:         {"this action needs a live Cloudflare Access session; run it from a human terminal", false},
+	ActionUnavailable:    {"the message names what is missing — a required flag, a confirmation, or a capability this build lacks; supply it and re-run, because an identical retry cannot change the result", false},
 	Internal:             {"run wapps doctor; if it persists contact the admin", false},
 
 	// Server-decrypt v2 kurtarma metinleri (SPEC §7.2/§7.4/§7.5).

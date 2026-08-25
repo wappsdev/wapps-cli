@@ -262,8 +262,8 @@ func TestRunExec_BreakGlassFailsLoudEvenNonAgent(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a hard error for --break-glass in an unwired deploy build")
 	}
-	if !clierr.Is(err, clierr.NotAvailable) {
-		t.Fatalf("wrong code (want NOT_AVAILABLE): %v", err)
+	if !clierr.Is(err, clierr.ActionUnavailable) {
+		t.Fatalf("wrong code (want ACTION_UNAVAILABLE): %v", err)
 	}
 	if r.gotName != "" {
 		t.Fatalf("subprocess must never run; got: %q", r.gotName)
