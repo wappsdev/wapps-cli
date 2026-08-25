@@ -150,7 +150,20 @@ wapps doctor              # deps + gate session + tofu/Coolify reachability
 wapps login --check       # is my session live? (never prints token bytes)
 ```
 
-Read the error fully — `wapps` errors carry a copy-pasteable recovery line.
+Read the error fully. In your context (agent/CI) `wapps` writes **one JSON line
+to stderr** and nothing else, then exits non-zero:
+
+```json
+{"error":"BINDING_UNPINNED","message":"repo not pinned","recovery":"run wapps secrets trust-repo in a terminal","retryable":false}
+```
+
+Parse it rather than the prose: `"error"` is the stable code you branch on,
+`"recovery"` is the copy-pasteable next step to relay to the operator, and
+`"retryable"` says whether re-running the same command can help at all (if it is
+`false`, retrying is noise — surface the recovery line instead).
+
+A human at a real terminal sees a sentence plus a `→` recovery line instead;
+same information, different shape. Do not expect that shape in your context.
 
 ## Safety canary (operator side)
 

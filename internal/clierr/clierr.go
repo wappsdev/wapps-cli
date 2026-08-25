@@ -1,7 +1,12 @@
 // Package clierr, wapps-secrets CLI'nın makine-okunur hata sözleşmesini sağlar
-// (SPEC §7.5). Her CLI hatası stderr'e TEK bir JSON satırı yayar:
+// (SPEC §7.5). AJAN/CI bağlamında her CLI hatası stderr'e TEK bir JSON satırı
+// yayar:
 //
 //	{"error":"<CODE>","message":"<cümle>","recovery":"<tam komut>","retryable":false}
+//
+// Biçimi seçen tek yer cmd.reportError: bir insan terminalinde aynı hata bir
+// cümle + "→ kurtarma" satırı olarak basılır (bkz. cmd/root.go). İki gösterim
+// YAN YANA basılmaz; her okuyucu tam olarak birini görür.
 //
 // Her reddin KENDİ tam kurtarma komutunu isimlendirmesi normatiftir. Kodlar,
 // katman registry'lerinin (kripto §3.10, trust §4.11, storage §5.7, Worker §6,
@@ -185,7 +190,9 @@ func Emit(w io.Writer, err error) {
 	}
 	var e *Error
 	if !errors.As(err, &e) {
-		e = Wrapf(Internal, err, "%s", err.Error())
+		// Sarmıyoruz: mesaj ZATEN hatanın tam metni; sarsak neden bir kez daha
+		// eklenir ("x: x").
+		e = Newf(Internal, "%s", err.Error())
 	}
 	recovery := e.Recovery
 	if recovery == "" {
@@ -193,7 +200,7 @@ func Emit(w io.Writer, err error) {
 	}
 	env := envelope{
 		Error:     e.Code,
-		Message:   clip(safelog.RedactPatterns(e.Message)),
+		Message:   clip(safelog.RedactPatterns(message(e))),
 		Recovery:  clip(safelog.RedactPatterns(recovery)),
 		Retryable: e.Retryable,
 	}
@@ -205,6 +212,17 @@ func Emit(w io.Writer, err error) {
 	}
 	// json.Marshal newline eklemez; tek satır + '\n'.
 	fmt.Fprintln(w, string(raw))
+}
+
+// message, zarfa girecek insan cümlesini kurar. Sarılmış bir hata varsa NEDENİ
+// de eklenir — Error() bunu bugün basıyor, ve zarf basmazsa ajan moduna geçen
+// bir okuyucu bugün gördüğü bilgiyi KAYBEDER (gate'in kendisi regresyon olur).
+// Neden safelog'dan geçer: dış bir gövdeye ait olabilir, ham geçmemeli.
+func message(e *Error) string {
+	if e.wrapped == nil || e.Message == "" {
+		return e.Message
+	}
+	return safelog.Sprintf("%s: %v", e.Message, e.wrapped)
 }
 
 // clip, tek satıra indirger ve maxMessageLen'e kısaltır.

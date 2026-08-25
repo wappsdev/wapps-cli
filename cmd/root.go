@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -10,6 +11,7 @@ import (
 	deploycmd "github.com/wappsdev/wapps-cli/cmd/deploy"
 	"github.com/wappsdev/wapps-cli/cmd/secrets"
 	skillcmd "github.com/wappsdev/wapps-cli/cmd/skill"
+	"github.com/wappsdev/wapps-cli/internal/agentmode"
 	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/projects"
 	skillpkg "github.com/wappsdev/wapps-cli/internal/skill"
@@ -121,15 +123,43 @@ func Execute() {
 	maybeAutoRefreshSkill()
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		// KURTARMA SATIRI: clierr kayıt defteri her kod için "ne yapmalı"yı
-		// taşıyor ama Error() onu içermediğinden bugüne dek hiç basılmamıştı.
-		// Hatanın yarısı buydu: kullanıcı neyin yanlış olduğunu görüyor, nasıl
-		// düzelteceğini görmüyordu.
-		if rec := clierr.RecoveryOf(err); rec != "" {
-			fmt.Fprintf(os.Stderr, "  → %s\n", rec)
-		}
+		reportError(os.Stderr, err, agentmode.IsAgent())
 		os.Exit(1)
+	}
+}
+
+// reportError, CLI'nın TEK hata basma yeridir ve okuyucuya göre BİÇİM seçer.
+//
+// Sözleşme tek eksenli: `agent` bayrağı, verb'leri zaten kapılayan
+// agentmode.IsAgent() ile AYNI saptama (§7.4.1). Böylece bir reddin KENDİSİ ile
+// o reddin BİÇİMİ ayrışamaz — ajan modunda reddedilen bir verb'ün hatasını yine
+// ajan biçiminde alırsınız.
+//
+//   - insan terminali → DEĞİŞMEDİ: "Error: <cümle>" + "  → <kurtarma>".
+//     Bir cümlenin yerine JSON satırı koymak insan için regresyondur.
+//   - ajan/CI (ajan işareti veya non-TTY stdin) → SPEC §7.5 zarfı: stderr'e TEK
+//     satır JSON. Bir cümleyi ayrıştırmak zorunda kalmak, sözleşmenin var olma
+//     sebebi.
+//
+// İki biçim YAN YANA basılmaz: zarfın "tek satır" olması sözleşmenin parçası,
+// ve insan tarafında da JSON gürültüsü istenmiyor. Her okuyucu TAM OLARAK bir
+// gösterim görür.
+func reportError(w io.Writer, err error, agent bool) {
+	if err == nil {
+		return
+	}
+	if agent {
+		// Zarf kodu, mesajı, kurtarmayı ve retryable'ı KENDİSİ taşır.
+		clierr.Emit(w, err)
+		return
+	}
+	fmt.Fprintf(w, "Error: %v\n", err)
+	// KURTARMA SATIRI: clierr kayıt defteri her kod için "ne yapmalı"yı
+	// taşıyor ama Error() onu içermediğinden bugüne dek hiç basılmamıştı.
+	// Hatanın yarısı buydu: kullanıcı neyin yanlış olduğunu görüyor, nasıl
+	// düzelteceğini görmüyordu.
+	if rec := clierr.RecoveryOf(err); rec != "" {
+		fmt.Fprintf(w, "  → %s\n", rec)
 	}
 }
 
@@ -137,17 +167,30 @@ func Execute() {
 // sessions and never in CI/scripts/pipes:
 //   - WAPPS_NO_UPDATE_CHECK set → fully disabled (opt-out for any context)
 //   - stderr is not a TTY → skip (piped output, CI logs, cron)
+//   - agent/CI context → skip; stderr there carries the JSON error envelope
+//     and a stray notice line would break whoever parses it
 //
 // The version/semver gating (skip "dev" and "main-<sha>" local builds) lives
 // in updatecheck.MaybeNotify itself.
 func maybeNotifyUpdate() {
-	if os.Getenv("WAPPS_NO_UPDATE_CHECK") != "" {
-		return
-	}
-	if !term.IsTerminal(int(os.Stderr.Fd())) {
+	if !humanNoticesEnabled(os.Getenv("WAPPS_NO_UPDATE_CHECK") != "",
+		term.IsTerminal(int(os.Stderr.Fd())), agentmode.IsAgent()) {
 		return
 	}
 	updatecheck.MaybeNotify(os.Stderr, updatecheck.Options{CurrentVersion: Version})
+}
+
+// humanNoticesEnabled, insan-için YAN bildirimlerin ("yeni sürüm var", "skill
+// tazelendi") basılıp basılmayacağını söyler.
+//
+// Ajan modunda stderr bir SÖZLEŞME KANALI: reportError oraya tek satır JSON
+// zarfı yazıyor, ve üzerine düşen her ek satır zarfı ayrıştıran tarafı bozar.
+// Eski koşul yalnızca stderr'in TTY olmasına bakıyordu — ama stderr bir terminal
+// İKEN stdin bir pipe olabilir (`cat cfg | wapps ...`), ve o bağlamda okuyucu
+// bir ajandır. Bildirimin insan olup olmadığı sorusu, hangi hata biçiminin
+// basılacağı sorusuyla AYNI soru; o yüzden aynı ekseni kullanıyor.
+func humanNoticesEnabled(noUpdateCheck, stderrIsTTY, agent bool) bool {
+	return !noUpdateCheck && stderrIsTTY && !agent
 }
 
 // maybeAutoRefreshSkill brings an existing symlink install of the wapps-secrets
@@ -164,7 +207,10 @@ func maybeAutoRefreshSkill() {
 		// `skill ...` manages the skill explicitly; don't double-report.
 		return
 	}
-	if skillpkg.AutoRefresh() && term.IsTerminal(int(os.Stderr.Fd())) {
+	// Tazeleme ajan modunda da KOŞAR (CI güncel skill'i alsın); yalnızca
+	// bildirim satırı insana özel.
+	if skillpkg.AutoRefresh() && humanNoticesEnabled(false,
+		term.IsTerminal(int(os.Stderr.Fd())), agentmode.IsAgent()) {
 		fmt.Fprintln(os.Stderr, "✓ wapps-secrets skill refreshed to match the new wapps version.")
 	}
 }

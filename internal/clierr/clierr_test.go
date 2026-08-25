@@ -79,3 +79,29 @@ func TestWithRecovery(t *testing.T) {
 	Emit(&buf, err)
 	require.Contains(t, buf.String(), "writers: a@1, b@2")
 }
+
+// Zarf, sarılmış hatanın NEDENİNİ taşımalı. Error() bunu bugün basıyor
+// ("INTERNAL: read policy file /x: no such file"); zarf basmazsa, ajan moduna
+// geçen bir okuyucu BUGÜN gördüğü bilgiyi KAYBEDER — gate'in kendisi bir
+// regresyon olur.
+func TestEmit_KeepsWrappedCause(t *testing.T) {
+	var buf bytes.Buffer
+	Emit(&buf, Wrapf(Internal, errors.New("no such file or directory"),
+		"read policy file %s", "/etc/wapps/policy.json"))
+
+	var w wire
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &w))
+	require.Contains(t, w.Message, "read policy file /etc/wapps/policy.json")
+	require.Contains(t, w.Message, "no such file or directory")
+	// Hâlâ TEK satır.
+	require.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("\n")))
+}
+
+// Sarılan hata dış bir gövdeden gelebilir; neden de sanitize edilir.
+func TestEmit_RedactsWrappedCause(t *testing.T) {
+	token := "AbCdEf0123456789GhIjKlMnOpQrStUv"
+	var buf bytes.Buffer
+	Emit(&buf, Wrapf(Internal, errors.New("upstream said "+token), "gate call failed"))
+	require.NotContains(t, buf.String(), token)
+	require.Contains(t, buf.String(), "gate call failed")
+}
