@@ -1,10 +1,15 @@
 pub mod agentmode;
+pub mod atomicfile;
+pub mod binding;
 pub mod clierr;
 pub mod cli;
 pub mod epochpin;
+pub mod goerr;
 pub mod gojson;
+pub mod projects;
 pub mod safelog;
 pub mod scrubber;
 pub mod session;
 pub mod setverb;
 pub mod store;
+pub mod wappsyaml;

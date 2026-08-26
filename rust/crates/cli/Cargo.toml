@@ -16,7 +16,12 @@ path = "src/main.rs"
 # clap: derive KULLANILIYOR ama `///` doc yorumlari YASAK (bkz. helptext.rs).
 clap = { version = "4", features = ["derive", "string"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# raw_value: Go'nun `json.RawMessage`inin karsiligi. GEREKLI, cunku exec'in
+# env kurucusu string-olmayan bir degeri HAM bayt olarak tasiyor (yalnizca
+# TrimSpace) — `[1, 2]` bosluguyla kaliyor. serde_json::Value bu bosluk
+# bilgisini KAYBEDIYOR ve olculdu: onsuz `K=[1,2]` uretiliyordu, Go ise
+# `K=[1, 2]`. Bir OZELLIK, yeni crate DEGIL.
+serde_json = { version = "1", features = ["raw_value"] }
 # ureq: BLOKLAYAN (async degil) HTTP istemcisi. Bu bir performans tercihi degil
 # bir BAGIMLILIK POLITIKASI tercihi: async bir istemci tokio'yu grafige sokardi
 # ve tokio bu estate'te yasakli. Olculdu: ureq'in grafiginde tokio/mio/socket2
@@ -41,3 +46,45 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 # getirmiyor (`std = ["alloc"]`).
 rustls-pki-types = { version = "1", features = ["std"] }
 webpki-roots = "0.26"
+# serde_yaml_ng: `.wapps.yaml` ayristiricisi. Go tarafi gopkg.in/yaml.v3
+# kullaniyor; Rust'ta bu bir BAGIMLILIK POLITIKASI karari, o yuzden adaylar
+# HATIRLANMADI, OLCULDU (taban: 93 crate, `cargo deny check` = 0):
+#
+#   aday            crate delta   deny check   sonuc
+#   serde_yaml      +6            0            ELENDI: surumun kendisi
+#                                              "0.9.34+deprecated"; dtolnay 2024'te
+#                                              arsivledi. RUSTSEC'te BUGUN bir
+#                                              duyuru YOK (tek kayit 2018-0005,
+#                                              >=0.8.4'te yamali) — yani deny'i
+#                                              gecerdi. Elenme sebebi olculen
+#                                              BAKIM durumu, bir duyuru degil.
+#   serde_yaml_ng   +6            0            SECILDI (bkz. asagi)
+#   serde_yml       +8            1            ELENDI: RUSTSEC-2025-0068,
+#                                              "unsound and unmaintained",
+#                                              patched=[] — yani `ignore` YAZMADAN
+#                                              gecirmenin yolu YOK. Bu estate bir
+#                                              guvenlik/bakim duyurusunu kalici
+#                                              susturan ignore yazmiyor
+#                                              (rustls-pemfile'da da yazmadi).
+#   saphyr          +10           0            ELENDI: serde entegrasyonu yok +
+#                                              en buyuk graf.
+#   yaml-rust2      +6            0            ELENDI: serde entegrasyonu yok.
+#
+# serde_yaml_ng, serde_yaml'in BAKIMI SUREN catali ve API'si birebir ayni.
+# serde derive'i tasidigi icin Go'nun struct etiketleri Rust alanlarina
+# DOGRUDAN esleniyor — ozellikle `Prefix *string`in "yok" / "acikca bos" ayrimi
+# `Option<String>`e birebir dusuyor. saphyr/yaml-rust2 ile bu eslemeyi ELDE
+# yazmak gerekirdi ve bir portun sessizce ayrisacagi yer tam olarak orasidir.
+#
+# Grafa giren 6 crate: equivalent, hashbrown, indexmap, ryu, serde_yaml_ng,
+# unsafe-libyaml. unsafe-libyaml icin RUSTSEC-2023-0075 (hizalanmamis u64
+# yazimi) VAR ama >=0.2.10'da yamali (cozulen: 0.2.11) ve duyuru zaten yalnizca
+# 32/16-bit hedefleri etkiliyor — deny.toml'daki dort ucluden hicbiri o kumede.
+serde_yaml_ng = "0.10"
+# ring: baglama parmak izinin SHA-256'si (binding.rs). Grafa YENI crate
+# SOKMUYOR ve bu olculdu: `rustls`in `ring` ozelligi onu zaten getiriyordu
+# (Cargo.lock'ta 0.17.14). Surum onunla BIREBIR ayni tutuldu — rustls-pki-types
+# icin verilen kararin aynisi. Alternatif `sha2` grafa uc crate eklerdi ve bu
+# ikilide zaten bir kripto kutuphanesi varken ikinciyi tasimak, iki ayri
+# denetim yuzeyi demek olurdu.
+ring = "0.17"

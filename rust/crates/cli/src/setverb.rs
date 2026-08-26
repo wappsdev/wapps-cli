@@ -36,26 +36,10 @@ pub fn trim_trailing_newline(s: &str) -> &str {
     &s[..end]
 }
 
-/// go_open_error, Go'nun *os.PathError metnini uretir:
-///   "open <yol>: <errno metni>"
-///
-/// Bu Go'nun IC hata tablosunu taklit etmek DEGILDIR; kullaniciya gosterilen
-/// mesajin kendisi sozlesmenin parcasi ve POSIX errno adlari ikisinde de ayni.
-/// Rust'in kendi dizesi ("No such file or directory (os error 2)") buyuk
-/// harfli ve numara tasiyor — sahadaki ikiliyle ayrisirdi.
-///
-/// Tanimadigi bir errno'da Rust'in dizesine DUSER (uydurmaz); bu, differential'in
-/// olcmedigi bir kolda sessizce yanlis bir metin uretmekten iyidir.
+// go_open_error, goerr'a delege eder. Metnin GEREKCESI orada yazili; burada
+// duran tek sey, bu modulun onu --from-file yolunda kullandigi.
 fn go_open_error(path: &str, e: &std::io::Error) -> String {
-    use std::io::ErrorKind;
-    let detail = match e.kind() {
-        ErrorKind::NotFound => "no such file or directory",
-        ErrorKind::PermissionDenied => "permission denied",
-        ErrorKind::IsADirectory => "is a directory",
-        ErrorKind::NotADirectory => "not a directory",
-        _ => return format!("open {path}: {e}"),
-    };
-    format!("open {path}: {detail}")
+    crate::goerr::open_error(path, e)
 }
 
 /// read_from_file, --from-file yolunu okur ve sondaki newline'i soyar.

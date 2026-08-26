@@ -109,50 +109,13 @@ fn save(path: &Path, p: &Pins) -> Result<(), Error> {
         .map_err(|e| Error::new(Code::Internal, format!("store.epochPins.save: {e}")))
 }
 
-fn create_dir_0700(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
+// Dizin kurma ve atomik yazim artik PAYLASILAN atomicfile modulunde. Uc ayri
+// kopya (epoch pini, baglama defteri, apply hedefleri) hepsi "atomik" der ama
+// zamanla ayrisirdi; garanti tek yerde duruyor.
+use crate::atomicfile::{create_dir_0700, write as write_atomic};
 
-// write_atomic_0600, internal/atomicfile.Write'in portu: AYNI dizinde gecici
-// dosya (cross-filesystem rename atomikligi kaybettirir), fsync (rename
-// metadata'yi atomik yapiyor ama VERININ diske indigini garanti etmiyor), sonra
-// rename.
 fn write_atomic_0600(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let base = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    // Rastgele sonek: es zamanli iki yazici birbirinin gecici dosyasini
-    // truncate etmesin (Go'da CreateTemp'in "*"'i bu isi yapiyor).
-    let tmp = dir.join(format!(".{base}.{}.{nanos}.tmp", std::process::id()));
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(&tmp)?;
-    let res = f.write_all(data).and_then(|()| f.sync_all());
-    drop(f);
-    if let Err(e) = res {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
+    write_atomic(path, data, 0o600)
 }
 
 /// check_and_advance, sunulan epoch'un yerel pin'e karsi monotonlugunu zorlar.
