@@ -19,6 +19,7 @@ use wapps::policyverb;
 use wapps::initverb;
 use wapps::projectsverb;
 use wapps::rmverb;
+use wapps::rotateplan;
 use wapps::session;
 use wapps::setverb;
 use wapps::statusverb;
@@ -152,6 +153,12 @@ fn run() -> Result<(), CmdError> {
                     std::process::exit(0);
                 }
             },
+            Some(("rotate-plan", rpm)) => run_rotate_plan(
+                rpm.get_one::<String>("identity").cloned().unwrap_or_default(),
+                rpm.get_one::<String>("since").cloned().unwrap_or_default(),
+                rpm.get_flag("assume-policy"),
+                rpm.get_flag("json"),
+            ),
             Some(("import-env", im)) => {
                 let files: Vec<String> =
                     im.get_many::<String>("file").map(|v| v.cloned().collect()).unwrap_or_default();
@@ -576,6 +583,69 @@ fn run_policy_set(path: &str, yes: bool) -> Result<(), CmdError> {
         res.version,
         policyverb::short12(&res.sha256)
     );
+    Ok(())
+}
+
+// run_rotate_plan, `wapps secrets rotate-plan --identity <principal>`.
+//
+// KAPI SIRASI, ve BIRINCI ADIM BU FIILI KARDESINDEN AYIRIYOR:
+//   1. ajan politikasi → `control`: CONTROL_PLANE_REQUIRED
+//   2. --identity zorunlulugu → INTERNAL
+//   3. --since RFC3339 dogrulamasi → INTERNAL
+//   4. GET /v1/admin/rotate-plan
+//
+// 1'in 2'DEN ONCE olmasi GOZLEMLENEBILIR: ajan modunda `--identity` YOKKEN
+// bile ret CONTROL_PLANE_REQUIRED, arguman hatasi DEGIL — cunku kapi
+// PersistentPreRunE'da, kontrol ise RunE'de. `wapps rotate skip` bunun TAM
+// TERSI (orada kapi RunE'nin ICINDE ve `--reason` kontrolundan SONRA), ve iki
+// fiil ayni aileden gorunduğu icin bu tahmin edilemez. Olculdu:
+// agent_rotate_plan_gate_precedes_the_identity_check.
+//
+// BAGLAMA KAPISI YOK ve config GEREKMIYOR (Go: bindingExempt): rotate-plan bir
+// PRINCIPAL sorgusudur, bir depo->proje baglamasina bagli degil. Pinsiz bir
+// config'in yaninda baglama sorusu HIC sorulmaz.
+fn run_rotate_plan(
+    identity: String,
+    since: String,
+    assume_policy: bool,
+    json: bool,
+) -> Result<(), CmdError> {
+    agentmode::guard(agentmode::POLICY_CONTROL, agentmode::is_agent()).map_err(CmdError::Cli)?;
+    if identity.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "rotate-plan: --identity is required (human:<email> | service:<common_name>)",
+        )));
+    }
+    // BOS `--since` "verilmemis" demek (Go: `if rotatePlanSince != ""`), yani
+    // dogrulamaya HIC girmiyor ve sorguya HIC eklenmiyor.
+    if !since.is_empty() && !rotateplan::rfc3339_valid(&since) {
+        // RET CUMLESI Go'nunkinden AYRI ve bu bilerek: Go'nun time.Parse'i
+        // reddi ayristiricinin ic durumuyla anlatiyor (bes ayri bicim). Kod,
+        // onek, kurtarma satiri ve cikis kodu AYNI; ayrisan tek sey proza.
+        // Vaka differential DISINDA (cases.py, EXCLUDED) ve KABUL KUMESI
+        // tests/rotateplan.rs'te Go'dan olculmus bir tabloyla pinli.
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            format!(
+                "rotate-plan: --since must be RFC3339: parsing time {} as {}",
+                go_quote(&since),
+                go_quote("2006-01-02T15:04:05Z07:00")
+            ),
+        )));
+    }
+
+    let res = store::rotate_plan(&identity, &since, assume_policy).map_err(CmdError::Cli)?;
+    let mut out = std::io::stdout();
+    if json {
+        // Go: json.Encoder + SetIndent("","  ") + SetEscapeHTML(false), ve
+        // Encode SONA newline ekler. serde_json HTML kacisi YAPMIYOR.
+        let text = serde_json::to_string_pretty(&res)
+            .map_err(|e| CmdError::Plain(format!("rotate-plan: {e}")))?;
+        let _ = writeln!(out, "{text}");
+        return Ok(());
+    }
+    let _ = write!(out, "{}", rotateplan::render_text(&res));
     Ok(())
 }
 

@@ -20,6 +20,7 @@ pub mod policyverb;
 pub mod projects;
 pub mod projectsverb;
 pub mod rmverb;
+pub mod rotateplan;
 pub mod safelog;
 pub mod scrubber;
 pub mod session;

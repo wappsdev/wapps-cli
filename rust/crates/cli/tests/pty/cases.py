@@ -1203,3 +1203,105 @@ TOFU_CASES = [
 ]
 
 CASES += TOFU_CASES
+
+
+# --- `secrets rotate-plan` ---------------------------------------------------
+#
+# KONTROL DUZLEMI, `policy` ile AYNI sinif ama kapi sirasi FARKLI bir yerde
+# gozlemlenebilir hale geliyor:
+#
+#   ajan politikasi (`control`) -> --identity kontrolu -> --since kontrolu -> GET
+#
+# AJAN KAPISI ARGUMAN DOGRULAMASINDAN ONCE, ve bu `rotate skip` ile TERS
+# (orada `--reason` kontrolu ajan kapisindan ONCE kosuyor, cunku o fiil KOKTE
+# mount'lu ve PersistentPreRunE'u YOK). Iki fiil ayni ailenin parcasi gibi
+# gorunuyor ama kapi siralari birbirinin aynasi degil — tahmin edilemez,
+# olculdu: `agent_rotate_plan_gate_precedes_the_identity_check`.
+#
+# BAGLAMA MUAF ve config GEREKMIYOR: rotate-plan GLOBAL bir admin sorgusu, bir
+# depo->proje baglamasina bagli degil (Go: bindingExempt). Pinsiz bir config'in
+# YANINDA kosuyor ve baglama sorusunu HIC gormuyor — ayni dizinde `secrets env`
+# soruyor.
+#
+# GERCEK SIR YOK: rotate-plan tanimi geregi DEGER dondurmez; donen satirlar
+# (project, key) ADLARI ve okuma sayaclaridir.
+
+def rp(name, argv, env, seedcfg=None):
+    return (name, ["secrets", "rotate-plan"] + argv, env, None, None, seedcfg)
+
+IDENT = ["--identity", "human:a@b.co"]
+
+ROTATE_PLAN_CASES = [
+    # === ajan kapisi: CONTROL_PLANE_REQUIRED, `policy` ile AYNI sinif ======
+    rp("agent_rotate_plan_is_control_plane", IDENT, AGENT),
+    # ...ve kapi --identity KONTROLUNDEN ONCE: bayrak eksikken bile ret
+    # CONTROL_PLANE_REQUIRED, INTERNAL DEGIL. `rotate skip`in TERSI.
+    rp("agent_rotate_plan_gate_precedes_the_identity_check", [], AGENT),
+
+    # === baglama MUAFIYETI ===============================================
+    # Pinsiz bir config'in YANINDA, INSAN + TTY: baglama sorusu SORULMAMALI.
+    rp("human_rotate_plan_is_binding_exempt_next_to_a_cfg", IDENT, HUMAN, cfg(VALID_CFG)),
+
+    # === --identity zorunlu ==============================================
+    rp("human_rotate_plan_requires_an_identity", [], HUMAN),
+
+    # === basari yollari ==================================================
+    # Metin tablosu: sabit genislikli sutunlar + bos `last_read` icin
+    # "(assume-policy)" ikamesi.
+    rp("human_rotate_plan_text_table", IDENT, HUMAN),
+    # JSON: 2 bosluk girinti, HTML kacisi KAPALI, sonda newline.
+    rp("human_rotate_plan_json", IDENT + ["--json"], HUMAN),
+    # `<`/`>`/`&` tasiyan bir kimlik: HTML kacisi KAPALI oldugu icin JSON'da
+    # CIPLAK cikmali. Go'da SetEscapeHTML(false) bunu yapiyor; unutulursa
+    # < basilir ve vaka ayrisir.
+    rp("human_rotate_plan_json_does_not_escape_html",
+       ["--identity", "human:<a>&b", "--json"], HUMAN),
+    # --assume-policy TEL'E BINIYOR: sahte gate bayragi gorunce bir satir daha
+    # donuyor. Gondermeyen bir istemci o satiri GORMEZ.
+    rp("human_rotate_plan_assume_policy_reaches_the_wire", IDENT + ["--assume-policy"], HUMAN),
+    # --since de TEL'E BINIYOR: gate alt sinir verilince ilk satiri dusuruyor.
+    rp("human_rotate_plan_since_reaches_the_wire",
+       IDENT + ["--since", "2026-01-02T03:04:05Z"], HUMAN),
+    # BOS --since "verilmemis" sayilir (Go: `if since != ""`), yani sorguya
+    # HIC eklenmez ve satir sayisi degismez.
+    rp("human_rotate_plan_empty_since_is_treated_as_unset", IDENT + ["--since", ""], HUMAN),
+    # RFC3339 kabul kumesi: kesirli saniye ve sayisal offset GECERLI.
+    rp("human_rotate_plan_since_accepts_fractional_seconds",
+       IDENT + ["--since", "2026-01-02T03:04:05.123Z"], HUMAN),
+    rp("human_rotate_plan_since_accepts_a_numeric_offset",
+       IDENT + ["--since", "2026-01-02T03:04:05+03:00"], HUMAN),
+    # BOS PLAN: tablo YERINE tek bir cumle. Kolayca bos bir baslik basip
+    # gecilebilecek bir dal.
+    rp("human_rotate_plan_empty_plan_prints_a_sentence_not_a_table",
+       ["--identity", "human:nobody@example.invalid"], HUMAN),
+
+    # === oturum ==========================================================
+    # Kurtarma satiri "wapps login" DEGIL "wapps login --write": /v1/admin
+    # kenarda AYRI bir CF Access uygulamasi.
+    ("human_rotate_plan_no_session", ["secrets", "rotate-plan"] + IDENT,
+     dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None, None),
+
+    # === bayrak hatasi ===================================================
+    rp("human_rotate_plan_unknown_flag", IDENT + ["--bogus"], HUMAN),
+    # DIFFERENTIAL DISI — asagidaki EXCLUDED'a bak (Go'nun time.Parse prozasi).
+    rp("human_rotate_plan_bad_since", IDENT + ["--since", "nope"], HUMAN),
+]
+
+CASES += ROTATE_PLAN_CASES
+
+# BOZUK --since, DIFFERENTIAL DISI ve sebebi burada yaziliyor:
+#
+#  human_rotate_plan_bad_since: Go'nun time.Parse'i reddi AYRISTIRICININ IC
+#      DURUMUYLA anlatiyor ve BES ayri cumle uretiyor — `cannot parse "1-02..."
+#      as "01"`, `month out of range`, `day out of range`, `hour out of range`,
+#      `extra text: "Z"`. Kod (INTERNAL), onek ("rotate-plan: --since must be
+#      RFC3339: "), kurtarma satiri ve cikis kodu ESIT; ayrisan tek sey
+#      ayristiricinin kendi prozasi. Go'nun bes cumlesini elle uretmek SAHTE
+#      bir sadakat olurdu — bir sonraki bozuk girdide kirilacak bir yalan.
+#      `human_gate_down` ve `human_policy_lint_broken_json` ile AYNI sinif.
+#
+#      KABUL/RET KARARININ KENDISI ayridir ve OLCULUYOR: kabul edilen bicimler
+#      differential'da uc vakayla (Z, kesirli saniye, sayisal offset) ve
+#      reddedilenler tests/rotateplan.rs'te Go'dan olculmus bir tabloyla
+#      pinleniyor. Ayrisan sey CUMLE, KARAR DEGIL.
+EXCLUDED.add("human_rotate_plan_bad_since")

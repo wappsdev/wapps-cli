@@ -666,3 +666,83 @@ fn decode_body<T: serde::de::DeserializeOwned>(
     serde_json::from_str::<T>(&text)
         .map_err(|_| Error::new(Code::Internal, format!("{ctx}: malformed gate response")))
 }
+
+/// RotatePlanItem, rotate-plan oracle'inin BIR satiridir.
+///
+/// DEGER ALANI YOK ve olmamali: rotate-plan "neyin dondurulmesi gerekiyor"
+/// sorusunu (project, key) ADLARIYLA cevapliyor. Buraya bir deger alani
+/// eklemek, offboard raporunu bir sir dokumune cevirirdi.
+///
+/// Alan SIRASI Go struct'iyla ayni — `--json` ciktisi bir sozlesme.
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct RotatePlanItem {
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub last_read: String,
+    #[serde(default)]
+    pub reads: u64,
+}
+
+/// RotatePlanResult, GET /v1/admin/rotate-plan yanitidir.
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct RotatePlanResult {
+    #[serde(default)]
+    pub identity: String,
+    #[serde(default)]
+    pub generated_at: String,
+    #[serde(default)]
+    pub items: Vec<RotatePlanItem>,
+}
+
+/// rotate_plan, GET /v1/admin/rotate-plan cagirir.
+///
+/// `/v1/admin` oneki KASITLI (policy ile ayni sebep): kenarda bu AYRI bir CF
+/// Access uygulamasidir (write-AUD), yani kimlik header'lari admin
+/// oturumundan geliyor ve oturum yoklugunda basilan kurtarma satiri
+/// "wapps login" DEGIL "wapps login --write".
+///
+/// EPOCH PIN'E DOKUNMAZ: bir PROJE degil bir PRINCIPAL sorgulanıyor, sunulan
+/// bir veri epoch'u OKUNMUYOR.
+///
+/// Sorgu dizesi `rotateplan::query_string` ile kuruluyor (Go'nun
+/// url.Values.Encode'u): kacilmamis bir `&` gate'e bambaska bir `identity`
+/// gosterirdi.
+///
+/// HATA BAGLAMI "rotate-plan".
+pub fn rotate_plan(
+    identity: &str,
+    since: &str,
+    assume_policy: bool,
+) -> Result<RotatePlanResult, Error> {
+    let headers = session::auth_headers_admin()?;
+    let mut pairs: Vec<(&str, String)> = vec![("identity", identity.to_string())];
+    // BOS `since` sorguya HIC girmiyor (Go: `if since != ""`). Bos bir
+    // parametre gondermek gate'te "alt sinir var" demek olurdu.
+    if !since.is_empty() {
+        pairs.push(("since", since.to_string()));
+    }
+    if assume_policy {
+        pairs.push(("assume_policy", "1".to_string()));
+    }
+    let url = format!(
+        "{}/v1/admin/rotate-plan?{}",
+        session::gate_url(),
+        crate::rotateplan::query_string(&pairs)
+    );
+    let mut req = agent().get(&url);
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = "rotate-plan";
+    match req.call() {
+        Ok(resp) => decode_body::<RotatePlanResult>(resp, ctx),
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, ctx)),
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}

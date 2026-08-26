@@ -105,6 +105,12 @@ class H(BaseHTTPRequestHandler):
             # tel'e bindigini gosteren tek gozlem bu.
             if (q.get("since") or [""])[0]:
                 items = items[1:]
+            # BOS PLAN dali icin bir kaldirac. Bu kimlik icin ledger'da
+            # duz-metin-bilen satir YOK, ve istemci o durumda TABLO YERINE tek
+            # bir cumle basmali — kolayca bos bir baslik satiri basip
+            # gecilebilecek bir dal.
+            if (q.get("identity") or [""])[0] == "human:nobody@example.invalid":
+                items = []
             return self._send(200, {
                 # identity AYNEN geri: sorgu parametresinin adini yanlis yazan
                 # bir istemci bos bir baslik satiri basar ve GORUNUR.

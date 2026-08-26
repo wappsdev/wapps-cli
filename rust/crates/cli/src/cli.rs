@@ -180,6 +180,36 @@ pub fn build() -> Command {
                         ),
                 )
                 .subcommand(
+                    Command::new("rotate-plan")
+                        .about("What must be rotated after an offboard, derived from the audit ledger")
+                        .arg(
+                            Arg::new("identity")
+                                .long("identity")
+                                .value_name("string")
+                                .help("principal to plan for (human:<email> | service:<common_name>)"),
+                        )
+                        .arg(
+                            Arg::new("since")
+                                .long("since")
+                                .value_name("string")
+                                .help("RFC3339 lower bound for ledger rows"),
+                        )
+                        .arg(
+                            Arg::new("assume-policy")
+                                .long("assume-policy")
+                                .action(ArgAction::SetTrue)
+                                .help("union every key the identity's rules COULD read (paranoid superset)"),
+                        )
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(ArgAction::SetTrue)
+                                .help("emit machine-readable JSON"),
+                        )
+                        // cobra'da rotatePlanCmd'in Args'i YOK -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
                     Command::new("import-env")
                         .about("Bulk import KEY=VALUE pairs from an env file into the store")
                         // Arite ELLE (cobra ExactArgs(1)).
