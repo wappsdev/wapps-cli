@@ -12,6 +12,7 @@ Tasinan rotalar:
   DELETE /v1/admin/projects/{p}       -> projeyi tumuyle silme (projects rm)
   GET    /v1/whoami                   -> status'un canlilik probu
   GET    /v1/admin/policy             -> aktif policy (policy show/set)
+  GET    /v1/admin/rotate-plan        -> audit-ledger rotate-set oracle (rotate-plan)
   PUT    /v1/admin/policy             -> CAS'li policy yazimi (policy set)
 
 TEL ADI `keyName` (camelCase) — bu bir AYRINTI DEGIL. Bu dosya bir sure
@@ -28,7 +29,7 @@ ATILIYOR. Bir sahte gate'in bile bir degeri diske/loga yazmasi, bu portun
 kapatmaya calistigi yuzeyin ta kendisi olurdu (log_message zaten susturulmus).
 """
 import json, sys, re, hashlib
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Anahtar -> (status, govde). Degerler TEST dizeleri; gercek sir DEGIL.
@@ -73,6 +74,44 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/v1/admin/policy":
             return self._send(200, {"version": POLICY_VERSION, "sha256": POLICY_SHA,
                                     "policy": POLICY_DOC})
+
+        # GET /v1/admin/rotate-plan — audit-ledger rotate-set oracle.
+        #
+        # BU ROTA DA BILEREK MUSKUL, ve muskulluk SORGU DIZESINDE: donen govde
+        # istemcinin GONDERDIGI parametrelerden surulur, sabit degil. Yani
+        # `--identity`yi gondermeyen, `--assume-policy`yi `1` yerine baska bir
+        # sey yapan ya da `--since`i yanlis adla yollayan bir istemci FARKLI
+        # bir govde alir ve differential'da GORUNUR. Sabit bir govde donseydi
+        # sorgu dizesini kuran kod HIC olculmezdi.
+        #
+        # GERCEK SIR YOK: donen satirlar (project, key) ADLARI ve sayaclardir —
+        # rotate-plan zaten tanimi geregi deger DONDURMEZ.
+        u = urlparse(self.path)
+        if u.path == "/v1/admin/rotate-plan":
+            q = parse_qs(u.query, keep_blank_values=True)
+            items = [
+                {"project": "vaulter", "key": "DB_PASSWORD",
+                 "last_read": "2026-01-02T03:04:05Z", "reads": 12},
+                # last_read BOS: istemci bunu "(assume-policy)" olarak
+                # yazdirmali — bos dize DEGIL.
+                {"project": "lumira", "key": "API_TOKEN", "last_read": "", "reads": 0},
+            ]
+            # `assume_policy=1` GONDERILDIYSE bir satir daha. Bayragi hic
+            # gondermeyen ya da baska bir deger gonderen istemci bunu GORMEZ.
+            if (q.get("assume_policy") or [""])[0] == "1":
+                items.append({"project": "navlun-app", "key": "TF_VAR_REGION",
+                              "last_read": "", "reads": 0})
+            # `since` GONDERILDIYSE ilk satir dusuyor — alt sinirin gercekten
+            # tel'e bindigini gosteren tek gozlem bu.
+            if (q.get("since") or [""])[0]:
+                items = items[1:]
+            return self._send(200, {
+                # identity AYNEN geri: sorgu parametresinin adini yanlis yazan
+                # bir istemci bos bir baslik satiri basar ve GORUNUR.
+                "identity": (q.get("identity") or [""])[0],
+                "generated_at": "2026-08-26T00:00:00Z",
+                "items": items,
+            })
 
         # GET /v1/projects — principal'in GOREBILDIGI proje ADLARI.
         # Filtreleme SUNUCUDA yapilir; istemci sirayi da BOZMAZ, o yuzden

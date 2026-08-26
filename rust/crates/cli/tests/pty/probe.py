@@ -75,6 +75,21 @@ def main():
                 "GIT_CEILING_DIRECTORIES": workdir,
             }
             env.update(extra)
+            # {GATE} -> sahte gate'in koku. argv'deki {FIX} ile AYNI mekanizma,
+            # ama ENV degerleri icin ve bir sebebi var: `doctor` COOLIFY_URL'e
+            # GERCEK bir HTTP istegi atiyor. Yerine konmazsa iki ikili de
+            # canli internete (coolify.meapps.dev) cikardi — olcum aga bagli
+            # olurdu ve bu harness'in "gercek bir gate'e HIC baglanma" kurali
+            # kirilirdi. Sahte gate'e cevrilince prob DETERMINISTIK olarak
+            # "reachable" doner (bilinmeyen rota 404, ve doctor 5xx ALTINI
+            # canli sayiyor).
+            #
+            # Port her ikili icin AYRI (probe.py her kosumda free_port aliyor),
+            # o yuzden PORTU CIKTIYA BASAN bir dal buradan gecmemeli — o
+            # dallar (oturum yok/dolmus) WAPPS_SECRETS_GATE'i SABIT bir dizeye
+            # cevirerek olculuyor.
+            env = {k: v.replace("{GATE}", f"http://127.0.0.1:{port}")
+                   for k, v in env.items()}
             env = {k: v for k, v in env.items() if v != ""}
             os.makedirs(env["HOME"], exist_ok=True)
             # her vaka temiz bir epoch-pin ile kossun; tohum verilmisse
