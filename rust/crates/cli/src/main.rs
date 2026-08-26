@@ -203,6 +203,28 @@ fn run() -> Result<(), CmdError> {
                 std::process::exit(0);
             }
         },
+        Some(("rotate", rm)) => match rm.subcommand() {
+            Some(("skip", sm)) => {
+                let args: Vec<String> =
+                    sm.get_many::<String>("args").map(|v| v.cloned().collect()).unwrap_or_default();
+                // ARITE ONCE (cobra ExactArgs(2), ValidateArgs RunE'den once).
+                if args.len() != 2 {
+                    return Err(CmdError::Plain(format!(
+                        "accepts 2 arg(s), received {}",
+                        args.len()
+                    )));
+                }
+                run_rotate_skip(
+                    &args[0],
+                    &args[1],
+                    sm.get_one::<String>("reason").map(String::as_str).unwrap_or_default(),
+                )
+            }
+            _ => {
+                let _ = cli::build().find_subcommand_mut("rotate").unwrap().print_help();
+                std::process::exit(0);
+            }
+        },
         Some(("tofu", tm)) => {
             let args: Vec<String> =
                 tm.get_many::<String>("argv").map(|v| v.cloned().collect()).unwrap_or_default();
@@ -584,6 +606,56 @@ fn run_policy_set(path: &str, yes: bool) -> Result<(), CmdError> {
         policyverb::short12(&res.sha256)
     );
     Ok(())
+}
+
+// run_rotate_skip, `wapps rotate skip <run-id> <project>/<key> --reason <why>`.
+//
+// KAPI SIRASI, ve BIR ONCEKI FIILIN TAM TERSI:
+//   1. arite         → cagiranda (cobra ExactArgs(2))
+//   2. --reason      → INTERNAL
+//   3. AJAN KAPISI   → AGENT_MODE_REFUSED
+//   4. ACTION_UNAVAILABLE (her zaman)
+//
+// 2'nin 3'TEN ONCE olmasi GOZLEMLENEBILIR: ajan modunda `--reason` YOKKEN ret
+// AGENT_MODE_REFUSED DEGIL INTERNAL. `secrets rotate-plan`da sira TERSINE —
+// orada kapi PersistentPreRunE'da olduğu icin arguman kontrolunden ONCE
+// kosuyor. Iki fiil kardes gorunuyor; siralari birbirinden TAHMIN EDILEMEZ.
+// Olculdu: agent_rotate_skip_reason_check_precedes_the_agent_gate.
+//
+// KAPI NEDEN BURADA, ANNOTATION'DA DEGIL — ve bu bir BULGU:
+// Go'da rotateSkipCmd bir `Annotations: {wapps_agent_policy: refuse_agent}`
+// TASIYOR ama o annotation OLU. Onu okuyan tek yer secretsPreRunE ve o hook bu
+// komut icin hic kosmuyor, cunku RotateCmd KOKE mount'lu. Reddi gercekten
+// yapan sey RunE'nin icindeki elle yazilmis kontrol. Annotation'a GUVENIP elle
+// kontrolu silen bir port, `wapps rotate skip`i ajanlara ACARDI — bu yuzden
+// burada da kapi ACIKCA yaziliyor, bir tabloya devredilmiyor.
+//
+// RET METNI `agentmode::guard`in uretecegi metin DEGIL: kendi cumlesi var
+// ("presence-admin ceremony"). Kod ayni (AGENT_MODE_REFUSED), cumle ayri —
+// `rm` ile `trust-repo` arasindaki ayrimin aynisi.
+fn run_rotate_skip(run_id: &str, target: &str, reason: &str) -> Result<(), CmdError> {
+    if reason.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "rotate skip: --reason is required (a recorded skip must state WHY the key needs no rotation)",
+        )));
+    }
+    if agentmode::is_agent() {
+        return Err(CmdError::Cli(Error::new(
+            Code::AgentModeRefused,
+            "rotate skip is a presence-admin ceremony; a human must run it in a terminal",
+        )));
+    }
+    // Motor hazir (Go: internal/rotation.RunLedger.SkipKey); eksik olan
+    // CLI↔canli rotasyon-ledger baglamasi. Sessiz bir no-op YERINE adlandirilmis
+    // bir ret — bir operator SKIP'in yazildigini SANMASIN. Mesaj IKI argumani
+    // da gomuyor, cunku operator hangi anahtarin askida kaldigini gormeli.
+    Err(CmdError::Cli(Error::new(
+        Code::ActionUnavailable,
+        format!(
+            "rotate skip ({run_id} {target}) is a control-plane admin op; the SKIP engine is ready (internal/rotation) but the CLI↔live rotation-ledger wiring lands with the rotation executor"
+        ),
+    )))
 }
 
 // run_rotate_plan, `wapps secrets rotate-plan --identity <principal>`.

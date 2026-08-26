@@ -258,6 +258,27 @@ pub fn build() -> Command {
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 ),
         )
+        // `rotate` KOKTE mount'lu, `secrets` altinda DEGIL — ve bunun
+        // gozlemlenebilir sonucu var: Go'da SecretsCmd.PersistentPreRunE
+        // KOSMUYOR, yani ajan kapisi ve baglama kapisi bu agac icin HIC
+        // calismiyor. Reddi yapan sey yaprak RunE'nin ICINDEKI elle yazilmis
+        // kontrol (bkz. run_rotate_skip).
+        .subcommand(
+            Command::new("rotate")
+                .about("Manage value-rotation worklist runs (offboard cleanup)")
+                .subcommand(
+                    Command::new("skip")
+                        .about("Recorded admin SKIP of a rotation worklist key (resolves NEEDS_TRIAGE)")
+                        // Arite ELLE (cobra ExactArgs(2)).
+                        .arg(Arg::new("args").num_args(0..).help("Run id and <project>/<key>"))
+                        .arg(
+                            Arg::new("reason")
+                                .long("reason")
+                                .value_name("string")
+                                .help("why this key needs no value rotation (recorded in the skip attestation; required)"),
+                        ),
+                ),
+        )
         // `tofu` KOKTE mount'lu — `secrets` altinda DEGIL, ve bu GOZLEMLENEBILIR
         // bir kapi farki: Go'da SecretsCmd.PersistentPreRunE (ajan-guard + depo
         // pini) CALISMAZ, o yuzden runTofu kapiyi ACIKCA yeniden uyguluyor.

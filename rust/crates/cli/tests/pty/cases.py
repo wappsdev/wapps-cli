@@ -1305,3 +1305,73 @@ CASES += ROTATE_PLAN_CASES
 #      reddedilenler tests/rotateplan.rs'te Go'dan olculmus bir tabloyla
 #      pinleniyor. Ayrisan sey CUMLE, KARAR DEGIL.
 EXCLUDED.add("human_rotate_plan_bad_since")
+
+
+# --- `wapps rotate skip` -----------------------------------------------------
+#
+# KAPI SIRASI, ve BIR ONCEKI FIILIN TAM TERSI:
+#
+#   arite (cobra ExactArgs(2)) -> --reason kontrolu -> AJAN KAPISI -> ret
+#
+# `rotate-plan`da ajan kapisi arguman kontrolunden ONCE kosuyordu; burada SONRA.
+# Sebep yapisal: RotateCmd KOKTE mount'lu, yani SecretsCmd.PersistentPreRunE
+# HIC kosmuyor ve ret RunE'nin ICINDE, `--reason` kontrolunun ALTINDA yaziyor.
+# Iki fiil ayni ailenin parcasi gibi gorunuyor; kapi siralari birbirinin aynasi
+# DEGIL. `agent_rotate_skip_reason_check_precedes_the_agent_gate` bunu pinliyor.
+#
+# BULGU — DUZELTILMIYOR, OLCULUYOR: rotateSkipCmd'de bir
+# `Annotations: {wapps_agent_policy: refuse_agent}` DURUYOR ama OLU. O
+# annotation'i okuyan tek yer secretsPreRunE ve o hook bu komut icin HIC
+# kosmuyor (kok mount). Reddi gercekten yapan sey RunE'nin ICINDEKI elle
+# yazilmis `agentmode.IsAgent()` kontrolu. Annotation silinse davranis
+# DEGISMEZDI — ve annotation'a GUVENIP elle kontrolu silen biri, `wapps rotate
+# skip`i ajanlara acardi.
+#
+# BAGLAMA KAPISI YOK (kok mount'un dogrudan sonucu): pinsiz bir config'in
+# yaninda bile hicbir sey sorulmuyor.
+#
+# GERCEK SIR YOK: bir SKIP attestation'i "bu anahtar neden dondurulmesin"
+# gerekcesidir, deger DEGIL.
+
+def rs(name, argv, env, seedcfg=None):
+    return (name, ["rotate", "skip"] + argv, env, None, None, seedcfg)
+
+SKIP_ARGS = ["run-2026-08", "vaulter/DB_PASSWORD"]
+REASON = ["--reason", "public constant; rotates at its origin"]
+
+ROTATE_SKIP_CASES = [
+    # === arite HER SEYDEN ONCE (cobra ValidateArgs) =======================
+    rs("agent_rotate_skip_arity_precedes_everything", ["run-2026-08"], AGENT),
+    rs("human_rotate_skip_arity_precedes_everything", ["run-2026-08"], HUMAN),
+    rs("human_rotate_skip_too_many_args", SKIP_ARGS + ["EXTRA"], HUMAN),
+
+    # === --reason kontrolu AJAN KAPISINDAN ONCE ==========================
+    # EN ONEMLI VAKA: ajan modunda, `--reason` YOKKEN ret AGENT_MODE_REFUSED
+    # DEGIL INTERNAL. `rotate-plan`in TERSI, ve tahmin edilemez.
+    rs("agent_rotate_skip_reason_check_precedes_the_agent_gate", SKIP_ARGS, AGENT),
+    rs("human_rotate_skip_requires_a_reason", SKIP_ARGS, HUMAN),
+    # BOS bir `--reason` de "verilmemis" sayilir.
+    rs("human_rotate_skip_empty_reason_is_still_missing",
+       SKIP_ARGS + ["--reason", ""], HUMAN),
+
+    # === ajan kapisi (RunE'nin ICINDE, annotation'dan DEGIL) =============
+    rs("agent_rotate_skip_is_refused_once_the_reason_is_supplied",
+       SKIP_ARGS + REASON, AGENT),
+
+    # === insan yolu: motor hazir, CLI baglamasi degil ====================
+    # Sessiz bir no-op DEGIL, adlandirilmis bir ret. Mesaj IKI ARGUMANI DA
+    # gomuyor — bir port kolayca yalnizca birini yazar.
+    rs("human_rotate_skip_is_action_unavailable_and_names_both_args",
+       SKIP_ARGS + REASON, HUMAN),
+
+    # === baglama kapisi YOK (kok mount) ==================================
+    # Pinsiz bir config'in YANINDA: hicbir sey sorulmuyor. Ayni dizinde
+    # `secrets env` satir ici onay istiyor.
+    rs("human_rotate_skip_asks_nothing_next_to_an_unpinned_cfg",
+       SKIP_ARGS + REASON, HUMAN, cfg(VALID_CFG)),
+
+    # === bayrak hatasi ===================================================
+    rs("human_rotate_skip_unknown_flag", SKIP_ARGS + REASON + ["--bogus"], HUMAN),
+]
+
+CASES += ROTATE_SKIP_CASES
