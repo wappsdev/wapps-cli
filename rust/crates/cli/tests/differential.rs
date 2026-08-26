@@ -124,12 +124,38 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // Karsilastirilan alan sayisi da arttI: cikti/cikis/epoch-pini/repo-pins'e
     // ek olarak yazilan dosyalarin icerigi + modu — ve artik `.wapps.yaml`in
     // KENDISI de (init'in URETTIGI dosya o).
+    // → 339: `dr` 28 vaka ekledi (verify/split/combine). Yirmi yedisi
+    //        `--project` GECMIYOR — bilerek: `dr` kokte mount'lu, Ctx hic
+    //        cozulmuyor, yani bu fiilin GERCEK kolu bayraksiz olan. Bir
+    //        `--project` yardimcisi yazmak, `set` ve `get`te iki kez cikan
+    //        kor noktayi UCUNCU kez uretirdi. Bayragin ATIL oldugu ayrica
+    //        olculuyor (dr_verify_project_flag_is_inert).
+    //
+    //        `dr split`in BASARILI yolu korpusta YOK ve olamaz: cikti RNG'ye
+    //        bagli. Onun olcusu bir KARSILASTIRMA degil bir IDDIA —
+    //        tests/cryptoid.rs frozen `rng_pattern_hex` ile paylari
+    //        BAYT BAYT pinliyor. Ayni sebeple `dr`in kripto cekirdeginin
+    //        tamami (HKDF, kid, GF(2^8)) iddia tarafinda olculuyor:
+    //        differential iki ikilinin PAYLASTIGI bir kusuru goremez.
+    //
+    //        BU ESIK KORPUS BOYUYLA AYNI DEGIL, ve fark olculdu: `CASES`
+    //        343 vaka tasiyor ama `EXCLUDED` DORT ad tasiyor (ikisi
+    //        cases.py'deki baslik yorumunda yazili, ikisi —
+    //        human_policy_lint_broken_json ve human_rotate_plan_bad_since —
+    //        sonradan eklenmis ve yoruma islenmemis). 343-4 = 339.
+    //
+    //        `dr` vakalari korpusa girerken IKI GERCEK AYRISMA buldu ve
+    //        ikisi de ayni kokten geliyordu: port dosya hatalarini Rust'in
+    //        kendi dizesiyle basiyordu ("No such file or directory (os error
+    //        2)") — Go ise *os.PathError metnini ("open <yol>: no such file
+    //        or directory"). Duzeltme drverb.rs'i ZATEN VAR OLAN goerr'e
+    //        bagladi; yeni bir metin UYDURULMADI.
     let equal: usize = report
         .rsplit("EQUAL=")
         .next()
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 311, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 339, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

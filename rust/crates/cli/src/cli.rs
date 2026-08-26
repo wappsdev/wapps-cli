@@ -321,6 +321,84 @@ pub fn build() -> Command {
                 .disable_help_flag(true)
                 .arg(Arg::new("argv").num_args(0..).help("Command and arguments")),
         )
+        // `dr` KOKTE mount'lu (Go: rootCmd.AddCommand(secrets.DrCmd)), yani
+        // SecretsCmd.PersistentPreRunE bu agac icin HIC kosmuyor: ne ajan
+        // kapisi ne baglama kapisi. Her yaprak kendi guard'ini ELDE cagiriyor
+        // ve `verify` BILEREK guard'siz (sir kullanmiyor, aga cikmiyor —
+        // `doctor` ile ayni gerekce). `projects list`in baglama kapisini hic
+        // gormemesiyle AYNI yapisal sebep.
+        //
+        // UC ALT KOMUT BURADA YOK ve bu bir unutma DEGIL: `restore`,
+        // `bootstrap` ve `accept-epoch-reset` portlanmadi. `restore` icin
+        // sebep olculdu ve bir CRATE karari: XChaCha20-Poly1305 (24 baytlik
+        // nonce) `ring`de YOK. Onlari clap agacina "yakinda" diye eklemek,
+        // Go'nun CALISAN bir toreninin yerine bir hata mesaji koymak olurdu;
+        // simdilik Rust ikilisi onlari TANIMIYOR ve fark differential
+        // korpusunda ADLANDIRILMIS durumda.
+        .subcommand(
+            Command::new("dr")
+                .about("Disaster recovery against the B2 ciphertext replica")
+                .subcommand(
+                    Command::new("verify")
+                        .about("Structural integrity check of the B2 replica snapshot (read-only)")
+                        .arg(
+                            Arg::new("snapshot")
+                                .long("snapshot")
+                                .value_name("string")
+                                .help("local (air-gapped) copy of the B2 replica"),
+                        )
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("split")
+                        .about("TTY-only: split the store's MASTER_KEK into N-of-M Shamir shares for offline custody")
+                        .arg(
+                            Arg::new("parts")
+                                .long("parts")
+                                .value_name("int")
+                                .help("total Shamir shares to create"),
+                        )
+                        .arg(
+                            Arg::new("threshold")
+                                .long("threshold")
+                                .value_name("int")
+                                .help("shares required to reconstruct"),
+                        )
+                        .arg(
+                            Arg::new("out-dir")
+                                .long("out-dir")
+                                .value_name("string")
+                                .help("directory for the 0600 hex share files"),
+                        )
+                        .arg(
+                            Arg::new("master-hex")
+                                .long("master-hex")
+                                .value_name("string")
+                                .help("supply the MASTER_KEK (64-hex) explicitly; NOTE: argv is visible via `ps`/shell history — prefer the no-echo prompt default"),
+                        )
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("combine")
+                        .about("TTY-only: reconstruct MASTER_KEK from >=threshold Shamir shares (to re-set the Worker secret)")
+                        // StringArrayVar: `--share` TEKRARLANABILIR ve sira
+                        // KORUNUR. clap'te bunun karsiligi Append.
+                        .arg(
+                            Arg::new("share")
+                                .long("share")
+                                .value_name("string")
+                                .action(ArgAction::Append)
+                                .help("hex Shamir share file (repeat >= threshold)"),
+                        )
+                        .arg(
+                            Arg::new("out")
+                                .long("out")
+                                .value_name("string")
+                                .help("0600 file to write the reconstructed MASTER_KEK hex into"),
+                        )
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                ),
+        )
         // `projects` KOKTE mount'lu, `secrets` altinda DEGIL — ve bu bir
         // duzenleme tercihi degil, GOZLEMLENEBILIR bir kapi farki: kok mount
         // demek Go'da SecretsCmd.PersistentPreRunE'un (ajan-guard + depo pini)

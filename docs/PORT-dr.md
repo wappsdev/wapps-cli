@@ -1,6 +1,11 @@
 # `wapps dr` — Rust port planı
 
-**Durum: PORTLANMADI.** Bu belge, portu bir sonraki şeridin yarısından
+**Durum: KISMEN PORTLANDI** (`verify`, `split`, `combine` — bkz. §7).
+Bu belgenin ilk hali `feat/rust-secrets-get-port` uzerinde ORTAYA konmustu;
+asagidaki §3 ve §4a DUZELTILDI, cunku port sirasinda OLCULUP YANLIS bulundular.
+Duzeltmeler §7'de gerekceleriyle yazili.
+
+**Durum (ilk hali): PORTLANMADI.** Bu belge, portu bir sonraki şeridin yarısından
 başlayabilmesi için ÖLÇÜLMÜŞ bir haritadır. Buradaki her sayı ve her
 "var/yok" bu ağaçta çalıştırılarak bulundu; hiçbiri hatırlanmadı.
 
@@ -210,3 +215,132 @@ değişmeden yeşil kalır. (`accept-epoch-reset`in Long'u
 `internal/store/epochpin.go` diyor — bu bir KAYNAK DOSYA referansı, spec
 referansı değil; kural onu yakalamıyor ve Go bugün onu yayınlıyor, yani
 port da aynen taşımalı.)
+
+---
+
+## 7. PORT TURU — olculenler, ve bu belgenin IKI YANLISI
+
+Bu bolum `dr verify` / `dr split` / `dr combine` portlanirken eklendi. Buradaki
+her sayi bu agacta kosuldu.
+
+### 7.1 §3 YANLISTI: `dr restore` YENI BIR CRATE GEREKTIRMIYOR
+
+§3'un olcumu DOGRU: `ring 0.17.14` XChaCha20-Poly1305 TASIMIYOR (`xchacha`
+kaynakta sifir kez; `NONCE_LEN = 96/8`). Bu bagimsiz olarak yeniden dogrulandi.
+
+**Ama §3'un SONUCU yanlis.** "ring'de XChaCha yok" ile "XChaCha portlanamaz"
+ayni sey degil, ve aradaki fark olculdu:
+
+> XChaCha20-Poly1305 = **HChaCha20 ile alt-anahtar turetimi** + `ring`in ZATEN
+> tasidigi duz **ChaCha20-Poly1305**.
+>
+> `XChaCha(key, nonce24)` = `ChaCha20Poly1305(HChaCha20(key, nonce24[0..16]),
+> 0x00000000 ‖ nonce24[16..24])`
+
+HChaCha20 ChaCha20 permutasyonunun **son toplama adimi olmayan** halidir: saf
+bir fonksiyon, ~25 satir, durum tasimaz. `ring` gerekli her seyi disa aciyor
+(`aead::CHACHA20_POLY1305`, `aead::LessSafeKey::open_in_place`, 12 baytlik
+`Nonce::assume_unique_for_key`).
+
+**KANIT — tahmin degil, kosuldu:** gecici bir test, elde yazilmis HChaCha20 +
+`ring`in AEAD'i ile `frozen_vectors.json`daki **WSB1 blob'unu ACTI** ve
+`plaintext` alanini bayt bayt geri verdi (28 bayt). Test amacini kanitladiktan
+sonra SILINDI (spekulatif kod agacta birakilmaz); bir sonraki serit onu
+`blob` vektorunden birebir yeniden uretebilir.
+
+Yani `restore`un maliyeti sudur:
+
+| yol | crate delta | `cargo deny` | ikinci kripto denetim yuzeyi |
+|---|---|---|---|
+| RustCrypto `chacha20poly1305 0.10` | **+14** (99 → 113) | **0** (gecer) | **EVET** |
+| **HChaCha20 elde + `ring`** | **0** | 0 | **HAYIR** |
+
++14 crate: aead, chacha20, chacha20poly1305, cipher, cpufeatures,
+crypto-common, generic-array, inout, opaque-debug, poly1305, rand_core,
+typenum, universal-hash, version_check.
+
+Aday `cargo deny`yi GECIYOR — yani karar bir gate karari DEGIL, bir POLITIKA
+karari, ve `Cargo.toml`daki `ring` gerekcesi onu zaten vermis durumda: `sha2`
+uc crate ekleyecegi ve "iki ayri denetim yuzeyi" demek olacagi icin
+REDDEDILMISTI. Ayni gerekce burada +14 crate'e KAT KAT daha guclu uygulanir.
+
+**ONERI: HChaCha20'yi elde yaz, `ring`in ChaCha20-Poly1305'ini kullan.** Bunun
+"elde kripto yazmak" olmadigina dikkat: HChaCha20 bir permutasyon, bir
+protokol degil, ve olcusu tahmine birakilmiyor — `frozen_vectors.json`daki
+`blob` (WSB1) ve Go'nun WKW1 round-trip'i onu BAYT DUZEYINDE pinliyor.
+Shamir'in ayni gerekceyle elde yazilmis olmasiyla ayni karar.
+
+### 7.2 §4a YANLISTI: `frozen_vectors.json`in BUGUN TEK tuketicisi var
+
+§4a "bugun iki tuketicisi var: `internal/cryptoid/kek_test.go` (Go) ve
+`worker/test/blob.test.ts` (TS)" diyor. Olculdu — **Go o dosyayi OKUMUYOR.**
+Dosyayi `import`/`read` eden TEK yer `worker/test/blob.test.ts`. Go tarafi ayni
+degerleri **KOPYA LITERALLER** olarak tasiyor (`frozenShamirShares`,
+`frozenKekVaulter`, ...) ve dosyaya yalnizca bir YORUMDA atifta bulunuyor.
+
+Onemi: bir literal kopyasi, kaynak dosya degistiginde **sessizce eskir**.
+Rust portu bu yuzden dosyayi GERCEKTEN okuyor (`tests/cryptoid.rs::frozen()`)
+ve boylece dosyanin **ikinci gercek tuketicisi** oldu.
+
+Kopyalarin BUGUN ayni oldugu ayrica dogrulandi (Go literalleri ile JSON
+`shares_hex` birebir esit) — yani bu bir bulgu, bir kirilma degil.
+
+### 7.3 `/wrap` blogu WKW1 DEGIL
+
+§4a'nin tablosu `/wrap` blogunun "WKW1 unwrap + AAD"i pinledigini soyluyor.
+Olculdu: `wrap_hex` **232 bayt** ve ilk dort bayti ASCII **`age-`**. WKW1 ise
+**76 bayt** (`magic(4)+nonce(24)+ct(48)`). O blok §3.5.5'in **X25519 age**
+wrap'i — `dr` ile ilgisi YOK.
+
+**Sonuc: WKW1'in HICBIR yerde frozen bir BAYT vektoru yok.** Go tarafindaki
+`TestWKW1RoundTripAndSlotBinding` bir round-trip (nonce rastgele), bir bayt
+pini degil. `restore` portlanirken bu bosluk bilinerek girilmeli.
+
+### 7.4 Portlanan yuzey ve olculer
+
+| alt komut | portlandi | olcusu |
+|---|---|---|
+| `verify` | **EVET** | differential (8 vaka) + `tests/drverb.rs` iddialari |
+| `split` | **EVET** | **YALNIZCA IDDIA** — RNG yuzunden differential'lanamaz |
+| `combine` | **EVET** | differential (13 vaka, yazilan dosya+mod dahil) + iddia |
+| `restore` | hayir | §7.1 (crate GEREKMIYOR; yol acik) |
+| `bootstrap` | hayir | `internal/tofu` portu gerekiyor |
+| `accept-epoch-reset` | hayir | store'da `AuditHead` + intent basligi yok |
+
+`shamir_split` RNG'yi **parametre aliyor** (§4a'nin uyardigi tasarim kisiti),
+ve frozen `rng_pattern_hex` ile paylar BAYT BAYT pinlendi.
+
+### 7.5 BULGU: yanlis tamamlanan bir toreni bugun soyleyen HICBIR SEY YOK
+
+Olculdu — Go ikilisi, ayni fikstur, tek farki bir payin ilk bayti:
+
+```
+DOGRU  : EXIT 0  "✓ MASTER_KEK reconstructed → good.hex  (0600, kid 425ed4e4a36b30ea)"
+YANLIS : EXIT 0  "✓ MASTER_KEK reconstructed → wrong.hex (0600, kid a30ed9e82836786b)"
+```
+
+Iki cikti **kid disinda karakter karakter ayni**: ayni ✓, ayni cikis kodu,
+ayni 0600 mod, ayni 65 bayt. `ShamirCombine` hata VERMIYOR (Shamir butunluk
+saglamaz), ve Rust portu ayni yanlis anahtari **bayt bayt** uretiyor (parite
+korunuyor — differential vakasi:
+`human_dr_combine_tampered_share_silently_succeeds`).
+
+Operatorun elindeki TEK isaret kid, ve onu karsilastirmasini soyleyen tek sey
+`dr combine`in uyari satiri. **Ama dogru kid'in nerede oldugu sorusunun cevabi
+rahatsiz edici:**
+
+> Dogru kid, replikadaki **HER manifest'in icinde** duruyor (`entries[].wrap.kid`).
+> `dr verify` o manifest'i okuyor, ayristiriyor ve `epoch`, `keys`,
+> `manifest=<kisa hash>` basiyor — **kid'i BASMIYOR** (olculdu: cikti kid'i
+> sifir kez iceriyor).
+
+Yani snapshot'i ve paylari ELINDE TUTAN bir operator, dogrulamayi otomatik
+yaptirabilecek her seye sahip — ve arac ona bunu ELDE yaptiriyor. `dr restore`
+bu kontrolu ZATEN yapiyor (`e.Wrap.Kid != kid` → erken dusme); `dr combine`
+yapmiyor.
+
+Bu bir PORT hatasi degil, Go tarafinin bugunku davranisi, ve port onu SADIK
+sekilde tasidi. Ama bir sonraki serit icin ucuz ve gercek bir iyilestirme:
+`dr combine --expect-kid <kid>` ya da `dr verify`in kid'i basmasi. Sessiz
+arizanin siniflarindan en kotusu bu — **cevabin kendisi degil, cevabin YANLIS
+oldugunun ANLASILMA ZAMANI gizleniyor: sifre cozulemedigi an, yani en kotu an.**

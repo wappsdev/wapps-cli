@@ -9,6 +9,7 @@ use wapps::clierr::{Code, Error};
 use wapps::configctx::{self, Ctx};
 use wapps::confirm;
 use wapps::doctorverb;
+use wapps::drverb;
 use wapps::envverb;
 use wapps::envwrite;
 use wapps::epochpin;
@@ -236,6 +237,27 @@ fn run() -> Result<(), CmdError> {
             // DisableFlagParsing onlari hic ayristirmiyor (bkz. run_tofu).
             run_tofu(&args)
         }
+        // `dr` — kokte mount'lu, kapilar YAPRAKTA. Sira Go ile AYNI ve
+        // yaprak basina FARKLI: `verify` guard'siz, `split`/`combine` PolicyTTY.
+        Some(("dr", dm)) => match dm.subcommand() {
+            Some(("verify", vm)) => run_dr_verify(vm.get_one::<String>("snapshot").cloned()),
+            Some(("split", sm)) => run_dr_split(
+                sm.get_one::<String>("out-dir").cloned(),
+                sm.get_one::<String>("parts").cloned(),
+                sm.get_one::<String>("threshold").cloned(),
+                sm.get_one::<String>("master-hex").cloned(),
+            ),
+            Some(("combine", cm)) => run_dr_combine(
+                cm.get_many::<String>("share")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default(),
+                cm.get_one::<String>("out").cloned(),
+            ),
+            _ => {
+                let _ = cli::build().find_subcommand_mut("dr").unwrap().print_help();
+                std::process::exit(0);
+            }
+        },
         Some(("projects", pm)) => match pm.subcommand() {
             Some(("list", lm)) => {
                 // cobra.NoArgs — ve reddin METNI cobra'nindir: fazladan
@@ -446,6 +468,135 @@ fn run_rm(
 // (projects_human_list → "projects: no .wapps.yaml found"), o yuzden AYNEN
 // tasiniyor: "gereksiz gorunen" bir kapiyi duzeltmek sahadaki ikiliyle
 // ayrisma demek.
+// --- dr ---------------------------------------------------------------------------
+//
+// UC KAPI FARKI, ve ucu de Go'dan OKUNDU, tahmin EDILMEDI:
+//   1. `dr` kokte mount'lu -> baglama kapisi HIC kosmuyor (Ctx cozulmuyor);
+//   2. `verify` ajan kapisi TASIMIYOR (sir yok, ag yok);
+//   3. `split`/`combine` PolicyTTY -> ajan modunda REDDEDILIYOR, ve red
+//      DIGER HER SEYDEN ONCE gelir (eksik bayrak kontrolunden bile).
+// Sira onemli: guard'i bayrak kontrolunden SONRA cagirmak, ajan moduna
+// "hangi bayragi unuttugunu" soyleyen bir sizinti olurdu.
+
+fn run_dr_verify(snapshot: Option<String>) -> Result<(), CmdError> {
+    let dir = snapshot.unwrap_or_default();
+    if dir.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::ActionUnavailable,
+            "dr verify runs against a local snapshot copy of the B2 replica: sync it first (rclone/b2 CLI, read-only key) and pass --snapshot <dir>",
+        )));
+    }
+    let mut out = std::io::stdout();
+    drverb::run_verify(&mut out, std::path::Path::new(&dir)).map_err(CmdError::Cli)
+}
+
+fn run_dr_split(
+    out_dir: Option<String>,
+    parts: Option<String>,
+    threshold: Option<String>,
+    master_hex: Option<String>,
+) -> Result<(), CmdError> {
+    // TTY-only: MASTER_KEK bir AI transcript'inden ASLA gecmemeli.
+    agentmode::guard(agentmode::POLICY_TTY, agentmode::is_agent()).map_err(CmdError::Cli)?;
+    // Go'da bunlar cobra IntVar VARSAYILANLARI (3 / 2), bayrak verilmezse
+    // sifir DEGIL. Varsayilani dusurmek `--parts`siz bir cagriyi sessizce
+    // "parts=0" yapardi ve hata metni ayrisirdi.
+    let parts = parse_int_flag(parts.as_deref(), 3, "parts")?;
+    let threshold = parse_int_flag(threshold.as_deref(), 2, "threshold")?;
+    let out_dir = out_dir.unwrap_or_default();
+    if out_dir.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "dr split: --out-dir <dir> is required (0600 share files land there)",
+        )));
+    }
+
+    // MASTER_KEK kaynagi: --master-hex, yoksa YANKISIZ prompt. Guard TTY'yi
+    // zaten kanitladi (non-TTY stdin -> ajan modu -> yukarida reddedildi).
+    let mut master = master_hex.unwrap_or_default().trim().to_string();
+    if master.is_empty() {
+        let mut errw = std::io::stderr();
+        let (v, _) = setverb::prompt_no_echo(&mut errw, "MASTER_KEK (64-hex, input hidden): ")
+            .map_err(|e| {
+                CmdError::Cli(Error::new(
+                    Code::Internal,
+                    format!("dr split: read MASTER_KEK from prompt: {e}"),
+                ))
+            })?;
+        master = v.trim().to_string();
+        if master.is_empty() {
+            return Err(CmdError::Cli(Error::new(
+                Code::ActionUnavailable,
+                "dr split: no MASTER_KEK provided — paste the 64-hex value at the prompt, or pass --master-hex",
+            )));
+        }
+    }
+
+    let mut out = std::io::stdout();
+    // CSPRNG. `shamir_split` RNG'yi PARAMETRE aliyor (frozen vektorun sarti);
+    // uretimde parametre isletim sisteminin entropi kaynagidir.
+    let mut rng = OsRng;
+    let res = drverb::run_split_core(
+        &mut out,
+        std::path::Path::new(&out_dir),
+        parts,
+        threshold,
+        &master,
+        &mut rng,
+    );
+    // Best-effort: String'in kendisi wipe EDILEMIYOR (Go yorumu da bunu
+    // soyluyor). Kapatilabilirdi (Zeroizing) ama o zaman iki ikili BELLEK
+    // HIJYENI olarak ayrisirdi — bilincli olarak parite tercih edildi.
+    master.clear();
+    res.map_err(CmdError::Cli)
+}
+
+fn run_dr_combine(shares: Vec<String>, out: Option<String>) -> Result<(), CmdError> {
+    agentmode::guard(agentmode::POLICY_TTY, agentmode::is_agent()).map_err(CmdError::Cli)?;
+    if shares.len() < 2 {
+        return Err(CmdError::Cli(Error::new(
+            Code::ActionUnavailable,
+            "dr combine needs >=2 --share files",
+        )));
+    }
+    let out = out.unwrap_or_default();
+    if out.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "dr combine: --out <file> is required (the key is NEVER printed)",
+        )));
+    }
+    let paths: Vec<std::path::PathBuf> = shares.iter().map(std::path::PathBuf::from).collect();
+    let mut w = std::io::stdout();
+    drverb::run_combine_core(&mut w, &paths, std::path::Path::new(&out)).map_err(CmdError::Cli)
+}
+
+/// parse_int_flag, cobra'nin IntVar'inin karsiligi: bayrak yoksa VARSAYILAN,
+/// varsa ayristirilir ve ayristirilamiyorsa cobra'nin METNIYLE reddedilir.
+fn parse_int_flag(v: Option<&str>, default: usize, name: &str) -> Result<usize, CmdError> {
+    match v {
+        None => Ok(default),
+        Some(s) => s.parse::<usize>().map_err(|_| {
+            CmdError::Plain(format!(
+                "invalid argument {} for \"--{name}\" flag: strconv.ParseInt: parsing {}: invalid syntax",
+                go_quote(s),
+                go_quote(s)
+            ))
+        }),
+    }
+}
+
+/// OsRng, isletim sisteminin CSPRNG'si — `shamir_split`in Read parametresi
+/// icin. Yeni bir crate EKLENMEDI: /dev/urandom dogrudan okunuyor. Kisa okuma
+/// `read_exact`te HATA olur (fail-closed), sessizce sifir DOLDURMAZ.
+struct OsRng;
+
+impl std::io::Read for OsRng {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut std::fs::File::open("/dev/urandom")?, buf)
+    }
+}
+
 fn run_projects_list(config: Option<String>, project: Option<String>) -> Result<(), CmdError> {
     agentmode::guard(agentmode::POLICY_ALLOW, agentmode::is_agent()).map_err(CmdError::Cli)?;
     let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;

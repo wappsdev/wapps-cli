@@ -120,6 +120,42 @@ fn read_line_bytes(fd: rustix::fd::BorrowedFd<'_>) -> Result<String, std::io::Er
     }
 }
 
+/// prompt_no_echo, Go'daki promptValueNoEcho(prompt) — SERBEST prompt metniyle.
+///
+/// NEDEN AYRI BIR GIRIS: `prompt_value` prompt metnini bir ANAHTAR ADINDAN
+/// uretiyor (`prompt_text(key)`), yani `dr split`in "MASTER_KEK (64-hex, input
+/// hidden): " metnini basamaz. Go tarafinda ikisi de AYNI fonksiyonu cagiriyor
+/// (promptValueNoEcho); burada da oyle — yankisiz okuma tek yerde kaliyor.
+/// Ikinci bir kopya yazmak, birinin gun gelip yankilamaya baslamasi demekti.
+///
+/// Doner: (deger, stdin_tty_miydi).
+pub fn prompt_no_echo<W: Write>(errw: &mut W, prompt: &str) -> Result<(String, bool), String> {
+    let _ = write!(errw, "{prompt}");
+    let _ = errw.flush();
+    if crate::agentmode::stdin_is_tty() {
+        return match read_password_line() {
+            Ok(v) => {
+                // ReadPassword'dan SONRA tek newline: kullanicinin basmadigi
+                // (cunku yankilanmadi) satir sonunu biz basiyoruz.
+                let _ = writeln!(errw);
+                Ok((v, true))
+            }
+            Err(e) => {
+                let _ = writeln!(errw);
+                Err(format!("read value: {e}"))
+            }
+        };
+    }
+    let mut raw = Vec::new();
+    match std::io::Read::read_to_end(&mut std::io::stdin(), &mut raw) {
+        Ok(_) => Ok((
+            trim_trailing_newline(&String::from_utf8_lossy(&raw)).to_string(),
+            false,
+        )),
+        Err(e) => Err(format!("read value: {e}")),
+    }
+}
+
 /// prompt_value, degeri operatorden okur.
 ///
 /// TTY ise yankisiz; degilse duz okuma (cagiran o durumda bir UYARI basar —

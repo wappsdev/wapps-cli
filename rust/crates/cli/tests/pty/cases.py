@@ -1605,3 +1605,198 @@ GET_CONFIG_CASES = [
 ]
 
 CASES += GET_CONFIG_CASES
+
+
+# --- `wapps dr` ------------------------------------------------------------------
+#
+# BU BLOGUN VAKALARININ HICBIRI `--project` GECMIYOR, ve bu bilincli. `dr`
+# KOKTE mount'lu: Go'da SecretsCmd.PersistentPreRunE kosmuyor, Ctx HIC
+# cozulmuyor, yani baglama kapisi bu agac icin yok. Bir `--project` yardimcisi
+# yazmak (`h`/`a`/`hp` kaliginda) bu fiilin BAYRAKSIZ kolunu — yani GERCEK
+# kolunu — erisilemez kilardi. O kor nokta bu agacta `set` ve `get`te birer kez
+# cikti ve ikisinde de gercek bir ayrisma gizlemisti.
+#
+# Bayragin ATIL oldugu ayrica OLCULUYOR (dr_verify_project_flag_is_inert):
+# `--project` ile ve onsuz cikti BIREBIR ayni olmali. `tofu`daki inert-bayrak
+# olcusuyle ayni fikir.
+#
+# DIFFERENTIAL DISI — sessizce atlanmiyor, BURADA yaziliyor:
+#   `dr restore` / `dr bootstrap` / `dr accept-epoch-reset`: Rust ikilisi bu
+#       alt komutlari TANIMIYOR (portlanmadi; `restore` icin sebep bir CRATE
+#       karari — XChaCha20-Poly1305 `ring`de yok). Go onlari CALISTIRIYOR.
+#       Ayrisma GERCEK ve bilincli; vaka yazmak "esit" ilan etmek olurdu.
+#   `wapps dr` (alt komutsuz): iki taraf da yardim basip 0 ile cikiyor ama
+#       DUZEN farkli (cobra vs clap). `agent_unknown_subcommand` ile ayni
+#       gerekce.
+import hashlib as _hashlib
+import json as _json
+
+def _dr_snapshot(projects):
+    """Gecerli bir B2 replika snapshot'i uretir (cfgseed 'files' haritasi).
+
+    GERCEK SIR YOK: blob'lar duz uydurma baytlar. Bu dilim onlari COZMUYOR
+    (restore portlanmadi), yalnizca ICERIK ADRESLERINI dogruluyor.
+    """
+    files = {}
+    for project, epoch in projects:
+        blob = f"fake-blob-bytes-for-{project}".encode()
+        bh = _hashlib.sha256(blob).hexdigest()
+        files[f"snap/secrets/{project}/blobs/{bh}"] = blob.decode()
+        man = _json.dumps({
+            "schema": "wapps-secrets/data-manifest/v2",
+            "project": project, "epoch": epoch,
+            "entries": [{"keyName": "KEY_ONE", "keyVersion": 1, "blobHash": bh,
+                         "wrap": {"recipient": "worker-kek:v1",
+                                  "kid": "0123456789abcdef", "wrap": "AAAA"}}],
+        }, separators=(",", ":"))
+        files[f"snap/secrets/{project}/manifests/{epoch}.json"] = man
+        files[f"snap/secrets/{project}/current"] = _json.dumps({
+            "schema": "wapps-secrets/current/v1", "project": project, "epoch": epoch,
+            "manifestSha256": _hashlib.sha256(man.encode()).hexdigest(),
+        }, separators=(",", ":"))
+    return files
+
+_SNAP_OK = _dr_snapshot([("alpha", 4), ("beta", 9)])
+
+def _snap_broken_chain():
+    """Pointer'in tasidigi hash ile manifest'in baytlari UYUSMUYOR."""
+    f = dict(_SNAP_OK)
+    k = "snap/secrets/alpha/manifests/4.json"
+    f[k] = f[k].replace("KEY_ONE", "KEY_TWO")  # ayni uzunluk, FARKLI hash
+    return f
+
+def _snap_bad_blob():
+    """Blob'un ADI icerik adresi; icerigini bozunca adres YALAN olur."""
+    f = dict(_SNAP_OK)
+    for k in list(f):
+        if k.startswith("snap/secrets/alpha/blobs/"):
+            f[k] = "kurcalanmis-baytlar"
+    return f
+
+def _snap_bad_recipient():
+    """Alici KAPALI bir kume; taninmayan alici reddedilmeli."""
+    f = dict(_SNAP_OK)
+    k = "snap/secrets/alpha/manifests/4.json"
+    man = f[k].replace("worker-kek:v1", "someone-else")
+    f[k] = man
+    # Pointer'i DUZELT ki olculen sey zincir degil ALICI dali olsun.
+    pk = "snap/secrets/alpha/current"
+    ptr = _json.loads(f[pk])
+    ptr["manifestSha256"] = _hashlib.sha256(man.encode()).hexdigest()
+    f[pk] = _json.dumps(ptr, separators=(",", ":"))
+    return f
+
+# SABIT paylar: GERCEK ANAHTAR DEGIL — uydurma bir test vektoru (frozen
+# vektordeki 0x42*32 sirrinin 2-of-3 paylari).
+# `dr split`in kendisi differential'lanAMAZ (RNG -> her kosumda farkli paylar),
+# o yuzden paylar BURADA statik. Uretimleri tests/cryptoid.rs'teki frozen
+# vektorle ayni algoritmadan gelir ve round-trip'leri orada IDDIA olarak
+# olculuyor.
+_SHARE_1 = "e98fe98fe98fe98fe98fe98fe98fe98fe98fe98fe98fe98fe98fe98fe98fe98f01"
+_SHARE_2 = "0fc30fc30fc30fc30fc30fc30fc30fc30fc30fc30fc30fc30fc30fc30fc30fc302"
+_SHARE_3 = "a40ea40ea40ea40ea40ea40ea40ea40ea40ea40ea40ea40ea40ea40ea40ea40e03"
+_SHARE_FILES = {"s1.hex": _SHARE_1 + "\n", "s2.hex": _SHARE_2 + "\n",
+                "s3.hex": _SHARE_3 + "\n"}
+
+def dr_h(name, argv, files=None, stdin=None):
+    return (f"human_{name}", argv, HUMAN, None, stdin, {"yaml": None, "files": files or {}})
+
+def dr_a(name, argv, files=None, stdin=None):
+    return (f"agent_{name}", argv, AGENT, None, stdin, {"yaml": None, "files": files or {}})
+
+DR_CASES = [
+    # --- verify: AJAN KAPISI YOK. Bu bir bosluk degil bir KARAR ve burada
+    # OLCULUYOR: ayni cagri insan ve ajan modunda AYNI seyi yapmali. Bir port
+    # buraya "guvenli olsun" diye bir guard eklerse bu iki vaka ayrisir.
+    dr_h("dr_verify_ok", ["dr", "verify", "--snapshot", "snap"], _SNAP_OK),
+    dr_a("dr_verify_ok_in_agent_mode", ["dr", "verify", "--snapshot", "snap"], _SNAP_OK),
+
+    # --snapshot YOK -> ACTION_UNAVAILABLE, ve iki bicimde de olculuyor.
+    dr_h("dr_verify_no_snapshot", ["dr", "verify"]),
+    dr_a("dr_verify_no_snapshot", ["dr", "verify"]),
+
+    # Var olmayan dizin: hata METNI isletim sistemi dizesini tasiyor.
+    dr_h("dr_verify_missing_dir", ["dr", "verify", "--snapshot", "yok-boyle-dizin"]),
+
+    # Zincir kirilmasi / icerik adresi / alici — verify'in UC reddi.
+    dr_h("dr_verify_broken_chain", ["dr", "verify", "--snapshot", "snap"], _snap_broken_chain()),
+    dr_h("dr_verify_bad_blob", ["dr", "verify", "--snapshot", "snap"], _snap_bad_blob()),
+    dr_h("dr_verify_bad_recipient", ["dr", "verify", "--snapshot", "snap"], _snap_bad_recipient()),
+
+    # `--project` ATIL olmali: `dr` kokte mount'lu, Ctx cozulmuyor. Bu vakanin
+    # ciktisi dr_verify_ok ile BIREBIR ayni olmali (diff.py ikisini de Go'ya
+    # karsi olcer; esitlik zaten her iki ikilide de bekleniyor).
+    dr_h("dr_verify_project_flag_is_inert", P + ["dr", "verify", "--snapshot", "snap"], _SNAP_OK),
+
+    # --- split: PolicyTTY. Ajan modunda red DIGER HER SEYDEN ONCE gelir —
+    # bayraklar EKSIK olsa bile ret ayni. Ikinci vaka bunu kanitliyor: eksik
+    # --out-dir'e ragmen cikti "eksik bayrak" DEGIL, ajan reddi olmali.
+    dr_a("dr_split_refused", ["dr", "split", "--out-dir", "sh", "--master-hex", "22" * 32]),
+    dr_a("dr_split_refused_before_flag_check", ["dr", "split"]),
+
+    dr_h("dr_split_no_outdir", ["dr", "split", "--master-hex", "22" * 32]),
+    dr_h("dr_split_threshold_too_low",
+         ["dr", "split", "--out-dir", "sh", "--threshold", "1", "--master-hex", "22" * 32]),
+    dr_h("dr_split_parts_below_threshold",
+         ["dr", "split", "--out-dir", "sh", "--parts", "2", "--threshold", "3",
+          "--master-hex", "22" * 32]),
+    dr_h("dr_split_master_not_64_hex",
+         ["dr", "split", "--out-dir", "sh", "--master-hex", "deadbeef"]),
+    dr_h("dr_split_master_not_hex_at_all",
+         ["dr", "split", "--out-dir", "sh", "--master-hex", "zz" * 32]),
+    # BASARILI split BILEREK YOK: cikti RNG'ye bagli, iki kosum ayni paylari
+    # uretmez. Onun olcusu tests/cryptoid.rs'teki frozen vektor IDDIASI.
+
+    # --- combine: PolicyTTY, ve BASARILI yol DETERMINISTIK (girdi paylar
+    # sabit) -> yazilan dosyanin ICERIGI ve MODU da karsilastiriliyor.
+    dr_a("dr_combine_refused",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex"],
+         _SHARE_FILES),
+    dr_h("dr_combine_ok",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex"],
+         _SHARE_FILES),
+    # Farkli pay CIFTI, AYNI anahtar: 2-of-3'un vaadi. Kid iki vakada da ayni
+    # basilmali; farkli cikarsa Lagrange interpolasyonu ayrisiyordur.
+    dr_h("dr_combine_other_pair",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s3.hex", "--out", "m.hex"],
+         _SHARE_FILES),
+    # UC pay (threshold'dan fazla) da ayni anahtari vermeli.
+    dr_h("dr_combine_three_shares",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--share", "s3.hex",
+          "--out", "m.hex"], _SHARE_FILES),
+
+    dr_h("dr_combine_one_share", ["dr", "combine", "--share", "s1.hex", "--out", "m.hex"],
+         _SHARE_FILES),
+    dr_h("dr_combine_no_out", ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex"],
+         _SHARE_FILES),
+    dr_h("dr_combine_missing_share_file",
+         ["dr", "combine", "--share", "yok.hex", "--share", "s2.hex", "--out", "m.hex"],
+         _SHARE_FILES),
+    dr_h("dr_combine_not_hex",
+         ["dr", "combine", "--share", "junk.hex", "--share", "s2.hex", "--out", "m.hex"],
+         dict(_SHARE_FILES, **{"junk.hex": "bu hex degil!!\n"})),
+    dr_h("dr_combine_duplicate_share",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s1.hex", "--out", "m.hex"],
+         _SHARE_FILES),
+    # O_EXCL: var olan bir --out dosyasini EZMEZ. Dosya 0644 tohumlanIyor;
+    # `written` MODU da tasidigi icin, bir ikili yazmis olsaydi mod 0600'e
+    # DUSER ve vaka ayrisirdi.
+    dr_h("dr_combine_out_exists",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex"],
+         dict(_SHARE_FILES, **{"m.hex": "onceden var olan icerik\n"})),
+    # Bosluk/yenisatir toleransi: operator paylari elle tasiyor.
+    dr_h("dr_combine_whitespace_share",
+         ["dr", "combine", "--share", "spaced.hex", "--share", "s2.hex", "--out", "m.hex"],
+         dict(_SHARE_FILES, **{"spaced.hex": _SHARE_1[:32] + " \n " + _SHARE_1[32:] + "\n"})),
+
+    # SESSIZ ARIZANIN DIFFERENTIAL'DAKI YUZU. Bozuk bir pay HATA VERMEZ:
+    # komut 0 ile biter, 0600 bir dosya yazar, yalnizca KID farklidir. Iki
+    # ikili de AYNI yanlis anahtari uretmeli — cunku yanlislik deterministik.
+    # Bu vaka, `dr combine`in bir tore YANLIS tamamlandiginda bile "basarili"
+    # gorundugunu KORPUSA yaziyor.
+    dr_h("dr_combine_tampered_share_silently_succeeds",
+         ["dr", "combine", "--share", "bad.hex", "--share", "s2.hex", "--out", "m.hex"],
+         dict(_SHARE_FILES, **{"bad.hex": "ff" + _SHARE_1[2:] + "\n"})),
+]
+
+CASES += DR_CASES
