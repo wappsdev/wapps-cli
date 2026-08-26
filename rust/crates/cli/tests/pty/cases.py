@@ -39,6 +39,23 @@ FIXTURE_FILES = {
     "empty.txt":    "",
     # YALNIZCA newline -> soyulunca bos kalir -> ayni ret.
     "newline.txt":  "\n",
+    # `tofu` SHIM'i — bir fikstur DEGIL bir PROGRAM (probe.py `#!` ile
+    # baslayani 0755 yazar). `wapps tofu` argv[0]'i "tofu" olarak sabitliyor,
+    # yani bu shim olmadan cocuk HIC kosmaz ve sarimin tek gercek vaadi
+    # olculemez: degerleri VERBATIM enjekte etmesi.
+    #
+    # Uc sey basiyor ve ucu de sozlesmenin bir parcasi:
+    #   1. argv — `plan -target=...` cocuga AYNEN gecti mi;
+    #   2. ALPHA — store anahtari FINAL adiyla mi geldi (scrubber onu ***
+    #      yapar, yani gorunen sey adin VARLIGI, degeri degil);
+    #   3. TF_VAR_ALPHA — EKLENMEMIS olmali. Prefix "" yerine "TF_VAR_"
+    #      olsaydi bu iki satir YER DEGISTIRIRDI, ve v0.23.0'da olan tam
+    #      olarak buydu.
+    "tofu": ("#!/bin/sh\n"
+             "echo \"argv: $*\"\n"
+             "echo \"ALPHA=${ALPHA-<unset>}\"\n"
+             "echo \"TF_VAR_ALPHA=${TF_VAR_ALPHA-<unset>}\"\n"
+             "exit 3\n"),
 }
 
 AGENT = {"CLAUDECODE": "1"}          # pty'de stdin TTY ama ajan isareti VAR
@@ -1096,3 +1113,93 @@ CASES += POLICY_CASES
 #      kucuk ve TAM bir esleme, ve bir policy dosyasindaki en sik yazim
 #      hatasinin dustugu dal o.
 EXCLUDED.add("human_policy_lint_broken_json")
+
+
+# --- `wapps tofu` ------------------------------------------------------------
+#
+# KOKTE mount'lu bir sarim, `secrets` altinda DEGIL — ve bu, `projects`teki
+# gibi, bir duzenleme tercihi degil OLCULEBILIR bir kapi farki. Iki sonucu var
+# ve ikisi de burada olculuyor:
+#
+#  1. SecretsCmd.PersistentPreRunE KOSMAZ. Go bu yuzden ajan kapisini ve depo
+#     pinini runTofu'nun ICINDE ACIKCA yeniden uyguluyor (kaynakta "F1 fix").
+#     Unutulsaydi `wapps tofu` her sirri okuyan, kapisiz bir yol olurdu —
+#     `secrets exec`in confused-deputy korumasinin etrafindan dolasan bir yol.
+#     `agent_tofu_binding_is_enforced_despite_the_root_mount` bunu pinliyor.
+#
+#  2. `DisableFlagParsing: true` (tofu'nun kendi `-target`/`-var` bayraklari
+#     tofu'ya gitsin diye) GLOBAL bayraklari da ATIL yapiyor. `--project` HIC
+#     ayristirilmiyor, yani degiskene HIC yazilmiyor. Bu GOZLEMLENEBILIR:
+#     ayni bayrakla `secrets exec` ajan modunda BINDING_UNPINNED verirken
+#     `tofu` NOT_FOUND veriyor — cunku biri projectOverride'i goruyor, digeri
+#     gormuyor. Tahmin edilebilir bir sey degil; olculdu.
+#
+# HATA ONEKI "exec:", "tofu:" DEGIL: sarim runExec'in ORTAK yoluna giriyor ve
+# o yolun baglami "exec". Bir port burada kolayca "tofu:" yazar ve ayrisir.
+#
+# args[0] "-h"/"--help" ya da hic arguman yoksa cobra YARDIMI basar — yardim
+# duzeni bu differential'in KAPSAMI DISINDA (bkz. agent_unknown_subcommand),
+# o yuzden o dal burada olculmuyor ve asagida ayrica yaziliyor.
+
+# Fikstur dizinini PATH'e koyan cevre: `tofu` shim'i ANCAK boyle bulunur.
+TOFU_PATH = {"PATH": "{FIX}:/usr/bin:/bin"}
+
+TOFU_CASES = [
+    # === kapi sirasi: ajan politikasi (`allow`) -> baglama -> config =======
+    # Config YOK: baglama sessizce gecer (loadOrNil nil doner), ret runExec'in
+    # config kapisindan gelir. ONEK "exec:".
+    ("agent_tofu_no_config", ["tofu", "plan"], AGENT, None, None, None),
+    ("human_tofu_no_config", ["tofu", "plan"], HUMAN, None, None, None),
+
+    # === `--project` ATIL (DisableFlagParsing) ============================
+    # EN SASIRTICI VAKA. Ayni bayrakla `secrets exec` ajan modunda
+    # BINDING_UNPINNED veriyor (agent_exec_project_flag_no_config, yukarida);
+    # `tofu` NOT_FOUND veriyor. Fark bir kapi sirasi degil, bayragin HIC
+    # ayristirilmamis olmasi.
+    ("agent_tofu_project_flag_is_inert", P + ["tofu", "plan"], AGENT, None, None, None),
+    ("human_tofu_project_flag_is_inert", P + ["tofu", "plan"], HUMAN, None, None, None),
+
+    # === baglama kapisi KOK MOUNT'A RAGMEN uygulaniyor ====================
+    # Bu vakanin kirmizi olmasi demek, `wapps tofu`nun kapisiz bir sir yolu
+    # olmasi demek.
+    ("agent_tofu_binding_is_enforced_despite_the_root_mount",
+     ["tofu", "plan"], AGENT, None, None, cfg(VALID_CFG)),
+    # Insan + TTY: SATIR ICI onay istemi — `secrets exec` ile AYNI istem.
+    ("human_tofu_binding_declined", ["tofu", "plan"], HUMAN, None, b"n\n", cfg(VALID_CFG)),
+
+    # === cocuk GERCEKTEN kosuyor =========================================
+    # Baglama "y" ile pinleniyor, store okunuyor, `tofu` shim'i kosuyor.
+    # Cocugun bastigi uc satir sarimin tamamini olcuyor: argv gecisi, FINAL
+    # anahtar adi, ve TF_VAR_ EKLENMEMIS olmasi.
+    ("human_tofu_injects_values_verbatim",
+     ["tofu", "plan", "-target=module.gate"], dict(HUMAN, **TOFU_PATH), None, b"y\n",
+     cfg(VALID_CFG)),
+    # Service-token cifti baglamayi MESRU olarak atlar (taze CI container'inda
+    # trust-repo imkansiz) → ajan yolunda da cocuga ULASILIYOR.
+    ("agent_tofu_runs_behind_a_service_token",
+     ["tofu", "apply"], dict(CI_TOKENS, **TOFU_PATH), None, None, cfg(VALID_CFG)),
+    # Cocugun cikis kodu AYNEN yansiyor: shim 3 ile cikiyor, wapps de 3.
+    # Sifir-disi bir cikisin bir HATA ZARFINA cevrilmedigi ancak boyle gorunur.
+    ("agent_tofu_propagates_the_child_exit_code",
+     ["tofu", "plan"], dict(CI_TOKENS, **TOFU_PATH), None, None, cfg(VALID_CFG)),
+
+    # === cocuk YOK: ad hatanin ICINDE gorunur ============================
+    # PATH'te `tofu` olmadiginda mesaj "tofu"yu adlandiriyor — argv[0]'in
+    # gercekten oraya eklendiginin kaniti.
+    ("agent_tofu_names_itself_when_the_binary_is_missing",
+     ["tofu", "plan"], CI_TOKENS, None, None, cfg(VALID_CFG)),
+
+    # === oturum yok ======================================================
+    ("agent_tofu_no_session", ["tofu", "plan"],
+     dict(AGENT, WAPPS_SESSION_TOKEN="", CF_ACCESS_CLIENT_ID="", CF_ACCESS_CLIENT_SECRET=""),
+     None, None, cfg(VALID_CFG)),
+
+    # === epoch pini: tofu bulk okuma yapiyor, yani pini ILERLETIR =========
+    ("agent_tofu_advances_the_epoch_pin",
+     ["tofu", "plan"], dict(CI_TOKENS, **TOFU_PATH), pinfile(3), None, cfg(VALID_CFG)),
+    # ...ve GERI SARMAZ: sunulan 7 < pinli 9 → EPOCH_DOWNGRADE.
+    ("agent_tofu_epoch_downgrade_refused",
+     ["tofu", "plan"], dict(CI_TOKENS, **TOFU_PATH), pinfile(9), None, cfg(VALID_CFG)),
+]
+
+CASES += TOFU_CASES

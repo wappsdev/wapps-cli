@@ -228,6 +228,31 @@ pub fn build() -> Command {
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 ),
         )
+        // `tofu` KOKTE mount'lu — `secrets` altinda DEGIL, ve bu GOZLEMLENEBILIR
+        // bir kapi farki: Go'da SecretsCmd.PersistentPreRunE (ajan-guard + depo
+        // pini) CALISMAZ, o yuzden runTofu kapiyi ACIKCA yeniden uyguluyor.
+        //
+        // `disable_flag_parsing` YOK, cunku clap'te oyle bir sey gerekmiyor:
+        // `trailing_var_arg` + `allow_hyphen_values` tofu'nun kendi
+        // bayraklarini (`-target`, `-var`, `-input=false`) cocuga aynen
+        // birakir. cobra'nin `DisableFlagParsing: true`sunun IKINCI etkisi —
+        // GLOBAL bayraklarin da atil kalmasi — burada agac degil CAGIRAN
+        // tarafinda tasiniyor: main.rs tofu dalinda `--project`/`--config`
+        // degerlerini GORMEZDEN gelir. Olculdu
+        // (agent_tofu_project_flag_is_inert).
+        //
+        // `disable_help_flag`: `-h`/`--help` clap tarafindan YAKALANMAMALI.
+        // Go'da yardim YALNIZCA args[0] "-h"/"--help" iken basiliyor;
+        // `tofu plan --help` bayragi tofu'ya GECIRIYOR. Ayni ayrimi
+        // koruyabilmek icin bayragi clap'ten geri aliyoruz.
+        .subcommand(
+            Command::new("tofu")
+                .about("Run tofu with the project's secrets injected as TF_VAR_*")
+                .trailing_var_arg(true)
+                .allow_hyphen_values(true)
+                .disable_help_flag(true)
+                .arg(Arg::new("argv").num_args(0..).help("Command and arguments")),
+        )
         // `projects` KOKTE mount'lu, `secrets` altinda DEGIL — ve bu bir
         // duzenleme tercihi degil, GOZLEMLENEBILIR bir kapi farki: kok mount
         // demek Go'da SecretsCmd.PersistentPreRunE'un (ajan-guard + depo pini)

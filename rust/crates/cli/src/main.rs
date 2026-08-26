@@ -196,6 +196,13 @@ fn run() -> Result<(), CmdError> {
                 std::process::exit(0);
             }
         },
+        Some(("tofu", tm)) => {
+            let args: Vec<String> =
+                tm.get_many::<String>("argv").map(|v| v.cloned().collect()).unwrap_or_default();
+            // `project` ve `config` BILEREK gecirilmiyor: cobra'da
+            // DisableFlagParsing onlari hic ayristirmiyor (bkz. run_tofu).
+            run_tofu(&args)
+        }
         Some(("projects", pm)) => match pm.subcommand() {
             Some(("list", lm)) => {
                 // cobra.NoArgs — ve reddin METNI cobra'nindir: fazladan
@@ -913,7 +920,29 @@ fn run_exec(
     let agent = agentmode::is_agent();
     let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
     gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
+    exec_core(&ctx, argv, &prefix, &intent, break_glass, agent)
+}
 
+// exec_core, exec-ailesinin KAPIDAN SONRAKI ortak yoludur ve Go'daki `runExec`
+// ile AYNI parcayi tasiyor: --break-glass reddi, --intent reddi, config
+// gereksinimi, store okumasi, inject→scrub→run, exit-code yansimasi.
+//
+// AYRI BIR FONKSIYON OLMASI BIR TERCIH DEGIL, SOZLESME: `wapps tofu` bu yola
+// KAPIYI KENDI UYGULADIKTAN SONRA giriyor (Go: runTofu → runExec). Cift kod
+// yazilsaydi iki yol sessizce ayrisabilirdi — ve ayrisacagi yer, sarimin
+// scrubber'i ya da exit-code yansimasi olurdu.
+//
+// `gate` BURADA CAGRILMIYOR: cagiran onu ZATEN cagirdi. Go'da da boyle
+// (runExec kapiyi bilmez; kapi ya PersistentPreRunE'da ya runTofu'da).
+#[allow(clippy::too_many_arguments)]
+fn exec_core(
+    ctx: &Ctx,
+    argv: &[String],
+    prefix: &str,
+    intent: &str,
+    break_glass: bool,
+    agent: bool,
+) -> Result<(), CmdError> {
     if break_glass && agent {
         return Err(CmdError::Cli(Error::new(
             Code::BreakGlassRefused,
@@ -929,6 +958,9 @@ fn run_exec(
             "deploy intent not yet wired to the store; --intent deploy is unavailable in this build (use --intent dev)",
         )));
     }
+    // HATA BAGLAMI DAIMA "exec" — `wapps tofu` icin bile. Sarim bu ORTAK yola
+    // giriyor ve Go'da da baglam "exec"; bir port burada kolayca "tofu" yazar
+    // ve ayrisir. Olculdu (agent_tofu_no_config).
     let cfg = ctx.require_store_config("exec").map_err(CmdError::Cli)?;
     // intent.Parse Go'da runExecStore'un ICINDE, yani config kapisindan SONRA
     // kosuyor. Olculdu (human_exec_unknown_intent): config'i olmayan bir
@@ -937,12 +969,12 @@ fn run_exec(
     if intent != "dev" && !intent.is_empty() {
         return Err(CmdError::Cli(Error::new(
             Code::Internal,
-            format!("unknown intent {} (allowed: dev, deploy)", go_quote(&intent)),
+            format!("unknown intent {} (allowed: dev, deploy)", go_quote(intent)),
         )));
     }
     let values = store::read_all(&cfg.project).map_err(CmdError::Cli)?;
     let archive = values_to_archive_json(&values).map_err(CmdError::Plain)?;
-    let (injected, scrub) = execverb::exec_env_and_values(archive.as_bytes(), &prefix)
+    let (injected, scrub) = execverb::exec_env_and_values(archive.as_bytes(), prefix)
         .map_err(|e| CmdError::Plain(format!("exec: {e}")))?;
 
     let mut out = std::io::stdout();
@@ -961,6 +993,58 @@ fn run_exec(
         execverb::ExitAction::Exit(code) => std::process::exit(code),
         execverb::ExitAction::Ok => Ok(()),
     }
+}
+
+// run_tofu, `wapps tofu <args...>` — `secrets exec --prefix "" -- tofu <args...>`
+// icin birinci-sinif sarim.
+//
+// KAPI SIRASI, ve ILK IKI ADIM BU FIILE OZEL:
+//   1. yardim dali    → arguman YOKSA ya da args[0] "-h"/"--help" ise. YALNIZCA
+//      args[0]: `tofu plan --help` bayragi tofu'ya GECIRIR.
+//   2. ajan politikasi → `allow`, ve BURADA ACIKCA cagriliyor
+//   3. baglama kapisi  → BURADA ACIKCA cagriliyor
+//   4. exec_core       → config gereksinimi, store okumasi, inject→scrub→run
+//
+// 2 ve 3'un BURADA olmasi bir tekrar degil bir ZORUNLULUK: TofuCmd KOKE
+// mount'lu, yani Go'da SecretsCmd.PersistentPreRunE HIC kosmuyor. Kapi burada
+// yeniden uygulanmasaydi `wapps tofu`, `secrets exec`in confused-deputy
+// korumasinin etrafindan dolasan kapisiz bir sir yolu olurdu. Go kaynagi bunu
+// "F1 fix" diye adlandiriyor; olcusu
+// agent_tofu_binding_is_enforced_despite_the_root_mount.
+//
+// `--project` / `--config` ATIL ve bu bir eksiklik degil, sahadaki ikilinin
+// OLCULEN davranisi: cobra'da `DisableFlagParsing: true` bayraklarin HICBIRINI
+// ayristirmiyor, global olanlari da. Ayni bayrakla `secrets exec` ajan modunda
+// BINDING_UNPINNED verirken `tofu` NOT_FOUND veriyor
+// (agent_tofu_project_flag_is_inert). Bu yuzden asagida Ctx VARSAYILAN yolla
+// cozuluyor — cagiranin gordugu bayraklar BILEREK gecirilmiyor.
+//
+// prefix "" (VERBATIM) ve intent "dev" SABIT. Prefix'in bos olmasi sarimin var
+// olma sebebi: store anahtarlari zaten TAM adlariyla duruyor (`TF_VAR_*`,
+// `AWS_*`), o yuzden bir onek daha eklemek cift-prefix uretirdi — v0.23.0
+// oncesinde tam olarak bu oluyordu. Olcusu human_tofu_injects_values_verbatim.
+fn run_tofu(args: &[String]) -> Result<(), CmdError> {
+    if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
+        let _ = cli::build().find_subcommand_mut("tofu").unwrap().print_help();
+        std::process::exit(0);
+    }
+    let agent = agentmode::is_agent();
+    agentmode::guard(agentmode::POLICY_ALLOW, agent).map_err(CmdError::Cli)?;
+    let ctx = Ctx::resolve(None, None).map_err(CmdError::Cli)?;
+    let mut errw = std::io::stderr();
+    configctx::check_repo_binding(
+        &ctx,
+        agent,
+        agentmode::stdin_is_tty(),
+        &mut errw,
+        &|repo, project, w| configctx::bind_prompt(repo, project, w),
+    )
+    .map_err(CmdError::Cli)?;
+
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("tofu".to_string());
+    argv.extend_from_slice(args);
+    exec_core(&ctx, &argv, "", "dev", false, agent)
 }
 
 // run_apply, `wapps secrets apply`: store'dan bir kez ceker ve `.wapps.yaml`in
