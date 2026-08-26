@@ -22,4 +22,5 @@ pub mod session;
 pub mod setverb;
 pub mod statusverb;
 pub mod store;
+pub mod trustrepo;
 pub mod wappsyaml;

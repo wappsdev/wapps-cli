@@ -652,3 +652,63 @@ VERB_CASES = [
 ]
 
 CASES += VERB_CASES
+
+
+# --- `trust-repo` ------------------------------------------------------------
+#
+# Baglamayi KURAN fiil, ve bu dilimin en kisa kapi zinciri:
+#
+#   ajan politikasi `tty`  ->  baglama kapisi MUAF  ->  config  ->  onay  ->  pin
+#
+# UC SEY BURADA OLCULUYOR ve hicbiri komsu fiillerden tahmin edilemiyor:
+#
+#  1. AJAN REDDININ METNI FARKLI. `get`/`rm` POLICY_REFUSE_AGENT ("surface
+#     refused in agent mode ..."); trust-repo POLICY_TTY ("this command
+#     requires a human terminal"). Ayni kod (AGENT_MODE_REFUSED), ayri cumle.
+#  2. BAGLAMA MUAFIYETI ZORUNLU. Pini KURAN fiil pinin varligini sart kosamaz;
+#     `human_trustrepo_pins` pinsiz bir config'in yaninda satir ici baglama
+#     istemini HIC gormeden kendi istemine gidiyor.
+#  3. ONAY KELIMESI YALNIZCA "y". `secrets exec`in satir ici istemi "yes"i de
+#     kabul ediyor; bu etmiyor (`human_trustrepo_yes_is_not_y`). Iki istemi
+#     tek fonksiyona indiren bir port bu vakada kirilir.
+#
+# ISTEM STDOUT'A gidiyor (satir ici baglama istemi stderr'e) — differential
+# ikisini ayri pty'lerde yakaladigi icin bu da olculuyor.
+#
+# repo-pins.json her vakada bayt-bayt karsilastiriliyor: bir ikili reddedip
+# yine de pinleseydi (ya da tersi) cikti esit gorunurdu.
+TRUSTREPO_CASES = [
+    ("agent_trustrepo_is_tty_only",
+     ["secrets", "trust-repo"], AGENT, None, None, cfg(VALID_CFG)),
+    # Config YOKKEN de ajan kapisi ONCE ates eder: ret AGENT_MODE_REFUSED,
+    # "applies only to a backend: store" DEGIL.
+    ("agent_trustrepo_gate_precedes_the_config_check",
+     ["secrets", "trust-repo"], AGENT, None, None, None),
+    # Insan + config YOK -> INTERNAL (NOT_FOUND DEGIL; Go'nun kendi cumlesi).
+    ("human_trustrepo_without_a_config",
+     ["secrets", "trust-repo"], HUMAN, None, None, None),
+    ("human_trustrepo_declined",
+     ["secrets", "trust-repo"], HUMAN, None, b"n\n", cfg(VALID_CFG)),
+    ("human_trustrepo_empty_line_declines",
+     ["secrets", "trust-repo"], HUMAN, None, b"\n", cfg(VALID_CFG)),
+    # "yes" BURADA GECERSIZ — satir ici baglama isteminin aksine.
+    ("human_trustrepo_yes_is_not_y",
+     ["secrets", "trust-repo"], HUMAN, None, b"yes\n", cfg(VALID_CFG)),
+    ("human_trustrepo_uppercase_y_confirms",
+     ["secrets", "trust-repo"], HUMAN, None, b"Y\n", cfg(VALID_CFG)),
+    ("human_trustrepo_pins",
+     ["secrets", "trust-repo"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
+    # Profiller bildirilmisse istem blogunda ALFABETIK siralanir.
+    ("human_trustrepo_lists_profiles",
+     ["secrets", "trust-repo"], HUMAN, None, b"n\n",
+     cfg("version: 2\nproject: testproj\nprofiles:\n  web: [ALPHA]\n  api: [BETA]\n")),
+    # cobra'da Args YOK -> ArbitraryArgs: fazladan arguman SESSIZCE yutulur.
+    ("human_trustrepo_extra_arg_is_ignored",
+     ["secrets", "trust-repo", "EXTRA"], HUMAN, None, b"n\n", cfg(VALID_CFG)),
+    # `--project <ad>` ile: trust-repo baglama-muaf oldugu icin ciplak
+    # `--project` reddi HIC kosmaz; ret config'in yoklugundan gelir.
+    ("human_trustrepo_project_flag_still_needs_a_config",
+     P + ["secrets", "trust-repo"], HUMAN, None, None, None),
+]
+
+CASES += TRUSTREPO_CASES

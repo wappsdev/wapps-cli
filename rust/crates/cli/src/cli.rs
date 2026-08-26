@@ -143,6 +143,13 @@ pub fn build() -> Command {
                         ),
                 )
                 .subcommand(
+                    Command::new("trust-repo")
+                        .about("Pin this repo to its project so an agent cannot target another (TTY only)")
+                        // cobra'da trustRepoCmd'in Args'i YOK -> ArbitraryArgs:
+                        // fazladan arguman SESSIZCE yok sayiliyor. Olculdu.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
                     Command::new("init")
                         .about("Scaffold .wapps.yaml for a fresh repo")
                         .arg(

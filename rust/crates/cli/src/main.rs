@@ -3,6 +3,7 @@ use std::io::Write;
 use std::process::ExitCode;
 use wapps::agentmode;
 use wapps::applyverb;
+use wapps::binding;
 use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
 use wapps::configctx::{self, Ctx};
@@ -17,6 +18,7 @@ use wapps::session;
 use wapps::setverb;
 use wapps::statusverb;
 use wapps::store;
+use wapps::trustrepo;
 
 fn main() -> ExitCode {
     let agent = agentmode::is_agent();
@@ -104,6 +106,7 @@ fn run() -> Result<(), CmdError> {
                 }
                 run_rm(&keys[0], config, project, rm.get_flag("yes"))
             }
+            Some(("trust-repo", _)) => run_trust_repo(config, project),
             Some(("init", im)) => run_init(
                 config,
                 project,
@@ -376,6 +379,77 @@ fn run_projects_rm(project: &str, yes: bool) -> Result<(), CmdError> {
         "{}",
         projectsverb::rm_success_line(&res.project, res.deleted_objects, res.pointer_events_kept)
     );
+    Ok(())
+}
+
+// run_trust_repo, `wapps secrets trust-repo` — baglamayi KURAN fiil.
+//
+// KAPI SIRASI:
+//   1. ajan politikasi → `tty`: AGENT_MODE_REFUSED ("this command requires a
+//      human terminal"). `get`/`rm`in POLICY_REFUSE_AGENT metninden FARKLI.
+//   2. baglama kapisi  → YOK. trust-repo baglama-MUAF (Go: bindingExempt), ve
+//      bu zorunlu: pini KURAN fiil, pinin varligini sart kosamaz.
+//   3. config gereksinimi → yoksa INTERNAL (NOT_FOUND DEGIL — Go'nun metni
+//      "applies only to a backend: store .wapps.yaml").
+//   4. onay → YALNIZCA "y" (bkz. trustrepo::confirm_y)
+//   5. pin yazimi
+//
+// ISTEM STDOUT'A gidiyor. Satir ici baglama istemi (configctx::bind_prompt)
+// stderr'e gidiyor; differential ikisini AYRI pty'lerde yakaladigi icin bu
+// fark olculuyor.
+fn run_trust_repo(config: Option<String>, project: Option<String>) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    agentmode::guard(agentmode::POLICY_TTY, agent).map_err(CmdError::Cli)?;
+
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    // ERISILEMEZ DAL — ve bilerek burada: Go'da da runTrustRepo kendi isAgent
+    // kontrolunu yapiyor ama PersistentPreRunE (yukaridaki guard) ONCE ates
+    // ettigi icin bu satira ajan modunda HIC gelinmiyor. Iki ikilide de
+    // olculemez; savunma katmani olarak duruyor.
+    if agent {
+        return Err(CmdError::Cli(Error::new(
+            Code::BindingUnpinned,
+            "trust-repo must run in a human terminal",
+        )));
+    }
+
+    let cfg = match ctx.load_or_none().map_err(CmdError::Cli)? {
+        Some(c) => c,
+        None => {
+            return Err(CmdError::Cli(Error::new(
+                Code::Internal,
+                "trust-repo applies only to a backend: store .wapps.yaml",
+            )))
+        }
+    };
+
+    let repo_id = configctx::repo_identity(&cfg);
+    let path = binding::default_path()
+        .map_err(|e| CmdError::Cli(Error::new(Code::Internal, format!("resolve repo-pins path: {e}"))))?;
+
+    let mut out = std::io::stdout();
+    let mut stdin = std::io::stdin();
+    if !trustrepo::confirm_y(&mut stdin, &mut out, &trustrepo::prompt_block(&repo_id, &cfg)) {
+        return Err(CmdError::Cli(Error::new(
+            Code::BindingUnpinned,
+            "trust-repo aborted; binding not pinned",
+        )));
+    }
+
+    let mut store = binding::load(&path)
+        .map_err(|e| CmdError::Cli(Error::new(Code::Internal, format!("load repo pins: {e}"))))?;
+    store.pin(
+        &binding::fingerprint(&repo_id),
+        binding::Pin {
+            repo: repo_id.clone(),
+            project: cfg.project.clone(),
+            backend: cfg.backend.clone(),
+        },
+    );
+    store
+        .save(&path)
+        .map_err(|e| CmdError::Cli(Error::new(Code::Internal, format!("save repo pins: {e}"))))?;
+    let _ = write!(out, "{}", trustrepo::success_line(&repo_id, &cfg.project));
     Ok(())
 }
 
