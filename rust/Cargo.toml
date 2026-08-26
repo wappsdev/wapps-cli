@@ -1,0 +1,30 @@
+# wapps-cli'nin Rust agaci.
+#
+# NEDEN BU DEPODA, wapps-platform'un workspace'inde DEGIL:
+# Kok Cargo.toml (wapps-platform) o workspace'in ne oldugunu acikca yaziyor —
+# "iki AYRI deponun (wapps-cli ve services/memory) PAYLASACAGI kodu tutuyor ve
+# bugun ikisine de ait degil". Bir CLI ikilisi paylasilan kod DEGIL; wapps-cli'nin
+# urunudur. Uc somut sonuc:
+#
+#  1. Release train. `wapps` ikilisi .goreleaser.yml ile BU depodan, bu deponun
+#     etiketlerinden cikiyor ve Homebrew tap'ine oradan gidiyor. Kaynak
+#     wapps-platform'da olsaydi bir CLI surumu kesmek ikinci bir depoda commit
+#     gerektirirdi — kok Cargo.toml'un adiyla uyardigi eslesmemis release train
+#     sorunu, ters yonden.
+#  2. Differential. Adim 6'nin kapisi Go ve Rust ikililerinin AYNI pty'de
+#     karsilastirilmasi. Oracle (Go) burada; ikisini bir arada tutmak testi tek
+#     `cargo test`e indiriyor, capraz-depo checkout'a degil.
+#  3. Bagimlilik yok. `wapps-core` chunk/freshness/search/curation/js tasiyor —
+#     memory alanina ait modiller. `secrets get` bunlarin HICBIRINI kullanmiyor,
+#     yani bu dilim iki agaci birbirine baglamiyor. Ortak kod dogdugunda
+#     wapps-core'a bagimlilik ayri ve acik bir karar olarak verilir.
+#
+# Yani bu, kok Cargo.toml ile CELISMIYOR; onu uyguluyor.
+
+[workspace]
+resolver = "2"
+members = ["crates/cli"]
+
+[profile.release]
+lto = true
+codegen-units = 1
