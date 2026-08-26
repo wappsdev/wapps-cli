@@ -1545,3 +1545,63 @@ DOCTOR_CASES = [
 ]
 
 CASES += DOCTOR_CASES
+
+
+# --- `secrets get`in YAPILANDIRMA KOLU --------------------------------------
+#
+# DOSYANIN EN SONUNDA olmasinin sebebi teknik: bu vakalar `cfg()`/`VALID_CFG`
+# kullaniyor ve onlar yukarida, `exec`/`apply` blogunda tanimli. Anlam olarak
+# bu blok dosyanin BASINDAKI `get` vakalarinin devamidir.
+#
+# BU KOL HIC GEZILMEMISTI. Bastaki 21 `get` vakasinin TAMAMI `--project
+# testproj` geciriyor (P sabiti), yani `get` icin `.wapps.yaml` cozumu,
+# projeler kayit defteri ve depo->proje baglamasi bir kez bile kosmadi.
+#
+# AYNI kor nokta `set`te OLCULDU ve GERCEK bir ayrisma sakliyordu. Burada da:
+# asagidaki dort vakanin UCU duzeltmeden ONCE DIFFERENT=3 raporladi (dorduncusu,
+# agent_get_config_unpinned, bir SIRA pinidir ve iki tarafta da esitti) —
+#
+#   Go   -> .wapps.yaml'i OKUYUP baglama kapisina variyor (BINDING_UNPINNED
+#           ya da satir ici onay), sonra degeri basiyor
+#   Rust -> dosyaya HIC bakmadan "get: no .wapps.yaml found" (NOT_FOUND)
+#
+# AJAN yolunun bu kolu YOK, ve bu bir eksiklik degil bir OLCUM: `get`in
+# politikasi refuse_agent, yani Guard baglama kapisindan ONCE reddediyor.
+# `agent_get_config_unpinned` tam olarak bunu pinliyor — `list` AYNI kosulda
+# BINDING_UNPINNED veriyor (agent_list_config_unpinned), `get` ise
+# AGENT_MODE_REFUSED vermeli. Iki vaka yan yana durunca kapi SIRASI gorunur.
+#
+# `--config` VAKALARI DA YENI: bu bayragin differential'da 309 vakalik korpus
+# boyunca TEK BIR vakasi yoktu. Rust'in run_get'i `config` parametresini HIC
+# almiyordu, yani bayrak sessizce yere dusuyordu. `--config`i bir ALT DIZINE
+# gostermek ayrica repoIdentity'nin config KOKUNU (cwd'yi degil) kullandigini
+# olcuyor: baglama istemindeki `repo:` satiri `<vaka>/sub` ile bitmeli.
+GET_CONFIG_CASES = [
+    # Config VAR, --project YOK, ajan → Guard baglama kapisindan ONCE reddeder.
+    ("agent_get_config_unpinned",
+     ["secrets", "get", "PLAIN_KEY"], AGENT, None, None, cfg(VALID_CFG)),
+    # Insan + TTY: satir ici baglama onayi. "n" → BINDING_UNPINNED, defter bos.
+    ("human_get_binding_declined",
+     ["secrets", "get", "PLAIN_KEY"], HUMAN, None, b"n\n", cfg(VALID_CFG)),
+    # "y" → pinlenir, DEGER basilir ve GET /read epoch pin'ini 7'ye kurar.
+    # Karsilastirilan dort alanin UCU birden bu vakada oynuyor: cikti,
+    # repo-pins.json ve epochs.json.
+    ("human_get_binding_accepted",
+     ["secrets", "get", "PLAIN_KEY"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
+    # --config bir ALT DIZINE: baglama kimligi CONFIG KOKUNDEN turuyor.
+    ("human_get_config_flag_binding_accepted",
+     ["--config", "sub/.wapps.yaml", "secrets", "get", "PLAIN_KEY"],
+     HUMAN, None, b"y\n", {"yaml": None, "files": {"sub/.wapps.yaml": VALID_CFG}}),
+
+    # --- SIRA PINLERI: bu ikisi duzeltmeden ONCE de SONRA da EQUAL ---
+    # Config YOK + --project YOK → baglama kapisi SESSIZCE geciyor ve ret bir
+    # adim sonra storeProject'ten NOT_FOUND olarak geliyor. Bir port burada
+    # BINDING_UNPINNED verseydi ayrisirdi; `set`in ayni vakasiyla (human_set_
+    # no_project) ayni kapiyi olcuyorlar.
+    ("human_get_no_project", ["secrets", "get", "PLAIN_KEY"], HUMAN, None, None, None),
+    # Ajan yolunda ayni cagri DAHA ONCE, Guard'da duser: config cozumu HIC
+    # kosmaz, yani mesaj NOT_FOUND DEGIL AGENT_MODE_REFUSED.
+    ("agent_get_no_project", ["secrets", "get", "PLAIN_KEY"], AGENT, None, None, None),
+]
+
+CASES += GET_CONFIG_CASES

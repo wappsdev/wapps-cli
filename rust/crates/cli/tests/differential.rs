@@ -97,6 +97,23 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     //        duzeltmeden ONCE DIFFERENT=3 raporladi (Go BINDING_UNPINNED,
     //        Rust NOT_FOUND) — yani bu uc vaka, epoch vakalarinin AKSINE,
     //        karsilastirma uzerinden GERCEKTEN bir kusur buldu.
+    // → 311: `get`in config kolu 6 vaka ekledi ve AYNI hikaye tekrar etti:
+    //        `get`in 21 vakasinin TAMAMI `--project testproj` geciriyordu,
+    //        yani yapilandirma kolu hic gezilmemisti. Alti vakanin UCU
+    //        duzeltmeden ONCE DIFFERENT=3 raporladi. Kalan uc vaka SIRA
+    //        pinidir (ajan reddi baglama kapisindan once, config yoksa
+    //        NOT_FOUND) ve ONCE de SONRA da esitti.
+    //
+    //        AYNI KOR NOKTA IKI KEZ CIKTI (once `set`, sonra `get`), ve
+    //        sebebi yapisal: bir fiil icin YARDIMCI yazan (burada `h`/`a`/
+    //        `hp`, hepsi `P = --project testproj` ekliyor) o fiilin
+    //        yardimcisiz kolunu bir daha HIC gezmiyor. Yeni bir fiil
+    //        portlanirken sorulacak soru: bu fiilin vakalarindan KACI
+    //        `--project`siz?
+    //
+    //        `--config` de bu turda ILK KEZ olculdu: 309 vakalik korpusta
+    //        o bayragin TEK bir vakasi yoktu ve Rust'in run_get'i onu hic
+    //        almiyordu (sessizce yere dusuyordu).
     //
     // Eklenen vakalarin AGIRLIK MERKEZI su soru: her fiilin ajan-modu
     // politikasi ne, ve kapi sirasi ne? Cevap fiil basina FARKLI (bkz.
@@ -113,6 +130,6 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 305, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 311, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

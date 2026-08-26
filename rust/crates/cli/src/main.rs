@@ -197,7 +197,7 @@ fn run() -> Result<(), CmdError> {
                         keys.len()
                     )));
                 }
-                run_get(&keys[0], project)
+                run_get(&keys[0], config, project)
             }
             _ => {
                 let _ = cli::build().find_subcommand_mut("secrets").unwrap().print_help();
@@ -1160,21 +1160,51 @@ fn run_set(
     Ok(())
 }
 
-fn run_get(key: &str, project: Option<String>) -> Result<(), CmdError> {
-    // get, gizli bir DUZ METIN degeri basar → ajan modunda YAPISAL red.
-    agentmode::guard(agentmode::POLICY_REFUSE_AGENT, agentmode::is_agent())
-        .map_err(CmdError::Cli)?;
+// run_get, `wapps secrets get <KEY>` — TEK anahtarin DUZ METIN degerini basar.
+//
+// KAPI SIRASI Go'dan OLCULDU:
+//
+//   1. arite            (cobra ExactArgs(1) — PersistentPreRunE'dan ONCE)
+//   2. --config/--project cozumu (kok PersistentPreRunE: resolveProjectFlag)
+//   3. ajan politikasi  (secretsPreRunE: `refuse_agent`)
+//   4. baglama kapisi   (secretsPreRunE: checkRepoBinding)
+//   5. proje cozumu     (storeProject("get") -> NOT_FOUND)
+//   6. POST /read
+//
+// 3'un varligi 4'u AJAN yolunda ERISILEMEZ kiliyor — `rm`teki ayni desen.
+//
+// BURADA BIR PORT BOSLUGU VARDI ve OLCULDU: run_get 2. ve 4. adimlari HIC
+// kosturmuyordu. `--config` parametresini almiyordu bile (bayrak sessizce yere
+// dusuyordu), ve `--project` yoksa dogrudan "get: no .wapps.yaml found"
+// diyordu. Yani KENDI `.wapps.yaml`i olan bir dizinde:
+//
+//   Go   -> baglama kapisi (satir ici onay, sonra deger)
+//   Rust -> NOT_FOUND, pinli bir depoda bile OKUYAMIYORDU
+//
+// Ayrisma differential'da GORUNMUYORDU: `get`in 21 pty vakasinin TAMAMI
+// `--project testproj` geciriyordu, yani yapilandirma kolu hic gezilmemisti.
+// Uc vaka eklendi (human_get_binding_{declined,accepted},
+// human_get_config_flag_binding_accepted) ve duzeltmeden ONCE DIFFERENT=3
+// raporladilar.
+//
+// NEDEN `store_project` ve `require_store_config` DEGIL: ayirici eksen
+// "okuyor mu yaziyor mu" DEGIL, "YEREL bir dosya OKUYOR mu". exec/apply
+// `targets`/`sources` okuyor, yani `.wapps.yaml` SART. `get` gate'ten TEK
+// anahtar cekiyor ve bunun icin yalnizca proje ADI gerekiyor — Go'nun
+// storeProject yorumu bu kumeyi ADIYLA sayiyor: list/get/rm/projects. Ciplak
+// `--project <ad>` bu yuzden deposuz calisiyor.
+//
+// Mekanizma ise `set`/`exec`/`apply` ile AYNI (Ctx::resolve -> gate ->
+// store_project). `get`in kendi kopyasi olsaydi zamanla ayrisirdi; ayrisacagi
+// yer de tam olarak yeni kapatilan bu delik olurdu.
+fn run_get(key: &str, config: Option<String>, project: Option<String>) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    // get, gizli bir DUZ METIN degeri basar → ajan modunda YAPISAL red. Kapi
+    // baglama kontrolunu de tasiyor ve SIRA onemli: ajan reddi ONCE.
+    gate(&ctx, agentmode::POLICY_REFUSE_AGENT, agent)?;
 
-    let project = match project {
-        Some(p) => p,
-        None => {
-            return Err(CmdError::Cli(
-                Error::new(Code::NotFound, "get: no .wapps.yaml found").with_recovery(
-                    "run this from a project directory, or pass --config <path>/.wapps.yaml (see 'wapps secrets init')",
-                ),
-            ))
-        }
-    };
+    let project = ctx.store_project("get").map_err(CmdError::Cli)?;
 
     let res = store::read(&project, std::slice::from_ref(&key.to_string()))
         .map_err(CmdError::Cli)?;

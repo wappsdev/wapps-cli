@@ -20,6 +20,13 @@
 // human_exec_binding_declined/accepted). Buradaki test, o vakalarin
 // olculmesinden BAGIMSIZ olarak kapinin KENDISINI adlandirir: differential'in
 // vaka listesinden biri silinse bu test yine de duser.
+//
+// `get` DE BURADA, ve differential'in yapisal koru yuzunden: bir ayrisma
+// duzeltilince DIFFERENT 0'a doner ve karsilastirmadan geriye KANIT KALMAZ.
+// `get`in yapilandirma kolu tam olarak boyle bir ayrismaydi (Go baglama
+// kapisina variyordu, Rust dosyaya HIC bakmadan NOT_FOUND diyordu; olculdu,
+// DIFFERENT=3). Asagidaki IDDIA'lar o kolu, iki ikili birlikte geri
+// kaysa BILE — yani karsilastirmanin gormeyecegi durumda da — yakalar.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -95,10 +102,62 @@ fn assert_gates(v: &serde_json::Value, side: &str) {
             "[{side}] {verb}: baglama onayi artik istenmiyor.\nolculen stderr: {s:?}"
         );
     }
+
+    // === `get` — ayni kapilar, KAPI 1 TERS yonde ==========================
+    //
+    // KAPI 1 (TERSINE): `--project <ad>` get icin YETER. Ayni cagri
+    // exec/apply'i yukarida NOT_FOUND ile dusuruyor; get GECMELI. Iki yonu
+    // birlikte tutmak, "hepsi requireStoreConfig kullansin" diye bir
+    // sadelestirmenin sessizce gecmesini engelliyor.
+    //
+    // DEGERE DEGIL, KAPININ GECILDIGINE bakiliyor: cikis 0 ve stderr BOS.
+    // Basilan bayt SAYISI da sifirdan buyuk olmali — aksi halde "kapi gecti
+    // ama hicbir sey donmedi" bu iddianin altindan gecerdi.
+    let s = stderr_of(v, "get_project_flag_no_config");
+    let exit = exit_of(v, "get_project_flag_no_config");
+    let n = stdout_len_of(v, "get_project_flag_no_config");
+    assert!(
+        exit == 0 && s.is_empty() && n > 0,
+        "[{side}] get: ciplak --project artik yetmiyor (get storeProject \
+         kullanmali, requireStoreConfig DEGIL).\nexit={exit} stdout_bayt={n} stderr={s:?}"
+    );
+
+    // KAPI 2: config var, --project yok -> baglama onayi, get icin de.
+    let s = stderr_of(v, "get_config_no_project");
+    assert!(
+        s.contains("not bound to a project yet") && s.contains("Bind them?"),
+        "[{side}] get: yapilandirma kolu baglama kapisina UGRAMIYOR — tam olarak \
+         kapatilan delik bu.\nolculen stderr: {s:?}"
+    );
+
+    // KAPI 3: SIRA. Ajan reddi baglama kontrolunden ONCE. `list` ayni kosulda
+    // BINDING_UNPINNED veriyor; fark POLITIKADAN geliyor, kapi sirasindan
+    // degil. Sira tersine donseydi ajan, uydurulmus bir .wapps.yaml'in proje
+    // ADINI hata mesajindan OKUYABILIRDI.
+    let s = stderr_of(v, "get_agent_config_unpinned");
+    assert!(
+        s.contains("AGENT_MODE_REFUSED") && !s.contains("BINDING_UNPINNED"),
+        "[{side}] get: ajan reddi artik baglama kontrolunden SONRA geliyor.\n\
+         olculen stderr: {s:?}"
+    );
+}
+
+fn stdout_len_of(v: &serde_json::Value, key: &str) -> u64 {
+    v.get(key)
+        .and_then(|o| o.get("stdout_len"))
+        .and_then(|s| s.as_u64())
+        .unwrap_or(0)
+}
+
+fn exit_of(v: &serde_json::Value, key: &str) -> i64 {
+    v.get(key)
+        .and_then(|o| o.get("exit"))
+        .and_then(|s| s.as_i64())
+        .unwrap_or_else(|| panic!("{key} cikis kodu yok"))
 }
 
 #[test]
-fn both_binaries_gate_exec_and_apply_the_same_way() {
+fn both_binaries_gate_exec_apply_and_get_the_same_way() {
     let root = repo_root();
     let work = scratch();
 

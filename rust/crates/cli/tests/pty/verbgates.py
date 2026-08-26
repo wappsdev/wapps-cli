@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""`secrets exec` ve `secrets apply`in ONUNDEKI iki kapiyi OLCER.
+"""`secrets exec`, `secrets apply` ve `secrets get`in ONUNDEKI kapilari OLCER.
 
-  1. `--project <ad>` bu iki verb icin config gereksinimini ATLATMIYOR.
+  1. `--project <ad>` exec/apply icin config gereksinimini ATLATMIYOR.
      get/set `storeProject` kullaniyor (proje ADI yeter); exec/apply
      `requireStoreConfig` kullaniyor ve yerel bir .wapps.yaml SART.
+     Bu kapi `get` icin TERSINE olculuyor: ayni cagri exec/apply'i NOT_FOUND
+     ile dusururken get'i GECIRMELI. Iki yon bir arada olmazsa "hepsini
+     requireStoreConfig yap" diye bir sadelestirme sessizce gecerdi.
   2. .wapps.yaml VARSA ve --project YOKSA, repo->proje baglamasi ETKILESIMLI
-     bir onay istiyor ("Bind them? [y/N]").
+     bir onay istiyor ("Bind them? [y/N]") — get icin de.
+  3. `get`in ajan reddi baglama kontrolunden ONCE geliyor: config'i olan
+     pinlenmemis bir dizinde ajan modunda mesaj AGENT_MODE_REFUSED olmali,
+     BINDING_UNPINNED DEGIL. (`list` AYNI kosulda BINDING_UNPINNED veriyor —
+     fark politikadan geliyor, kapi sirasindan degil.)
 
 Onceki dilimde bu betik yalnizca GO'yu olcuyordu, cunku bu iki kapinin
 arkasindaki altsistemler (config yukleme/dogrulama ve baglama pin defteri)
@@ -82,6 +89,38 @@ def main():
             o, e, c = run([binary] + argv, env, cwd=withcfg, stdin_data=b"n\n")
             res[f"{vname}_config_no_project"] = {
                 "stderr": e.decode("utf-8", "replace"), "exit": c}
+
+        # --- `get`: AYNI kapilar, biri TERS yonde -------------------------
+        #
+        # KAPI 1 TERSINE, ve bu bir istisna degil kumenin TANIMI: get
+        # storeProject kullaniyor (proje ADI yeter), exec/apply
+        # requireStoreConfig kullaniyor (yerel dosya SART).
+        #
+        # DEGER STDOUT'A BASILIYOR ve BURAYA KAYDEDILMIYOR — yalnizca UZUNLUGU.
+        # (Sahte gate'in dizesi zaten uydurma, ama bir olcum dosyasinin bir
+        # "deger" alani tasimasi bu portun kapatmaya calistigi yuzeyin ta
+        # kendisi olurdu.) Kapinin gecildigi, cikis 0 + stderr BOS ile
+        # adlandiriliyor.
+        o, e, c = run([binary, "--project", "testproj", "secrets", "get", "PLAIN_KEY"],
+                      env, cwd=nocfg)
+        res["get_project_flag_no_config"] = {
+            "stderr": e.decode("utf-8", "replace"), "exit": c, "stdout_len": len(o)}
+
+        # KAPI 2, get icin: config VAR, --project YOK -> baglama onayi.
+        o, e, c = run([binary, "secrets", "get", "PLAIN_KEY"], env, cwd=withcfg,
+                      stdin_data=b"n\n")
+        res["get_config_no_project"] = {
+            "stderr": e.decode("utf-8", "replace"), "exit": c}
+
+        # KAPI 3: ajan reddi baglama kontrolunden ONCE. WAPPS_AGENT_MODE
+        # override'i KALDIRILIYOR ve ajan isareti konuyor; stdin verilmiyor
+        # cunku bu yol bir soru SORMAMALI (sorarsa timeout'ta olur ve
+        # cagirandaki iddia bunu adlandirir).
+        agent_env = {k: v for k, v in env.items() if k != "WAPPS_AGENT_MODE"}
+        agent_env["CLAUDECODE"] = "1"
+        o, e, c = run([binary, "secrets", "get", "PLAIN_KEY"], agent_env, cwd=withcfg)
+        res["get_agent_config_unpinned"] = {
+            "stderr": e.decode("utf-8", "replace"), "exit": c}
     finally:
         gate.terminate(); gate.wait()
 
