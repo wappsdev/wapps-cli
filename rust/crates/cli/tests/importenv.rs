@@ -132,7 +132,10 @@ use wapps::clierr::{Code, Error};
 
 #[test]
 fn an_epoch_downgrade_from_the_keys_call_is_a_gate_not_a_convenience() {
-    let e = Error::new(Code::EpochDowngrade, "served epoch 7 < pinned 9 for \"testproj\"");
+    let e = Error::new(
+        Code::EpochDowngrade,
+        "served epoch 7 < pinned 9 for \"testproj\"",
+    );
     let got = importenv::existing_names(Err(e));
     let err = got.expect_err("EPOCH_DOWNGRADE YUTULAMAZ — rollback kapisi");
     assert_eq!(err.code, Code::EpochDowngrade);
@@ -152,5 +155,8 @@ fn any_other_keys_error_is_still_swallowed() {
 #[test]
 fn a_successful_keys_call_yields_the_name_set() {
     let names = importenv::existing_names(Ok(vec!["BETA".into(), "ALPHA".into()])).unwrap();
-    assert_eq!(names.iter().cloned().collect::<Vec<_>>(), vec!["ALPHA", "BETA"]);
+    assert_eq!(
+        names.iter().cloned().collect::<Vec<_>>(),
+        vec!["ALPHA", "BETA"]
+    );
 }

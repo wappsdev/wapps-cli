@@ -30,7 +30,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).expect("depo koku bulunamadi").to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("depo koku bulunamadi")
+        .to_path_buf()
 }
 
 // scratch, depo AGACININ DISINDA bir calisma dizini verir. Depo agacinin
@@ -57,7 +61,11 @@ fn go_oracle(work: &Path) -> PathBuf {
         .current_dir(repo_root())
         .output()
         .expect("go build calistirilamadi");
-    assert!(out.status.success(), "go build (oracle) basarisiz:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "go build (oracle) basarisiz:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     bin
 }
 
@@ -79,7 +87,10 @@ fn run_agent(bin: &Path, args: &[&str], work: &Path) -> (String, i32) {
         .stdin(std::process::Stdio::null())
         .output()
         .expect("ikili calistirilamadi");
-    (String::from_utf8_lossy(&out.stderr).to_string(), out.status.code().unwrap_or(-1))
+    (
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
 }
 
 #[test]
@@ -91,7 +102,14 @@ fn rotate_skip_refuses_an_agent_in_both_binaries() {
     for (side, bin) in [("go", &go), ("rust", &rs)] {
         let (stderr, code) = run_agent(
             bin,
-            &["rotate", "skip", "run-1", "SOME_KEY", "--reason", "value is a public constant"],
+            &[
+                "rotate",
+                "skip",
+                "run-1",
+                "SOME_KEY",
+                "--reason",
+                "value is a public constant",
+            ],
             &work,
         );
         // IDDIA: beklenen kod ADIYLA yaziliyor. Diger ikiliye BAKILMIYOR.
@@ -128,7 +146,10 @@ fn the_three_root_mounted_verbs_do_not_share_a_gate() {
     for (side, bin) in [("go", &go), ("rust", &rs)] {
         // `rotate skip`: ajan REDDEDILIR (elle yazilmis kontrol).
         let (s, _) = run_agent(bin, &["rotate", "skip", "r", "K", "--reason", "x"], &work);
-        assert!(s.contains("AGENT_MODE_REFUSED"), "[{side}] rotate skip: {s:?}");
+        assert!(
+            s.contains("AGENT_MODE_REFUSED"),
+            "[{side}] rotate skip: {s:?}"
+        );
 
         // `tofu`: ajan SERBEST (PolicyAllow) ama BAGLAMA kapisi elle yeniden
         // uygulanmis → pinsiz bir agacta BINDING_UNPINNED ile duser. Yani
