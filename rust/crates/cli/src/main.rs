@@ -60,6 +60,27 @@ fn run() -> Result<(), CmdError> {
     let project = matches.get_one::<String>("project").cloned();
     let config = matches.get_one::<String>("config").cloned();
 
+    // `--config` + `--project` BIRLIKTE: ret DISPATCH'TEN ONCE, ve FIILDEN
+    // BAGIMSIZ. Buraya konmasinin sebebi olculdu: Go'da bu kontrol root'un
+    // `PersistentPreRunE`unda (`resolveProjectFlag`), yani `Ctx::resolve`
+    // cagirmayan fiiller icin de ates ediyor — `doctor`, `dr verify`,
+    // `secrets policy show`, `rotate skip`, `projects rm`in HEPSI Go'da bu
+    // hatayi veriyor. Kontrol `Ctx::resolve`in ICINDE kalsaydi o bes fiil
+    // Rust'ta iki bayragi da SESSIZCE kabul ederdi.
+    //
+    // `tofu` ISTISNA ve bu da olculdu: Go'da `TofuCmd` root'a mount'lu ve
+    // `DisableFlagParsing: true`, o yuzden root'un hook'u onun icin
+    // CALISMIYOR — `wapps --config x --project p tofu plan` mutual-exclusion
+    // DEGIL, "exec: no .wapps.yaml found" veriyor. Ayni istisna zaten
+    // asagida da var (tofu dali iki bayragi da GORMEZDEN geliyor); bu satir
+    // onunla ayni gercegi tasiyor.
+    if config.is_some() && project.is_some() && matches.subcommand_name() != Some("tofu") {
+        // `Plain` — `Cli` DEGIL. Go'da bu hata duz bir `fmt.Errorf`, yani
+        // insan yolunda kod oneki ve kurtarma satiri YOK. `Plain` ajan
+        // modunda zaten INTERNAL zarfina sariliyor, yani iki bicim de dogru.
+        return Err(CmdError::Plain(configctx::MUTUALLY_EXCLUSIVE.to_string()));
+    }
+
     match matches.subcommand() {
         Some(("secrets", sm)) => match sm.subcommand() {
             Some(("set", sm2)) => {

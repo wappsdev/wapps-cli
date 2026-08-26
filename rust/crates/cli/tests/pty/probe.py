@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Bir ikiliyi tum vakalarda pty altinda kosturur ve sonucu JSON dokerler."""
-import json, os, shutil, socket, subprocess, sys, time
+import hashlib, json, os, shutil, socket, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
 from cases import CASES, GATE_SCRIPT, FIXTURE_FILES
+
+def bindpath_for(cfg):
+    return os.path.join(cfg, "wapps", "repo-pins.json")
 
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
@@ -62,6 +65,20 @@ def main():
             # kendisi o dosyayi URETIYOR, ve workdir'de kosarsa oraya yazip
             # "config yok" dalini olcen BUTUN diger vakalari bozardi.
             cfgseed = case[5] if len(case) > 5 else None
+            # 7. eleman: ONCEDEN VAR OLAN bir depo->proje pini.
+            #
+            # NEDEN GEREKLI: `bindPrompt`in UYUSMAZLIK dali (config PINLI
+            # OLANDAN BASKA bir proje isimliyor) bu tohum olmadan HICBIR fiil
+            # icin gezilemiyordu. Korpustaki her pin KOSUM SIRASINDA doguyor
+            # (insan "y" diyor), yani her zaman EŞLESEN bir pin; uyusmazlik ve
+            # "zaten pinli, SORMADAN gec" dallarinin ikisi de olculmemisti.
+            #
+            # NEDEN YAPILABILIR: parmak izi sha256(config KOKUNUN mutlak yolu)
+            # ve o yol probe.py'nin ELINDE (casedir'i o kuruyor). Dosya bicimi
+            # Go'nun MarshalIndent'i; python json.dumps(indent=2) ile BAYT
+            # ESITLIGI olculdu (Go ikilisinin urettigi dosyayla karsilastirildi).
+            # Yol iki ikili icin de AYNI workdir'den turedigi icin tohum da ayni.
+            bindseed = case[6] if len(case) > 6 else None
             # {FIX} -> fikstur dizini (mutlak). Iki ikili de ayni dizeyi gorur.
             argv = [a.replace("{FIX}", fixdir) for a in argv]
             env = {
@@ -139,6 +156,21 @@ def main():
                     mode = "wb" if isinstance(content, (bytes, bytearray)) else "w"
                     with open(fp, mode) as f:
                         f.write(content)
+            if bindseed is not None:
+                # Pin, CONFIG KOKUNE gore anahtarlanir; `sub` verilirse
+                # `--config sub/.wapps.yaml` kolunun kimligi olculur.
+                broot = casedir
+                if bindseed.get("sub"):
+                    broot = os.path.join(casedir, bindseed["sub"])
+                fp = hashlib.sha256(broot.encode()).hexdigest()
+                doc = {"schema": "wapps-repo-pins/v1",
+                       "pins": {fp: {"repo": broot,
+                                     "project": bindseed["project"],
+                                     "backend": bindseed.get("backend", "store")}}}
+                os.makedirs(os.path.dirname(bindpath_for(cfg)), exist_ok=True)
+                with open(bindpath_for(cfg), "w") as f:
+                    f.write(json.dumps(doc, indent=2))
+
             out, err, code = run([binary] + argv, env, cwd=casedir,
                                  stdin_data=stdin_data)
             # Pin dosyasinin SON hali de sozlesmenin parcasi: reddedilen bir
@@ -146,7 +178,7 @@ def main():
             pin = open(pinpath, "rb").read().hex() if os.path.exists(pinpath) else None
             # BAGLAMA defteri de sozlesmenin parcasi: bir ikili reddedip yine de
             # pinleseydi (ya da tersi) cikti esit gorunurdu.
-            bindpath = os.path.join(cfg, "wapps", "repo-pins.json")
+            bindpath = bindpath_for(cfg)
             bind = open(bindpath, "rb").read().hex() if os.path.exists(bindpath) else None
             # apply'in YAZDIGI hedef dosyalar: cikti satirlari ("wrote x")
             # esit olup dosya ICERIGI ayrisabilirdi. Mod da tasiniyor cunku

@@ -35,6 +35,26 @@ pub struct Ctx {
     pub project_override: Option<String>,
 }
 
+/// MUTUALLY_EXCLUSIVE, `--config` + `--project` reddinin TEK metin kaynagi.
+///
+/// SABIT, fonksiyon DEGIL — cunku iki cagiran onu FARKLI SARIYOR ve fark
+/// OLCULDU:
+///
+///   * dispatch (main.rs) → `CmdError::Plain`. Go'da bu hata root'un
+///     `PersistentPreRunE`undan DUZ bir `fmt.Errorf` olarak donuyor, yani
+///     insan yolunda "Error: <cumle>" basiliyor — kod oneki YOK, kurtarma
+///     satiri YOK. Ilk duzeltme burada `Error::new(Code::Internal, ...)`
+///     kullandi ve ajan yolu ESITLENDI ama INSAN yolu ayrisik kaldi
+///     (differential DIFFERENT=1): Rust "Error: INTERNAL: ... → run wapps
+///     doctor" basiyordu. `Plain` ajan modunda zaten Internal'a sariliyor,
+///     yani ZARF da dogru kaliyor.
+///   * `Ctx::resolve` → yapisal `Error`. Bu yol programatik/test cagrilari
+///     icin duruyor (Go'daki `resolveProjectFlag`in kendi kontrolu gibi) ve
+///     dispatch onu yakaladigi icin SAHADAN ERISILEMEZ.
+///
+/// Metin iki yere KOPYALANSAYDI biri gunun birinde otekinden ayrisirdi.
+pub const MUTUALLY_EXCLUSIVE: &str = "--config and --project are mutually exclusive";
+
 impl Ctx {
     /// resolve, --config/--project bayraklarini bir baglama cevirir.
     ///
@@ -44,10 +64,7 @@ impl Ctx {
     pub fn resolve(config: Option<&str>, project: Option<&str>) -> Result<Ctx, Error> {
         if let Some(c) = config {
             if project.is_some() {
-                return Err(Error::new(
-                    Code::Internal,
-                    "--config and --project are mutually exclusive",
-                ));
+                return Err(Error::new(Code::Internal, MUTUALLY_EXCLUSIVE));
             }
             let abs = abs_path(Path::new(c))
                 .map_err(|e| Error::new(Code::Internal, format!("resolve --config path: {e}")))?;

@@ -154,12 +154,80 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     //        2)") — Go ise *os.PathError metnini ("open <yol>: no such file
     //        or directory"). Duzeltme drverb.rs'i ZATEN VAR OLAN goerr'e
     //        bagladi; yeni bir metin UYDURULMADI.
+    // → 413: BU TURDA 54 VAKA EKLENDI VE HICBIRI AYRISMA BULMADI. Bu bir
+    //        SONUC, bir bosluk degil — ve olcum su sirayla, her grup
+    //        YAZILMADAN ONCE ve SONRA yapildi:
+    //
+    //          taban                        EQUAL=359 DIFFERENT=0
+    //          +23 `--config` kolu vakasi   EQUAL=382 DIFFERENT=0
+    //          +19 baglama-durumu vakasi    EQUAL=401 DIFFERENT=0
+    //          +12 kol-boslugu vakasi       EQUAL=413 DIFFERENT=0
+    //          +4  BESINCI DURUM vakasi     EQUAL=413 DIFFERENT=2  <-- AYRISMA
+    //          duzeltmeden sonra            EQUAL=417 DIFFERENT=0
+    //          +2  KISA BICIM (-p/-c)        EQUAL=419 DIFFERENT=0
+    //
+    //        `set` ve `get`te iki kez cikan kor nokta UCUNCU KEZ CIKMADI:
+    //        `--config` kalan ON BIR `Ctx::resolve` fiilinin (list/status/rm/
+    //        projects list/import-env/env/trust-repo/init/set/exec/apply)
+    //        hepsinde iki ikilide de AYNI davraniyor.
+    //
+    //        BRIEF'IN VERDIGI SEBEP OLCULDU VE YANLIS CIKTI. Iddia "korpustaki
+    //        her vaka `--project` geciren bir yardimcidan doguyor"du. Olcum:
+    //        359 vakanin 119'u `--project`, 1'i `--config`, 239'u HICBIR
+    //        kimlik bayragi gecirmiyordu; korpus elemanlarinin 199'u SATIR ICI
+    //        TUPLE, 164'u yardimci cagrisi; ve `P` ekleyen yardimcilarin IKISI
+    //        (`e_h`, `e_a`) HIC CAGRILMIYOR. Yani yardimci kalibini
+    //        degistirmek korpusun yarisina bile dokunmazdi — `exec`in sekiz
+    //        `--project` vakasi elle `P` yazan satir ici tuple'lardir.
+    //
+    //        Gercek bosluk SAYIMDA: bir fiilin kimlik kollarindan kacinin
+    //        gezildigi hic sayilmiyordu. cases.py artik bunu IMPORT ANINDA
+    //        sart kosuyor (`_armcheck`), ve mekanizmanin kendisi
+    //        tests/armcheck.rs'te MUTASYONLA sinaniyor.
+    //
+    //        IKINCI BOSLUK DA KAPANDI: probe.py `repo-pins.json`
+    //        TOHUMLAYABILIYOR (7. vaka elemani; parmak izi = sha256(config
+    //        kokunun mutlak yolu), bicim Go'nun MarshalIndent'i ve bayt
+    //        esitligi Go ikilisinin urettigi dosyayla OLCULDU). Bu olmadan
+    //        `bindPrompt`in UYUSMAZLIK dali ("baska projeye pinli") hicbir
+    //        fiil icin gezilemiyordu; "ZATEN PINLI, sormadan gec" dali da
+    //        oyle — ve o dal bir AJANIN gercekten calistigi TEK yol.
+    //
+    //        UC ASIMETRI DE BURADA PINLENDI. UCU DE IKI IKILIDE AYNI, yani
+    //        differential onlari BULAMAZDI (paylasilan kusur kor noktasi);
+    //        ciktiya ELLE bakilarak goruldular:
+    //          * `secrets init` `--config`i YAZMA yolunda kullanmiyor (sablon
+    //            CWD'ye dusuyor) ama BAGLAMA kapisinda kullaniyor;
+    //          * `import-env <dosya>` yolu CWD'ye gore cozuluyor;
+    //          * `env --write <yol>` CWD'ye gore, ama `apply`in `targets`i
+    //            CONFIG KOKUNE gore cozuluyor.
+    //
+    //        VE BIR AYRISMA GERCEKTEN CIKTI — ama ARANAN eksende degil.
+    //        `--config` kolu on bir fiilde de temizdi; ayrisma, DORT KOLLU
+    //        taksonominin KENDI kor noktasindan cikti: `--config` ile
+    //        `--project` BIRLIKTE verildiginde. O durumun taksonomide adi
+    //        yoktu ve korpusta tek ornegi de yoktu.
+    //
+    //          Go   -> "--config and --project are mutually exclusive"
+    //          Rust -> clap'in `conflicts_with` cumlesi
+    //
+    //        Duzeltme UC olcumden dogdu (hicbiri tahmin degil): ret
+    //        `Ctx::resolve`e ait DEGIL (Go'da root'un PersistentPreRunE'unda,
+    //        yani `doctor`/`dr`/`policy`/`rotate skip`/`projects rm` de
+    //        aliyor); `tofu` ISTISNA (DisableFlagParsing → bayraklar atil);
+    //        ve hata DUZ (`Plain`), yani insan yolunda kod oneki/kurtarma
+    //        satiri YOK. Ucuncusu ilk turda kacirildi ve DIFFERENT=1 olarak
+    //        geri geldi.
+    //
+    //        Ayrisma tests/identityflags.rs'te IDDIA olarak da duruyor:
+    //        duzeltmeden sonra DIFFERENT 0'a doner ve karsilastirmada kanit
+    //        KALMAZ.
     let equal: usize = report
         .rsplit("EQUAL=")
         .next()
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 359, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 419, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

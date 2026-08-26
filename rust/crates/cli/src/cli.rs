@@ -49,7 +49,18 @@ pub fn build() -> Command {
                 .short('p')
                 .long("project")
                 .value_name("string")
-                .conflicts_with("config")
+                // `conflicts_with("config")` BILEREK YOK. clap onu
+                // AYRISTIRMA aninda reddediyordu ve KENDI cumlesini basiyordu
+                // ("the argument '--config <string>' cannot be used with
+                // '--project <string>'"). Go'da konusan katman o DEGIL:
+                // cobra'nin grup dogrulamasi degil, `resolveProjectFlag`in
+                // programatik kontrolu ates ediyor ve "--config and --project
+                // are mutually exclusive" diyor. OLCULDU (differential
+                // human_/agent_both_identity_flags_are_rejected, duzeltmeden
+                // ONCE DIFFERENT=2).
+                //
+                // Ret artik main.rs'te, dispatch'ten once — cunku `tofu` bu
+                // reddi ALMIYOR (bkz. orasi).
                 .help("Registered project name; resolves to that project's .wapps.yaml"),
         )
         .subcommand(

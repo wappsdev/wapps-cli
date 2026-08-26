@@ -2001,3 +2001,517 @@ DR_CASES = [
 ]
 
 CASES += DR_CASES
+
+
+# --- `--config` KOLU: kalan ON BIR fiil -------------------------------------
+#
+# BRIEF'IN ONERMESI OLCULDU VE YANLIS CIKTI. Iddia: "korpustaki her vaka
+# `--project` geciren bir yardimcidan doguyor". Olcum (bkz. armcheck asagida):
+# 359 vakanin 119'u `--project` geciriyor, 239'u HICBIR kimlik bayragi
+# gecirmiyor, ve `--config` geciren TEK BIR vaka var (`get`in). Dahasi korpus
+# elemanlarinin 199'u SATIR ICI TUPLE, 164'u yardimci cagrisi — yani
+# "yardimciyi duzeltmek" korpusun %45'ine dokunurdu. `exec`in sekiz
+# `--project` vakasi elle `P` yazan SATIR ICI tuple'lardir; P ekleyen
+# yardimcilarin ikisi (`e_h`/`e_a`) HIC CAGRILMIYOR.
+#
+# Gercek boslugu adlandiralim: kor nokta YARDIMCIDA degil, bir fiilin
+# KIMLIK KOLLARININ hangilerinin gezildiginin HIC SAYILMAMASINDA. Dort kol
+# var ve hepsi ayri kod yolu:
+#     proj  : `--project <ad>`  -> projects::resolve, cozulmezse override
+#     cfg   : `--config <yol>`  -> config_path SABITLENIR, cwd ILGISIZ
+#     rooted: bayrak yok + cwd'de `.wapps.yaml` VAR -> load_or_none dolu
+#     bare  : bayrak yok + `.wapps.yaml` YOK        -> load_or_none bos
+#
+# `Ctx::resolve`den gecen ON IKI fiil var (13.'su `tofu`, `resolve(None, None)`
+# cagiriyor — iki bayragi da BILEREK almiyor). Bu blok yazilmadan once
+# `--config` kolu o on ikiden YALNIZCA `get` icin geziliyordu; kalan on birde
+# bayragin differential'da tek bir vakasi yoktu.
+#
+# `--config` bir ALT DIZINE gosteriliyor. Bu bir kolaylik degil bir olcu:
+# baglama kimligi CONFIG KOKUNDEN turemeli (cwd'den degil), yani istemdeki
+# `repo:` satiri `<vaka>/sub` ile bitmeli; ve `apply`/`env --write` hedef
+# yollarini o koke gore cozmeli.
+CFG_SUB = ["--config", "sub/.wapps.yaml"]
+
+def _sub(yaml=VALID_CFG, files=None):
+    f = {"sub/.wapps.yaml": yaml}
+    f.update(files or {})
+    return {"yaml": None, "files": f}
+
+def cf(name, argv, env, stdin=None, yaml=VALID_CFG, files=None):
+    """`--config sub/.wapps.yaml` ile bir vaka. `.wapps.yaml` KOKE YAZILMAZ —
+    aksi halde cwd-goreli varsayilan da bulunur ve bayragin GERCEKTEN
+    onurlandirildigi olculemez; iki ikili de ayni dosyaya duser ve vaka
+    sessizce bos gezerdi."""
+    return (name, CFG_SUB + argv, env, None, stdin, _sub(yaml, files))
+
+CONFIG_FLAG_CASES = [
+    # === list ===============================================================
+    cf("agent_list_config_flag_unpinned", ["secrets", "list"], AGENT),
+    cf("human_list_config_flag_binding_accepted", ["secrets", "list"], HUMAN, b"y\n"),
+
+    # === status =============================================================
+    # status proje adini YEREL config'ten okur; `--config` ile o ad alt
+    # dizinden gelmeli. Baglama kapisi status'ta YOK, yani stdin de gerekmez.
+    cf("human_status_config_flag", ["secrets", "status"], HUMAN, None),
+    cf("human_status_config_flag_json", ["secrets", "status", "--json"], HUMAN, None),
+
+    # === rm =================================================================
+    cf("agent_rm_config_flag_refused", ["secrets", "rm", "PLAIN_KEY", "--yes"], AGENT),
+    cf("human_rm_config_flag_binding_accepted",
+       ["secrets", "rm", "PLAIN_KEY", "--yes"], HUMAN, b"y\n"),
+
+    # === projects list ======================================================
+    # Baglama kapisi YOK (kokte mount'lu) ama config GEREKSINIMI VAR: bayrak
+    # onurlandirilmazsa "no .wapps.yaml found" ile duser.
+    cf("human_projects_list_config_flag", ["projects", "list"], HUMAN, None),
+    cf("agent_projects_list_config_flag", ["projects", "list"], AGENT, None),
+
+    # === import-env =========================================================
+    # OLCULDU: dosya yolu CWD'ye gore cozuluyor, CONFIG KOKUNE gore DEGIL.
+    # `in.env` YALNIZCA `sub/` altinda var; baglama kapisi config kokunu
+    # (`.../sub`) kullaniyor ama okuma bir adim sonra cwd-goreli `in.env` ile
+    # duşuyor. IKI IKILI DE AYNI: bu bir ayrisma degil, PINLENEN bir asimetri.
+    cf("human_import_env_config_flag_reads_the_file_from_cwd",
+       ["secrets", "import-env", "in.env"],
+       HUMAN, b"y\n", files={"sub/in.env": IMPORT_FILES["in.env"]}),
+    cf("agent_import_env_config_flag_unpinned", ["secrets", "import-env", "in.env"],
+       AGENT, None, files={"sub/in.env": IMPORT_FILES["in.env"]}),
+
+    # === env ================================================================
+    cf("human_env_config_flag_binding_accepted", ["secrets", "env"], HUMAN, b"y\n"),
+    # `--write`: OLCULDU, hedef yol CWD'ye gore cozuluyor (`out.env` vaka
+    # KOKUNE dusuyor, `sub/` altina DEGIL) — oysa `apply`in `targets` yollari
+    # CONFIG KOKUNE gore cozuluyor (asagida `sub/.env.local`). Bu asimetri iki
+    # ikilide de AYNI; vaka onu pinliyor ki bir taraf "duzeltip" ayrismasin.
+    cf("agent_env_config_flag_write_lands_next_to_cwd_behind_a_service_token",
+       ["secrets", "env", "--write", "out.env"], CI_TOKENS),
+
+    # === trust-repo =========================================================
+    cf("human_trustrepo_config_flag_pins", ["secrets", "trust-repo"], HUMAN, b"y\n"),
+    cf("agent_trustrepo_config_flag_is_tty_only", ["secrets", "trust-repo"], AGENT),
+
+    # === init ===============================================================
+    # OLCULDU ve BEKLENENIN TERSI: `init` `--config`i YAZMA yolunda HIC
+    # kullanmiyor — sablon CWD'deki `.wapps.yaml`a dusuyor, `sub/` altindaki
+    # dosyaya DOKUNULMUYOR. Bayrak yine de ETKISIZ DEGIL: baglama kapisi onu
+    # onurlandiriyor (istemdeki `repo:` satiri `.../sub` ile bitiyor). Yani
+    # tek bir cagride bayrak BIR kapida gecerli, digerinde yok.
+    # Sonuc: "already exists" dali BU KOLDA ERISILEMEZ ve `--force`un
+    # ezecegi bir sey YOK. Iki vaka da ayni yola giriyor; ayirdiklari sey
+    # proje ADININ nereden geldigi (dizin adi vs `--project-name`).
+    cf("human_init_config_flag_writes_to_cwd_not_the_config_path",
+       ["secrets", "init"], HUMAN, b"y\n"),
+    cf("human_init_config_flag_named_project_also_writes_to_cwd",
+       ["secrets", "init", "--force", "--project-name", "repl"], HUMAN, b"y\n"),
+    cf("agent_init_config_flag_is_gated", ["secrets", "init"], AGENT),
+
+    # === set ================================================================
+    cf("human_set_config_flag_binding_accepted",
+       ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"], HUMAN, b"y\n"),
+    cf("agent_set_config_flag_unpinned",
+       ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"], AGENT),
+
+    # === exec ===============================================================
+    cf("human_exec_config_flag_binding_accepted",
+       ["secrets", "exec", "--", "/bin/sh", "-c", "echo $ALPHA"], HUMAN, b"y\n"),
+    cf("agent_exec_config_flag_unpinned",
+       ["secrets", "exec", "--", "/bin/sh", "-c", "echo $ALPHA"], AGENT),
+
+    # === apply ==============================================================
+    # Hedef `.env.local` CONFIG KOKUNE gore cozulmeli → `sub/.env.local`.
+    cf("human_apply_config_flag_writes_under_the_config_root",
+       ["secrets", "apply"], HUMAN, b"y\n", yaml=CFG_TARGETS),
+    cf("agent_apply_config_flag_unpinned", ["secrets", "apply"], AGENT, yaml=CFG_TARGETS),
+]
+
+CASES += CONFIG_FLAG_CASES
+
+
+# --- ONCEDEN VAR OLAN BAGLAMA: `bindPrompt`in olculmemis IKI dali ------------
+#
+# Korpustaki her pin KOSUM ICINDE doguyordu (insan "y" diyor), yani her zaman
+# ESLESEN bir pin. Iki dal bu yuzden HICBIR fiil icin gezilmemisti:
+#
+#   UYUSMAZLIK : defterde pin VAR ama `.wapps.yaml` BASKA bir proje isimliyor
+#                -> her modda hard fail, satir ici COZUM YOK (pinin var olma
+#                sebebi tam olarak bu).
+#   ZATEN PINLI: pin VAR ve ESLESIYOR -> kapi SESSIZCE gecer, istem YOK. Bu
+#                dal AJANIN gercekten calistigi tek yol, ve differential'da
+#                tek bir vakasi yoktu.
+#
+# Engel harness'taydi, uygulamada degil: probe.py `repo-pins.json` yazamiyordu.
+# Kapatildi (7. vaka elemani); parmak izi sha256(config kokunun mutlak yolu) ve
+# o yolu probe.py zaten kuruyor.
+#
+# ISTEM YOKLUGUNUN KANITI stdin'in None olmasi: pinin ESLESTIGI vakalar girdi
+# ALMADAN 0 ile bitiyor. Kapi sorsaydi bir pty EOF vermez, iki ikili de
+# bloklanir ve diff.py bunu TIMEOUT diye UNSOUND sayardi — yani "sormadi"
+# iddiasi bir yorum degil, olcumun kendisi.
+def bs(project="otherproj", sub=None, backend="store"):
+    return {"project": project, "sub": sub, "backend": backend}
+
+MISMATCH = bs("otherproj")
+MATCHES = bs("testproj")
+
+BINDSTATE_CASES = [
+    # === UYUSMAZLIK: her modda hard fail ====================================
+    ("human_get_binding_mismatch",
+     ["secrets", "get", "PLAIN_KEY"], HUMAN, None, None, cfg(VALID_CFG), MISMATCH),
+    # `get` refuse_agent: AJAN kapisi baglama kapisindan ONCE — mesaj
+    # AGENT_MODE_REFUSED olmali, "different project" DEGIL.
+    ("agent_get_binding_mismatch_hits_the_agent_gate_first",
+     ["secrets", "get", "PLAIN_KEY"], AGENT, None, None, cfg(VALID_CFG), MISMATCH),
+    ("agent_list_binding_mismatch",
+     ["secrets", "list"], AGENT, None, None, cfg(VALID_CFG), MISMATCH),
+    ("human_list_binding_mismatch",
+     ["secrets", "list"], HUMAN, None, None, cfg(VALID_CFG), MISMATCH),
+    ("human_set_binding_mismatch",
+     ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     HUMAN, None, None, cfg(VALID_CFG), MISMATCH),
+    ("human_rm_binding_mismatch",
+     ["secrets", "rm", "PLAIN_KEY", "--yes"], HUMAN, None, None, cfg(VALID_CFG), MISMATCH),
+    ("human_exec_binding_mismatch",
+     ["secrets", "exec", "--", "/bin/sh", "-c", "echo $ALPHA"],
+     HUMAN, None, None, cfg(VALID_CFG), MISMATCH),
+    ("human_apply_binding_mismatch",
+     ["secrets", "apply"], HUMAN, None, None, cfg(CFG_TARGETS), MISMATCH),
+    ("human_env_binding_mismatch",
+     ["secrets", "env"], HUMAN, None, None, cfg(VALID_CFG), MISMATCH),
+    ("human_import_env_binding_mismatch",
+     ["secrets", "import-env", "in.env"], HUMAN, None, None,
+     cfg(VALID_CFG, IMPORT_FILES), MISMATCH),
+    # Baglama kapisi init'in YAZIMINDAN once: dosya DOKUNULMAZ.
+    ("human_init_binding_mismatch",
+     ["secrets", "init"], HUMAN, None, None, cfg(VALID_CFG), MISMATCH),
+    # `--config` kolu: parmak izi CONFIG KOKUNDEN (`sub/`) turemeli. Vaka
+    # KOKUNE pinlenmis olsaydi kapi "pinsiz" derdi; `sub`a pinli oldugu icin
+    # "different project" diyor — yani bu vaka anahtarlamayi da olcuyor.
+    ("human_get_config_flag_binding_mismatch",
+     CFG_SUB + ["secrets", "get", "PLAIN_KEY"], HUMAN, None, None,
+     _sub(VALID_CFG), bs("otherproj", sub="sub")),
+    # `trust-repo` baglama-MUAF: uyusmazligi satir ici cozebilen TEK yol.
+    ("human_trustrepo_repins_over_a_mismatch",
+     ["secrets", "trust-repo"], HUMAN, None, b"y\n", cfg(VALID_CFG), MISMATCH),
+
+    # === ZATEN PINLI: kapi sessizce gecer (stdin YOK = istem YOK) ===========
+    ("human_get_binding_already_pinned",
+     ["secrets", "get", "PLAIN_KEY"], HUMAN, None, None, cfg(VALID_CFG), MATCHES),
+    ("human_list_binding_already_pinned",
+     ["secrets", "list"], HUMAN, None, None, cfg(VALID_CFG), MATCHES),
+    # AJANIN GERCEKTEN CALISTIGI YOL: eslesen bir pin, service-token muafiyeti
+    # OLMADAN. Bu dalin differential'da tek bir vakasi yoktu.
+    ("agent_exec_binding_already_pinned",
+     ["secrets", "exec", "--", "/bin/sh", "-c", "echo $ALPHA"],
+     AGENT, None, None, cfg(VALID_CFG), MATCHES),
+    ("agent_apply_binding_already_pinned",
+     ["secrets", "apply"], AGENT, None, None, cfg(CFG_TARGETS), MATCHES),
+    ("agent_env_write_binding_already_pinned",
+     ["secrets", "env", "--write", "out.env"], AGENT, None, None, cfg(VALID_CFG), MATCHES),
+    # Pinin `backend` alani KONTROLE GIRMIYOR (check yalnizca project'e bakiyor).
+    # Bir port burada backend'i de karsilastirsaydi bu vaka ayrisirdi.
+    ("human_get_binding_pinned_with_another_backend",
+     ["secrets", "get", "PLAIN_KEY"], HUMAN, None, None, cfg(VALID_CFG),
+     bs("testproj", backend="legacy-git")),
+]
+
+CASES += BINDSTATE_CASES
+
+
+# --- ARM MATRISINDEKI BOSLUKLAR ---------------------------------------------
+#
+# Asagidaki armcheck, `Ctx::resolve`den gecen ON IKI fiil icin DORT kimlik
+# kolunun da gezilmis olmasini SART kosuyor. Ilk kosuldugunda bes boslugu
+# adlandirdi; bu blok onlari kapatiyor. (Bulundugu an DIFFERENT olcusu
+# raporda.)
+ARMGAP_CASES = [
+    # `apply` ve `exec`in BAYRAKSIZ + CONFIGSIZ kolu: baglama kapisi SESSIZCE
+    # gecer (loadOrNil nil), ret bir adim sonraki config kapisindan gelir.
+    ("human_apply_bare_has_no_config", ["secrets", "apply"], HUMAN, None, None, None),
+    ("agent_apply_bare_has_no_config", ["secrets", "apply"], AGENT, None, None, None),
+    ("human_exec_bare_has_no_config",
+     ["secrets", "exec", "--", "/bin/sh", "-c", "echo $ALPHA"], HUMAN, None, None, None),
+    ("agent_exec_bare_has_no_config",
+     ["secrets", "exec", "--", "/bin/sh", "-c", "echo $ALPHA"], AGENT, None, None, None),
+
+    # `init`in `--project` kolu: ad kayit defterinde YOK -> project_override.
+    # Ortada baglanacak depo olmadigi icin ajan fail-closed, insan gecer.
+    ("agent_init_project_flag", P + ["secrets", "init"], AGENT, None, None, cfg_only_dir()),
+    ("human_init_project_flag", P + ["secrets", "init"], HUMAN, None, None, cfg_only_dir()),
+
+    # `status`un `--project` kolu: statusProject projeyi YALNIZCA yerel
+    # config'ten okuyor, yani ciplak `--project` adi ciktiya GIRMEMELI.
+    ("human_status_project_flag", P + ["secrets", "status"], HUMAN, None, None, None),
+    ("agent_status_project_flag", P + ["secrets", "status"], AGENT, None, None, None),
+
+    # `projects list`in KOKLU kolu: cwd'de `.wapps.yaml` VAR. Baglama kapisi
+    # bu fiilde HIC kosmadigi icin pinsiz bir config'te bile istem YOK.
+    ("human_projects_list_rooted", ["projects", "list"], HUMAN, None, None, cfg(VALID_CFG)),
+    ("agent_projects_list_rooted", ["projects", "list"], AGENT, None, None, cfg(VALID_CFG)),
+
+    # `tofu`nun `--config` kolu: bayrak ATIL olmali (DisableFlagParsing).
+    # `--project`in atilligi zaten olculuyordu; `--config`inki olculmuyordu ve
+    # ikisi AYNI sebepten atil — birinin olculup digerinin olculmemesi bir
+    # tercih degil, bir bosluktu.
+    ("agent_tofu_config_flag_is_inert",
+     CFG_SUB + ["tofu", "plan"], AGENT, None, None, _sub(VALID_CFG)),
+    ("human_tofu_config_flag_is_inert",
+     CFG_SUB + ["tofu", "plan"], HUMAN, None, None, _sub(VALID_CFG)),
+]
+
+CASES += ARMGAP_CASES
+
+
+# ============================================================================
+# ARM KAPSAMI — HATIRLANAN BIR KURAL DEGIL, BIR MEKANIZMA
+# ============================================================================
+#
+# AYNI KOR NOKTA IKI KEZ CIKTI (`set`, sonra `get`): bir fiilin vakalari hep
+# `--project` geciriyor, yapilandirma kolu HIC gezilmiyor, ve o kolda GERCEK
+# bir ayrisma saklaniyor (her ikisinde de DIFFERENT=3). Ikinci sefer sebep
+# ADLANDIRILDI ama DUZELTILMEDI, cunku onerilen sebep YANLISTI.
+#
+# OLCUM (bkz. rapor): "korpustaki her vaka `--project` geciren bir yardimcidan
+# doguyor" iddiasi yanlis. 359 vakanin 119'u `--project` geciriyordu, 239'u
+# hicbir kimlik bayragi gecirmiyordu. Korpus elemanlarinin 199'u SATIR ICI
+# TUPLE (164'u yardimci cagrisi), ve `P` ekleyen yardimcilarin IKISI (`e_h`,
+# `e_a`) HIC CAGRILMIYOR. Yani "yardimci kalibini duzeltmek" korpusun
+# yarisina bile dokunmazdi: `exec`in sekiz `--project` vakasi elle `P` yazan
+# satir ici tuple'lardir.
+#
+# Gercek bosluk sayimda: bir fiilin KIMLIK KOLLARINDAN kacinin gezildigi HIC
+# SAYILMIYORDU. Dort kol var, dordu de AYRI kod yolu:
+#
+#   proj   `--project <ad>`  -> projects::resolve; defterde yoksa override
+#   cfg    `--config <yol>`  -> config_path SABITLENIR, cwd ILGISIZ
+#   rooted bayrak yok, cwd'de `.wapps.yaml` VAR -> load_or_none DOLU
+#   bare   bayrak yok, `.wapps.yaml` YOK        -> load_or_none BOS
+#
+# BU KONTROL IMPORT ANINDA KOSAR. Bir kol eksikse cases.py YUKLENMEZ; probe.py
+# duser, differential.rs duser. Yani yeni bir fiilin bir kolunu unutmak
+# IFADE EDILEMEZ — kolu atlamanin TEK yolu asagiya bir GEREKCE yazmaktir.
+# Tabloda HIC yer almayan bir fiil DORT KOLU DA yurumek zorundadir; yani
+# sessizlik "muaf" degil "gerekli" anlamina gelir.
+#
+# Kontrol yardimcilara DEGIL, uretilen VAKALARA bakiyor — satir ici tuple da,
+# yardimci cagrisi da ayni kapiya girer.
+
+# Bir fiilin YURUMESI GEREKEN kollar. `both` (--config + --project) bu
+# listede DEGIL: o bir kimlik kolu degil, bir RET. Yine de arm_of onu
+# ayri adlandiriyor ki `cfg`/`proj` sayimlarini SISIRMESIN.
+ARM_NAMES = ("proj", "cfg", "rooted", "bare")
+
+
+# Kimlik bayraklarinin HER IKI YAZIMI. KISA BICIMLER de burada, ve bu bir
+# tamamlayicilik susu degil bir SAGLAMLIK duzeltmesi: ilk surum yalnizca
+# `--config`/`--project` ariyordu, yani `-p testproj` gecen bir vaka `bare`
+# (bayraksiz) sayilirdi — kontrol o fiilin bayraksiz kolunu GEZILMIS gorur ve
+# tam da yakalamak icin var oldugu boslugu ONAYLARDI. Bugun korpusta kisa
+# bicim kullanan vaka YOK (olculdu), yani bu bir hata duzeltmesi degil bir
+# TUZAK kapatmasi.
+IDENT_CONFIG = ("--config", "-c")
+IDENT_PROJECT = ("--project", "-p")
+
+
+def arm_verb(argv):
+    """Bir argv'den fiil adini cikarir. Bayraklar ve `--` sonrasi ATILIR."""
+    out, i = [], 0
+    while i < len(argv):
+        if argv[i] in IDENT_CONFIG or argv[i] in IDENT_PROJECT:
+            i += 2
+            continue
+        if argv[i] == "--":
+            break
+        if argv[i].startswith("-"):
+            i += 1
+            continue
+        out.append(argv[i])
+        i += 1
+    if not out:
+        return "<none>"
+    if out[0] in ("secrets", "rotate", "dr", "projects"):
+        return out[0] + " " + (out[1] if len(out) > 1 else "?")
+    return out[0]
+
+
+def arm_of(case):
+    """Vakanin gezdigi KIMLIK KOLU. Sira `Ctx::resolve` ile AYNI: once
+    `--config` (ikisi birlikte verilirse `both`), sonra `--project`.
+
+    `--` SONRASI ATILIR — ve bu bir ayrinti degil, bu dosyanin kendi
+    kusuruydu: ilk surumde `arm_verb` `--`da duruyor ama `arm_of` DURMUYORDU.
+    `secrets exec -- sh -c '... --config ...'` gibi bir vaka fiili dogru,
+    KOLU YANLIS siniflanirdi; ve yanlis siniflanan bir kol "gezildi" sayilip
+    kontrolun kendisini sessizce delerdi. Bugun etkilenen vaka sayisi OLCULDU
+    ve SIFIR; yine de duzeltildi, cunku bu kontrolun tek isi tam olarak
+    "gezilmis gorunen ama gezilmeyen kol"u yakalamak."""
+    argv = case[1]
+    if "--" in argv:
+        argv = argv[: argv.index("--")]
+    seed = case[5] if len(case) > 5 else None
+    has_c = any(a in IDENT_CONFIG for a in argv)
+    has_p = any(a in IDENT_PROJECT for a in argv)
+    # BESINCI DURUM: ikisi birlikte. Dort kollu taksonomi bunu GORMUYORDU —
+    # bir taksonominin kendi kor noktasi. Ayri bir kol degil (kod yolu bir
+    # RET), ama sayilmasi sart ki `cfg` ya da `proj` diye YANLIS sayilmasin.
+    if has_c and has_p:
+        return "both"
+    if has_c:
+        return "cfg"
+    if has_p:
+        return "proj"
+    files = (seed or {}).get("files") or {}
+    if seed is not None and (seed.get("yaml") is not None
+                             or any(k.endswith(".wapps.yaml") for k in files)):
+        return "rooted"
+    return "bare"
+
+
+# ARM_WAIVERS: fiil -> {kol: GEREKCE}. Bir kolu atlamanin TEK yolu burasi ve
+# GEREKCE bos olamaz. Her gerekce OLCULDU, tahmin edilmedi: asagidaki fiillerin
+# hicbiri `Ctx::resolve` cagirmiyor (main.rs'te imzalarinda `config`/`project`
+# parametresi YOK), yani onlar icin `--config`/`--project` gecen bir vaka
+# yazmak bir kod yolu DEGIL, yalnizca clap/cobra'nin bayragi yutmasini olcerdi.
+ARM_WAIVERS = {
+    "doctor": {
+        "proj": "run_doctor(mode) — Ctx::resolve YOK, imzasinda config/project yok",
+        "cfg": "ayni sebep: doctor yerel `.wapps.yaml`e HIC bakmiyor",
+        "rooted": "ayni sebep",
+    },
+    "dr split": {
+        "proj": "run_dr_split — kokte mount'lu, Ctx hic cozulmuyor",
+        "cfg": "ayni sebep",
+        "rooted": "ayni sebep",
+    },
+    "dr combine": {
+        "proj": "run_dr_combine — kokte mount'lu, Ctx hic cozulmuyor",
+        "cfg": "ayni sebep",
+        "rooted": "ayni sebep",
+    },
+    "dr verify": {
+        "cfg": "run_dr_verify(snapshot) — Ctx::resolve YOK; buradaki tek "
+               "`--project` vakasi bayragin ATIL oldugunu olcuyor",
+        "rooted": "ayni sebep: yerel config bu fiile girmiyor",
+    },
+    "dr restore": {
+        "cfg": "run_dr_restore — `--project` burada DR'IN KENDI zorunlu "
+               "bayragi (snapshot icindeki proje adi), kimlik bayragi DEGIL; "
+               "Ctx::resolve cagrilmiyor",
+        "rooted": "ayni sebep",
+    },
+    "projects rm": {
+        "proj": "run_projects_rm(project, yes) — storeProject cagirmiyor, "
+                "config GEREKMIYOR (projects list'in AKSINE, ve bu olculdu)",
+        "cfg": "ayni sebep",
+        "rooted": "ayni sebep",
+    },
+    "secrets policy": {
+        "proj": "policy GLOBAL bir dokuman; run_policy_* config almiyor",
+        "cfg": "ayni sebep",
+    },
+    "secrets rotate-plan": {
+        "proj": "run_rotate_plan — Ctx::resolve YOK",
+        "cfg": "ayni sebep",
+    },
+    "rotate skip": {
+        "proj": "run_rotate_skip(run_id, target, reason) — proje adi "
+                "ARGUMANDAN geliyor (`<proje>/<anahtar>`), bayraktan degil",
+        "cfg": "ayni sebep",
+    },
+}
+
+
+def _armcheck():
+    seen = {}
+    for c in CASES:
+        if c[0] in EXCLUDED:
+            continue
+        seen.setdefault(arm_verb(c[1]), set()).add(arm_of(c))
+
+    problems = []
+    for verb in sorted(seen):
+        waived = ARM_WAIVERS.get(verb, {})
+        for arm in ARM_NAMES:
+            if arm in seen[verb]:
+                continue
+            reason = waived.get(arm)
+            if not reason:
+                problems.append(
+                    f"  {verb!r}: `{arm}` kolunun TEK VAKASI YOK. Ya bir vaka "
+                    f"yaz, ya ARM_WAIVERS[{verb!r}][{arm!r}]'a bir GEREKCE."
+                )
+    # Tablo CURUMESIN: artik gerekmeyen ya da artik var olmayan bir muafiyet
+    # sessizce durmasin — yoksa bir sonraki fiil onun arkasina saklanabilir.
+    for verb, waived in sorted(ARM_WAIVERS.items()):
+        if verb not in seen:
+            problems.append(f"  {verb!r}: ARM_WAIVERS'ta ama korpusta VAKASI YOK (olu muafiyet)")
+            continue
+        for arm, reason in sorted(waived.items()):
+            if not reason:
+                problems.append(f"  {verb!r}/{arm}: muafiyetin GEREKCESI BOS")
+            elif arm in seen[verb]:
+                problems.append(
+                    f"  {verb!r}/{arm}: muaf ama kol ARTIK GEZILIYOR — muafiyeti SIL")
+    if problems:
+        raise SystemExit(
+            "cases.py: KIMLIK KOLU KAPSAMI EKSIK\n" + "\n".join(problems) +
+            "\n\nDort kol: proj (--project) / cfg (--config) / rooted "
+            "(bayraksiz + .wapps.yaml VAR) / bare (bayraksiz + config YOK).\n"
+            "Bu kontrol iki kez ayni kor noktaya dusuldugu icin var: `set` ve "
+            "`get`in yapilandirma kolu hic gezilmemisti ve IKISINDE DE gercek "
+            "bir ayrisma sakliyordu."
+        )
+
+
+
+# --- BESINCI DURUM: `--config` ve `--project` BIRLIKTE ----------------------
+#
+# Dort kollu taksonominin GORMEDIGI durum, ve differential'da TEK BIR vakasi
+# yoktu. Iki yerde birden reddediliyor ve hangisinin once atesledigi
+# GOZLEMLENEBILIR: cobra `MarkFlagsMutuallyExclusive("config","project")`,
+# clap `.conflicts_with("config")` — yani ret AYRISTIRMA aninda geliyor ve
+# `Ctx::resolve`in kendi programatik korumasi ("--config and --project are
+# mutually exclusive") bu yoldan ERISILEMEZ kaliyor. Iki ayri katmanda iki
+# ayri metin var; hangisinin konustugu ancak boyle olculur.
+BOTH_FLAG_CASES = [
+    ("human_both_identity_flags_are_rejected",
+     ["--config", "sub/.wapps.yaml"] + P + ["secrets", "get", "PLAIN_KEY"],
+     HUMAN, None, None, _sub(VALID_CFG)),
+    ("agent_both_identity_flags_are_rejected",
+     ["--config", "sub/.wapps.yaml"] + P + ["secrets", "list"],
+     AGENT, None, None, _sub(VALID_CFG)),
+]
+
+CASES += BOTH_FLAG_CASES
+
+BOTH_FLAG_CASES += [
+    # Fiilden BAGIMSIZ: `Ctx::resolve` CAGIRMAYAN bir fiil de ayni reddi
+    # aliyor. Bu vaka olmadan ret `Ctx::resolve`in icine geri tasinabilir ve
+    # `doctor`/`dr`/`policy`/`rotate`/`projects rm` sessizce iki bayragi da
+    # kabul eder hale gelirdi.
+    ("agent_doctor_both_identity_flags_are_rejected",
+     ["--config", "sub/.wapps.yaml"] + P + ["doctor"], AGENT, None, None, _sub(VALID_CFG)),
+    # ...`tofu` HARIC. Go'da TofuCmd root'a mount'lu ve DisableFlagParsing
+    # acik, yani root'un hook'u kosmuyor: ret mutual-exclusion DEGIL,
+    # "exec: no .wapps.yaml found". Istisnayi tutan sey bu vaka.
+    ("agent_tofu_both_identity_flags_are_inert",
+     ["--config", "sub/.wapps.yaml"] + P + ["tofu", "plan"], AGENT, None, None,
+     _sub(VALID_CFG)),
+]
+CASES += BOTH_FLAG_CASES[-2:]
+
+
+# --- KISA BICIMLER: `-p` / `-c` ----------------------------------------------
+#
+# Korpusta 359 vaka boyunca kisa bicimin TEK ornegi yoktu; kimlik bayraklari
+# hep uzun yazilmisti. Iki tarafta da kayitli (`StringVarP`/`.short()`), yani
+# atil degiller — yalnizca olculmemislerdi.
+SHORT_FLAG_CASES = [
+    ("agent_short_project_flag_behaves_like_the_long_one",
+     ["-p", "testproj", "secrets", "list"], AGENT),
+    ("human_short_config_flag_behaves_like_the_long_one",
+     ["-c", "sub/.wapps.yaml", "secrets", "list"], HUMAN, None, b"y\n", _sub(VALID_CFG)),
+]
+CASES += SHORT_FLAG_CASES
+
+_armcheck()
