@@ -143,6 +143,24 @@ pub fn build() -> Command {
                         ),
                 )
                 .subcommand(
+                    Command::new("env")
+                        .about("Emit the project's secrets as .envrc-style export lines")
+                        .arg(
+                            Arg::new("write")
+                                .long("write")
+                                .value_name("string")
+                                .help("write env output to this file (0600, atomic) instead of stdout; AI-safe path that never prints values"),
+                        )
+                        .arg(
+                            Arg::new("prefix")
+                                .long("prefix")
+                                .value_name("string")
+                                .help("prefix prepended to each KEY (default: none — keys are stored under their final name)"),
+                        )
+                        // cobra'da envCmd'in Args'i YOK -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
                     Command::new("trust-repo")
                         .about("Pin this repo to its project so an agent cannot target another (TTY only)")
                         // cobra'da trustRepoCmd'in Args'i YOK -> ArbitraryArgs:

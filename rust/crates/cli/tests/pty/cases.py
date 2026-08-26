@@ -712,3 +712,93 @@ TRUSTREPO_CASES = [
 ]
 
 CASES += TRUSTREPO_CASES
+
+
+# --- `env` -------------------------------------------------------------------
+#
+# env'in KENDINE OZGU kapisi UCUNCU sirada ve komsu hicbir fiilde yok:
+#
+#   ajan `allow` -> baglama -> PRINT-FORM REDDI -> config -> store
+#
+# `--write FILE` YOKSA env gizli DUZ METIN basiyor, yani ajan modunda
+# REFUSE_AGENT; `--write` ile ayni fiil SERBEST (§7.4.2 AI-safe yol). Iki dal
+# da olculuyor.
+#
+# EN COK YANLIS YAPILACAK NOKTA — ve `agent_env_write_is_still_binding_gated`
+# tam olarak bunu pinliyor: AI-safe yol baglama kapisini ATLATMIYOR. Pinsiz bir
+# config'in yaninda ajan modunda `env --write out.env` cagirmak
+# AGENT_MODE_REFUSED DEGIL BINDING_UNPINNED verir, cunku baglama kapisi
+# PersistentPreRunE'da ve print-form reddi RunE'de.
+#
+# CF_ACCESS SERVICE-TOKEN CIFTI ile kosan vakalar baglama kapisini MESRU
+# olarak atliyor (taze bir CI container'inda trust-repo/TTY imkansiz) ve
+# boylece print-form reddine ULASILABILIYOR — o kapi aksi halde ajan yolunda
+# ERISILEMEZ kalirdi. Jetonlar UYDURMA test dizeleri; sahte gate kimlik
+# DOGRULAMIYOR.
+CI_TOKENS = dict(AGENT, CF_ACCESS_CLIENT_ID="fake-id-not-a-secret",
+                 CF_ACCESS_CLIENT_SECRET="fake-secret-not-a-secret")
+
+ENV_CASES = [
+    # === print-form reddi ===================================================
+    # Config YOK + --project YOK: baglama sessizce gecer, ret RunE'nin ajan
+    # kapisindan gelir — NOT_FOUND DEGIL. Yani print-form reddi CONFIG
+    # kapisindan da ONCE.
+    ("agent_env_print_form_is_refused",
+     ["secrets", "env"], AGENT, None, None, None),
+    # ...ve `--write` ayni kosulda o kapiyi GECER, config kapisina duser.
+    ("agent_env_write_reaches_the_config_gate",
+     ["secrets", "env", "--write", "out.env"], AGENT, None, None, None),
+
+    # === baglama kapisi print-form reddinden ONCE ===========================
+    ("agent_env_binding_precedes_the_print_refusal",
+     ["secrets", "env"], AGENT, None, None, cfg(VALID_CFG)),
+    # AI-safe yol da AYNI kapinin arkasinda.
+    ("agent_env_write_is_still_binding_gated",
+     ["secrets", "env", "--write", "out.env"], AGENT, None, None, cfg(VALID_CFG)),
+    # Service-token cifti baglamayi atlar → print-form reddi ARTIK ERISILEBILIR.
+    ("agent_env_print_refused_behind_a_service_token",
+     ["secrets", "env"], CI_TOKENS, None, None, cfg(VALID_CFG)),
+    # ...ve ayni muafiyetle `--write` CALISIR: dosya yazilir, stdout BOS kalir.
+    ("agent_env_write_works_behind_a_service_token",
+     ["secrets", "env", "--write", "out.env"], CI_TOKENS, None, None, cfg(VALID_CFG)),
+
+    # === insan yolu =========================================================
+    ("human_env_binding_accepted",
+     ["secrets", "env"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
+    ("human_env_binding_declined",
+     ["secrets", "env"], HUMAN, None, b"n\n", cfg(VALID_CFG)),
+    ("human_env_prefix_renames_keys",
+     ["secrets", "env", "--prefix", "TF_VAR_"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
+    # --write: stdout BOS, dosya 0600. Icerik ve MOD karsilastiriliyor.
+    ("human_env_write_emits_nothing_to_stdout",
+     ["secrets", "env", "--write", "out.env"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
+    # BULGU (bkz. src/envverb.rs): Go O_CREATE|O_TRUNC kullaniyor, O_EXCL DEGIL.
+    # Onceden duran bir `<hedef>.tmp` YENIDEN KULLANILIYOR ve modu 0600'e
+    # CEKILMIYOR — duz metin sir 0644 ile kaliyor. Vaka bunu DUZELTMIYOR,
+    # iki ikilinin AYNI modu urettigini olcuyor. probe.py `.tmp` sonekli
+    # dosyalari atliyor ama `out.env`in MODU karsilastiriliyor.
+    ("human_env_write_reuses_a_wide_temp",
+     ["secrets", "env", "--write", "out.env"], HUMAN, None, b"y\n",
+     cfg(VALID_CFG, {"out.env.tmp": ""})),
+    # `--project <ad>` config gereksinimini ATLATMIYOR: env `store_project`
+    # DEGIL `require_store_config` kullaniyor.
+    ("human_env_project_flag_still_needs_a_config",
+     P + ["secrets", "env"], HUMAN, None, None, None),
+    ("human_env_no_config", ["secrets", "env"], HUMAN, None, None, None),
+    # cobra'da Args YOK → fazladan arguman SESSIZCE yutulur.
+    ("human_env_extra_arg_is_ignored",
+     P + ["secrets", "env", "EXTRA"], HUMAN, None, None, None),
+    ("human_env_unknown_flag",
+     P + ["secrets", "env", "--bogus"], HUMAN, None, None, None),
+    ("human_env_no_session",
+     ["secrets", "env"], dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, b"y\n", cfg(VALID_CFG)),
+    # POST /read epoch pin'ini ILERLETIR (env bulk okuma yapiyor). Pin 3'te
+    # tohumlaniyor, gate 7 sunuyor → 7.
+    ("human_env_advances_the_epoch_pin",
+     ["secrets", "env"], HUMAN, pinfile(3), b"y\n", cfg(VALID_CFG)),
+    # ...ve GERI SARMAZ.
+    ("human_env_epoch_downgrade_refused",
+     ["secrets", "env"], HUMAN, pinfile(9), b"y\n", cfg(VALID_CFG)),
+]
+
+CASES += ENV_CASES

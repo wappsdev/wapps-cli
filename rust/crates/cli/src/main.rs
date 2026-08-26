@@ -8,6 +8,8 @@ use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
 use wapps::configctx::{self, Ctx};
 use wapps::confirm;
+use wapps::envverb;
+use wapps::envwrite;
 use wapps::epochpin;
 use wapps::execverb;
 use wapps::gojson::quote as go_quote;
@@ -106,6 +108,12 @@ fn run() -> Result<(), CmdError> {
                 }
                 run_rm(&keys[0], config, project, rm.get_flag("yes"))
             }
+            Some(("env", em)) => run_env(
+                config,
+                project,
+                em.get_one::<String>("write").cloned().unwrap_or_default(),
+                em.get_one::<String>("prefix").cloned().unwrap_or_default(),
+            ),
             Some(("trust-repo", _)) => run_trust_repo(config, project),
             Some(("init", im)) => run_init(
                 config,
@@ -380,6 +388,56 @@ fn run_projects_rm(project: &str, yes: bool) -> Result<(), CmdError> {
         projectsverb::rm_success_line(&res.project, res.deleted_objects, res.pointer_events_kept)
     );
     Ok(())
+}
+
+// run_env, `wapps secrets env` — export satirlari.
+//
+// KAPI SIRASI, ve ucuncu adim bu fiile OZEL:
+//   1. ajan politikasi (`allow`) — PersistentPreRunE
+//   2. baglama kapisi  — env baglama-MUAF DEGIL
+//   3. PRINT-FORM REDDI: `--write` YOKSA ajan modunda REFUSE_AGENT. Ancak
+//      `--write FILE` serbest (§7.4.2): degerler stdout'a/transcript'e DEGIL
+//      0600 bir dosyaya iniyor.
+//   4. config gereksinimi (require_store_config → NOT_FOUND). `--project <ad>`
+//      BUNU ATLATMAZ: env `store_project` DEGIL `require_store_config`
+//      kullaniyor, cunku... aslinda `targets`/`sources` okumuyor. Yine de
+//      Go boyle ve OLCULDU (human_env_project_flag_still_needs_a_config).
+//   5. store okumasi
+//
+// 2 ile 3'un sirasi GOZLEMLENEBILIR ve olculdu: pinsiz bir config'in yaninda
+// ajan modunda `env --write out.env` cagirmak AGENT_MODE_REFUSED DEGIL
+// BINDING_UNPINNED verir — yani AI-safe yol bile baglama kapisinin ARKASINDA.
+fn run_env(
+    config: Option<String>,
+    project: Option<String>,
+    write_path: String,
+    prefix: String,
+) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
+
+    // env'in print-form'u gizli DUZ METIN basar → ajan modunda YAPISAL red.
+    // `--write FILE` bu kapinin DISINDA.
+    if write_path.is_empty() {
+        agentmode::guard(agentmode::POLICY_REFUSE_AGENT, agent).map_err(CmdError::Cli)?;
+    }
+
+    let cfg = ctx.require_store_config("env").map_err(CmdError::Cli)?;
+    let values = store::read_all(&cfg.project).map_err(CmdError::Cli)?;
+    let archive = values_to_archive_json(&values).map_err(|e| CmdError::Plain(format!("env: {e}")))?;
+
+    if write_path.is_empty() {
+        let mut out = std::io::stdout();
+        return envwrite::write_tofu_outputs_as_env(archive.as_bytes(), &prefix, &mut out)
+            .map_err(CmdError::Plain);
+    }
+    // Hedef yolu CWD-GORELI birakiliyor (Go: os.OpenFile(writePath...)),
+    // `apply`in config_root'a cozdugu hedeflerin AKSINE. Bu fark bilincli
+    // tasindi: `env --write` bir kerelik, operatorun bulundugu dizine yazan
+    // bir kacis kapisi.
+    envverb::write_env_file_atomic(std::path::Path::new(&write_path), archive.as_bytes(), &prefix)
+        .map_err(CmdError::Plain)
 }
 
 // run_trust_repo, `wapps secrets trust-repo` — baglamayi KURAN fiil.

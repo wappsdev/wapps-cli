@@ -6,6 +6,7 @@ pub mod clierr;
 pub mod confirm;
 pub mod cli;
 pub mod configctx;
+pub mod envverb;
 pub mod envwrite;
 pub mod epochpin;
 pub mod execverb;
