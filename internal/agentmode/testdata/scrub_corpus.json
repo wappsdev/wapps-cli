@@ -1,0 +1,411 @@
+[
+  {
+    "name": "plain_full_match",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "before injected-test-value after"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "before *** after"
+  },
+  {
+    "name": "no_match_passthrough",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "nothing to see here"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "nothing to see here"
+  },
+  {
+    "name": "no_values_at_all",
+    "values": [],
+    "chunks": [
+      "nothing to see here"
+    ],
+    "want_filtered": [],
+    "want_note": "",
+    "want_out": "nothing to see here"
+  },
+  {
+    "name": "value_is_whole_chunk",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "injected-test-value"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "***"
+  },
+  {
+    "name": "multiple_occurrences",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "injected-test-value and injected-test-value again"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "*** and *** again"
+  },
+  {
+    "name": "adjacent_occurrences",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "injected-test-valueinjected-test-value"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "******"
+  },
+  {
+    "name": "value_at_very_end",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "tail injected-test-value"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "tail ***"
+  },
+  {
+    "name": "value_at_very_start",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "injected-test-value head"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "*** head"
+  },
+  {
+    "name": "split_across_two_chunks",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "before injected",
+      "-test-value after"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "before *** after"
+  },
+  {
+    "name": "split_across_three_chunks",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "pre injec",
+      "ted-tes",
+      "t-value post"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "pre *** post"
+  },
+  {
+    "name": "split_one_byte_at_a_time",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "x",
+      "i",
+      "n",
+      "j",
+      "e",
+      "c",
+      "t",
+      "e",
+      "d",
+      "-",
+      "t",
+      "e",
+      "s",
+      "t",
+      "-",
+      "v",
+      "a",
+      "l",
+      "u",
+      "e",
+      "y"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "x***y"
+  },
+  {
+    "name": "false_start_then_real",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "injectNOPE ",
+      "injected-test-value ok"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "injectNOPE *** ok"
+  },
+  {
+    "name": "partial_at_eof_is_flushed",
+    "values": [
+      "injected-test-value"
+    ],
+    "chunks": [
+      "trailing injecte"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "trailing injecte"
+  },
+  {
+    "name": "longest_match_wins",
+    "values": [
+      "injected-test-value",
+      "injected-test-value-longer"
+    ],
+    "chunks": [
+      "see injected-test-value-longer here"
+    ],
+    "want_filtered": [
+      "injected-test-value",
+      "injected-test-value-longer"
+    ],
+    "want_note": "",
+    "want_out": "see *** here"
+  },
+  {
+    "name": "prefix_value_alone",
+    "values": [
+      "injected-test-value",
+      "injected-test-value-longer"
+    ],
+    "chunks": [
+      "see injected-test-value here"
+    ],
+    "want_filtered": [
+      "injected-test-value",
+      "injected-test-value-longer"
+    ],
+    "want_note": "",
+    "want_out": "see *** here"
+  },
+  {
+    "name": "longest_split_across_chunks",
+    "values": [
+      "injected-test-value",
+      "injected-test-value-longer"
+    ],
+    "chunks": [
+      "see injected-tes",
+      "t-value-longer here"
+    ],
+    "want_filtered": [
+      "injected-test-value",
+      "injected-test-value-longer"
+    ],
+    "want_note": "",
+    "want_out": "see *** here"
+  },
+  {
+    "name": "sub_floor_real_looking_notes",
+    "values": [
+      "injected-test-value",
+      "ab"
+    ],
+    "chunks": [
+      "injected-test-value and ab"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "wapps: 1 short secret value(s) below the 4-char scrub floor were NOT redacted from child output — they may appear in the transcript\n",
+    "want_out": "*** and ab"
+  },
+  {
+    "name": "sub_floor_digits_no_note",
+    "values": [
+      "injected-test-value",
+      "42"
+    ],
+    "chunks": [
+      "injected-test-value and 42"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "*** and 42"
+  },
+  {
+    "name": "common_literal_not_scrubbed",
+    "values": [
+      "true",
+      "null",
+      "injected-test-value"
+    ],
+    "chunks": [
+      "true null injected-test-value"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "true null ***"
+  },
+  {
+    "name": "only_sub_floor_value",
+    "values": [
+      "xy"
+    ],
+    "chunks": [
+      "xy stays"
+    ],
+    "want_filtered": [],
+    "want_note": "wapps: 1 short secret value(s) below the 4-char scrub floor were NOT redacted from child output — they may appear in the transcript\n",
+    "want_out": "xy stays"
+  },
+  {
+    "name": "floor_boundary_four_chars",
+    "values": [
+      "abcd"
+    ],
+    "chunks": [
+      "abcd goes"
+    ],
+    "want_filtered": [
+      "abcd"
+    ],
+    "want_note": "",
+    "want_out": "*** goes"
+  },
+  {
+    "name": "floor_boundary_three_chars",
+    "values": [
+      "abc"
+    ],
+    "chunks": [
+      "abc stays"
+    ],
+    "want_filtered": [],
+    "want_note": "wapps: 1 short secret value(s) below the 4-char scrub floor were NOT redacted from child output — they may appear in the transcript\n",
+    "want_out": "abc stays"
+  },
+  {
+    "name": "duplicate_values_deduped",
+    "values": [
+      "injected-test-value",
+      "injected-test-value"
+    ],
+    "chunks": [
+      "injected-test-value once"
+    ],
+    "want_filtered": [
+      "injected-test-value",
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "*** once"
+  },
+  {
+    "name": "empty_value_ignored",
+    "values": [
+      "",
+      "injected-test-value"
+    ],
+    "chunks": [
+      "injected-test-value fine"
+    ],
+    "want_filtered": [
+      "injected-test-value"
+    ],
+    "want_note": "",
+    "want_out": "*** fine"
+  },
+  {
+    "name": "utf8_value",
+    "values": [
+      "değer-türkçe-test"
+    ],
+    "chunks": [
+      "önce değer-türkçe-test sonra"
+    ],
+    "want_filtered": [
+      "değer-türkçe-test"
+    ],
+    "want_note": "",
+    "want_out": "önce *** sonra"
+  },
+  {
+    "name": "utf8_split_mid_rune",
+    "values": [
+      "değer-türkçe-test"
+    ],
+    "chunks": [
+      "önce değer-tür",
+      "kçe-test sonra"
+    ],
+    "want_filtered": [
+      "değer-türkçe-test"
+    ],
+    "want_note": "",
+    "want_out": "önce *** sonra"
+  },
+  {
+    "name": "value_longer_than_chunk",
+    "values": [
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "chunks": [
+      "head xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx tail"
+    ],
+    "want_filtered": [
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "want_note": "",
+    "want_out": "head *** tail"
+  }
+]

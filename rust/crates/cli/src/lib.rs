@@ -4,6 +4,7 @@ pub mod cli;
 pub mod epochpin;
 pub mod gojson;
 pub mod safelog;
+pub mod scrubber;
 pub mod session;
 pub mod setverb;
 pub mod store;
