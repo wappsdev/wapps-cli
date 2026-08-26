@@ -87,11 +87,15 @@ func IsAgent() bool { return Default().IsAgent() }
 
 // --- Verb gating (SPEC §7.4.2) ----------------------------------------------
 
-// Cobra command annotation anahtarı + politika değerleri. Bir verb, init'inde
-// bu annotation'ı SET ETMELİDİR; etmezse (missing) en kısıtlayıcı sınıfa düşer.
-const AnnotationKey = "wapps_agent_policy"
-
-// Politika değerleri (annotation string'leri).
+// Politika değerleri.
+//
+// TARİHÇE: burada bir `AnnotationKey = "wapps_agent_policy"` sabiti duruyordu
+// ve bu değerler "annotation string'leri" diye anılıyordu. O mekanizmanın
+// TAMAMI ölüydü — sabitin üretim kodunda SIFIR okuyucusu vardı; yalnızca iki
+// YAZAN (rotate skip, exec). Gerçek gating agentgate.go'daki `agentPolicy`
+// haritasından geliyor, cmd annotation'larından DEĞİL. Yetkili GÖRÜNEN ama
+// hiçbir şey yapmayan bir mekanizma, gerçek korumayı fazlalık gibi gösterdiği
+// için tehlikeliydi; sabit de yazanlar da kaldırıldı.
 const (
 	// PolicyAllow, verb ajan modunda serbesttir (exec/apply/env --write/set/...).
 	PolicyAllow = "allow"

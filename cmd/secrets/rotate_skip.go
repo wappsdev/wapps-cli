@@ -40,12 +40,28 @@ API (write-AUD session + admin verb). The engine transition (internal/rotation
 RunLedger.SkipKey) is implemented and tested; the CLI↔live-ledger wiring lands
 with the rotation executor.`,
 	Args: cobra.ExactArgs(2),
-	// Ajan modunda control-plane imza seremonileri reddedilir (presence-admin gerekir).
-	Annotations: map[string]string{agentmode.AnnotationKey: agentmode.PolicyRefuseAgent},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if rotateSkipReason == "" {
 			return clierr.New(clierr.Internal, "rotate skip: --reason is required (a recorded skip must state WHY the key needs no rotation)")
 		}
+		// AJAN KAPISI BURADA — ve BURADA OLMAK ZORUNDA.
+		//
+		// RotateCmd KÖKE mount'lu (cmd/root.go), yani
+		// SecretsCmd.PersistentPreRunE bu komut için HİÇ koşmuyor ve
+		// agentPolicy tablosu devreye GİRMİYOR. Bu satır silinirse
+		// `wapps rotate skip` ajanlara AÇILIR — başka hiçbir şey onu
+		// tutmuyor.
+		//
+		// Burada eskiden yetkili GÖRÜNEN bir
+		// `Annotations: {wapps_agent_policy: refuse_agent}` da duruyordu.
+		// Annotation ÖLÜYDÜ: `wapps_agent_policy`nin üretim kodunda SIFIR
+		// okuyucusu vardı (secretsPreRunE politikayı AYRI bir tablodan
+		// alıyor). İki satır yan yana durunca sonraki okuyucu makul ama
+		// YANLIŞ bir çıkarım yapardı — "annotation zaten reddediyor, bu
+		// kontrol fazladan" — ve gerçekten koruyan satırı silerdi.
+		// Annotation kaldırıldı. Bu yorum da yeter değil, çünkü yorumlar
+		// silinir: kontrolü ADIYLA ölçen testler
+		// cmd/secrets/rotate_skip_test.go ve rust/.../tests/rootmount.rs.
 		if agentmode.IsAgent() {
 			return clierr.New(clierr.AgentModeRefused, "rotate skip is a presence-admin ceremony; a human must run it in a terminal")
 		}

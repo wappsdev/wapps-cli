@@ -36,8 +36,11 @@ the agent transcript.
   wapps secrets exec -- ./scripts/deploy.sh`,
 	Args:               cobra.MinimumNArgs(1),
 	DisableFlagParsing: false,
-	// Ajan modunda exec SERBEST'tir; yalnızca --break-glass reddedilir.
-	Annotations: map[string]string{agentmode.AnnotationKey: agentmode.PolicyAllow},
+	// NOT: burada bir `wapps_agent_policy: allow` annotation'ı DURUYORDU ve
+	// ÖLÜYDÜ — hiçbir şey okumuyordu. exec ajan modunda gerçekten serbest
+	// ama bunu annotation'dan DEĞİL, agentgate.go'daki agentPolicy
+	// tablosundan alıyor ("exec": PolicyAllow). Annotation yalnızca ona
+	// KATILIYORDU, yani silinmesi davranışı değiştirmez.
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runExec(args, execPrefix, execIntent, execBreakGlass, agentmode.IsAgent(),
 			cmd.OutOrStdout(), cmd.ErrOrStderr(), defaultExecRunner)

@@ -34,6 +34,16 @@ All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachange
 - **The code table is now guarded against silent gaps** (`internal/clierr/vocabulary_test.go`). `registry` is a map, and Go returns the zero value for a missing key: `New(unregisteredCode)` produced an empty `recovery` and `retryable: false` with no warning, so a half-finished rename failed *quietly*. wapps-memory gets this from the type system (`Record<ErrorCode, CodeSpec>` will not compile with a key missing); the Go equivalent is `AllCodes` plus a test asserting every declared code has a registry entry and a non-empty recovery. It was verified to fail on exactly that mistake before being relied on.
 - **The estate overlap is pinned** (`sharedWithEstate`). The four names this table shares with wapps-memory — `RATE_LIMITED`, `NOT_FOUND`, `SERVICE_MISCONFIGURED`, `INTERNAL` — must agree on `retryable`, and `NOT_AVAILABLE` may not be reintroduced here. The reciprocal half lives in `services/memory/test/cross-repo-vocabulary.test.ts`, so a change on either side fails in its own repository.
 
+### Removed
+- **The `wapps_agent_policy` command annotations are gone — they looked authoritative and had zero readers.** `agentmode.AnnotationKey` was declared, written by exactly two commands (`rotate skip` with `refuse_agent`, `exec` with `allow`), and read by nothing. `secretsPreRunE` — widely assumed to be the reader — never looks at `cmd.Annotations` at all; it takes the policy from a separate central table (`agentPolicy` in `cmd/secrets/agentgate.go`), keyed by verb name.
+
+  Deleting a dead mechanism would normally be housekeeping. This one mattered because of where it sat. `wapps rotate skip` is mounted on the **root** command, so `SecretsCmd.PersistentPreRunE` never runs for it and the policy table is never consulted — the only thing keeping an agent out is a hand-written `agentmode.IsAgent()` check inside its `RunE`. The file showed an authoritative-looking `refuse_agent` annotation on one line and the check that actually protects it five lines later. A reader making the reasonable inference — "the annotation already refuses, this check is redundant" — would delete the check and **open `wapps rotate skip` to agents**. Removing the annotation changes nothing; removing the check opens the door, and nothing wrote that difference down.
+
+  The check now carries a comment saying why it is there, and — because comments get deleted too — a test on each side naming the refusal (`TestRotateSkip_RefusesAnAgentWithoutThePersistentHook`, `rotate_skip_refuses_an_agent_in_both_binaries`). Both were verified by deleting the guard and watching them go red. `exec`'s annotation was dead in the harmless direction (it is not root-mounted and gets `allow` from the table regardless), and went with it.
+
+### Known
+- **"Root-mounted" says nothing on its own.** The three root-mounted verbs each handle their gates differently: `tofu` re-implements the whole gate by hand (agent guard *and* repo binding), `rotate skip` re-implements only the agent refusal, and `doctor` has no gate at all. None of the three can be predicted from the others. This round only *measured* the divergence (`the_three_root_mounted_verbs_do_not_share_a_gate`) so it cannot drift silently; reconciling it is still open.
+
 ## [v0.21.1] - 2026-08-14
 
 ### Fixed

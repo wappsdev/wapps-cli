@@ -70,7 +70,13 @@ pub const POLICY_TTY: &str = "tty";
 pub const POLICY_REFUSE_AGENT: &str = "refuse_agent";
 
 /// guard, verilen politikayi ajan moduna karsi uygular. Bilinmeyen/bos politika
-/// FAIL-CLOSED: annotation'i unutulmus yeni bir verb REFUSED'a duser.
+/// FAIL-CLOSED: MERKEZI TABLOYA (agentgate.go'daki agentPolicy, Rust'ta
+/// verb_policy) eklenmesi unutulmus yeni bir verb REFUSED'a duser.
+///
+/// "annotation" DEMIYOR, ve bu duzeltilmis bir yanlis: politika bir cobra
+/// annotation'indan HIC gelmiyordu. `wapps_agent_policy` annotation'inin
+/// uretim kodunda SIFIR okuyucusu vardi ve mekanizma tumuyle olu oldugu icin
+/// silindi. Yetkiyi veren sey TABLO.
 pub fn guard(policy: &str, is_agent: bool) -> Result<(), Error> {
     if !is_agent {
         return Ok(());

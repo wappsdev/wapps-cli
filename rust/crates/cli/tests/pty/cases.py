@@ -1345,11 +1345,11 @@ EXCLUDED.add("human_rotate_plan_bad_since")
 # DEGIL. `agent_rotate_skip_reason_check_precedes_the_agent_gate` bunu pinliyor.
 #
 # BULGU — DUZELTILMIYOR, OLCULUYOR: rotateSkipCmd'de bir
-# `Annotations: {wapps_agent_policy: refuse_agent}` DURUYOR ama OLU. O
-# annotation'i okuyan tek yer secretsPreRunE ve o hook bu komut icin HIC
+# `Annotations: {wapps_agent_policy: refuse_agent}` DURUYORDU ama OLUYDU (artik
+# SILINDI). O annotation'i secretsPreRunE bile OKUMUYORDU, ve o hook bu komut icin HIC
 # kosmuyor (kok mount). Reddi gercekten yapan sey RunE'nin ICINDEKI elle
-# yazilmis `agentmode.IsAgent()` kontrolu. Annotation silinse davranis
-# DEGISMEZDI — ve annotation'a GUVENIP elle kontrolu silen biri, `wapps rotate
+# yazilmis `agentmode.IsAgent()` kontrolu. Annotation silinince davranis
+# DEGISMEDI — ve annotation'a GUVENIP elle kontrolu silen biri, `wapps rotate
 # skip`i ajanlara acardi.
 #
 # BAGLAMA KAPISI YOK (kok mount'un dogrudan sonucu): pinsiz bir config'in

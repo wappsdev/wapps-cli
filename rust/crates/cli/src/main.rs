@@ -764,13 +764,20 @@ fn probe_coolify() -> (String, bool) {
 // kosuyor. Iki fiil kardes gorunuyor; siralari birbirinden TAHMIN EDILEMEZ.
 // Olculdu: agent_rotate_skip_reason_check_precedes_the_agent_gate.
 //
-// KAPI NEDEN BURADA, ANNOTATION'DA DEGIL — ve bu bir BULGU:
+// KAPI NEDEN BURADA, BIR TABLODA DEGIL — ve bu bir BULGUYDU:
 // Go'da rotateSkipCmd bir `Annotations: {wapps_agent_policy: refuse_agent}`
-// TASIYOR ama o annotation OLU. Onu okuyan tek yer secretsPreRunE ve o hook bu
-// komut icin hic kosmuyor, cunku RotateCmd KOKE mount'lu. Reddi gercekten
-// yapan sey RunE'nin icindeki elle yazilmis kontrol. Annotation'a GUVENIP elle
-// kontrolu silen bir port, `wapps rotate skip`i ajanlara ACARDI — bu yuzden
-// burada da kapi ACIKCA yaziliyor, bir tabloya devredilmiyor.
+// TASIYORDU ama o annotation OLUYDU. Onu okudugu sanilan secretsPreRunE
+// annotation'a HIC bakmiyor (politikayi AYRI bir tablodan, agentPolicy'den
+// aliyor), ve zaten o hook bu komut icin hic kosmuyor cunku RotateCmd KOKE
+// mount'lu. Reddi gercekten yapan sey RunE'nin icindeki elle yazilmis kontrol.
+// Annotation'a GUVENIP elle kontrolu silen biri `wapps rotate skip`i ajanlara
+// ACARDI. Annotation IKI tarafta da SILINDI (olu mekanizma yetkili
+// gorunuyordu); kapi burada ACIKCA yaziliyor ve bir tabloya devredilmiyor.
+//
+// Yorum yeter DEGIL — yorumlar silinir. Kontrolu ADIYLA olcen testler:
+// tests/rootmount.rs ve Go tarafinda cmd/secrets/rotate_skip_test.go. Ikisi de
+// KARSILASTIRMA degil IDDIA, cunku kontrolu iki tarafta da silmek
+// differential'i YESIL birakirdi.
 //
 // RET METNI `agentmode::guard`in uretecegi metin DEGIL: kendi cumlesi var
 // ("presence-admin ceremony"). Kod ayni (AGENT_MODE_REFUSED), cumle ayri —
