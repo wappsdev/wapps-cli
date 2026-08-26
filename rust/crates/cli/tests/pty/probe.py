@@ -29,7 +29,9 @@ def main():
     os.makedirs(cfg, exist_ok=True)
     results = {}
     try:
-        for name, argv, extra in CASES:
+        for case in CASES:
+            name, argv, extra = case[0], case[1], case[2]
+            seed = case[3] if len(case) > 3 else None
             env = {
                 "PATH": "/usr/bin:/bin",
                 "HOME": os.path.join(workdir, "fakehome"),
@@ -44,11 +46,19 @@ def main():
             env.update(extra)
             env = {k: v for k, v in env.items() if v != ""}
             os.makedirs(env["HOME"], exist_ok=True)
-            # her vaka temiz bir epoch-pin ile kossun
-            for f in ("wapps",):
-                import shutil; shutil.rmtree(os.path.join(cfg, f), ignore_errors=True)
+            # her vaka temiz bir epoch-pin ile kossun; tohum verilmisse
+            # dosya IKI ikili icin de AYNI baytlarla kuruluyor
+            import shutil; shutil.rmtree(os.path.join(cfg, "wapps"), ignore_errors=True)
+            pinpath = os.path.join(cfg, "wapps", "epochs.json")
+            if seed is not None:
+                os.makedirs(os.path.dirname(pinpath), exist_ok=True)
+                with open(pinpath, "w") as f: f.write(seed)
             out, err, code = run([binary] + argv, env)
-            results[name] = {"stdout_hex": out.hex(), "stderr_hex": err.hex(), "exit": code}
+            # Pin dosyasinin SON hali de sozlesmenin parcasi: reddedilen bir
+            # okumanin pin'i geri sarmadigi ancak boyle gorunur.
+            pin = open(pinpath, "rb").read().hex() if os.path.exists(pinpath) else None
+            results[name] = {"stdout_hex": out.hex(), "stderr_hex": err.hex(),
+                             "exit": code, "pinfile_hex": pin}
     finally:
         gate.terminate(); gate.wait()
     with open(outpath, "w") as f:

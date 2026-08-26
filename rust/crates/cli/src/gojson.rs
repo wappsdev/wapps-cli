@@ -46,3 +46,103 @@ pub fn to_string<T: serde::Serialize>(v: &T) -> serde_json::Result<String> {
     v.serialize(&mut ser)?;
     Ok(String::from_utf8(buf).expect("serde_json her zaman gecerli UTF-8 uretir"))
 }
+
+/// GoEscapePretty, `json.MarshalIndent(v, "", "  ")` ile AYNI baytlari uretir:
+/// serde_json'in girintili duzeni + Go'nun fazladan kacirdigi bes karakter.
+///
+/// Neden gerekli: epoch pin dosyasi Go ikilisiyle PAYLASILAN bir dosya. Iki
+/// ikili ayni pin'i farkli baytlarla yazarsa, dosyayi karsilastiran her olcum
+/// (differential dahil) sahte bir fark gorur — ve daha kotusu, iki ikili
+/// arasinda gidip gelen bir kullanicida dosya her seferinde yeniden yazilir.
+pub struct GoEscapePretty<'a> {
+    inner: serde_json::ser::PrettyFormatter<'a>,
+}
+
+impl Default for GoEscapePretty<'_> {
+    fn default() -> Self {
+        GoEscapePretty { inner: serde_json::ser::PrettyFormatter::with_indent(b"  ") }
+    }
+}
+
+impl Formatter for GoEscapePretty<'_> {
+    fn write_string_fragment<W>(&mut self, w: &mut W, frag: &str) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        GoEscape.write_string_fragment(w, frag)
+    }
+
+    fn begin_array<W>(&mut self, w: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_array(w)
+    }
+    fn end_array<W>(&mut self, w: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_array(w)
+    }
+    fn begin_array_value<W>(&mut self, w: &mut W, first: bool) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_array_value(w, first)
+    }
+    fn end_array_value<W>(&mut self, w: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_array_value(w)
+    }
+    fn begin_object<W>(&mut self, w: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_object(w)
+    }
+    fn end_object<W>(&mut self, w: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_object(w)
+    }
+    fn begin_object_key<W>(&mut self, w: &mut W, first: bool) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_object_key(w, first)
+    }
+    fn begin_object_value<W>(&mut self, w: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.begin_object_value(w)
+    }
+    fn end_object_value<W>(&mut self, w: &mut W) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        self.inner.end_object_value(w)
+    }
+}
+
+/// to_string_indent, Go-uyumlu kacisla 2-bosluk girintili JSON uretir
+/// (`json.MarshalIndent(v, "", "  ")`). Sonda newline YOKTUR — Go da koymuyor.
+pub fn to_string_indent<T: serde::Serialize>(v: &T) -> serde_json::Result<String> {
+    let mut buf = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, GoEscapePretty::default());
+    v.serialize(&mut ser)?;
+    Ok(String::from_utf8(buf).expect("serde_json her zaman gecerli UTF-8 uretir"))
+}
+
+/// quote, Go'nun `%q`'sunu taklit eder.
+///
+/// SINIR: Rust'in `{:?}`'si ile Go'nun strconv.Quote'u yazdirilamayan
+/// karakterlerde ayrisir (`\u{7}` vs `\a`). Bu yolun tasidigi degerler proje ve
+/// anahtar ADLARI — o kumede iki bicim ayni. Ayrisan bir ad gorulurse burasi
+/// elle yazilmalidir; sessizce dogru saymak icin degil, bilerek kabul edildi.
+pub fn quote(s: &str) -> String {
+    format!("{s:?}")
+}

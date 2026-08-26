@@ -1,6 +1,7 @@
 pub mod agentmode;
 pub mod clierr;
 pub mod cli;
+pub mod epochpin;
 pub mod gojson;
 pub mod safelog;
 pub mod session;

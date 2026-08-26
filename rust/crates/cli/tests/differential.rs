@@ -86,6 +86,6 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 25, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 32, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

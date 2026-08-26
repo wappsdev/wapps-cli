@@ -11,7 +11,8 @@ for name in sorted(go):
     if r is None:
         print(f"MISSING  {name}"); neq += 1; continue
     same = (g["stdout_hex"] == r["stdout_hex"] and g["stderr_hex"] == r["stderr_hex"]
-            and g["exit"] == r["exit"])
+            and g["exit"] == r["exit"]
+            and g.get("pinfile_hex") == r.get("pinfile_hex"))
     if same:
         eq += 1; continue
     neq += 1
@@ -23,5 +24,9 @@ for name in sorted(go):
             print(f"   {f} RS: {b.decode('utf-8','replace')!r}")
     if g["exit"] != r["exit"]:
         print(f"   exit GO={g['exit']} RS={r['exit']}")
+    if g.get("pinfile_hex") != r.get("pinfile_hex"):
+        def dec(v): return None if v is None else bytes.fromhex(v).decode("utf-8", "replace")
+        print(f"   epochs.json GO: {dec(g.get('pinfile_hex'))!r}")
+        print(f"   epochs.json RS: {dec(r.get('pinfile_hex'))!r}")
 print(f"\nEQUAL={eq} DIFFERENT={neq}")
 sys.exit(1 if neq else 0)

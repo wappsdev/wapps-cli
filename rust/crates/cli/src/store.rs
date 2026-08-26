@@ -2,6 +2,7 @@
 // Ham gate govdesi ASLA transcript'e yayilmaz — hatalar clierr sozlesmesine
 // eslenir, yalnizca kod + kisa alanlar tasinir.
 use crate::clierr::{Code, Error};
+use crate::epochpin;
 use crate::session;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -163,9 +164,17 @@ pub fn read(project: &str, keys: &[String]) -> Result<ReadResult, Error> {
             let text = resp.into_string().map_err(|e| {
                 Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
             })?;
-            serde_json::from_str::<ReadResult>(&text).map_err(|e| {
-                Error::new(Code::Internal, format!("decode {ctx}: {e}"))
-            })
+            let out = serde_json::from_str::<ReadResult>(&text)
+                .map_err(|e| Error::new(Code::Internal, format!("decode {ctx}: {e}")))?;
+            // EPOCH PIN — cozumden SONRA, deger dondurulmeden ONCE (Go'daki
+            // sira). Sunulan epoch yerel pin'in altindaysa bu cagri
+            // EPOCH_DOWNGRADE ile duser: daha eski bir store'un degerleri
+            // cagirana HIC ulasmaz. `accept_reset` daima false, cunku onu
+            // kuran seremoni verb'u (`wapps dr accept-epoch-reset`) bu dilimde
+            // yok ve Go tarafinda da get/exec/apply yollarina ASLA
+            // threadlenmiyor.
+            epochpin::check_and_advance(&epochpin::default_path()?, project, out.epoch, false)?;
+            Ok(out)
         }
         Err(ureq::Error::Status(status, resp)) => {
             let retry_after = resp

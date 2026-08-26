@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use wapps::agentmode;
 use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
+use wapps::gojson::quote as go_quote;
 use wapps::store;
 
 fn main() -> ExitCode {
@@ -92,10 +93,4 @@ fn run_get(key: &str, project: Option<String>) -> Result<(), CmdError> {
             format!("key {} not returned by the store", go_quote(key)),
         ))),
     }
-}
-
-// go_quote, Go'nun %q bicimini taklit eder (basit ASCII vakasi yeterli: anahtar
-// adlari bu kumeden).
-fn go_quote(s: &str) -> String {
-    format!("{s:?}")
 }
