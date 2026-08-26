@@ -1,15 +1,57 @@
 #!/usr/bin/env python3
-"""Iki probe ciktisini BAYT-BAYT karsilastirir."""
+"""Iki probe ciktisini BAYT-BAYT karsilastirir.
+
+IKI SESSIZ YALAN, ve ikisi de artik BURADA MEKANIZMA:
+
+ 1. ZAMAN ASIMI, "esitlik" gibi gorunur. Onay bekleyen bir dal stdin'siz
+    kosarsa bir pty ASLA EOF vermez: iki ikili de okumada bloklanir ve 30 sn
+    sonra ayni negatif kodla (-9) oldurulur. diff bunu EQUAL sayar ama olculen
+    sey bir davranis DEGIL bir timeout'tur. Bu tam olarak oldu
+    (human_policy_set_yes_flag, `--yes` unutulmustu) ve yalnizca cikis kodu
+    elle okundugu icin fark edildi. Artik NEGATIF cikis kodu HATA.
+
+ 2. BOS VAKA, "esitlik" gibi gorunur. Hicbir sey basmayan, hicbir dosya
+    yazmayan bir vaka da EQUAL doner. Onceki bir dilim bunu vaka basina bayt
+    sayarak ELLE aradi; artik karsilastiriciya gomulu.
+
+Ikisi de EXCLUDED'a saygi duyar: acikca disarida birakilmis bir vaka bu
+kontrollerden de muaftir.
+"""
 import json, os, sys
 go = json.load(open(sys.argv[1])); rs = json.load(open(sys.argv[2]))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cases import EXCLUDED as skip
 eq = neq = 0
+bad = []
+
+
+def _is_vacuum(v):
+    """Vaka HICBIR SEY gozlemlemiyor mu?"""
+    if v.get("stdout_hex") or v.get("stderr_hex"):
+        return False
+    if v.get("pinfile_hex") or v.get("bindfile_hex"):
+        return False
+    for _, entry in (v.get("written") or {}).items():
+        if entry[0]:
+            return False
+    return True
+
 for name in sorted(go):
     if name in skip: continue
     g, r = go[name], rs.get(name)
     if r is None:
         print(f"MISSING  {name}"); neq += 1; continue
+    # Negatif cikis kodu = timeout'ta oldurulmus. Iki taraf da oyleyse
+    # karsilastirma bir davranisi degil bir zaman asimini olcerdi.
+    for tag, v in (("GO", g), ("RS", r)):
+        if v["exit"] < 0:
+            bad.append(f"TIMEOUT  {name}: {tag} cikis {v['exit']} — bu vaka bir "
+                       f"DAVRANIS degil bir ZAMAN ASIMI olcuyor (onay dali "
+                       f"stdin'siz mi kaldi?)")
+    if _is_vacuum(g) and _is_vacuum(r):
+        bad.append(f"VACUUM   {name}: sifir stdout + sifir stderr + yazilan dosya "
+                   f"YOK + pin YOK + baglama defteri YOK — bu vaka HICBIR SEY "
+                   f"karsilastirmiyor")
     same = (g["stdout_hex"] == r["stdout_hex"] and g["stderr_hex"] == r["stderr_hex"]
             and g["exit"] == r["exit"]
             and g.get("pinfile_hex") == r.get("pinfile_hex")
@@ -43,5 +85,7 @@ for name in sorted(go):
         def dec(v): return None if v is None else bytes.fromhex(v).decode("utf-8", "replace")
         print(f"   epochs.json GO: {dec(g.get('pinfile_hex'))!r}")
         print(f"   epochs.json RS: {dec(r.get('pinfile_hex'))!r}")
-print(f"\nEQUAL={eq} DIFFERENT={neq}")
-sys.exit(1 if neq else 0)
+for line in bad:
+    print(line)
+print(f"\nEQUAL={eq} DIFFERENT={neq} UNSOUND={len(bad)}")
+sys.exit(1 if (neq or bad) else 0)
