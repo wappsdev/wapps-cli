@@ -15,6 +15,8 @@ pub mod gojson;
 pub mod importenv;
 pub mod initverb;
 pub mod listverb;
+pub mod policy;
+pub mod policyverb;
 pub mod projects;
 pub mod projectsverb;
 pub mod rmverb;

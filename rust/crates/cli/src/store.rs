@@ -5,7 +5,7 @@ use crate::clierr::{Code, Error};
 use crate::epochpin;
 use crate::session;
 use rustls_pki_types::pem::PemObject;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -472,6 +472,89 @@ pub fn delete(project: &str, key: &str) -> Result<(), Error> {
         Err(ureq::Error::Status(status, resp)) => {
             Err(status_error(status, resp, &ctx))
         }
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+/// PolicyResult, GET /v1/admin/policy yanitidir.
+///
+/// Alan sirasi Go struct'i ile AYNI (version, sha256, policy): `policy show
+/// --json` bu yapiyi girintili basiyor ve cikti bayt-bayt karsilastiriliyor.
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct PolicyResult {
+    #[serde(default)]
+    pub version: u64,
+    #[serde(default)]
+    pub sha256: String,
+    #[serde(default)]
+    pub policy: crate::policy::PolicyDoc,
+}
+
+/// policy_get, GET /v1/admin/policy cagirir.
+///
+/// `/v1/admin` oneki KASITLI: kenarda bu AYRI bir CF Access uygulamasidir
+/// (write-AUD, 15 dk + WebAuthn), o yuzden kimlik header'lari admin
+/// oturumundan geliyor — bir okuma oturumu GECERLI olsa bile yetmez, ve
+/// oturum yoklugunda basilan kurtarma satiri "wapps login" DEGIL
+/// "wapps login --write" olmali.
+///
+/// EPOCH PIN'E DOKUNMAZ: policy bir PROJE degil, GLOBAL bir dokuman; sunulan
+/// bir veri epoch'u OKUNMUYOR.
+///
+/// HATA BAGLAMI "policy show".
+pub fn policy_get() -> Result<PolicyResult, Error> {
+    let headers = session::auth_headers_admin()?;
+    let url = format!("{}/v1/admin/policy", session::gate_url());
+    let mut req = agent().get(&url);
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = "policy show";
+    match req.call() {
+        Ok(resp) => decode_body::<PolicyResult>(resp, ctx),
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, ctx)),
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+/// PolicyPutResult, PUT /v1/admin/policy yanitidir.
+#[derive(Debug, Deserialize, Default)]
+pub struct PolicyPutResult {
+    #[serde(default)]
+    pub version: u64,
+    #[serde(default)]
+    pub sha256: String,
+}
+
+/// policy_put, PUT /v1/admin/policy cagirir — CAS'li policy yazimi.
+///
+/// GONDERILEN BAYTLAR SOZLESMENIN PARCASI: gate aldigi govdenin sha256'sini
+/// geri veriyor ve istemci onu basiyor. Alan sirasi ya da omitempty bir yerde
+/// ayrisirsa basilan sha ayrisir — bu yuzden govde `policy::PolicyDoc`un
+/// serde etiketleriyle uretiliyor ve o etiketler Go struct etiketlerinin
+/// AYNISI (tests/policyverb.rs bunu ag'a cikmadan olcuyor, sahte gate'in PUT
+/// rotasi da canli olcuyor).
+///
+/// HATA BAGLAMI "policy set".
+pub fn policy_put(doc: &crate::policy::PolicyDoc) -> Result<PolicyPutResult, Error> {
+    let headers = session::auth_headers_admin()?;
+    let body = serde_json::to_string(doc)
+        .map_err(|e| Error::new(Code::Internal, format!("encode policy: {e}")))?;
+    let url = format!("{}/v1/admin/policy", session::gate_url());
+    let mut req = agent().put(&url).set("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = "policy set";
+    match req.send_string(&body) {
+        Ok(resp) => decode_body::<PolicyPutResult>(resp, ctx),
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, ctx)),
         Err(ureq::Error::Transport(t)) => Err(Error::new(
             Code::NetworkRequired,
             format!("secrets gate unreachable: {t}"),

@@ -119,6 +119,61 @@ fn assert_policies(v: &serde_json::Value, side: &str) {
         err.contains("BINDING_UNPINNED") && code == 1,
         "[{side}] secrets init YAZMADAN once baglama kapisina takilmali.\nstderr: {err:?}"
     );
+
+    // trust-repo: `tty` politikasi. Kod `rm` ile AYNI (AGENT_MODE_REFUSED) ama
+    // CUMLE farkli, ve operator cumleyi okuyor. Iki reddi tek metne indiren
+    // bir port burada kirilir.
+    let (err, code) = obs(v, "secrets_trustrepo");
+    assert!(
+        err.contains("AGENT_MODE_REFUSED")
+            && err.contains("this command requires a human terminal")
+            && code == 1,
+        "[{side}] trust-repo `tty` reddi kendi cumlesini basmali.\nstderr: {err:?}"
+    );
+    let (rm_err, _) = obs(v, "secrets_rm");
+    assert!(
+        !rm_err.contains("this command requires a human terminal"),
+        "[{side}] `rm` ile `trust-repo` AYNI cumleyi basmamali (refuse_agent vs tty).\nstderr: {rm_err:?}"
+    );
+
+    // policy show/set: KONTROL DUZLEMI, `refuse_agent` DEGIL.
+    for probe in ["secrets_policy_show", "secrets_policy_set"] {
+        let (err, code) = obs(v, probe);
+        assert!(
+            err.contains("CONTROL_PLANE_REQUIRED") && code == 1,
+            "[{side}] {probe} CONTROL_PLANE_REQUIRED almali.\nstderr: {err:?}"
+        );
+    }
+    // ...ve `policy set` bunu YAPRAK adiyla degil AILE adiyla aliyor. Bu
+    // tablonun en kritik satiri: gating anahtari "set" olsaydi data-plane
+    // `set`in `allow` iznini MIRAS ALIRDI ve bir ajan yetki kurallarini
+    // yazabilirdi.
+    let (err, _) = obs(v, "secrets_policy_set");
+    assert!(
+        !err.contains("BINDING_UNPINNED") && !err.contains("NOT_FOUND"),
+        "[{side}] `policy set` data-plane `set`in iznini MIRAS ALMIS gorunuyor.\nstderr: {err:?}"
+    );
+
+    // env print-form: RunE'de reddediliyor (`allow` + baglama gectikten SONRA).
+    let (err, code) = obs(v, "secrets_env_print");
+    assert!(
+        err.contains("AGENT_MODE_REFUSED") && code == 1,
+        "[{side}] `env` print-form'u ajan modunda reddedilmeli.\nstderr: {err:?}"
+    );
+    // ...ve `--write` AYNI kosulda o kapiyi GECIYOR: ret bir SONRAKI kapidan
+    // (config) geliyor. AI-safe yolun gercekten ayri bir yol oldugunun kaniti.
+    let (err, code) = obs(v, "secrets_env_write");
+    assert!(
+        !err.contains("AGENT_MODE_REFUSED") && err.contains("NOT_FOUND") && code == 1,
+        "[{side}] `env --write` print-form kapisini GECMELI, config kapisina dusmeli.\nstderr: {err:?}"
+    );
+
+    // import-env: `allow`, baglama VAR → ciplak --project + ajan fail-closed.
+    let (err, code) = obs(v, "secrets_import_env");
+    assert!(
+        err.contains("BINDING_UNPINNED") && code == 1,
+        "[{side}] import-env ajan modunda baglama kapisina takilmali.\nstderr: {err:?}"
+    );
 }
 
 #[test]

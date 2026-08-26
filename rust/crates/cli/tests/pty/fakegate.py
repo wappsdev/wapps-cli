@@ -11,6 +11,8 @@ Tasinan rotalar:
   GET    /v1/projects                 -> proje ADLARI (projects list)
   DELETE /v1/admin/projects/{p}       -> projeyi tumuyle silme (projects rm)
   GET    /v1/whoami                   -> status'un canlilik probu
+  GET    /v1/admin/policy             -> aktif policy (policy show/set)
+  PUT    /v1/admin/policy             -> CAS'li policy yazimi (policy set)
 
 TEL ADI `keyName` (camelCase) — bu bir AYRINTI DEGIL. Bu dosya bir sure
 `key_name` yaydi (Rust'in alan adi) ve o yanlis ad GERCEK bir ayrismayi
@@ -25,12 +27,28 @@ YAZILAN DEGER ASLA KAYDEDILMIYOR: PUT govdesi Content-Length kadar okunup
 ATILIYOR. Bir sahte gate'in bile bir degeri diske/loga yazmasi, bu portun
 kapatmaya calistigi yuzeyin ta kendisi olurdu (log_message zaten susturulmus).
 """
-import json, sys, re
+import json, sys, re, hashlib
 from urllib.parse import unquote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Anahtar -> (status, govde). Degerler TEST dizeleri; gercek sir DEGIL.
 SCRIPT = {}
+
+# AKTIF POLICY. Bir sir DEGIL — yetki kurallari. Version 3 SABIT: `policy set`
+# CAS'i current+1 istiyor, yani istemcinin 4 gondermesi bekleniyor ve bunu
+# gondermeyen bir istemci 412 aliyor (asagiya bak).
+POLICY_VERSION = 3
+POLICY_SHA = "abc123def456789abcdef"
+POLICY_DOC = {
+    "schema": "wapps-secrets/policy/v1",
+    "version": POLICY_VERSION,
+    "rules": [
+        {"group": "developers@wapps.co", "projects": ["*"],
+         "keys": ["*", "!*_PROD_*"], "verbs": ["read"]},
+        {"service": "ci-runner", "projects": ["vaulter"],
+         "keys": ["DB_*"], "verbs": ["read", "write"]},
+    ],
+}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -45,6 +63,16 @@ class H(BaseHTTPRequestHandler):
         # tasima hatasi offline demek.
         if self.path == "/v1/whoami":
             return self._send(200, {"principal": "probe@example.invalid"})
+
+        # GET /v1/admin/policy — aktif policy dokumani.
+        #
+        # AYRI BIR ONEK: kenarda /v1/admin AYRI bir CF Access uygulamasidir
+        # (write-AUD). Sahte gate AUD dogrulamiyor — o kenarin isi — ama
+        # rotanin AYRI olmasi Go'nun URL'iyle birebir ayni kalsin diye
+        # korunuyor: bir istemci /v1/policy'ye giderse 404 alir ve GORUNUR.
+        if self.path == "/v1/admin/policy":
+            return self._send(200, {"version": POLICY_VERSION, "sha256": POLICY_SHA,
+                                    "policy": POLICY_DOC})
 
         # GET /v1/projects — principal'in GOREBILDIGI proje ADLARI.
         # Filtreleme SUNUCUDA yapilir; istemci sirayi da BOZMAZ, o yuzden
@@ -131,7 +159,37 @@ class H(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         # Govde OKUNUYOR ama SAKLANMIYOR — istemci yazimi tamamlayabilsin diye.
-        self._drain()
+        body = self._drain()
+
+        # PUT /v1/admin/policy — CAS'li policy yazimi.
+        #
+        # BU ROTA BILEREK MUSKUL, ve sebebi bu harness'in gecmisinde yazili: bir
+        # sahte gate'in en kolay hatasi YANLIS bir isteğe DOGRU cevabi vermektir.
+        # Burada UC sey govdeye BAGLI, yani govdeyi yanlis ureten bir istemci
+        # farkli bir cevap alir ve differential'da GORUNUR:
+        #
+        #   1. CAS. version == current+1 DEGILSE 412 POLICY_CONFLICT. Yani
+        #      current'i cekmeden ya da yanlis hesaplayan bir istemci duser.
+        #   2. Donen `version`, GOVDEDEN okunuyor — sabit degil. Yanlis bir
+        #      surum basilan basari satirini degistirir.
+        #   3. Donen `sha256`, ALINAN BAYTLARIN sha256'si. Bu, dokumanin JSON
+        #      SERILESTIRMESINI olculebilir yapar: alan SIRASI ya da bos
+        #      selector'lerin omitempty'si Go'dan ayrisirsa sha ayrisir ve
+        #      "✓ policy v4 active (sha256 ...)" satiri farklilasir. Okuma
+        #      tarafindaki `keyName` hatasinin YAZIM tarafindaki karsiligi tam
+        #      olarak budur.
+        if self.path == "/v1/admin/policy":
+            try:
+                doc = json.loads(body or b"{}") or {}
+            except ValueError:
+                return self._send(400, {"error": "MALFORMED_POLICY"})
+            want = POLICY_VERSION + 1
+            if doc.get("version") != want:
+                return self._send(412, {"error": "POLICY_CONFLICT",
+                                        "current_version": POLICY_VERSION})
+            return self._send(200, {"version": doc["version"],
+                                    "sha256": hashlib.sha256(body).hexdigest()})
+
         m = re.match(r"^/v1/projects/([^/]+)/keys/([^/]+)$", self.path)
         if not m:
             return self._send(404, {"error": "NO_ROUTE"})

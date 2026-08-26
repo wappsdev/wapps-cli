@@ -5,16 +5,31 @@ Bu betigin varlik sebebi, portun en sik ayristigi sorunun tek bir yerde
 adlandirilmasi: bir fiilin ajan modunda ne yaptigi, komsusundan TAHMIN
 EDILEMEZ. Olculen alti nokta:
 
-  secrets list   + ajan + --project  -> BINDING_UNPINNED   (allow, baglama VAR)
-  secrets status + ajan + pinsiz cfg -> cikis 0            (allow, baglama MUAF)
-  secrets rm     + ajan              -> AGENT_MODE_REFUSED (refuse_agent)
-  projects list  + ajan + --project  -> cikis 0            (KOK mount: kapi YOK)
-  projects rm    + ajan              -> CONTROL_PLANE_REQUIRED
-  secrets init   + ajan + mevcut cfg -> BINDING_UNPINNED   (kapi YAZIMDAN once)
+  secrets list       + ajan + --project  -> BINDING_UNPINNED   (allow, baglama VAR)
+  secrets status     + ajan + pinsiz cfg -> cikis 0            (allow, baglama MUAF)
+  secrets rm         + ajan              -> AGENT_MODE_REFUSED (refuse_agent)
+  projects list      + ajan + --project  -> cikis 0            (KOK mount: kapi YOK)
+  projects rm        + ajan              -> CONTROL_PLANE_REQUIRED
+  secrets init       + ajan + mevcut cfg -> BINDING_UNPINNED   (kapi YAZIMDAN once)
+  secrets trust-repo + ajan              -> AGENT_MODE_REFUSED (tty), FARKLI CUMLE
+  secrets policy set + ajan              -> CONTROL_PLANE_REQUIRED (aile adiyla)
+  secrets env        + ajan (print-form) -> AGENT_MODE_REFUSED (RunE'de)
+  secrets env --write+ ajan              -> AGENT_MODE_REFUSED DEGIL: config kapisi
+  secrets import-env + ajan + --project  -> BINDING_UNPINNED   (allow)
 
 Ucuncu ve dorduncu satir YAN YANA duruyor cunku carpici olan o: iki fiil de
 "yalnizca ADlar" sinifinda ve ikisi de ajana serbest, ama `secrets list`
 baglama kapisinin arkasinda, `projects list` DEGIL.
+
+UC AYRI "AGENT_MODE_REFUSED" var ve METINLERI AYRI: `rm` (refuse_agent,
+"surface refused..."), `trust-repo` (tty, "this command requires a human
+terminal"), `env` print-form (refuse_agent, RunE'de — kapi sirasi farkli).
+Ayni kodu paylasmalari onlari ayni yapmiyor; operator CUMLEYI okuyor.
+
+`policy set` satiri bu tablonun EN KRITIK satiri: gating anahtari SecretsCmd'nin
+ALTINDAKI ILK seviye ad ("policy"), YAPRAK ad ("set") DEGIL. Yaprak adla
+anahtarlanan bir port, `policy set`e data-plane `set`in `allow` iznini MIRAS
+ALDIRIR ve bir ajan yetki kurallarini yazabilir.
 
 Gate SAHTE ve yereldir; gercek bir gate'e HIC baglanilmaz ve buradaki hicbir
 deger gercek bir sir DEGILDIR.
@@ -35,6 +50,15 @@ PROBES = [
     ("projects_list",  ["--project", "testproj", "projects", "list"], False),
     ("projects_rm",    ["projects", "rm", "vaulter", "--yes"], False),
     ("secrets_init",   ["secrets", "init"], True),
+    ("secrets_trustrepo", ["secrets", "trust-repo"], True),
+    ("secrets_policy_show", ["secrets", "policy", "show"], True),
+    # AILE ADIYLA KAPILANMA: `set` yaprak adi data-plane `set`in izniyle
+    # KARISTIRILMAMALI. Bu satirin duzelmesi, bir ajana policy yazdirir.
+    ("secrets_policy_set", ["secrets", "policy", "set", "nope.json"], True),
+    ("secrets_env_print", ["secrets", "env"], False),
+    # `--write` print-form reddini GECER; ret bir sonraki kapidan gelir.
+    ("secrets_env_write", ["secrets", "env", "--write", "out.env"], False),
+    ("secrets_import_env", ["--project", "testproj", "secrets", "import-env", "x.env"], False),
 ]
 
 

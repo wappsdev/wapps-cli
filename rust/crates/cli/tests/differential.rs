@@ -84,6 +84,7 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // → 176: `trust-repo` 11 vaka ekledi.
     // → 194: `env` 18 vaka ekledi.
     // → 211: `import-env` 17 vaka ekledi.
+    // → 244: `policy` (show/set/lint) 33 vaka ekledi.
     //
     // Eklenen vakalarin AGIRLIK MERKEZI su soru: her fiilin ajan-modu
     // politikasi ne, ve kapi sirasi ne? Cevap fiil basina FARKLI (bkz.
@@ -100,6 +101,6 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 211, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 244, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

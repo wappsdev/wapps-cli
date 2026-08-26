@@ -14,6 +14,8 @@ use wapps::epochpin;
 use wapps::execverb;
 use wapps::gojson::quote as go_quote;
 use wapps::importenv;
+use wapps::policy;
+use wapps::policyverb;
 use wapps::initverb;
 use wapps::projectsverb;
 use wapps::rmverb;
@@ -109,6 +111,47 @@ fn run() -> Result<(), CmdError> {
                 }
                 run_rm(&keys[0], config, project, rm.get_flag("yes"))
             }
+            Some(("policy", pm)) => match pm.subcommand() {
+                Some(("show", shm)) => run_policy_show(shm.get_flag("json")),
+                Some(("set", psm)) => {
+                    let files: Vec<String> = psm
+                        .get_many::<String>("file")
+                        .map(|v| v.cloned().collect())
+                        .unwrap_or_default();
+                    // ARITE ONCE — ve bu SIRA olculdu: ajan modunda eksik
+                    // arguman CONTROL_PLANE_REQUIRED DEGIL bir arite hatasi
+                    // veriyor (cobra ValidateArgs, PersistentPreRunE'dan once).
+                    if files.len() != 1 {
+                        return Err(CmdError::Plain(format!(
+                            "accepts 1 arg(s), received {}",
+                            files.len()
+                        )));
+                    }
+                    run_policy_set(&files[0], psm.get_flag("yes"))
+                }
+                Some(("lint", plm)) => {
+                    let files: Vec<String> = plm
+                        .get_many::<String>("file")
+                        .map(|v| v.cloned().collect())
+                        .unwrap_or_default();
+                    if files.len() != 1 {
+                        return Err(CmdError::Plain(format!(
+                            "accepts 1 arg(s), received {}",
+                            files.len()
+                        )));
+                    }
+                    run_policy_lint(&files[0])
+                }
+                _ => {
+                    let _ = cli::build()
+                        .find_subcommand_mut("secrets")
+                        .unwrap()
+                        .find_subcommand_mut("policy")
+                        .unwrap()
+                        .print_help();
+                    std::process::exit(0);
+                }
+            },
             Some(("import-env", im)) => {
                 let files: Vec<String> =
                     im.get_many::<String>("file").map(|v| v.cloned().collect()).unwrap_or_default();
@@ -401,6 +444,130 @@ fn run_projects_rm(project: &str, yes: bool) -> Result<(), CmdError> {
         out,
         "{}",
         projectsverb::rm_success_line(&res.project, res.deleted_objects, res.pointer_events_kept)
+    );
+    Ok(())
+}
+
+// --- `secrets policy` ailesi: KONTROL DUZLEMI --------------------------------
+//
+// UC SEY BU AILEYI BUTUN DIGER FIILLERDEN AYIRIYOR:
+//
+//  1. AJAN POLITIKASI `control`, `refuse_agent` DEGIL. Ret kodu
+//     CONTROL_PLANE_REQUIRED ve kurtarma satiri bir ADMIN SEREMONISINI
+//     adlandiriyor ("write-AUD session"). `rm`in AGENT_MODE_REFUSED'i ile
+//     ayni sey DEGIL — iki ayri sinif, iki ayri cikis yolu.
+//  2. AILE ADIYLA KAPILANIYOR. Go'da gateKey, SecretsCmd'nin ALTINDAKI ilk
+//     seviye adi ("policy") aliyor, yaprak adini ("set") DEGIL. Aksi halde
+//     `policy set`, data-plane `set`in `allow` iznini MIRAS ALIRDI ve bir
+//     ajan yetki kurallarini yazabilirdi. Burada her yaprak acikca
+//     POLICY_CONTROL ile kapiliyor.
+//  3. BAGLAMA KAPISI YOK ve config GEREKMIYOR. policy GLOBAL bir dokuman; bir
+//     depo→proje baglamasina bagli DEGIL (Go: bindingExempt). Olculdu:
+//     pinlenmemis bir config'in yaninda `policy show` baglama sorusunu HIC
+//     sormadan gate'e gidiyor.
+//
+// Oturum yoklugunda kurtarma satiri "wapps login" DEGIL "wapps login --write":
+// /v1/admin kenarda AYRI bir CF Access uygulamasi (auth_headers_admin).
+
+fn policy_gate() -> Result<(), CmdError> {
+    agentmode::guard(agentmode::POLICY_CONTROL, agentmode::is_agent()).map_err(CmdError::Cli)
+}
+
+// run_policy_show, GET /v1/admin/policy.
+fn run_policy_show(json: bool) -> Result<(), CmdError> {
+    policy_gate()?;
+    let res = store::policy_get().map_err(CmdError::Cli)?;
+    let mut out = std::io::stdout();
+    if json {
+        // Go: json.Encoder + SetIndent("","  ") + SetEscapeHTML(false), ve
+        // Encode SONA newline ekler. serde_json HTML kacisi YAPMIYOR, yani
+        // `<`/`>`/`&` iki tarafta da ciplak cikiyor.
+        let text = serde_json::to_string_pretty(&res)
+            .map_err(|e| CmdError::Plain(format!("policy show: {e}")))?;
+        let _ = writeln!(out, "{text}");
+        return Ok(());
+    }
+    let _ = write!(out, "{}", policyverb::render_show(res.version, &res.sha256, &res.policy));
+    Ok(())
+}
+
+// run_policy_lint, bir policy dosyasini CEVRIMDISI dogrular. Gate'e HIC
+// gidilmez — uyarilar BLOKLAMAZ, sema hatasi BLOKLAR.
+fn run_policy_lint(path: &str) -> Result<(), CmdError> {
+    policy_gate()?;
+    let doc = policyverb::read_policy_file(std::path::Path::new(path)).map_err(CmdError::Cli)?;
+    let warns = policy::lint(&doc);
+    let mut out = std::io::stdout();
+    for w in &warns {
+        let _ = writeln!(out, "⚠ {w}");
+    }
+    let _ = writeln!(
+        out,
+        "✓ {path}: schema valid ({} rules, {} warnings)",
+        doc.rules.len(),
+        warns.len()
+    );
+    Ok(())
+}
+
+// run_policy_set, lint + diff + CAS'li PUT.
+//
+// SIRA OLCULDU ve gozlemlenebilir: lint uyarilari gate'e GITMEDEN ONCE
+// basiliyor. Yani gate erisilemezken bile operator dosyasinin uyarilarini
+// gorur — `set_good_no_gate` vakasi tam olarak bunu pinliyor.
+//
+// CAS: version = current+1. Es zamanli bir admin duzenlemesi CAS'i kaybettirir
+// (412 POLICY_CONFLICT) → `policy show` ile yeniden cek, rebase et, tekrarla.
+fn run_policy_set(path: &str, yes: bool) -> Result<(), CmdError> {
+    policy_gate()?;
+    let mut doc = policyverb::read_policy_file(std::path::Path::new(path)).map_err(CmdError::Cli)?;
+
+    let mut out = std::io::stdout();
+    // Cevrimdisi lint: UYARILAR BLOKLAMAZ (sema hatasi zaten yukarida bloklardi).
+    for w in policy::lint(&doc) {
+        let _ = writeln!(out, "⚠ {w}");
+    }
+
+    let cur = store::policy_get().map_err(CmdError::Cli)?;
+    doc.version = cur.version + 1;
+    // YENIDEN dogrulama: surum degistigi icin. Buradaki ret POLICY_INVALID
+    // ama mesaj FARKLI ("policy file rejected offline") — dosya okumadaki
+    // "policy file <yol> invalid" ile karistirilmamali.
+    policy::validate(&doc, policyverb::POLICY_TOPOLOGY).map_err(|e| {
+        CmdError::Cli(
+            Error::new(Code::PolicyInvalid, format!("policy file rejected offline: {e}")),
+        )
+    })?;
+
+    let _ = write!(out, "{}", policyverb::rule_diff(&cur.policy.rules, &doc.rules));
+    let _ = write!(
+        out,
+        "\nPUT policy v{} → v{} ({} rules). ",
+        cur.version,
+        doc.version,
+        doc.rules.len()
+    );
+    if !yes {
+        // Onay istemi STDOUT'a (Go: cmd.OutOrStdout()), ve kabul edilen TEK
+        // cevap "yes" — `rm`/`projects rm` ile ayni katilik, `trust-repo`nun
+        // "y"siyle DEGIL.
+        let mut stdin = std::io::stdin();
+        if !confirm::ask(&mut stdin, &mut out, "Type 'yes' to apply: ") {
+            return Err(CmdError::Cli(Error::new(
+                Code::ActionUnavailable,
+                "policy set aborted (not confirmed)",
+            )));
+        }
+    } else {
+        let _ = writeln!(out, "(--yes)");
+    }
+
+    let res = store::policy_put(&doc).map_err(CmdError::Cli)?;
+    let _ = writeln!(
+        out,
+        "✓ policy v{} active (sha256 {})",
+        res.version,
+        policyverb::short12(&res.sha256)
     );
     Ok(())
 }

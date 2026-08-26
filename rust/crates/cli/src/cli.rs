@@ -142,6 +142,43 @@ pub fn build() -> Command {
                                 .help("skip the interactive confirm (still refused in agent mode)"),
                         ),
                 )
+                // `policy` bir AILE komutu. Ajan-modu anahtarı SecretsCmd'nin
+                // ALTINDAKI ILK seviye addir ("policy"), yaprak adi degil —
+                // boylece `policy set` data-plane `set`in `allow` iznini MIRAS
+                // ALAMAZ. Go'da gateKey bunu yapiyor; burada agac zaten oyle
+                // kurulu ve her yaprak POLICY_CONTROL ile kapiliyor.
+                .subcommand(
+                    Command::new("policy")
+                        .about("Show / set / lint the gate's access policy (admin)")
+                        .subcommand(
+                            Command::new("show")
+                                .about("Fetch the active policy version + rules (admin verb, write-AUD session)")
+                                .arg(
+                                    Arg::new("json")
+                                        .long("json")
+                                        .action(ArgAction::SetTrue)
+                                        .help("emit the raw policy JSON"),
+                                )
+                                .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                        )
+                        .subcommand(
+                            Command::new("set")
+                                .about("Lint + diff + CAS write of a policy file (version = current+1)")
+                                // Arite ELLE (cobra ExactArgs(1)).
+                                .arg(Arg::new("file").num_args(0..).help("Policy file path"))
+                                .arg(
+                                    Arg::new("yes")
+                                        .long("yes")
+                                        .action(ArgAction::SetTrue)
+                                        .help("skip the interactive confirm (still TTY-only via the agent gate)"),
+                                ),
+                        )
+                        .subcommand(
+                            Command::new("lint")
+                                .about("Offline schema validation + overlap analysis (warnings only)")
+                                .arg(Arg::new("file").num_args(0..).help("Policy file path")),
+                        ),
+                )
                 .subcommand(
                     Command::new("import-env")
                         .about("Bulk import KEY=VALUE pairs from an env file into the store")

@@ -914,3 +914,185 @@ IMPORT_CASES = [
 ]
 
 CASES += IMPORT_CASES
+
+
+# --- `secrets policy` (show / set / lint) ------------------------------------
+#
+# KONTROL DUZLEMI. Bu aile diger her fiilden UC noktada ayriliyor, ve ucu de
+# burada olculuyor:
+#
+#  1. AJAN POLITIKASI `control`, `refuse_agent` DEGIL. Ret kodu
+#     CONTROL_PLANE_REQUIRED ve kurtarma satiri bir ADMIN SEREMONISINI
+#     adlandiriyor. `secrets rm`in AGENT_MODE_REFUSED'iyle AYNI SEY DEGIL.
+#  2. AILE ADIYLA KAPILANIYOR. Go'da gateKey, SecretsCmd'nin ALTINDAKI ILK
+#     seviye adi ("policy") aliyor, yaprak adini ("set") DEGIL. Aksi halde
+#     `policy set` data-plane `set`in `allow` iznini MIRAS ALIRDI ve bir ajan
+#     yetki kurallarini yazabilirdi. `agent_policy_set_does_not_inherit_set`
+#     tam olarak bunu pinliyor — bu, tek satirlik bir hatanin ajanlara policy
+#     yazdirabilecegi yer.
+#  3. BAGLAMA KAPISI YOK, config GEREKMIYOR. policy GLOBAL bir dokuman.
+#     `human_policy_show_is_binding_exempt` pinsiz bir config'in yaninda
+#     kosuyor ve baglama sorusunu HIC gormeden gate'e gidiyor — ayni dizinde
+#     `secrets env` satir ici onay istiyor.
+#
+# SAHTE GATE'IN PUT ROTASI KASITLI MUSKUL (bkz. fakegate.py): donen `sha256`,
+# ALINAN BAYTLARIN sha256'sidir. Yani `policy set`in bastigi basari satiri,
+# dokumanin JSON SERILESTIRMESINE bagli — alan sirasi ya da bos selector'lerin
+# omitempty'si Go'dan ayrisirsa sha ayrisir ve vaka kirmizi olur. Bu, okuma
+# tarafindaki `keyName` hatasinin YAZIM tarafindaki karsiligi.
+#
+# GERCEK SIR YOK: policy dosyalari YETKI KURALLARI tasir, deger DEGIL.
+
+# Gate'in aktif policy'si version 3, yani CAS current+1 = 4 bekliyor.
+def _pol(rules, version=None):
+    d = {"schema": "wapps-secrets/policy/v1", "rules": rules}
+    if version is not None:
+        d["version"] = version
+    return json.dumps(d, indent=2)
+
+import json  # noqa: E402  (yalnizca policy fikstürleri icin)
+
+POLICY_FILES = {
+    # Temiz ama (b) uyarisi ureten dosya: `*` prod anahtarlarina ulasabiliyor.
+    "warns.json": _pol([{"group": "eng@wapps.co", "projects": ["vaulter"],
+                         "keys": ["*"], "verbs": ["read"]}], 1),
+    # Uyarisiz: kural-ici deny (b)'yi susturuyor.
+    "clean.json": _pol([{"group": "eng@wapps.co", "projects": ["vaulter"],
+                         "keys": ["*", "!*_PROD_*"], "verbs": ["read"]}], 1),
+    # Bes uyari sinifindan dordunu birden ureten dosya (a/c/d/e).
+    "noisy.json": _pol([
+        {"group": "eng", "projects": ["*"], "keys": ["*"], "verbs": ["*"]},
+        {"service": "ci", "projects": ["*"], "keys": ["*"], "verbs": ["*"]},
+        {"group": "eng", "projects": ["p"], "keys": ["A*", "!*_PROD_*"], "verbs": ["read"]},
+        {"group": "admins", "projects": ["vaulter"], "keys": ["*"], "verbs": ["admin"]},
+    ], 1),
+    # Gate'in AKTIF kurallarinin AYNISI -> diff "(no rule changes)" demeli.
+    "same.json": _pol([
+        {"group": "developers@wapps.co", "projects": ["*"],
+         "keys": ["*", "!*_PROD_*"], "verbs": ["read"]},
+        {"service": "ci-runner", "projects": ["vaulter"],
+         "keys": ["DB_*"], "verbs": ["read", "write"]},
+    ], 1),
+    # Sema/dogrulama ihlalleri — her biri FARKLI bir cumle uretmeli.
+    "badschema.json": json.dumps({"schema": "nope/v1", "version": 1, "rules": []}),
+    "twosel.json": _pol([{"group": "g", "service": "s", "projects": ["p"],
+                          "keys": ["*"], "verbs": ["read"]}], 1),
+    "aud.json": _pol([{"aud": "abc", "projects": ["p"], "keys": ["*"], "verbs": ["read"]}], 1),
+    "badservice.json": _pol([{"service": "-bad name", "projects": ["p"],
+                              "keys": ["*"], "verbs": ["read"]}], 1),
+    "badverb.json": _pol([{"group": "g", "projects": ["p"], "keys": ["*"],
+                           "verbs": ["deploy"]}], 1),
+    "denyonly.json": _pol([{"group": "g", "projects": ["p"], "keys": ["!x"],
+                            "verbs": ["read"]}], 1),
+    "noverbs.json": _pol([{"group": "g", "projects": ["p"], "keys": ["*"], "verbs": []}], 1),
+    "denyproj.json": _pol([{"group": "g", "projects": ["!x"], "keys": ["*"],
+                            "verbs": ["read"]}], 1),
+    # `version` alani YOK -> 1 kabul edilir ve gecer.
+    "noversion.json": _pol([]),
+    # BILINMEYEN alan -> DisallowUnknownFields.
+    "unknown.json": '{"schema":"wapps-secrets/policy/v1","version":1,"rules":[],"extra":1}',
+    # BOZUK JSON — DIFFERENTIAL DISI (asagidaki EXCLUDED'a bak).
+    "broken.json": "{ this is not json",
+}
+
+
+def pol(name, argv, env, stdin=None):
+    return (name, ["secrets", "policy"] + argv, env, None, stdin,
+            cfg(None if "cfg" not in name else VALID_CFG, POLICY_FILES))
+
+
+POLICY_CASES = [
+    # === ajan kapisi: CONTROL_PLANE_REQUIRED ==============================
+    pol("agent_policy_show_is_control_plane", ["show"], AGENT),
+    pol("agent_policy_lint_is_control_plane", ["lint", "clean.json"], AGENT),
+    # EN ONEMLI VAKA: `policy set` data-plane `set`in `allow` iznini MIRAS
+    # ALMAMALI. Alirsa bir ajan yetki kurallarini yazabilir.
+    pol("agent_policy_set_does_not_inherit_set", ["set", "clean.json"], AGENT),
+    # Arite ajan kapisindan ONCE: eksik arguman CONTROL_PLANE_REQUIRED DEGIL.
+    pol("agent_policy_lint_missing_arg_is_an_arity_error", ["lint"], AGENT),
+    pol("agent_policy_set_missing_arg_is_an_arity_error", ["set"], AGENT),
+    # Ajan kapisi dosya okumasindan da ONCE: var olmayan bir dosyayla bile ret
+    # CONTROL_PLANE_REQUIRED.
+    pol("agent_policy_lint_gate_precedes_the_file_read", ["lint", "nope.json"], AGENT),
+
+    # === baglama MUAFIYETI ================================================
+    # Pinsiz bir config'in YANINDA, INSAN + TTY: baglama sorusu SORULMAMALI.
+    # Ayni dizinde `secrets env` soruyor. (Ad "cfg" icerdigi icin pol() bu
+    # vakaya bir `.wapps.yaml` tohumluyor.)
+    pol("human_policy_show_is_binding_exempt_next_to_a_cfg", ["show"], HUMAN),
+
+    # === lint (cevrimdisi; gate'e HIC gidilmez) ===========================
+    pol("human_policy_lint_clean", ["lint", "clean.json"], HUMAN),
+    pol("human_policy_lint_warns_about_prod_reach", ["lint", "warns.json"], HUMAN),
+    # Dort uyari sinifi tek dosyada; SIRA da sozlesmenin parcasi ((c) daima en
+    # sonda, cunku Go'da AYRI bir dongude kosuyor).
+    pol("human_policy_lint_reports_every_class_in_order", ["lint", "noisy.json"], HUMAN),
+    pol("human_policy_lint_absent_version_defaults_to_one", ["lint", "noversion.json"], HUMAN),
+    pol("human_policy_lint_missing_file_is_internal", ["lint", "nope.json"], HUMAN),
+    pol("human_policy_lint_unknown_field", ["lint", "unknown.json"], HUMAN),
+    pol("human_policy_lint_too_many_args", ["lint", "a", "b"], HUMAN),
+
+    # === dogrulama reddi: her biri FARKLI bir cumle ========================
+    pol("human_policy_lint_bad_schema", ["lint", "badschema.json"], HUMAN),
+    pol("human_policy_lint_two_selectors", ["lint", "twosel.json"], HUMAN),
+    pol("human_policy_lint_aud_in_primary", ["lint", "aud.json"], HUMAN),
+    pol("human_policy_lint_bad_service_name", ["lint", "badservice.json"], HUMAN),
+    pol("human_policy_lint_unknown_verb", ["lint", "badverb.json"], HUMAN),
+    pol("human_policy_lint_deny_only_keys", ["lint", "denyonly.json"], HUMAN),
+    pol("human_policy_lint_empty_verbs", ["lint", "noverbs.json"], HUMAN),
+    pol("human_policy_lint_deny_project_glob", ["lint", "denyproj.json"], HUMAN),
+    # DIFFERENTIAL DISI — EXCLUDED'a bak (Go'nun JSON sozdizimi hata metni).
+    pol("human_policy_lint_broken_json", ["lint", "broken.json"], HUMAN),
+
+    # === show =============================================================
+    pol("human_policy_show", ["show"], HUMAN),
+    pol("human_policy_show_json", ["show", "--json"], HUMAN),
+    pol("human_policy_show_extra_arg_is_ignored", ["show", "EXTRA"], HUMAN),
+    # Oturum yokken KURTARMA SATIRI "wapps login" DEGIL "wapps login --write":
+    # /v1/admin kenarda AYRI bir CF Access uygulamasi.
+    ("human_policy_show_no_session", ["secrets", "policy", "show"],
+     dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None, cfg(None, POLICY_FILES)),
+
+    # === set ==============================================================
+    # Lint uyarilari gate'e GITMEDEN ONCE basiliyor; sonra diff, sonra onay.
+    # "no" -> ACTION_UNAVAILABLE, PUT GITMEZ.
+    pol("human_policy_set_declined", ["set", "clean.json"], HUMAN, b"no\n"),
+    # Kabul edilen TEK cevap "yes" — `trust-repo`nun "y"si DEGIL.
+    pol("human_policy_set_y_is_not_yes", ["set", "clean.json"], HUMAN, b"y\n"),
+    # "yes" -> PUT v4. Basilan sha, gate'in ALDIGI BAYTLARIN sha256'si, yani
+    # bu vaka dokumanin JSON serilestirmesini de olcuyor.
+    pol("human_policy_set_confirmed", ["set", "clean.json"], HUMAN, b"yes\n"),
+    # --yes: onay atlanir, "(--yes)" basilir ve stdin HIC okunmaz.
+    #
+    # `--yes`i UNUTMAK bu vakayi SESSIZCE bir ZAMAN ASIMI olcumune cevirir:
+    # stdin'siz bir onay dali bir pty'de ASLA EOF gormez, iki ikili de okumada
+    # bloklanir ve 30 sn sonra -9 ile doner. "EQUAL" gorunur ama olculen sey
+    # bir davranis DEGIL bir timeout olur. Bir kez yazildi, cikis kodu -9
+    # oldugu icin yakalandi, ve bu not onun yerinde duruyor.
+    pol("human_policy_set_yes_flag", ["set", "clean.json", "--yes"], HUMAN),
+    # Uyarili dosya: ⚠ satiri diff'ten ONCE.
+    pol("human_policy_set_prints_warnings_before_the_diff", ["set", "warns.json"], HUMAN, b"yes\n"),
+    # Gate'in AKTIF kurallariyla AYNI dosya -> "(no rule changes)".
+    pol("human_policy_set_identical_rules_show_no_changes", ["set", "same.json"], HUMAN, b"yes\n"),
+    # Sema ihlali gate'e GITMEDEN duser.
+    pol("human_policy_set_bad_schema_never_reaches_the_gate", ["set", "badschema.json"], HUMAN),
+]
+
+CASES += POLICY_CASES
+
+# BOZUK JSON, DIFFERENTIAL DISI ve sebebi burada yaziliyor:
+#
+#  human_policy_lint_broken_json: Go'nun encoding/json'u SOZDIZIMI hatalarini
+#      ayristiricinin ic durumuyla anlatiyor ("invalid character 't' looking
+#      for beginning of object key string"); serde_json bambaska bir cumle
+#      kuruyor ("expected `,` or `}` at line 1 column 8"). Kod (POLICY_INVALID),
+#      onek ("policy file <yol> not valid JSON: "), kurtarma satiri ve cikis
+#      kodu EŞIT; ayrisan tek sey ayristiricinin kendi prozasi. Go'nun
+#      metnini elle uretmek SAHTE bir sadakat olurdu — bir sonraki bozuk
+#      dosyada kirilacak bir yalan. `human_gate_down` ile AYNI sinif.
+#
+#      DisallowUnknownFields dali AYRIDIR ve OLCULUYOR
+#      (human_policy_lint_unknown_field): `json: unknown field "extra"` sabit,
+#      kucuk ve TAM bir esleme, ve bir policy dosyasindaki en sik yazim
+#      hatasinin dustugu dal o.
+EXCLUDED.add("human_policy_lint_broken_json")
