@@ -393,3 +393,143 @@ pub fn read_all(project: &str) -> Result<BTreeMap<String, String>, Error> {
     }
     Ok(read(project, &names)?.values)
 }
+
+/// delete, DELETE /v1/projects/{p}/keys/{KEY} cagirir — TEK anahtar silme.
+///
+/// EPOCH PIN'E DOKUNMAZ, ve bu bir eksiklik degil Go'nun sozlesmesi: pin
+/// yalnizca Keys/Read yollarinda ilerliyor (internal/store/worker.go:273,316).
+/// Bir silme sunulan bir epoch OKUMUYOR, dolayisiyla pinlenecek bir sey de yok.
+/// Differential pin dosyasinin son halini de karsilastirdigi icin, bir tarafin
+/// burada pin'i oynatmasi GORUNUR (human_rm_leaves_pin_alone).
+///
+/// HATA BAGLAMI "delete <KEY>" — Go'daki mapHTTPError(r, "delete "+key).
+pub fn delete(project: &str, key: &str) -> Result<(), Error> {
+    let headers = session::auth_headers()?;
+    let url = format!(
+        "{}/v1/projects/{}/keys/{}",
+        session::gate_url(),
+        urlencode_path_segment(project),
+        urlencode_path_segment(key)
+    );
+    let mut req = agent().delete(&url);
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = format!("delete {key}");
+    match req.call() {
+        // Govde OKUNMUYOR: Go tarafi da 200'de govdeye bakmiyor.
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(status, resp)) => {
+            Err(status_error(status, resp, &ctx))
+        }
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+/// ProjectsResult, GET /v1/projects yanitidir: principal'in GOREBILDIGI proje
+/// ADlari. Deger duzlemi DEGIL — burada yalnizca adlar var.
+#[derive(Debug, Deserialize, Default)]
+pub struct ProjectsResult {
+    #[serde(default)]
+    pub projects: Vec<String>,
+}
+
+/// projects, GET /v1/projects cagirir.
+///
+/// Sonuc SIRALANMAZ: filtreleme sunucuda yapiliyor ve istemcide gizli bir
+/// siralama, sunucunun sirasini sessizce yok ederdi (`secrets list`in aksine —
+/// orada sort ISTEMCIDE, Go: sort.Strings).
+///
+/// HATA BAGLAMI "list projects".
+pub fn projects() -> Result<ProjectsResult, Error> {
+    let headers = session::auth_headers()?;
+    let url = format!("{}/v1/projects", session::gate_url());
+    let mut req = agent().get(&url);
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = "list projects";
+    match req.call() {
+        Ok(resp) => decode_body::<ProjectsResult>(resp, ctx),
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, ctx)),
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+/// ProjectDeleteResult, DELETE /v1/admin/projects/{p} yanitidir.
+#[derive(Debug, Deserialize, Default)]
+pub struct ProjectDeleteResult {
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub deleted_objects: i64,
+    #[serde(default)]
+    pub pointer_events_kept: bool,
+}
+
+/// project_delete, DELETE /v1/admin/projects/{p} cagirir — projenin TUM
+/// verisini kaldirir.
+///
+/// IKI SEY BURADA KASITLI:
+///
+///  1. `/v1/admin` oneki. Kenarda bu AYRI bir CF Access uygulamasidir
+///     (write-AUD, §3.2), o yuzden kimlik header'lari da admin oturumundan
+///     geliyor — read oturumu GECERLI olsa bile yetmez.
+///  2. Govdedeki `confirm` proje adini TEKRAR eder. Sunucu eslesmezse 400
+///     verir; istemci onu buradan dolduruyor ki YANLIS HEDEFLI bir cagri aga
+///     hic cikmasin.
+///
+/// HATA BAGLAMI "delete project <p>".
+pub fn project_delete(project: &str) -> Result<ProjectDeleteResult, Error> {
+    let headers = session::auth_headers_admin()?;
+    let body = serde_json::json!({ "confirm": project });
+    let url = format!(
+        "{}/v1/admin/projects/{}",
+        session::gate_url(),
+        urlencode_path_segment(project)
+    );
+    let mut req = agent().delete(&url).set("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = format!("delete project {project}");
+    match req.send_json(body) {
+        Ok(resp) => decode_body::<ProjectDeleteResult>(resp, &ctx),
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, &ctx)),
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+// status_error, bir non-2xx yaniti Retry-After'i da okuyarak hata sozlesmesine
+// esler. Uc yeni rota da ayni sekli kullaniyor — kopyalanmis bir dal zamanla
+// ayrisirdi.
+fn status_error(status: u16, resp: ureq::Response, ctx: &str) -> Error {
+    let retry_after = resp
+        .header("Retry-After")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_RETRY_AFTER);
+    let text = resp.into_string().unwrap_or_default();
+    map_http_error(status, &text, retry_after, ctx)
+}
+
+// decode_body, 200 govdesini cozer. Bozuk govde INTERNAL (fail-closed) —
+// Go'daki decodeJSON ile ayni sinif.
+fn decode_body<T: serde::de::DeserializeOwned>(
+    resp: ureq::Response,
+    ctx: &str,
+) -> Result<T, Error> {
+    let text = resp.into_string().map_err(|e| {
+        Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
+    })?;
+    serde_json::from_str::<T>(&text)
+        .map_err(|_| Error::new(Code::Internal, format!("{ctx}: malformed gate response")))
+}

@@ -420,3 +420,235 @@ CONFIG_CASES = [
 ]
 
 CASES += EXEC_APPLY_CASES + SCRUB_CASES + APPLY_WRITE_CASES + CONFIG_CASES
+
+
+# --- `list`, `status`, `rm`, `projects`, `init` ------------------------------
+#
+# Bu bes fiilin ORTAK sorusu — ve portun en sik ayristigi yer — su: HER FIILIN
+# AJAN-MODU POLITIKASI NE, VE KAPI SIRASI NE? Cevap fiil basina FARKLI ve
+# hicbiri digerinden tahmin edilemiyor. Olculdu:
+#
+#   fiil            ajan politikasi   baglama kapisi   config gereksinimi
+#   ------------    ---------------   --------------   ------------------
+#   list            allow             VAR              VAR (proje adi)
+#   status          allow             MUAF             yok (hard-fail etmez)
+#   rm              refuse_agent      erisilemez(*)    VAR (proje adi)
+#   projects list   allow             YOK (kok mount)  VAR (kullanilmasa da!)
+#   projects rm     control           YOK (kok mount)  yok
+#   init            allow             VAR (yazimdan ONCE)  yok
+#
+#   (*) ajan kapisi once ates ettigi icin `rm`de baglama kapisi ajan yolunda
+#       ERISILEMEZ — `get`teki ayni desen.
+#
+# En carpici ikisi:
+#
+#  1. `projects list` KOKTE mount'lu, yani depo→proje baglama kontrolu HIC
+#     kosmuyor. Sonucu gozlemlenebilir: `--project testproj` ile AJAN modunda
+#     `projects list` CALISIR, ama ayni bayrakla `secrets list`
+#     BINDING_UNPINNED ile duser. Iki fiil de "yalnizca ADlar" sinifinda, ama
+#     ayni kapinin arkasinda DEGILLER.
+#
+#  2. `rm`de ARITE ajan kapisindan ONCE kosuyor (cobra ValidateArgs,
+#     PersistentPreRunE'dan once): ajan modunda eksik arguman
+#     AGENT_MODE_REFUSED DEGIL bir arite hatasi veriyor.
+#
+# OLCULEMEYEN IKI SEY, ayrica EXCLUDED'da degil cunku vaka olarak HIC
+# EKLENMEDILER — sessiz birakmamak icin burada yaziliyorlar:
+#
+#  * `wapps projects` (ciplak, alt komutsuz): cobra kendi yardim duzenini
+#    basip 0 ile cikiyor, clap kendi duzenini. Esitlemek cobra'nin yardim
+#    olusturucusunu port etmek demek — `agent_unknown_subcommand` ile AYNI
+#    sinif, ayni sebeple disarida.
+#
+#  * `rm`in EOF (girdisiz) onay dali: bir pty ASLA EOF vermiyor, yani her iki
+#    ikili de okumada bloklanip 30 sn sonra oldurulmus olarak (-9) donuyor.
+#    "Esit" gorunurdu ama olculen sey bir zaman asimi olurdu, davranis degil.
+#    Bos SATIR ("\n") dali olculuyor ve o gercek reddi geziyor.
+
+def cfg_only_dir():
+    """Vakaya KENDI dizinini verir ama oraya `.wapps.yaml` YAZMAZ.
+
+    `init` icin sart: init o dosyayi URETIYOR. Ortak workdir'de kossaydi oraya
+    yazar ve "config yok" dalini olcen butun diger vakalari bozardi."""
+    return {"yaml": None, "files": {}}
+
+
+VERB_CASES = [
+    # === list ===============================================================
+    # Ajan + ciplak `--project`: baglama kapisi fail-closed. `get`te bu kapi
+    # ERISILEMEZDI (ajan kapisi once reddediyordu); `list` ajana serbest oldugu
+    # icin buraya kadar geliyor.
+    ("agent_list_project_flag",  P + ["secrets", "list"], AGENT, None, None, None),
+    # Ayni cagri INSAN yolunda GECIYOR: ciplak --project bir insan icin acik
+    # hedef beyanidir, pinin korudugu confused-deputy durumu degil.
+    ("human_list_project_flag",  P + ["secrets", "list"], HUMAN, None, None, None),
+    # Config YOK + --project YOK → baglama sessizce geciyor, ret bir adim
+    # sonra storeProject'ten NOT_FOUND olarak geliyor. AJAN modunda da ayni:
+    # BINDING_UNPINNED DEGIL.
+    ("agent_list_no_config",     ["secrets", "list"], AGENT, None, None, None),
+    ("human_list_no_config",     ["secrets", "list"], HUMAN, None, None, None),
+    # Config VAR, pin YOK, ajan → fail-closed.
+    ("agent_list_config_unpinned", ["secrets", "list"], AGENT, None, None, cfg(VALID_CFG)),
+    # Insan + TTY: satir ici onay, "y" → pinlenir ve liste basilir.
+    # repo-pins.json da karsilastiriliyor.
+    ("human_list_binding_accepted", ["secrets", "list"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
+    ("human_list_binding_declined", ["secrets", "list"], HUMAN, None, b"n\n", cfg(VALID_CFG)),
+    # cobra'da listCmd'in Args'i YOK → ArbitraryArgs: fazladan arguman SESSIZCE
+    # yok sayiliyor. clap'e birakilsa "unexpected argument" ile 2 donerdi.
+    ("human_list_extra_arg_is_ignored", P + ["secrets", "list", "EXTRA"], HUMAN, None, None, None),
+    # GET /keys epoch pin'ini ILERLETIR (Go: WorkerStore.Keys →
+    # checkAndAdvanceEpochPin). Pin 3'te tohumlaniyor, gate 7 sunuyor → 7.
+    ("human_list_advances_the_epoch_pin",
+     P + ["secrets", "list"], HUMAN, pinfile(3), None, None),
+    # ...ve GERI SARMAZ: pin 9 iken sunulan 7 bir ROLLBACK'tir.
+    ("human_list_epoch_downgrade_refused",
+     P + ["secrets", "list"], HUMAN, pinfile(9), None, None),
+    ("human_list_no_session",
+     P + ["secrets", "list"], dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None, None),
+
+    # === status =============================================================
+    # status HER modda ve her ag durumunda 0 ile cikar. Asagidaki vakalarin
+    # HEPSI cikis 0 bekliyor; biri 1 donerse "asla hard-fail etmez" vaadi
+    # kalkmis demektir.
+    ("human_status",      ["secrets", "status"], HUMAN, None, None, None),
+    ("agent_status",      ["secrets", "status"], AGENT, None, None, None),
+    ("human_status_json", ["secrets", "status", "--json"], HUMAN, None, None, None),
+    # BAGLAMA MUAFIYETININ KANITI: pinlenmemis bir config'in yaninda ajan
+    # modunda. `list` ayni kosulda BINDING_UNPINNED veriyor; status 0 donmeli.
+    ("agent_status_is_binding_exempt",
+     ["secrets", "status"], AGENT, None, None, cfg(VALID_CFG)),
+    # epoch_pin config'teki PROJE adiyla okunuyor.
+    ("human_status_reports_the_pin",
+     ["secrets", "status"], HUMAN, pinfile(5), None, cfg(VALID_CFG)),
+    ("human_status_json_reports_the_pin",
+     ["secrets", "status", "--json"], HUMAN, pinfile(5), None, cfg(VALID_CFG)),
+    # Config YOKKEN proje adi "" → pin 0 (dosya dolu olsa bile).
+    ("human_status_without_config_reports_no_pin",
+     ["secrets", "status"], HUMAN, pinfile(5), None, None),
+    # BOZUK config status'u DUSURMEZ — yalnizca pin 0 kalir. Ayni dosya
+    # `apply`i yuksek sesle dusuruyor (agent_cfg_no_project).
+    ("human_status_survives_a_broken_config",
+     ["secrets", "status"], HUMAN, pinfile(5), None, cfg("version: 2\nbackend: store\n")),
+    # Prob KAPALI → online false, deterministik (CI'da dis cagri yok).
+    ("human_status_no_probe",
+     ["secrets", "status"], dict(HUMAN, WAPPS_STATUS_NO_PROBE="1"), None, None, None),
+    # Gate ERISILEMEZ → online false. `get`in gate_down vakasinin aksine burada
+    # bir HATA METNI yok (status yutuyor), yani tasima dali metin ayrismasi
+    # OLMADAN olculebiliyor — differential disi birakmaya gerek kalmiyor.
+    ("human_status_gate_down",
+     ["secrets", "status"], dict(HUMAN, WAPPS_SECRETS_GATE="http://127.0.0.1:1"),
+     None, None, None),
+    ("human_status_no_session",
+     ["secrets", "status"], dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None, None),
+    # GECMISTE dolan bir oturum → gecersiz, kalan 0. Sabit bir unix damgasi
+    # kullaniliyor ki olcum saate bagli OLMASIN.
+    ("human_status_expired_session",
+     ["secrets", "status"],
+     dict(HUMAN, WAPPS_SESSION_EXPIRES="1000000000"), None, None, None),
+    ("human_status_extra_arg_is_ignored",
+     ["secrets", "status", "EXTRA"], HUMAN, None, None, None),
+
+    # === rm =================================================================
+    # Ajan modunda YAPISAL red: silme geri alinamaz.
+    ("agent_rm_refused",  P + ["secrets", "rm", "PLAIN_KEY", "--yes"], AGENT, None, None, None),
+    # ARITE, AJAN KAPISINDAN ONCE. Bu vaka o sirayi pinliyor: eksik arguman
+    # AGENT_MODE_REFUSED degil bir arite hatasi vermeli.
+    ("agent_rm_missing_arg_is_an_arity_error",
+     P + ["secrets", "rm"], AGENT, None, None, None),
+    # Ajan kapisi CONFIG kapisindan da once: config'i olmayan bir dizinde bile
+    # ret AGENT_MODE_REFUSED, NOT_FOUND degil.
+    ("agent_rm_refused_before_config",
+     ["secrets", "rm", "PLAIN_KEY", "--yes"], AGENT, None, None, None),
+    ("human_rm_yes_flag",  P + ["secrets", "rm", "PLAIN_KEY", "--yes"], HUMAN, None, None, None),
+    ("human_rm_confirmed", P + ["secrets", "rm", "PLAIN_KEY"], HUMAN, None, b"yes\n", None),
+    # Kabul edilen TEK cevap "yes". Asagidaki UCU de silmeyi IPTAL etmeli —
+    # "y" bir kisaltma DEGIL, "YES" buyuk/kucuk harf toleransi DEGIL.
+    ("human_rm_declined",           P + ["secrets", "rm", "PLAIN_KEY"], HUMAN, None, b"no\n", None),
+    ("human_rm_y_is_not_yes",       P + ["secrets", "rm", "PLAIN_KEY"], HUMAN, None, b"y\n", None),
+    ("human_rm_uppercase_is_not_yes", P + ["secrets", "rm", "PLAIN_KEY"], HUMAN, None, b"YES\n", None),
+    ("human_rm_empty_line_is_not_yes", P + ["secrets", "rm", "PLAIN_KEY"], HUMAN, None, b"\n", None),
+    ("human_rm_missing_arg",  P + ["secrets", "rm"], HUMAN, None, None, None),
+    ("human_rm_too_many_args", P + ["secrets", "rm", "A", "B"], HUMAN, None, None, None),
+    ("human_rm_no_config",    ["secrets", "rm", "PLAIN_KEY", "--yes"], HUMAN, None, None, None),
+    # Gate hata dallari — baglam "delete <KEY>" (get'te "read <proje>").
+    ("human_rm_not_found",    P + ["secrets", "rm", "GONE_KEY", "--yes"], HUMAN, None, None, None),
+    ("human_rm_grant_denied", P + ["secrets", "rm", "DENIED_KEY", "--yes"], HUMAN, None, None, None),
+    ("human_rm_rate_limited", P + ["secrets", "rm", "RATE_KEY", "--yes"], HUMAN, None, None, None),
+    ("human_rm_unauthorized", P + ["secrets", "rm", "UNAUTH_KEY", "--yes"], HUMAN, None, None, None),
+    ("human_rm_no_session",
+     P + ["secrets", "rm", "PLAIN_KEY", "--yes"],
+     dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None, None),
+    # rm epoch pin'ine DOKUNMAZ (`list`in aksine): silme sunulan bir epoch
+    # OKUMUYOR. Pin 3'te tohumlanip basarili bir silme yapiliyor; pin 3'te
+    # KALMALI.
+    ("human_rm_leaves_the_epoch_pin_alone",
+     P + ["secrets", "rm", "PLAIN_KEY", "--yes"], HUMAN, pinfile(3), None, None),
+
+    # === projects ===========================================================
+    # KOK MOUNT'UN GOZLEMLENEBILIR SONUCU: baglama kapisi HIC kosmuyor, o
+    # yuzden ajan + ciplak `--project` BASARILI. Hemen ustteki
+    # `agent_list_project_flag` AYNI bayrakla BINDING_UNPINNED aliyor.
+    ("agent_projects_list_has_no_binding_gate",
+     P + ["projects", "list"], AGENT, None, None, None),
+    ("human_projects_list", P + ["projects", "list"], HUMAN, None, None, None),
+    # Config gereksinimi YINE DE var (storeProject cagriliyor, donen ad
+    # kullanilmasa bile) — "gereksiz gorunen" kapi aynen tasindi.
+    ("agent_projects_list_still_needs_a_config",
+     ["projects", "list"], AGENT, None, None, None),
+    ("human_projects_list_needs_a_config", ["projects", "list"], HUMAN, None, None, None),
+    # cobra.NoArgs → "unknown command" (arite hatasi DEGIL).
+    ("human_projects_list_rejects_extra_args",
+     P + ["projects", "list", "EXTRA"], HUMAN, None, None, None),
+    ("human_projects_list_no_session",
+     P + ["projects", "list"], dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None, None),
+    # KONTROL DUZLEMI: rm'in AGENT_MODE_REFUSED'i DEGIL, CONTROL_PLANE_REQUIRED.
+    # Iki farkli sinif, iki farkli kurtarma satiri.
+    ("agent_projects_rm_is_control_plane",
+     ["projects", "rm", "vaulter", "--yes"], AGENT, None, None, None),
+    ("human_projects_rm_yes_flag",
+     ["projects", "rm", "vaulter", "--yes"], HUMAN, None, None, None),
+    ("human_projects_rm_confirmed",
+     ["projects", "rm", "vaulter"], HUMAN, None, b"yes\n", None),
+    ("human_projects_rm_declined",
+     ["projects", "rm", "vaulter"], HUMAN, None, b"no\n", None),
+    ("human_projects_rm_missing_arg", ["projects", "rm"], HUMAN, None, None, None),
+    # Oturum yoklugunda KURTARMA SATIRI farkli: admin app AYRI bir CF Access
+    # uygulamasidir, yani "wapps login" YETMEZ — "wapps login --write".
+    ("human_projects_rm_no_session",
+     ["projects", "rm", "vaulter", "--yes"],
+     dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None, None),
+
+    # === init ===============================================================
+    # Bu vakalar KENDI dizinlerinde kosuyor (cfg_only_dir) ve yazilan
+    # `.wapps.yaml` BAYT olarak karsilastiriliyor. Proje adi verilmezse DIZIN
+    # adina duser — dizin adi vaka adidir, yani iki ikili icin AYNI.
+    ("agent_init_writes_the_config",
+     ["secrets", "init"], AGENT, None, None, cfg_only_dir()),
+    ("human_init_writes_the_config",
+     ["secrets", "init"], HUMAN, None, None, cfg_only_dir()),
+    ("human_init_named_project",
+     ["secrets", "init", "--project-name", "myproj"], HUMAN, None, None, cfg_only_dir()),
+    # BAGLAMA KAPISI YAZIMDAN ONCE: mevcut ama pinlenmemis bir config'in
+    # yaninda ajan modunda init BINDING_UNPINNED verir ve dosyaya DOKUNMAZ.
+    ("agent_init_is_gated_before_it_writes",
+     ["secrets", "init"], AGENT, None, None, cfg(VALID_CFG)),
+    # ...ve `--force` bu kapiyi ACMAZ. Korudugu sey gercek: uydurulmus bir
+    # `.wapps.yaml` bulunan bir depoda bir ajan onu yeniden yazip baska bir
+    # projeyi hedefleyemesin.
+    ("agent_init_force_does_not_open_the_gate",
+     ["secrets", "init", "--force"], AGENT, None, None, cfg(VALID_CFG)),
+    # Insan + TTY: baglama sorulur. "n" → ret, dosya DOKUNULMAZ.
+    ("human_init_binding_declined",
+     ["secrets", "init"], HUMAN, None, b"n\n", cfg(VALID_CFG)),
+    # "y" → pinlenir, sonra "already exists" ile duser (--force yok).
+    ("human_init_refuses_to_clobber",
+     ["secrets", "init"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
+    # --force ile EZER; yazilan sablon bayt-bayt karsilastiriliyor.
+    ("human_init_force_overwrites",
+     ["secrets", "init", "--force", "--project-name", "repl"], HUMAN, None, b"y\n",
+     cfg(VALID_CFG)),
+    ("human_init_extra_arg_is_ignored",
+     ["secrets", "init", "EXTRA"], HUMAN, None, None, cfg_only_dir()),
+]
+
+CASES += VERB_CASES

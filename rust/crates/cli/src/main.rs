@@ -4,11 +4,18 @@ use std::process::ExitCode;
 use wapps::agentmode;
 use wapps::applyverb;
 use wapps::cli::{self, CmdError};
-use wapps::configctx::{self, Ctx};
-use wapps::execverb;
 use wapps::clierr::{Code, Error};
+use wapps::configctx::{self, Ctx};
+use wapps::confirm;
+use wapps::epochpin;
+use wapps::execverb;
 use wapps::gojson::quote as go_quote;
+use wapps::initverb;
+use wapps::projectsverb;
+use wapps::rmverb;
+use wapps::session;
 use wapps::setverb;
+use wapps::statusverb;
 use wapps::store;
 
 fn main() -> ExitCode {
@@ -80,6 +87,29 @@ fn run() -> Result<(), CmdError> {
                 )
             }
             Some(("apply", _)) => run_apply(config, project),
+            Some(("list", _)) => run_list(config, project),
+            Some(("status", stm)) => run_status(config, project, stm.get_flag("json")),
+            Some(("rm", rm)) => {
+                let keys: Vec<String> =
+                    rm.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default();
+                // ARITE ONCE — ve bu sirayi OLCTUK: ajan modunda eksik
+                // arguman AGENT_MODE_REFUSED DEGIL bir arite hatasi veriyor.
+                // cobra ValidateArgs'i PersistentPreRunE'dan (ve dolayisiyla
+                // ajan kapisindan) ONCE kosuyor.
+                if keys.len() != 1 {
+                    return Err(CmdError::Plain(format!(
+                        "accepts 1 arg(s), received {}",
+                        keys.len()
+                    )));
+                }
+                run_rm(&keys[0], config, project, rm.get_flag("yes"))
+            }
+            Some(("init", im)) => run_init(
+                config,
+                project,
+                im.get_one::<String>("project-name").cloned().unwrap_or_default(),
+                im.get_flag("force"),
+            ),
             Some(("get", gm)) => {
                 let keys: Vec<String> =
                     gm.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default();
@@ -97,11 +127,282 @@ fn run() -> Result<(), CmdError> {
                 std::process::exit(0);
             }
         },
+        Some(("projects", pm)) => match pm.subcommand() {
+            Some(("list", lm)) => {
+                // cobra.NoArgs — ve reddin METNI cobra'nindir: fazladan
+                // arguman "unknown command" olarak adlandiriliyor, bir arite
+                // hatasi olarak DEGIL.
+                if let Some(extra) = lm.get_many::<String>("extra").and_then(|mut v| v.next().cloned())
+                {
+                    return Err(CmdError::Plain(format!(
+                        "unknown command {} for \"wapps projects list\"",
+                        go_quote(&extra)
+                    )));
+                }
+                run_projects_list(config, project)
+            }
+            Some(("rm", rm)) => {
+                let names: Vec<String> = rm
+                    .get_many::<String>("project")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
+                if names.len() != 1 {
+                    return Err(CmdError::Plain(format!(
+                        "accepts 1 arg(s), received {}",
+                        names.len()
+                    )));
+                }
+                run_projects_rm(&names[0], rm.get_flag("yes"))
+            }
+            _ => {
+                let _ = cli::build().find_subcommand_mut("projects").unwrap().print_help();
+                std::process::exit(0);
+            }
+        },
         _ => {
             let _ = cli::build().print_help();
             std::process::exit(0);
         }
     }
+}
+
+// run_list, `wapps secrets list` — anahtar ADLARI, deger asla.
+//
+// KAPI SIRASI:
+//   1. ajan politikasi (`allow` → gecer)
+//   2. baglama kapisi  (list baglama-MUAF DEGIL)
+//   3. proje cozumu    (store_project → NOT_FOUND)
+//   4. GET /keys
+//
+// 2 ile 3'un sirasi GOZLEMLENEBILIR ve olculdu: `--project testproj` ile ajan
+// modunda cagirmak "no .wapps.yaml found" DEGIL BINDING_UNPINNED vermeli
+// (agent_list_project_flag). Insan yolunda ayni cagri GECER — ciplak
+// `--project` bir insan icin acik hedef beyanidir.
+//
+// GET /keys epoch pin'ini ILERLETIR (Go: WorkerStore.Keys →
+// checkAndAdvanceEpochPin). `rm`in aksine: silme sunulan bir epoch okumuyor.
+fn run_list(config: Option<String>, project: Option<String>) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
+
+    let project = ctx.store_project("list").map_err(CmdError::Cli)?;
+    let res = store::keys(&project).map_err(CmdError::Cli)?;
+    let names: Vec<String> = res.keys.into_iter().map(|k| k.key_name).collect();
+
+    let mut out = std::io::stdout();
+    let _ = write!(out, "{}", wapps::listverb::render(&names));
+    Ok(())
+}
+
+// run_status, `wapps secrets status` — HER modda ve her ag durumunda guvenli.
+//
+// TEK fiil ki HICBIR KOSULDA hard-fail ETMEZ: rapor her zaman basilir ve cikis
+// 0'dir. Bu yuzden burada `?` YOK — her adim kendi fail-safe degerine duser.
+//
+// BAGLAMA KAPISI BURADA CAGRILMIYOR ve bu bir unutma degil: Go'da `status`
+// bindingExempt kumesinde (trust-repo, policy, rotate-plan ile birlikte).
+// Pinlenmemis bir depoda `status` YINE CALISIR — zaten "baska her sey hata
+// verdiginde ilk kosulan komut" olmasinin sebebi bu.
+//
+// Proje adi YALNIZCA yerel config'ten okunuyor: ciplak `--project <ad>`
+// (defterde olmayan) status icin bir proje ADLANDIRMAZ, cunku Go'da
+// statusProject `loadOrNil(wappsConfigPath())` cagiriyor ve projectOverride'a
+// HIC bakmiyor.
+fn run_status(
+    config: Option<String>,
+    project: Option<String>,
+    json: bool,
+) -> Result<(), CmdError> {
+    // --config ile --project birlikte verilirse bu hata YINE yuzeye cikar:
+    // Go'da da kok PersistentPreRunE (resolveProjectFlag) status'tan ONCE
+    // kosuyor ve orada duser.
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    // Ayristirma hatasi YUTULUYOR (Go: loadOrNil hatasinda "" doner) — bozuk
+    // bir `.wapps.yaml` status'u dusurmez, yalnizca epoch_pin 0 kalir.
+    let project_name = ctx
+        .load_or_none()
+        .ok()
+        .flatten()
+        .map(|c| c.project)
+        .unwrap_or_default();
+
+    let epoch_pin = match epochpin::default_path() {
+        Ok(p) => statusverb::read_epoch_pin(&p, &project_name),
+        Err(_) => 0,
+    };
+    let (session_valid, session_expires_in) = read_session_now();
+
+    let rep = statusverb::StatusReport {
+        online: probe_gate(),
+        session_valid,
+        session_expires_in,
+        epoch_pin,
+    };
+    let mut out = std::io::stdout();
+    let text = if json { statusverb::render_json(&rep) } else { statusverb::render_text(&rep) };
+    let _ = write!(out, "{text}");
+    Ok(())
+}
+
+// read_session_now, uretim oturum okumasidir (env → dosya).
+fn read_session_now() -> (bool, i64) {
+    let host = statusverb::host_of(&session::gate_url());
+    let path = match epochpin::default_path() {
+        // epochs.json ile AYNI dizin koku: <XDG>/wapps. Oturum dosyasi
+        // session/<host>.json altinda.
+        Ok(p) => p
+            .parent()
+            .map(|d| d.join("session").join(statusverb::host_file(&host)))
+            .unwrap_or_default(),
+        Err(_) => std::path::PathBuf::new(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    statusverb::read_session_from(&|k| std::env::var(k).ok(), &path, now)
+}
+
+// probe_gate, gate'e KISA bir prob atar.
+//
+// HERHANGI bir HTTP yaniti (401 dahil) → online. Yalnizca tasima
+// hatasi/timeout offline demek: "gate ayakta mi" sorusunun cevabi
+// "yetkim var mi"dan BAGIMSIZ.
+//
+// WAPPS_STATUS_NO_PROBE=1, CI'da dis cagriyi onlemek icin deterministik
+// olarak offline dondurur.
+fn probe_gate() -> bool {
+    if std::env::var("WAPPS_STATUS_NO_PROBE").as_deref() == Ok("1") {
+        return false;
+    }
+    let url = format!("{}/v1/whoami", session::gate_url());
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_millis(1500))
+        .build();
+    match agent.get(&url).call() {
+        Ok(_) => true,
+        // Status hatasi da bir YANITTIR → online.
+        Err(ureq::Error::Status(_, _)) => true,
+        Err(ureq::Error::Transport(_)) => false,
+    }
+}
+
+// run_rm, `wapps secrets rm <KEY>` — bu dilimin SILEN fiili.
+//
+// KAPI SIRASI (arite zaten cagiran tarafta kontrol edildi):
+//   1. arite            → cagiranda, ajan kapisindan ONCE (olculdu)
+//   2. ajan politikasi  → `refuse_agent`: AGENT_MODE_REFUSED
+//   3. baglama kapisi   → insan yolunda ates eder
+//   4. proje cozumu     → NOT_FOUND
+//   5. onay             → --yes ile atlanir; kabul edilen TEK cevap "yes"
+//   6. DELETE
+//
+// 2'nin varligi 3'u AJAN yolunda erisilemez kiliyor — `get`teki ayni desen.
+fn run_rm(
+    key: &str,
+    config: Option<String>,
+    project: Option<String>,
+    yes: bool,
+) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    gate(&ctx, agentmode::POLICY_REFUSE_AGENT, agent)?;
+
+    let project = ctx.store_project("rm").map_err(CmdError::Cli)?;
+
+    // Onay istemi STDOUT'a (Go: cmd.OutOrStdout()) — stderr'e DEGIL.
+    let mut out = std::io::stdout();
+    if !yes {
+        let mut stdin = std::io::stdin();
+        if !confirm::ask(&mut stdin, &mut out, &rmverb::prompt(key, &project)) {
+            return Err(CmdError::Cli(Error::new(
+                Code::Internal,
+                "secrets.rm: aborted (confirmation not given)",
+            )));
+        }
+    }
+
+    store::delete(&project, key).map_err(CmdError::Cli)?;
+    let _ = write!(out, "{}", rmverb::success_line(key, &project));
+    Ok(())
+}
+
+// run_projects_list, `wapps projects list`.
+//
+// BAGLAMA KAPISI YOK — kok mount'un dogrudan sonucu (bkz. projectsverb.rs).
+// Ama config GEREKSINIMI VAR ve bu ilk bakista tuhaf gorunuyor: Go
+// `storeProject("projects")` cagiriyor, donen proje adini GET /v1/projects'e
+// HIC gecirmiyor, yine de config yoksa NOT_FOUND ile duser. Olculdu
+// (projects_human_list → "projects: no .wapps.yaml found"), o yuzden AYNEN
+// tasiniyor: "gereksiz gorunen" bir kapiyi duzeltmek sahadaki ikiliyle
+// ayrisma demek.
+fn run_projects_list(config: Option<String>, project: Option<String>) -> Result<(), CmdError> {
+    agentmode::guard(agentmode::POLICY_ALLOW, agentmode::is_agent()).map_err(CmdError::Cli)?;
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    let _ = ctx.store_project("projects").map_err(CmdError::Cli)?;
+
+    let res = store::projects().map_err(CmdError::Cli)?;
+    let mut out = std::io::stdout();
+    let _ = write!(out, "{}", projectsverb::render(&res.projects));
+    Ok(())
+}
+
+// run_projects_rm, `wapps projects rm <PROJECT>` — KONTROL DUZLEMI op'u.
+//
+// Bir projeyi silmek, oradaki her anahtari silmenin TOPLAMIDIR; per-key
+// `delete` grant'i buna yetmez, global `admin` verb'u + write-AUD ister. Ajan
+// modunda CONTROL_PLANE_REQUIRED (rm'in AGENT_MODE_REFUSED'i DEGIL — iki
+// farkli sinif, iki farkli kurtarma satiri).
+//
+// Config GEREKSINIMI YOK (projects list'in aksine): storeProject cagrilmiyor.
+fn run_projects_rm(project: &str, yes: bool) -> Result<(), CmdError> {
+    agentmode::guard(agentmode::POLICY_CONTROL, agentmode::is_agent()).map_err(CmdError::Cli)?;
+
+    let mut out = std::io::stdout();
+    if !yes {
+        let mut stdin = std::io::stdin();
+        if !confirm::ask(&mut stdin, &mut out, &projectsverb::rm_prompt(project)) {
+            return Err(CmdError::Cli(Error::new(
+                Code::Internal,
+                "secrets.projects.rm: aborted (confirmation not given)",
+            )));
+        }
+    }
+
+    let res = store::project_delete(project).map_err(CmdError::Cli)?;
+    let _ = write!(
+        out,
+        "{}",
+        projectsverb::rm_success_line(&res.project, res.deleted_objects, res.pointer_events_kept)
+    );
+    Ok(())
+}
+
+// run_init, `wapps secrets init` — `.wapps.yaml` YAZAR.
+//
+// BAGLAMA KAPISI YAZIMDAN ONCE ve bu SIRA olculdu: `init` baglama-muaf DEGIL,
+// yani mevcut ama PINLENMEMIS bir config'in yaninda ajan modunda `init`
+// cagirmak BINDING_UNPINNED verir ve dosyaya DOKUNULMAZ — `--force` ile bile.
+// Ilk bakista ters gorunuyor ("init neden var olan bir baglamayi sorsun?") ama
+// korudugu sey gercek: uydurulmus bir `.wapps.yaml` bulunan bir depoda, bir
+// ajan onu `--force` ile YENIDEN yazip baska bir projeyi hedefleyemesin.
+fn run_init(
+    config: Option<String>,
+    project: Option<String>,
+    project_name: String,
+    force: bool,
+) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
+
+    // Depo koku DAIMA "." — Go'da da runInitStore(".", ...). `--config` bir
+    // konum SECMEZ, yalnizca baglama kapisinin baktigi dosyayi degistirir.
+    let text = initverb::run(".", &project_name, force).map_err(CmdError::Plain)?;
+    let mut out = std::io::stdout();
+    let _ = write!(out, "{text}");
+    Ok(())
 }
 
 // run_set, `wapps secrets set <KEY>`.

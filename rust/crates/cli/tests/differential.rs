@@ -79,18 +79,24 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         "bayt karsilastirmasi",
     );
     // Karsilastirmanin GERCEKTEN vaka gezdiginin kaniti: bos bir kume de
-    // "fark yok" derdi. Taban 32 → 60 (`secrets set`) → 102: `exec` ve `apply`
-    // 42 vaka ekledi (config yukleme+dogrulama, baglama pin defteri, iki
-    // kapinin SIRASI, canli scrubber, apply'in yazicisi ve idempotensi).
+    // "fark yok" derdi. Taban 32 → 60 (`secrets set`) → 102 (`exec`/`apply`)
+    // → 165: `list`, `status`, `rm`, `projects` ve `init` 63 vaka ekledi.
     //
-    // Karsilastirilan alan sayisi da arttI: cikti/cikis/epoch-pini'ne ek olarak
-    // repo-pins.json ve apply'in YAZDIGI dosyalarin icerigi + modu.
+    // Eklenen vakalarin AGIRLIK MERKEZI su soru: her fiilin ajan-modu
+    // politikasi ne, ve kapi sirasi ne? Cevap fiil basina FARKLI (bkz.
+    // cases.py'deki tablo) ve hicbiri digerinden tahmin edilemiyor —
+    // `projects list` kokte mount'lu oldugu icin baglama kapisi HIC kosmuyor,
+    // `rm`de arite ajan kapisindan ONCE kosuyor, `init`in kapisi YAZIMDAN once.
+    //
+    // Karsilastirilan alan sayisi da arttI: cikti/cikis/epoch-pini/repo-pins'e
+    // ek olarak yazilan dosyalarin icerigi + modu — ve artik `.wapps.yaml`in
+    // KENDISI de (init'in URETTIGI dosya o).
     let equal: usize = report
         .rsplit("EQUAL=")
         .next()
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 102, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 165, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

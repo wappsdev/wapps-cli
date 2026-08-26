@@ -108,6 +108,85 @@ pub fn build() -> Command {
                         // ("unexpected argument ... found") sahadaki ikilinin
                         // bastigi metin DEGIL.
                         .arg(Arg::new("key").num_args(0..).help("Secret key name")),
+                )
+                .subcommand(
+                    Command::new("list")
+                        .about("List the project's secret names (never values)")
+                        // cobra'da listCmd'in Args'i YOK, yani varsayilan
+                        // ArbitraryArgs: fazladan arguman SESSIZCE yok sayiliyor.
+                        // Olculdu (`secrets list EXTRA` → cikis 0). Burada da
+                        // serbest birakiliyor; clap'e birakilsa "unexpected
+                        // argument" ile 2 dondururdu.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("status")
+                        .about("Machine-readable gate/session state (safe in every mode)")
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(ArgAction::SetTrue)
+                                .help("emit the machine-readable JSON schema"),
+                        )
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("rm")
+                        .about("Remove a key from the store (irreversible; refused in agent mode)")
+                        // Arite ELLE (cobra ExactArgs(1)).
+                        .arg(Arg::new("key").num_args(0..).help("Secret key name"))
+                        .arg(
+                            Arg::new("yes")
+                                .long("yes")
+                                .action(ArgAction::SetTrue)
+                                .help("skip the interactive confirm (still refused in agent mode)"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("init")
+                        .about("Scaffold .wapps.yaml for a fresh repo")
+                        .arg(
+                            Arg::new("force")
+                                .long("force")
+                                .action(ArgAction::SetTrue)
+                                .help("overwrite an existing .wapps.yaml (default refuses to clobber)"),
+                        )
+                        .arg(
+                            Arg::new("project-name")
+                                .long("project-name")
+                                .value_name("string")
+                                .help("project name in the gate (default: current directory name)"),
+                        )
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                ),
+        )
+        // `projects` KOKTE mount'lu, `secrets` altinda DEGIL — ve bu bir
+        // duzenleme tercihi degil, GOZLEMLENEBILIR bir kapi farki: kok mount
+        // demek Go'da SecretsCmd.PersistentPreRunE'un (ajan-guard + depo pini)
+        // CALISMAMASI demek. Her yaprak kendi guard'ini cagirir ve depo→proje
+        // baglama kontrolu HIC yapilmaz. Olculdu: ajan modunda
+        // `--project testproj projects list` CALISIR, ayni bayrakla
+        // `secrets list` BINDING_UNPINNED ile duser.
+        .subcommand(
+            Command::new("projects")
+                .about("List the projects in the secrets gate / remove one entirely")
+                .subcommand(
+                    Command::new("list")
+                        .about("Project names you can see (names only, never values)")
+                        // cobra.NoArgs — ve reddin METNI cobra'ya ait:
+                        // `unknown command "X" for "wapps projects list"`.
+                        .arg(Arg::new("extra").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("rm")
+                        .about("Remove a project and ALL its data (admin; irreversible; refused in agent mode)")
+                        .arg(Arg::new("project").num_args(0..).help("Project name"))
+                        .arg(
+                            Arg::new("yes")
+                                .long("yes")
+                                .action(ArgAction::SetTrue)
+                                .help("skip the interactive confirm (still refused in agent mode)"),
+                        ),
                 ),
         )
 }

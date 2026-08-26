@@ -91,6 +91,22 @@ impl Ctx {
         }
     }
 
+    /// store_project, YALNIZCA proje ADINA ihtiyac duyan verb'ler
+    /// (list/get/rm/projects) icindir: gate'e gitmek icin yerel bir
+    /// `.wapps.yaml`, dizin ya da depo GEREKMEZ.
+    ///
+    /// `--project` bir dizine cozulmediyse ADIN KENDISI yeterlidir; aksi halde
+    /// normal yerel config yuklenir ve YOKLUGU bir hatadir.
+    ///
+    /// Bu, exec/apply'in kullandigi `require_store_config`ten ayri durmali:
+    /// oradaki verb'ler `targets`/`sources` OKUYOR, yani yerel dosya SART.
+    pub fn store_project(&self, verb: &str) -> Result<String, Error> {
+        if let Some(p) = &self.project_override {
+            return Ok(p.clone());
+        }
+        Ok(self.require_store_config(verb)?.project)
+    }
+
     /// require_store_config, yerel `.wapps.yaml`i yukler ve VAR OLMASINI sart
     /// kosar. targets veya sources OKUYAN verb'ler (apply/sync/exec/env) bunu
     /// cagirir; yalnizca proje ADI yeten verb'ler (list/get/rm/projects)

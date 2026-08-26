@@ -47,6 +47,11 @@ def main():
             # onceden yazilmis hedef dosyalari). Verilirse vaka KENDI dizininde
             # kosar; verilmezse workdir'de (orada .wapps.yaml YOK, yani
             # "config yok" dali DETERMINISTIK olculur).
+            #
+            # `{"yaml": None}` OZEL: vaka kendi dizininde kosar ama oraya
+            # `.wapps.yaml` YAZILMAZ. `secrets init` icin sart — init'in
+            # kendisi o dosyayi URETIYOR, ve workdir'de kosarsa oraya yazip
+            # "config yok" dalini olcen BUTUN diger vakalari bozardi.
             cfgseed = case[5] if len(case) > 5 else None
             # {FIX} -> fikstur dizini (mutlak). Iki ikili de ayni dizeyi gorur.
             argv = [a.replace("{FIX}", fixdir) for a in argv]
@@ -90,8 +95,10 @@ def main():
                 casedir = os.path.join(workdir, "cases", name)
                 shutil.rmtree(casedir, ignore_errors=True)
                 os.makedirs(casedir, exist_ok=True)
-                with open(os.path.join(casedir, ".wapps.yaml"), "w") as f:
-                    f.write(cfgseed.get("yaml", ""))
+                seed_yaml = cfgseed.get("yaml")
+                if seed_yaml is not None:
+                    with open(os.path.join(casedir, ".wapps.yaml"), "w") as f:
+                        f.write(seed_yaml)
                 for rel, content in (cfgseed.get("files") or {}).items():
                     fp = os.path.join(casedir, rel)
                     os.makedirs(os.path.dirname(fp), exist_ok=True)
@@ -114,15 +121,24 @@ def main():
                 written = {}
                 for root_, _, fs in os.walk(casedir):
                     for fn in sorted(fs):
-                        # `.wapps.yaml` girdinin kendisi. `.tmp` sonekliler
-                        # atomik yazicinin gecici dosyalari (normalde rename
-                        # sonrasi kalmazlar; kalmislarsa da isim rastgele).
+                        # `.tmp` sonekliler atomik yazicinin gecici
+                        # dosyalaridir (normalde rename sonrasi kalmazlar;
+                        # kalmislarsa da isim rastgele, yani karsilastirilamaz).
+                        #
+                        # `.wapps.yaml` ARTIK ATLANMIYOR. Eskiden atlaniyordu
+                        # ("girdinin kendisi") ama `secrets init` icin o dosya
+                        # CIKTININ ta kendisi — atlanirsa init'in urettigi
+                        # sablon HIC karsilastirilmaz ve vakalar bos gezerdi.
+                        # Seed'li vakalarda da atlamamak zararsiz ve daha
+                        # gucludur: iki ikili AYNI baytlari aliyor, yani bir
+                        # fark ancak biri config'i DEGISTIRDIYSE cikar — ki bu
+                        # da bilinmesi gereken bir sey.
                         #
                         # DIKKAT: burada "nokta ile baslayanlari atla" YAZMAK
                         # olcumu SESSIZCE BOSALTIR — asil hedefin adi
                         # `.env.local`. Bu bir kez yazildi ve iki apply vakasi
                         # hicbir sey karsilastirmadan "esit" gorundu.
-                        if fn == ".wapps.yaml" or fn.endswith(".tmp"):
+                        if fn.endswith(".tmp"):
                             continue
                         fp = os.path.join(root_, fn)
                         rel = os.path.relpath(fp, casedir)

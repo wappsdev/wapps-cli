@@ -47,3 +47,23 @@ pub fn auth_headers() -> Result<Vec<AuthHeader>, Error> {
         .with_recovery("run 'wapps login'")),
     }
 }
+
+/// auth_headers_admin, KONTROL DUZLEMI cagrilari icin kimlik header'larini
+/// uretir (`projects rm`, ve ileride policy/rotate-plan).
+///
+/// Uretilen header'lar `auth_headers` ile AYNI; ayrilan tek sey oturum
+/// YOKKEN basilan KURTARMA satiridir. Bu bir kozmetik fark degil: kenarda
+/// `/v1/admin` AYRI bir CF Access uygulamasidir (write-AUD, 15 dk + WebAuthn),
+/// yani "wapps login" calistiran bir operator hala reddedilir. Kurtarma satiri
+/// dogru komutu soylemezse operator dongude kalir.
+///
+/// ORACLE: internal/session/auth.go (AuthAdmin → authFor(AdminSessionKey(),
+/// "run 'wapps login --write' ...")).
+pub fn auth_headers_admin() -> Result<Vec<AuthHeader>, Error> {
+    match auth_headers() {
+        Err(e) if e.code == Code::SessionExpired => Err(e.with_recovery(
+            "run 'wapps login --write' (admin app: 15 min + WebAuthn)",
+        )),
+        other => other,
+    }
+}
