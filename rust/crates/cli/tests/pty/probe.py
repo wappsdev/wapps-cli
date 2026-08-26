@@ -34,8 +34,17 @@ def main():
     fixdir = os.path.join(workdir, "fixtures")
     os.makedirs(fixdir, exist_ok=True)
     for rel, content in FIXTURE_FILES.items():
-        with open(os.path.join(fixdir, rel), "w") as f:
+        fp = os.path.join(fixdir, rel)
+        with open(fp, "w") as f:
             f.write(content)
+        # `#!` ile BASLAYAN bir fikstur bir PROGRAMDIR ve calistirilabilir
+        # yazilir. Bunun tek musterisi var ve gercek: `wapps tofu` argv[0]'i
+        # "tofu" olarak SABITLIYOR, yani /bin/sh cagirarak olculemez. PATH'e
+        # konabilen bir `tofu` shim'i olmadan verb'un VAR OLMA SEBEBI —
+        # degerleri VERBATIM enjekte etmesi, TF_VAR_ eklememesi — hic
+        # olculemezdi; v0.23.0'da tam olarak orada bir hata yasandi.
+        if content.startswith("#!"):
+            os.chmod(fp, 0o755)
 
     results = {}
     try:
@@ -88,7 +97,10 @@ def main():
             # o yuzden PORTU CIKTIYA BASAN bir dal buradan gecmemeli — o
             # dallar (oturum yok/dolmus) WAPPS_SECRETS_GATE'i SABIT bir dizeye
             # cevirerek olculuyor.
+            # {FIX} env tarafinda da cozuluyor (argv'de zaten cozuluyordu):
+            # `PATH` degerine fikstur dizinini koyabilmek icin.
             env = {k: v.replace("{GATE}", f"http://127.0.0.1:{port}")
+                        .replace("{FIX}", fixdir)
                    for k, v in env.items()}
             env = {k: v for k, v in env.items() if v != ""}
             os.makedirs(env["HOME"], exist_ok=True)
