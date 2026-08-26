@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/spf13/cobra"
+	"github.com/wappsdev/wapps-cli/internal/clierr"
 	"github.com/wappsdev/wapps-cli/internal/source"
 	"github.com/wappsdev/wapps-cli/internal/store"
 )
@@ -68,11 +69,31 @@ func runImportEnv(envFilePath string, lookup func(string) string) error {
 
 	// Hangi adların ÜZERİNE yazılacağını önceden söyleyebilmek için ad düzlemi
 	// (Keys — değer okumaz, audit'e value.read düşmez) ile kesişim alınır.
+	//
+	// HATA SINIFA GÖRE AYRILIR, ve bu bir güvenlik kapısıdır:
+	//
+	// checkAndAdvanceEpochPin bir rollback saldırısını durduran TEK kontrol,
+	// ve YALNIZCA Keys + Read içinden çağrılıyor — Import onu HİÇ çağırmıyor.
+	// Yani bu Keys çağrısı, `import-env`in epoch pin'ini gördüğü TEK yer.
+	// Hatası TÜMÜYLE yutulduğunda EPOCH_DOWNGRADE de yutuluyordu: geri
+	// sarılmış bir store'a karşı `list` (Keys) ve `env` (Read) REDDEDERKEN,
+	// toplu YAZAN fiil sessizce yazıp 0 ile çıkıyordu. Okuyan fiiller
+	// "rollback" diye bağırırken yazan fiilin sessiz kalması ters yönde bir
+	// asimetri — yazmak geri alınamaz olandır.
+	//
+	// Ayrım DAR tutuluyor: yutmanın ilk yazılma sebebi (Keys başka bir
+	// sebeple patlarsa `import-env` kullanılamaz olmasın) korunuyor. Ayırt
+	// etme clierr KODUYLA yapılıyor, dize eşleştirmesiyle DEĞİL — aynı ayrım
+	// dr_epoch_reset.go'da da bu şekilde yazılı.
 	existing := map[string]bool{}
-	if kr, kerr := st.Keys(ctx, cfg.Project); kerr == nil {
+	kr, kerr := st.Keys(ctx, cfg.Project)
+	switch {
+	case kerr == nil:
 		for _, k := range kr.Keys {
 			existing[k.KeyName] = true
 		}
+	case clierr.Is(kerr, clierr.EpochDowngrade):
+		return kerr
 	}
 	var overridden []string
 	for k := range sets {

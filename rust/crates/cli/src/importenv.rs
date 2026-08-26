@@ -88,3 +88,42 @@ pub fn override_line(names: &[String]) -> String {
 /// (STDERR) — ve bu bir HATA DEGIL: cikis kodu 0.
 pub const EMPTY_INPUT_WARNING: &str =
     "⚠ no keys found in input file (all lines were blank/comments)\n";
+
+/// existing_names, GET /keys sonucunu `import-env`in ihtiyac duydugu AD
+/// KUMESINE cevirir — ve hatayi SINIFA gore ayirir.
+///
+/// ORACLE: cmd/secrets/import_env.go (`switch { case kerr == nil: ...; case
+/// clierr.Is(kerr, clierr.EpochDowngrade): return kerr }`).
+///
+/// NEDEN AYRI BIR FONKSIYON: bu karar bir GUVENLIK KAPISI, ve `run_import_env`
+/// main.rs'te (ikili) yasadigi icin oradan sinanamiyor. Karari ADIYLA buraya
+/// almak, onu bir IDDIA testinin erisebilecegi yere koyuyor. Kusur iki ikilide
+/// de canliydi, yani differential'in goremedigi siniftaydi — orada bir
+/// karsilastirma yeterli DEGIL.
+///
+/// KAPI vs KOLAYLIK:
+///   - keys cagrisi bir KOLAYLIK: hangi adlarin UZERINE yazilacagini onceden
+///     soyluyor, ve ad duzlemi oldugu icin audit'e value.read DUSMUYOR. O
+///     yuzden hatasi YUTULUYOR — keys patlarsa `import-env` kullanilamaz
+///     olmamali.
+///   - AMA epoch pin kontrolu (check_and_advance_epoch_pin) bir rollback
+///     saldirisini durduran TEK kontrol ve YALNIZCA keys + read icinden
+///     cagriliyor; import onu HIC cagirmiyor. Yani bu cagri `import-env`in
+///     epoch pin'ini gordugu TEK yer. Hatasi TUMUYLE yutuldugunda
+///     EPOCH_DOWNGRADE de yutuluyordu: geri sarilmis bir store'a karsi `list`
+///     (keys) ve `env` (read) REDDEDERKEN, toplu YAZAN fiil sessizce yazip 0
+///     ile cikiyordu.
+///
+/// Ayirt etme KODLA yapiliyor, dize eslestirmesiyle DEGIL — kirilgan bir
+/// ayirt etme saglam bir duzeltme degildir.
+pub fn existing_names(
+    r: Result<Vec<String>, crate::clierr::Error>,
+) -> Result<std::collections::BTreeSet<String>, crate::clierr::Error> {
+    match r {
+        Ok(names) => Ok(names.into_iter().collect()),
+        // KAPI: rollback. Yazim BASLAMADAN reddedilir.
+        Err(e) if e.code == crate::clierr::Code::EpochDowngrade => Err(e),
+        // KOLAYLIK: geri kalan her sey yutulur, import yine kosar.
+        Err(_) => Ok(Default::default()),
+    }
+}

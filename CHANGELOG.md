@@ -20,6 +20,14 @@ All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachange
 
   How this was missed: the flaw was live in **both** binaries, and the Go↔Rust pty differential can only see where the two *disagree*. It is measured now by an assertion on each side (`TestRunEnv_WriteCannotInheritAWideTempMode`, `a_preexisting_wide_temp_cannot_widen_the_secret`), not by a comparison.
 
+- **`import-env` silently wrote to a rolled-back store.** `checkAndAdvanceEpochPin` is the only check standing between this CLI and a rollback attack, and it has exactly two call sites: `Keys` and `Read`. `Import` never calls it. `import-env` *did* call `Keys` — for a convenience, to name which keys were about to be overwritten — but deliberately swallowed its error (`if kr, kerr := st.Keys(...); kerr == nil`). `EPOCH_DOWNGRADE` arrived inside that swallowed error and was thrown away.
+
+  The result was an asymmetry pointing the wrong way: against a gate serving epoch 7 with a local pin of 9, `list` (Keys) and `env` (Read) refused, while the **bulk-writing** verb printed no warning, wrote to the store and exited 0. The reading verbs shouted "rollback"; the irreversible one stayed quiet.
+
+  That `Keys` call is the only place `import-env` ever sees the epoch pin, so its error is now split by class: `EPOCH_DOWNGRADE` refuses before any write begins, everything else stays swallowed so an unrelated `Keys` failure still cannot make `import-env` unusable. The discrimination is by `clierr` **code**, not string matching — the same way `dr accept-epoch-reset` already did it.
+
+  Measured on the shipping binary: the pty case `human_import_env_with_a_rolled_back_pin` went from `exit 0` + `✓ Imported 3 keys` to `exit 1` + `EPOCH_DOWNGRADE`, and no write. Note that the Go↔Rust differential reported `DIFFERENT=0` both **before and after** — the flaw was live in both binaries, so the comparison neither found it nor confirmed the fix. Assertions on each side did.
+
 - **This code's recovery line described a refusal it was never used for.** It read "this action needs a live Cloudflare Access session; run it from a human terminal", which matched none of its call sites — and 9 of the 11 emitted it verbatim, since only `login` and the bulk-read cap override it. An agent refused for `dr combine needs >=2 --share files` was told to go find a terminal. The line now names the real next step, and says why retrying cannot help.
 
 ### Added

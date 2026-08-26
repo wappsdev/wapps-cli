@@ -62,6 +62,10 @@ type fakeStore struct {
 	values        map[string]string
 	readErr       error
 	writeErr      error
+	// keysErr, GET /keys'in hata dalıdır. Ayrı bir alan çünkü `import-env`
+	// bu çağrının hatasını SINIFINA göre ayırıyor: EPOCH_DOWNGRADE bir kapı,
+	// geri kalan her şey yutulan bir kolaylık hatası.
+	keysErr error
 	// importNoop true ise Import çağrıyı KAYDEDER ama f.values'a yazmaz —
 	// migrate import'un round-trip verify başarısızlık yolunu simüle eder.
 	importNoop bool
@@ -92,6 +96,9 @@ func (f *fakeStore) Projects(_ context.Context) (*store.ProjectsResult, error) {
 
 func (f *fakeStore) Keys(_ context.Context, project string) (*store.KeysResult, error) {
 	f.keysCalls++
+	if f.keysErr != nil {
+		return nil, f.keysErr
+	}
 	out := &store.KeysResult{Project: project, Epoch: 1}
 	for k := range f.values {
 		out.Keys = append(out.Keys, store.KeyInfo{KeyName: k, KeyVersion: 1})

@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/wappsdev/wapps-cli/internal/clierr"
 )
 
 func TestRunImportEnv_HappyPath(t *testing.T) {
@@ -87,5 +89,63 @@ func TestRunImportEnv_EmptyFileNoOpButNoError(t *testing.T) {
 	}
 	if len(f.importCalls) != 0 {
 		t.Errorf("empty input must not write to the store, got %+v", f.importCalls)
+	}
+}
+
+// TestRunImportEnv_RefusesAnEpochDowngradeAndWritesNothing, bir ROLLBACK
+// karşısında `import-env`in reddettiğini VE store'a yazmadığını ölçer.
+//
+// Neden bu test var: `checkAndAdvanceEpochPin` bir rollback saldırısını
+// durduran TEK kontrol, ve yalnızca Keys + Read içinden çağrılıyor — Import
+// onu HİÇ çağırmıyor. `import-env` Keys'i çağırıyordu ama hatasını BİLEREK
+// yutuyordu (`if kr, kerr := ...; kerr == nil`), çünkü o çağrı bir kolaylık
+// (hangi adların üzerine yazılacağını önceden söylemek). Yan etkisi:
+// EPOCH_DOWNGRADE o yutulan hatanın içinde geliyordu ve sessizce atılıyordu.
+// Sonuç: aynı geri sarılmış store'a karşı `list` ve `env` REDDEDERKEN, toplu
+// YAZAN fiil sessizce yazıp 0 ile çıkıyordu.
+//
+// Testin İKİNCİ YARISI zorunlu: "reddetti" yetmez. Bir rollback'e karşı
+// yazmanın kendisi zarardır, o yüzden Import'un HİÇ çağrılmadığı da ölçülüyor.
+func TestRunImportEnv_RefusesAnEpochDowngradeAndWritesNothing(t *testing.T) {
+	setupStoreProject(t, "")
+	f := installFakeStore(t)
+	f.keysErr = clierr.Newf(clierr.EpochDowngrade, "served epoch %d < pinned %d for %q", 7, 9, "testproj")
+
+	if err := os.WriteFile("in.env", []byte("ALPHA=test-string\n"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	err := runImportEnv("in.env", func(string) string { return "" })
+
+	if err == nil {
+		t.Fatal("import-env against a rolled-back store: want refusal, got nil")
+	}
+	if !clierr.Is(err, clierr.EpochDowngrade) {
+		t.Errorf("error code = %v, want EPOCH_DOWNGRADE", err)
+	}
+	// İKİNCİ YARI: reddetmek yetmez, YAZMAMIŞ da olmalı.
+	if len(f.importCalls) != 0 {
+		t.Errorf("import-env wrote to a rolled-back store: %d Import call(s), want 0", len(f.importCalls))
+	}
+}
+
+// TestRunImportEnv_StillSwallowsAnUnrelatedKeysError, ayrımın DAR olduğunu
+// ölçer: yutmanın ilk yazılma sebebi (Keys başka bir sebeple patlarsa
+// `import-env` kullanılamaz olmasın) korunuyor. Yalnızca EPOCH_DOWNGRADE bir
+// kapı; geri kalan her şey hâlâ bir kolaylık hatası.
+func TestRunImportEnv_StillSwallowsAnUnrelatedKeysError(t *testing.T) {
+	setupStoreProject(t, "")
+	f := installFakeStore(t)
+	f.keysErr = clierr.New(clierr.Internal, "keys listing is having a bad day")
+
+	if err := os.WriteFile("in.env", []byte("ALPHA=test-string\n"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	if err := runImportEnv("in.env", func(string) string { return "" }); err != nil {
+		t.Fatalf("an unrelated Keys error must stay swallowed, got: %v", err)
+	}
+	if len(f.importCalls) != 1 {
+		t.Errorf("Import call(s) = %d, want 1 (the write must still happen)", len(f.importCalls))
 	}
 }

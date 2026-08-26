@@ -937,10 +937,19 @@ IMPORT_CASES = [
     ("human_import_env_advances_the_pin_via_the_keys_call",
      ["secrets", "import-env", "in.env"], HUMAN, pinfile(3), b"y\n",
      cfg(VALID_CFG, IMPORT_FILES)),
-    # ...ve GERI SARMAZ: pin 9 iken sunulan 7 bir ROLLBACK'tir. GET /keys'in
-    # hatasi YUTULDUGU icin bu vaka o yutmanin SINIRINI da gosteriyor —
-    # epoch reddi bir clierr hatasi olarak yuzeye cikiyor mu, yoksa yutulup
-    # import yine mi kosuyor? Cevabi Go veriyor.
+    # ...ve GERI SARMAZ: pin 9 iken sunulan 7 bir ROLLBACK'tir.
+    #
+    # BU VAKA DIFFERENTIAL'IN KOR NOKTASININ KANITI. Eskiden GET /keys'in
+    # hatasi TUMUYLE yutuluyordu, yani bu vaka IKI ikilide de `exit 0` +
+    # "✓ Imported 3 keys" uretiyordu: geri sarilmis bir store'a SESSIZ yazim.
+    # DIFFERENT=0'di. Duzeltmeden sonra iki ikili de `exit 1` + EPOCH_DOWNGRADE
+    # uretiyor. DIFFERENT yine 0. Yani bu karsilastirma kusuru ne buldu ne de
+    # duzeltmeyi dogruladi — iki tarafin AYNI seyi yaptigini olcuyor, DOGRU
+    # seyi yaptigini degil. Kusuru bulan sey IDDIA testleriydi (Go:
+    # TestRunImportEnv_RefusesAnEpochDowngradeAndWritesNothing, Rust:
+    # an_epoch_downgrade_from_the_keys_call_is_a_gate_not_a_convenience).
+    # Vakanin isi hala var: duzeltmenin IKI tarafa da AYNI sekilde indigini
+    # olcuyor.
     ("human_import_env_with_a_rolled_back_pin",
      ["secrets", "import-env", "in.env"], HUMAN, pinfile(9), b"y\n",
      cfg(VALID_CFG, IMPORT_FILES)),

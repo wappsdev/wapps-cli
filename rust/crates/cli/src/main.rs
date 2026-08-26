@@ -873,9 +873,12 @@ fn run_rotate_plan(
 //   4. config gereksinimi → require_store_config (`--project <ad>` ATLATMAZ)
 //   5. dosyayi oku + ayristir
 //   6. GET /keys  → yalnizca UZERINE YAZILACAK adlari onceden soylemek icin.
-//      Hatasi YUTULUYOR (Go: `if kr, kerr := ...; kerr == nil`). Ad duzlemi,
-//      yani audit'e value.read DUSMEZ. YAN ETKI: bu cagri EPOCH PIN'INI
-//      ILERLETIR — import'un kendisi ilerletmez.
+//      Ad duzlemi, yani audit'e value.read DUSMEZ. Hatasi SINIFA GORE
+//      ayriliyor: EPOCH_DOWNGRADE bir KAPI (reddedilir, yazim BASLAMAZ), geri
+//      kalan her sey yutulur. YAN ETKI ve tam da bu yuzden kapi: bu cagri
+//      EPOCH PIN'INI kontrol eden TEK cagri — POST /import kontrolu HIC
+//      cagirmiyor, yani hata yutulursa geri sarilmis bir store'a SESSIZCE
+//      yazilirdi.
 //   7. POST /import → TEK atomik epoch
 //   8. bildirilen hedefleri yaz (apply_targets_after_write) — cikti STDERR'e
 //   9. basari satiri → STDOUT
@@ -910,11 +913,14 @@ fn run_import_env(
     }
 
     // Hangi adlarin UZERINE yazilacagini onceden soyleyebilmek icin AD DUZLEMI
-    // ile kesisim. Hata YUTULUYOR — bu bilgi bir kolayliktir, bir kapi degil.
-    let existing: std::collections::BTreeSet<String> = match store::keys(&cfg.project) {
-        Ok(kr) => kr.keys.into_iter().map(|k| k.key_name).collect(),
-        Err(_) => Default::default(),
-    };
+    // ile kesisim. Hata SINIFA GORE ayriliyor (importenv::existing_names):
+    // EPOCH_DOWNGRADE bir KAPI — bu cagri `import-env`in epoch pin'ini gordugu
+    // TEK yer, cunku import kontrolu HIC cagirmiyor. Geri kalan her sey bir
+    // kolaylik hatasi ve YUTULUYOR.
+    let existing = importenv::existing_names(
+        store::keys(&cfg.project).map(|kr| kr.keys.into_iter().map(|k| k.key_name).collect()),
+    )
+    .map_err(CmdError::Cli)?;
     let overridden: Vec<String> =
         sets.keys().filter(|k| existing.contains(*k)).cloned().collect();
 
