@@ -344,3 +344,101 @@ sekilde tasidi. Ama bir sonraki serit icin ucuz ve gercek bir iyilestirme:
 `dr combine --expect-kid <kid>` ya da `dr verify`in kid'i basmasi. Sessiz
 arizanin siniflarindan en kotusu bu — **cevabin kendisi degil, cevabin YANLIS
 oldugunun ANLASILMA ZAMANI gizleniyor: sifre cozulemedigi an, yani en kotu an.**
+
+---
+
+## 8. PORT TURU 2 — `restore` indi, ve §7.1'in ACIK BIRAKTIGI YOL DOGRULANDI
+
+Bu bölümün her sayısı bu ağaçta koşuldu.
+
+### 8.1 `dr restore` PORTLANDI — Cargo.toml'a SIFIR crate
+
+§7.1 yolu göstermişti, bu tur onu ÜRETİME aldı. `xchacha20_poly1305_open` =
+elde yazılmış HChaCha20 (~40 satır, saf permütasyon) + `ring`in
+`CHACHA20_POLY1305`i. `cargo deny` **0**, crate sayısı **99 → 99**.
+
+Kanıt bir round-trip DEĞİL, üç ayrı ORACLE:
+
+| ölçü | ne pinliyor |
+|---|---|
+| `open_blob_opens_the_frozen_wsb1_blob` | Go/TS üretimi GERÇEK bir WSB1 blob'u açılıyor |
+| `unwrap_dek_with_kek_opens_the_go_generated_wkw1_wrap` | Go'nun ÜRETTİĞİ WKW1 baytları |
+| `human_dr_restore_ok` (differential) | sahada, Go ikilisine karşı, yazılan dosya + mod |
+
+### 8.2 §7.3'ün BOŞLUĞU KAPATILDI: WKW1'in artık frozen bayt vektörü VAR
+
+§7.3 doğru saptamıştı: WKW1'in hiçbir yerde bayt vektörü yoktu ve Go'nun
+`TestWKW1RoundTripAndSlotBinding`i bir round-trip — kendi sardığını kendi
+açar, yani **yanlış-ama-tutarlı** bir implementasyonu yeşil geçirir.
+
+`frozen_vectors.json`a `wkw1` bloğu eklendi ve baytları
+`internal/cryptoid.WrapDEKForKEK` **SABİT bir nonce ile ÜRETTİ**. Bu bir
+round-trip değil bir çapraz-dil oracle: Rust'ın açışını Go'nun gerçek
+baytlarına pinliyor.
+
+### 8.3 §7.2 HÂLÂ GEÇERLİ, ve bir ÖNERİ doğuruyor
+
+Yeniden ölçüldü: `frozen_vectors.json`ı **Go OKUMUYOR** (kopya literaller).
+Bu turda eklenen `wkw1` ve `blob_padding_negatives` bloklarının bugün TEK
+tüketicisi Rust.
+
+> **ÖNERİ (bu turda YAPILMADI):** Go tarafı `internal/cryptoid`de dosyayı
+> gerçekten okusun. Bugün Go'nun literalleri ile dosya aynı — ama bu
+> **ölçülerek** doğrulanıyor, mekanizmayla değil. Dosya değişirse Go sessizce
+> eskir. Değişiklik `dr`in kapsamı dışında olduğu için önerilmekle bırakıldı.
+
+### 8.4 MUTASYON: bir TAMAM SANILAN suit, bir kontrolü HİÇ ölçmüyordu
+
+`unpad`in **sıfır-dolgu kontrolü SİLİNDİĞİNDE tüm suit YEŞİL kaldı.** Hiçbir
+vektör o dalı gezmiyordu — çünkü frozen `blob` vektörü GEÇERLİ bir blob ve
+geçerli bir blob padding savunmasını hiç tetiklemez.
+
+`blob_padding_negatives` bloğu bu yüzden eklendi: yapısal olarak GEÇERLİ
+(magic doğru, AEAD etiketi DOĞRULANIYOR) ama çözülen padded formu kuralları
+ihlal eden üç konteyner. Yani yalnızca `unpad`i ölçüyorlar. Aynı mutasyon
+artık `open_blob_enforces_the_padding_rules` ile düşüyor; `is_valid_bucket`
+ve uzunluk-taşması mutasyonları da öyle.
+
+**Ders §7.5'in kardeşi:** "frozen vektöre karşı yeşil" ile "her dal ölçülüyor"
+AYNI ŞEY DEĞİL. Bir POZİTİF vektör, negatif dalları hiç gezmez.
+
+### 8.5 §7.5'in BULGUSU KAPATILDI (bkz. CHANGELOG)
+
+`dr verify` kid'i BASIYOR (kaynak), `dr combine --expect-kid` onu TÜKETİYOR
+ve uyuşmazlıkta **hiçbir şey yazmadan** reddediyor (karşılaştırıcı). İkisi
+aynı commit'te Go + Rust'a indi.
+
+Sıra fail-closed için zorunlu: **kid kontrolü dosya yazılmadan ÖNCE.** Bu
+sıralamayı bozan bir mutasyon İKİ TARAFA BİRDEN uygulandı ve differential
+`DIFFERENT=0` dedi — yani karşılaştırma bu kusura **kör**. Yakalayan yalnızca
+iddialar oldu.
+
+### 8.6 KENDİ İŞİMİ ÇÜRÜTME DENEMESİ — bir ölçüm SAHTE ÇIKTI
+
+`restore`un SIFIR girdili bir manifest'te ne yaptığı korpusta YOKTU. İddiam
+şuydu: Go'nun `strings.Join(nil, "\n") + "\n"`i `"\n"` verir, yani boş proje
+de tek bir yenisatır yazar.
+
+İlk ölçüm denemesi `script(1)` ile yapıldı ve **"STDOUT EŞİT" dedi — ama iki
+ikili de HİÇ ÇALIŞMAMIŞTI** (`script: tcgetattr/ioctl: Operation not supported
+on socket`). İki boş çıktı eşit görünür. Bu, `diff.py`nin başlığındaki
+VACUUM/TIMEOUT tuzağının aynısı, ve elle koşulan bir ölçüde o korumaların
+HİÇBİRİ yok.
+
+Gerçek ölçüm ağacın kendi `ptyrun.py`si ile yapıldı: iki ikili de `b"\n"`,
+mod `0600`, exit 0 — iddia DOĞRU. Sonra vaka korpusa alındı
+(`dr_restore_empty_manifest`) ki bir daha ELLE ölçülmesin.
+
+**Ders:** elle koşulan bir karşılaştırma, ölçtüğü şeyin GERÇEKTEN koştuğunu
+ayrıca kanıtlamalı. "Fark yok" ile "hiçbir şey olmadı" aynı görünür.
+
+### 8.7 KALAN İKİ ALT KOMUT, ve tam olarak neyin eksik olduğu
+
+Girilmedi (yarım bir alt komut bırakmamak için) ve gerekenler:
+
+| alt komut | Rust'ta EKSİK olan |
+|---|---|
+| `bootstrap` | `internal/tofu` portu: `PreflightEnv` + `BootstrapEnvVars`. Rust'ta `tofu` modülü YOK. |
+| `accept-epoch-reset` | store'da `AuditHead` rotası **ve** `X-Wapps-Intent: epoch-reset` başlığı YOK; ayrıca `internal/intent` portu. |
+
+İkisi de Go ikilisinde ÇALIŞMAYA DEVAM EDİYOR.

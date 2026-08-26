@@ -328,13 +328,19 @@ pub fn build() -> Command {
         // `doctor` ile ayni gerekce). `projects list`in baglama kapisini hic
         // gormemesiyle AYNI yapisal sebep.
         //
-        // UC ALT KOMUT BURADA YOK ve bu bir unutma DEGIL: `restore`,
-        // `bootstrap` ve `accept-epoch-reset` portlanmadi. `restore` icin
-        // sebep olculdu ve bir CRATE karari: XChaCha20-Poly1305 (24 baytlik
-        // nonce) `ring`de YOK. Onlari clap agacina "yakinda" diye eklemek,
-        // Go'nun CALISAN bir toreninin yerine bir hata mesaji koymak olurdu;
-        // simdilik Rust ikilisi onlari TANIMIYOR ve fark differential
-        // korpusunda ADLANDIRILMIS durumda.
+        // IKI ALT KOMUT BURADA YOK ve bu bir unutma DEGIL: `bootstrap` ve
+        // `accept-epoch-reset` portlanmadi (ilki `internal/tofu` portunu,
+        // ikincisi store'da `AuditHead` + `X-Wapps-Intent` basligini
+        // istiyor — ikisi de Rust store'da YOK). Onlari clap agacina
+        // "yakinda" diye eklemek, Go'nun CALISAN bir toreninin yerine bir
+        // hata mesaji koymak olurdu; Rust ikilisi onlari TANIMIYOR ve fark
+        // differential korpusunda ADLANDIRILMIS durumda.
+        //
+        // `restore` ARTIK VAR. Onceki tur onu "XChaCha20-Poly1305 ring'de yok,
+        // yani yeni bir CRATE gerekiyor" diye disarida birakmisti; olcum o
+        // SONUCU curuttu (yerinde olcum DOGRUYDU: ring'de gercekten yok).
+        // XChaCha = HChaCha20 + ring'in ZATEN tasidigi ChaCha20-Poly1305, ve
+        // port Cargo.toml'a TEK bir crate eklemeden indi (docs/PORT-dr.md §7.1).
         .subcommand(
             Command::new("dr")
                 .about("Disaster recovery against the B2 ciphertext replica")
@@ -346,6 +352,43 @@ pub fn build() -> Command {
                                 .long("snapshot")
                                 .value_name("string")
                                 .help("local (air-gapped) copy of the B2 replica"),
+                        )
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("restore")
+                        .about("TTY-only DR ceremony: Shamir shares + snapshot → 0600 env file")
+                        .arg(
+                            Arg::new("snapshot")
+                                .long("snapshot")
+                                .value_name("string")
+                                .help("local (air-gapped) copy of the B2 replica"),
+                        )
+                        .arg(
+                            Arg::new("project")
+                                .long("project")
+                                .value_name("string")
+                                .help("project to reconstruct"),
+                        )
+                        .arg(
+                            Arg::new("out")
+                                .long("out")
+                                .value_name("string")
+                                .help("0600 env file to write the restored values into"),
+                        )
+                        .arg(
+                            Arg::new("confirm")
+                                .long("confirm")
+                                .action(ArgAction::SetTrue)
+                                .help("confirm the TTY restore ceremony"),
+                        )
+                        // StringArrayVar: `--share` TEKRARLANABILIR, sira KORUNUR.
+                        .arg(
+                            Arg::new("share")
+                                .long("share")
+                                .value_name("string")
+                                .action(ArgAction::Append)
+                                .help("MASTER_KEK Shamir share file, hex (repeat ≥2; assembled key NEVER persisted)"),
                         )
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 )
@@ -395,6 +438,12 @@ pub fn build() -> Command {
                                 .long("out")
                                 .value_name("string")
                                 .help("0600 file to write the reconstructed MASTER_KEK hex into"),
+                        )
+                        .arg(
+                            Arg::new("expect-kid")
+                                .long("expect-kid")
+                                .value_name("string")
+                                .help("refuse unless the reconstructed key's kid equals this (get it from `wapps dr verify`); without it the check is left to your eyes"),
                         )
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 ),

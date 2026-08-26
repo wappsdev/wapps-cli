@@ -11,6 +11,21 @@ All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachange
 
   Agents matching the literal string `"NOT_AVAILABLE"` on stderr must switch to `"ACTION_UNAVAILABLE"`. Behaviour, exit codes and `retryable: false` are unchanged.
 
+### Added
+- **`wapps dr verify` now prints the wrap `kid`, and `wapps dr combine` takes `--expect-kid`.** These ship together because they are two halves of one check, and separately neither is worth much.
+
+  `dr combine` reconstructs `MASTER_KEK` from Shamir shares. Shamir provides **no integrity**: hand it too few shares, or shares from two different generations, and it does not fail — it returns a perfectly well-formed 32-byte key that is simply the **wrong** key. Measured on the shipped binary, the correct and the incorrect ceremony were **character-for-character identical apart from the kid**: same `✓`, same exit code 0, same 0600 file, same 65 bytes. The operator's only signal was the printed kid and a warning telling them to verify it.
+
+  The uncomfortable part was where the expected kid lived: **inside every manifest in the replica** (`entries[].wrap.kid`) — a file `dr verify` was already reading and parsing, and whose kid it did not print. So an operator holding the snapshot and the shares had everything needed to automate the check, and the tool made them do it by eye. This is the worst class of silent failure: not the answer itself but the **moment the answer is discovered to be wrong** is hidden, and that moment is when decryption fails — the worst possible time.
+
+  `dr verify` now prints `kid=<kid>` per project (the set of distinct kids, sorted, since a rotation can legitimately leave two generations side by side). `dr combine --expect-kid <kid>` consumes it and **refuses** on mismatch, **writing nothing** — the check happens before the file is created, so a rejected ceremony leaves no 0600 file that could be mistaken for a verified one. Uppercase and surrounding whitespace are accepted, because the operator carries this value by hand.
+
+  The flag is **opt-in, not mandatory**: an air-gapped machine may hold shares and no replica, and making the check compulsory would break that path. Without it the warning now names both the risk *and* the automatic route, which the old text did not — it said "verify this kid" without saying where the value could be found.
+
+  A `kid` is the first 16 hex of `SHA-256(MASTER_KEK)` — one-way, and already sitting in the clear in every manifest. Printing it discloses nothing new; it only makes visible what the operator already holds.
+
+  This change lands in **both** binaries in the same commit. The differential is structurally blind to it: a mutation moving the kid check to *after* the file write was applied to Go and Rust together and the comparison still reported `DIFFERENT=0`. Only assertions caught it (`TestDrCombineRefusesAKidMismatchAndWritesNothing`, `combine_refuses_a_kid_mismatch_and_writes_nothing`).
+
 ### Fixed
 - **`secrets env --write` could leave a world-readable secrets file.** It carried its own atomic writer instead of using `internal/atomicfile`, which has been in the tree doing the same job correctly for `apply`. The copy diverged in three places, and the third was the bug: it opened a **fixed, predictable** temp path `<target>.tmp` with `O_CREATE|O_TRUNC` and **no `O_EXCL`**. POSIX `open(2)` says "the mode argument shall be ignored if the file exists" — so when a `<target>.tmp` was already sitting next to the target with mode 0644, the requested 0600 was never applied, `O_TRUNC` emptied it, the plaintext secret was written into it, and `rename` moved it onto the target. The result was a **0644 file full of decrypted secrets**. The copy also skipped `fsync`, so a power loss could leave the new name pointing at empty or stale content.
 

@@ -152,6 +152,11 @@ func runDrVerify(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
+		// Manifest'teki wrap kid'leri: bunlar bu projenin ciphertext'ini
+		// açabilecek MASTER_KEK neslini adlandırır. Normalde tek bir kid
+		// vardır; rotasyon (§2.5) sırasında iki nesil BİR ARADA olabilir, o
+		// yüzden küme olarak toplanıp deterministik sırayla basılıyor.
+		kidSet := map[string]struct{}{}
 		for _, e := range man.Entries {
 			blob, berr := os.ReadFile(filepath.Join(drSnapshotDir, "secrets", project, "blobs", e.BlobHash))
 			if berr != nil {
@@ -163,8 +168,10 @@ func runDrVerify(cmd *cobra.Command, _ []string) error {
 			if e.Wrap.Recipient != cryptoid.WrapRecipient {
 				return clierr.Newf(clierr.Internal, "snapshot: unsupported wrap recipient on %s/%s", project, e.KeyName)
 			}
+			kidSet[e.Wrap.Kid] = struct{}{}
 		}
-		fmt.Fprintf(w, "  %-20s epoch=%d keys=%d manifest=%s\n", project, ptr.Epoch, len(man.Entries), short(ptr.ManifestSha256))
+		fmt.Fprintf(w, "  %-20s epoch=%d keys=%d kid=%s manifest=%s\n",
+			project, ptr.Epoch, len(man.Entries), joinKids(kidSet), short(ptr.ManifestSha256))
 	}
 	fmt.Fprintf(w, "✓ snapshot VERIFIED (%d project(s), %s)\n", len(projects), drSnapshotDir)
 	return nil
@@ -307,6 +314,30 @@ func writeRestoredEnvFile(path string, lines []string) error {
 	return nil
 }
 
+// joinKids, bir manifest'teki wrap kid'lerini deterministik, tek satırlık bir
+// forma indirger. BU DEĞER BİR SIR DEĞİLDİR: kid, MASTER_KEK'in SHA-256'sının
+// ilk 16 hex'idir (§2.2, tek yönlü) ve replikadaki her manifest'te zaten açıkça
+// duruyor — basmak yeni hiçbir şey sızdırmaz, YALNIZCA operatörün elinde
+// zaten olan bilgiyi GÖRÜNÜR kılar.
+//
+// NEDEN BASILIYOR: `dr combine` yanlış/eksik paylarla da EXIT 0 verir ve tek
+// ayırt edici işaret kid'dir. O karşılaştırmanın bir KAYNAĞA ihtiyacı var; bu
+// satır o kaynak. `dr combine --expect-kid` de tüketicisi.
+func joinKids(set map[string]struct{}) string {
+	if len(set) == 0 {
+		return "-"
+	}
+	kids := make([]string, 0, len(set))
+	for k := range set {
+		if k == "" {
+			k = "-"
+		}
+		kids = append(kids, k)
+	}
+	sort.Strings(kids)
+	return strings.Join(kids, ",")
+}
+
 func short(s string) string {
 	if len(s) <= 16 {
 		return s
@@ -444,8 +475,9 @@ func runDrSplitCore(w io.Writer) error {
 }
 
 var (
-	drCombineShares []string
-	drCombineOut    string
+	drCombineShares    []string
+	drCombineOut       string
+	drCombineExpectKid string
 )
 
 var drCombineCmd = &cobra.Command{
@@ -469,33 +501,66 @@ Refused in agent mode.`,
 		if drCombineOut == "" {
 			return clierr.New(clierr.Internal, "dr combine: --out <file> is required (the key is NEVER printed)")
 		}
-		shares, err := readShareFiles(drCombineShares)
-		if err != nil {
-			return err
-		}
-		master, err := cryptoid.ShamirCombine(shares)
-		if err != nil {
-			return clierr.Wrapf(clierr.Internal, err, "reconstruct MASTER_KEK")
-		}
-		if len(master) != 32 {
-			return clierr.Newf(clierr.Internal, "reconstructed MASTER_KEK is %d bytes, want 32 (wrong/mismatched shares?)", len(master))
-		}
-		kid, err := cryptoid.KekKid(master)
-		if err != nil {
-			return clierr.Wrapf(clierr.Internal, err, "derive kid")
-		}
-		if err := writeSecretFile0600(drCombineOut, []byte(hex.EncodeToString(master)+"\n")); err != nil {
-			return err
-		}
+		return runDrCombineCore(cmd.OutOrStdout(), drCombineShares, drCombineOut, drCombineExpectKid)
+	},
+}
+
+// runDrCombineCore, combine seremonisinin çekirdeğidir (TTY guard'ı ve bayrak
+// kontrolleri RunE'de — split/restore ile aynı ayrım, test edilebilir).
+//
+// expectKid, SESSİZ ARIZAYI KAPATAN ŞEYDİR. Shamir bütünlük SAĞLAMAZ: yanlış
+// ya da eksik paylar hata vermeden 32 baytlık BAŞKA bir anahtar üretir, komut
+// EXIT 0 verir ve tören sessizce yanlış tamamlanır — bu ancak şifre
+// çözülemediği an, yani EN KÖTÜ AN anlaşılır. expectKid verildiğinde
+// karşılaştırma ARAÇ tarafından yapılır, operatörün gözüne bırakılmaz.
+//
+// SIRA FAIL-CLOSED İÇİN ZORUNLU: kid kontrolü DOSYA YAZILMADAN ÖNCE. Tersi,
+// reddedilen bir törenden geriye YANLIŞ anahtarı taşıyan 0600 bir dosya
+// bırakırdı ve operatör onu doğrulanmış sanabilirdi.
+func runDrCombineCore(w io.Writer, sharePaths []string, outPath, expectKid string) error {
+	shares, err := readShareFiles(sharePaths)
+	if err != nil {
+		return err
+	}
+	master, err := cryptoid.ShamirCombine(shares)
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "reconstruct MASTER_KEK")
+	}
+	if len(master) != 32 {
+		return clierr.Newf(clierr.Internal, "reconstructed MASTER_KEK is %d bytes, want 32 (wrong/mismatched shares?)", len(master))
+	}
+	kid, err := cryptoid.KekKid(master)
+	if err != nil {
+		return clierr.Wrapf(clierr.Internal, err, "derive kid")
+	}
+	// Operatör bu değeri bir terminalden elle taşıyor: boşluk ve BÜYÜK harf
+	// tolere edilir. Karşılaştırmanın kendisi tam eşitlik.
+	if want := strings.ToLower(strings.TrimSpace(expectKid)); want != "" && want != kid {
 		wipeBytes(master)
 		wipeBytes(shares...)
-		w := cmd.OutOrStdout()
-		fmt.Fprintf(w, "✓ MASTER_KEK reconstructed → %s (0600, kid %s)\n", drCombineOut, kid)
-		fmt.Fprintf(w, "  ⚠ VERIFY this kid matches split's / the live Worker's kid BEFORE use — too few or\n")
-		fmt.Fprintf(w, "    mismatched shares yield a silently-WRONG 32-byte key (no error). Then:\n")
-		fmt.Fprintf(w, "  npx wrangler secret put MASTER_KEK < %s   # then: rm %s\n", drCombineOut, drCombineOut)
-		return nil
-	},
+		return clierr.Newf(clierr.ActionUnavailable,
+			"reconstructed key's kid %s does not match --expect-kid %s — too few or mismatched shares (NOTHING was written; run 'wapps dr verify --snapshot <dir>' to read the replica's kid)",
+			kid, want)
+	}
+	if err := writeSecretFile0600(outPath, []byte(hex.EncodeToString(master)+"\n")); err != nil {
+		return err
+	}
+	wipeBytes(master)
+	wipeBytes(shares...)
+	fmt.Fprintf(w, "✓ MASTER_KEK reconstructed → %s (0600, kid %s)\n", outPath, kid)
+	if strings.TrimSpace(expectKid) == "" {
+		// Kontrol YAPILMADI: uyarı, operatöre hem riski hem de OTOMATİK yolu
+		// söylemeli. Eski metin yalnızca "verify this kid" diyordu ve
+		// karşılaştıracak değerin NEREDE olduğunu söylemiyordu — oysa o değer
+		// replikadaki her manifest'in içinde duruyor.
+		fmt.Fprintf(w, "  ⚠ kid NOT verified — too few or mismatched shares yield a silently-WRONG\n")
+		fmt.Fprintf(w, "    32-byte key (no error). Re-run with --expect-kid <kid> to make this check\n")
+		fmt.Fprintf(w, "    automatic; 'wapps dr verify --snapshot <dir>' prints the replica's kid.\n")
+	} else {
+		fmt.Fprintf(w, "  ✓ kid MATCHES --expect-kid (these shares reconstruct the expected key)\n")
+	}
+	fmt.Fprintf(w, "  npx wrangler secret put MASTER_KEK < %s   # then: rm %s\n", outPath, outPath)
+	return nil
 }
 
 func init() {
@@ -512,6 +577,7 @@ func init() {
 	drSplitCmd.Flags().StringVar(&drSplitMasterHex, "master-hex", "", "supply the MASTER_KEK (64-hex) explicitly; NOTE: argv is visible via `ps`/shell history — prefer the no-echo prompt default")
 	drCombineCmd.Flags().StringArrayVar(&drCombineShares, "share", nil, "hex Shamir share file (repeat ≥ threshold)")
 	drCombineCmd.Flags().StringVar(&drCombineOut, "out", "", "0600 file to write the reconstructed MASTER_KEK hex into")
+	drCombineCmd.Flags().StringVar(&drCombineExpectKid, "expect-kid", "", "refuse unless the reconstructed key's kid equals this (get it from `wapps dr verify`); without it the check is left to your eyes")
 
 	DrCmd.AddCommand(drVerifyCmd, drRestoreCmd, drSplitCmd, drCombineCmd)
 }

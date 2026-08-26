@@ -16,7 +16,8 @@
 use std::path::{Path, PathBuf};
 
 use wapps::cryptoid::{
-    blob_hash, derive_project_kek, kek_kid, shamir_combine, shamir_split, verify_blob_hash, Slot,
+    blob_hash, derive_project_kek, kek_kid, open_blob, shamir_combine, shamir_split,
+    unwrap_dek_with_kek, verify_blob_hash, Slot,
 };
 
 fn repo_root() -> PathBuf {
@@ -341,4 +342,217 @@ fn shamir_split_fails_closed_when_the_rng_is_short() {
         shamir_split(&[0u8; 32], 3, 2, &mut rng).is_err(),
         "kisa RNG kabul edildi"
     );
+}
+
+// --- §3.5.4 WSB1 blob acma (XChaCha20-Poly1305) --------------------------------
+//
+// BU TESTIN OLCTUGU SEY BIR CRATE KARARIDIR. `ring` XChaCha20-Poly1305
+// TASIMIYOR (`xchacha` kaynakta sifir kez, NONCE_LEN=12). Port onu RustCrypto
+// ekleyerek degil, HChaCha20'yi elde yazip `ring`in duz ChaCha20-Poly1305'ine
+// baglayarak cozuyor. O turetimin DOGRU oldugunu soyleyen tek sey bu vektor:
+// frozen `blob_hex`, Go/TS tarafindan uretilmis GERCEK bir WSB1 blob'u, ve
+// acilisi `plaintext` alanini bayt bayt geri vermeli. Turetim bir bit
+// kayarsa AEAD auth'u duser ve bu test kirmizi olur.
+#[test]
+fn open_blob_opens_the_frozen_wsb1_blob() {
+    let f = frozen();
+    let b = &f["blob"];
+    let dek: [u8; 32] = unhex(b["dek_hex"].as_str().unwrap()).try_into().unwrap();
+    let slot = Slot::new(
+        b["slot"]["project"].as_str().unwrap(),
+        b["slot"]["keyName"].as_str().unwrap(),
+        b["slot"]["keyVersion"].as_u64().unwrap(),
+    );
+    let blob = unhex(b["blob_hex"].as_str().unwrap());
+    let pt = open_blob(&blob, &dek, &slot).expect("frozen WSB1 blob ACILMALI");
+    // Plaintext bir test vektoru ama yine de DEGER basilmiyor (§sir kurali).
+    assert!(
+        pt == b["plaintext"].as_str().unwrap().as_bytes(),
+        "acilan plaintext frozen vektorden SAPTI ({} bayt)",
+        pt.len()
+    );
+}
+
+// --- §2.4 WKW1 DEK unwrap ---------------------------------------------------------
+//
+// BU VEKTOR BU SERITTE EKLENDI, ve neden onemli: WKW1'in HICBIR YERDE frozen
+// bir BAYT vektoru YOKTU (docs/PORT-dr.md §7.3). Go tarafindaki
+// TestWKW1RoundTripAndSlotBinding bir ROUND-TRIP'tir (nonce rastgele) — kendi
+// sardigini kendi acar, yani yanlis-ama-tutarli bir implementasyonu YESIL
+// gecirir. Buradaki vektor `internal/cryptoid.WrapDEKForKEK` tarafindan SABIT
+// bir nonce ile URETILDI, yani Rust'in acisini Go'nun GERCEK baytlarina
+// pinliyor. Bu bir karsilastirma degil, ucuncu bir oracle.
+#[test]
+fn unwrap_dek_with_kek_opens_the_go_generated_wkw1_wrap() {
+    let f = frozen();
+    let k = &f["wkw1"];
+    let master = unhex(k["master_hex"].as_str().unwrap());
+    let slot = Slot::new("vaulter", "DATABASE_URL", 3);
+    let wrap = unhex(k["wrap_hex"].as_str().unwrap());
+    assert!(
+        wrap.len() == 76,
+        "WKW1 cercevesi 76 bayt olmali, {} bulundu",
+        wrap.len()
+    );
+    let dek =
+        unwrap_dek_with_kek(&master, "vaulter", &slot, &wrap).expect("Go'nun WKW1 wrap'i ACILMALI");
+    assert!(
+        hexs(&dek) == k["dek_hex"].as_str().unwrap(),
+        "acilan DEK frozen vektorden SAPTI"
+    );
+}
+
+/// Wrap'in SLOT'a baglandigini olcer: ayni wrap baska bir projeye/anahtara/
+/// versiyona REPLAY EDILEMEZ. AAD yanlis kurulursa (ornegin keyVersion
+/// atlanirsa) bu test kirmizi olur — ve o hata differential'da GORUNMEZDI,
+/// cunku iki ikili de ayni yanlis AAD'yi paylasabilir.
+#[test]
+fn wkw1_wrap_does_not_replay_to_another_slot() {
+    let f = frozen();
+    let k = &f["wkw1"];
+    let master = unhex(k["master_hex"].as_str().unwrap());
+    let wrap = unhex(k["wrap_hex"].as_str().unwrap());
+    for (project, key, ver) in [
+        ("vaulter", "DATABASE_URL", 4u64), // versiyon kaydi
+        ("vaulter", "OTHER_KEY", 3),       // anahtar adi kaydi
+        ("other", "DATABASE_URL", 3),      // proje kaydi (KEK de degisir)
+    ] {
+        let slot = Slot::new(project, key, ver);
+        assert!(
+            unwrap_dek_with_kek(&master, project, &slot, &wrap).is_err(),
+            "wrap {project}/{key}/v{ver} slotuna REPLAY EDILEBILDI"
+        );
+    }
+}
+
+/// Cerceve ihlalleri fail-closed: kisa/uzun wrap ve yanlis magic.
+#[test]
+fn wkw1_rejects_framing_violations() {
+    let f = frozen();
+    let k = &f["wkw1"];
+    let master = unhex(k["master_hex"].as_str().unwrap());
+    let slot = Slot::new("vaulter", "DATABASE_URL", 3);
+    let good = unhex(k["wrap_hex"].as_str().unwrap());
+
+    let mut bad_magic = good.clone();
+    bad_magic[0] = b'X';
+    let mut too_long = good.clone();
+    too_long.push(0);
+
+    for (name, w) in [
+        ("bos", Vec::new()),
+        ("kisa", good[..75].to_vec()),
+        ("uzun", too_long),
+        ("yanlis magic", bad_magic),
+    ] {
+        assert!(
+            unwrap_dek_with_kek(&master, "vaulter", &slot, &w).is_err(),
+            "{name} wrap KABUL EDILDI"
+        );
+    }
+}
+
+/// Kurcalanmis bir ciphertext baytinin AEAD'de dusmesi gerekir — WKW1'in
+/// butunluk sagladigi yer burasi (Shamir'in AKSINE, ki o saglamaz).
+#[test]
+fn wkw1_rejects_a_tampered_ciphertext_byte() {
+    let f = frozen();
+    let k = &f["wkw1"];
+    let master = unhex(k["master_hex"].as_str().unwrap());
+    let slot = Slot::new("vaulter", "DATABASE_URL", 3);
+    let mut w = unhex(k["wrap_hex"].as_str().unwrap());
+    let last = w.len() - 1;
+    w[last] ^= 0x01;
+    assert!(
+        unwrap_dek_with_kek(&master, "vaulter", &slot, &w).is_err(),
+        "kurcalanmis WKW1 wrap KABUL EDILDI"
+    );
+}
+
+/// Yanlis master (yani yanlis KEK) acmamali. `dr restore`un kid kontrolu bu
+/// dususu ONCEDEN yakalar; bu test o kontrolun ARKASINDAKI savunmayi olcer.
+#[test]
+fn wkw1_rejects_a_wrong_master_key() {
+    let f = frozen();
+    let k = &f["wkw1"];
+    let slot = Slot::new("vaulter", "DATABASE_URL", 3);
+    let wrap = unhex(k["wrap_hex"].as_str().unwrap());
+    assert!(
+        unwrap_dek_with_kek(&[0x43u8; 32], "vaulter", &slot, &wrap).is_err(),
+        "yanlis master ile WKW1 ACILDI"
+    );
+}
+
+/// WSB1 tamper savunmalari: magic, kisa girdi, kurcalanmis ciphertext.
+#[test]
+fn open_blob_rejects_tamper_and_bad_framing() {
+    let f = frozen();
+    let b = &f["blob"];
+    let dek: [u8; 32] = unhex(b["dek_hex"].as_str().unwrap()).try_into().unwrap();
+    let slot = Slot::new("vaulter", "DATABASE_URL", 3);
+    let good = unhex(b["blob_hex"].as_str().unwrap());
+
+    let mut bad_magic = good.clone();
+    bad_magic[3] = b'2';
+    let mut tampered = good.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+
+    for (name, blob) in [
+        ("bos", Vec::new()),
+        ("yalnizca overhead", vec![0u8; 44]),
+        ("yanlis magic", bad_magic),
+        ("kurcalanmis ct", tampered),
+    ] {
+        assert!(
+            open_blob(&blob, &dek, &slot).is_err(),
+            "{name} blob KABUL EDILDI"
+        );
+    }
+    // Yanlis slot (AAD) da dusmeli — blob da slotuna baglidir.
+    assert!(
+        open_blob(&good, &dek, &Slot::new("vaulter", "DATABASE_URL", 4)).is_err(),
+        "blob baska bir slota REPLAY EDILEBILDI"
+    );
+}
+
+/// §3.5.2 padding TAMPER SAVUNMALARI — ve bu test bir MUTASYONUN urunu.
+///
+/// `unpad`in sifir-dolgu kontrolu SILINDIGINDE tum suit YESIL kaldi: hicbir
+/// vektor o dali gezmiyordu. Buradaki girdiler YAPISAL OLARAK GECERLI WSB1
+/// konteynerleri — dogru magic, dogru nonce, AEAD etiketi DOGRULANIYOR — ama
+/// cozulen padded formlari kurallari ihlal ediyor. Yani yalnizca `unpad`i
+/// olcuyorlar: dogru cozup padding kontrollerini atlayan bir implementasyon
+/// bu dosyadaki DIGER her vektoru gecer ve SADECE burada duser.
+///
+/// Bu, differential'in yapisal olarak goremeyecegi siniftan: iki ikili de
+/// kontrolu atlasaydi karsilastirma EQUAL derdi.
+#[test]
+fn open_blob_enforces_the_padding_rules() {
+    let f = frozen();
+    let n = &f["blob_padding_negatives"];
+    let dek: [u8; 32] = unhex(n["dek_hex"].as_str().unwrap()).try_into().unwrap();
+    let slot = Slot::new("vaulter", "DATABASE_URL", 3);
+
+    // Kontrol: AYNI yoldan uretilmis GECERLI konteyner ACILMALI. Bu olmadan
+    // asagidaki dort reddin "her sey duser"den ayirt edilmesi mumkun olmazdi.
+    let good = unhex(n["good_hex"].as_str().unwrap());
+    let pt = open_blob(&good, &dek, &slot).expect("gecerli konteyner ACILMALI");
+    assert!(
+        pt.len() == 5,
+        "kontrol vektorunun uzunlugu {} (5 bekleniyor)",
+        pt.len()
+    );
+
+    for name in [
+        "nonzero_fill_hex",         // dolgu baytlarindan biri SIFIR DEGIL
+        "len_overflows_bucket_hex", // uzunluk oneki KOVAYI asiyor
+        "not_a_valid_bucket_hex",   // padded boyut TANINAN bir kova degil
+    ] {
+        let blob = unhex(n[name].as_str().unwrap());
+        assert!(
+            open_blob(&blob, &dek, &slot).is_err(),
+            "{name}: padding ihlali KABUL EDILDI"
+        );
+    }
 }

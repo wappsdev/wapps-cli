@@ -129,7 +129,15 @@ def main():
                 for rel, content in (cfgseed.get("files") or {}).items():
                     fp = os.path.join(casedir, rel)
                     os.makedirs(os.path.dirname(fp), exist_ok=True)
-                    with open(fp, "w") as f:
+                    # BAYT icerik BINARY yazilir. `dr restore` fikstuleri
+                    # gercek WSB1 blob'lari tasiyor (sifreli, rastgele bayt) ve
+                    # metin modunda yazmak onlari SESSIZCE bozardi: str
+                    # icerikler UTF-8'e kodlanir, yani 0x80-0xFF araligindaki
+                    # her bayt IKI bayta cikar ve blob'un icerik adresi tutmaz.
+                    # O bozulma "iki ikili de ayni hatayi verdi" diye EQUAL
+                    # gorunurdu — yani vakalar gecerdi ve HICBIR SEY olcmezdi.
+                    mode = "wb" if isinstance(content, (bytes, bytearray)) else "w"
+                    with open(fp, mode) as f:
                         f.write(content)
             out, err, code = run([binary] + argv, env, cwd=casedir,
                                  stdin_data=stdin_data)

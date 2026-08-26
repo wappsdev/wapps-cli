@@ -138,11 +138,15 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     //        tamami (HKDF, kid, GF(2^8)) iddia tarafinda olculuyor:
     //        differential iki ikilinin PAYLASTIGI bir kusuru goremez.
     //
-    //        BU ESIK KORPUS BOYUYLA AYNI DEGIL, ve fark olculdu: `CASES`
-    //        343 vaka tasiyor ama `EXCLUDED` DORT ad tasiyor (ikisi
-    //        cases.py'deki baslik yorumunda yazili, ikisi —
-    //        human_policy_lint_broken_json ve human_rotate_plan_bad_since —
-    //        sonradan eklenmis ve yoruma islenmemis). 343-4 = 339.
+    //        BU ESIK KORPUS BOYUYLA AYNI DEGIL, ve fark olculdu: `EXCLUDED`
+    //        DORT ad tasiyor (ikisi cases.py'deki baslik yorumunda yazili,
+    //        ikisi — human_policy_lint_broken_json ve
+    //        human_rotate_plan_bad_since — sonradan eklenmis ve yoruma
+    //        islenmemis). ESIK METINDEN DEGIL OLCULEREK alinmali:
+    //            python3 -c "from cases import CASES,EXCLUDED; \
+    //                        print(len({c[0] for c in CASES})-len(EXCLUDED))"
+    //        343-4 = 339 idi; `dr restore`un 15 vakasi + kid kapatmasinin 4
+    //        vakasiyla, ve sifir-girdili manifest vakasiyla 363-4 = 359.
     //
     //        `dr` vakalari korpusa girerken IKI GERCEK AYRISMA buldu ve
     //        ikisi de ayni kokten geliyordu: port dosya hatalarini Rust'in
@@ -156,6 +160,6 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 339, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 359, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

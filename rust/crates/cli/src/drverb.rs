@@ -1,23 +1,23 @@
 // `wapps dr` — felaket kurtarma verb'leri (server-decrypt SPEC §8.4).
 //
-// PORTLANAN: verify, split, combine.
+// PORTLANAN: verify, restore, split, combine.
 // PORTLANMAYAN, ve NEDEN — bu liste bir eksiklik itirafi degil bir SINIR:
 //
-//   restore              XChaCha20-Poly1305 (24 BAYTLIK nonce) istiyor. `ring`
-//                        onu TASIMIYOR (olculdu: kaynakta `xchacha` sifir kez,
-//                        NONCE_LEN=12). Yani bu alt komut bir CRATE KARARI
-//                        olmadan portlanamaz ve o karar Cargo.toml'daki `ring`
-//                        gerekcesine dogrudan carpiyor ("ikinci bir kripto
-//                        denetim yuzeyi"). Yarim bir restore YAZILMADI: bir
-//                        kurtarma toreninin yarisi, olmamasindan daha kotudur.
 //   bootstrap            `internal/tofu` PreflightEnv + BootstrapEnvVars
-//                        portunu gerektiriyor.
+//                        portunu gerektiriyor; Rust'ta `tofu` modulu YOK.
 //   accept-epoch-reset   store'da `AuditHead` rotasi ve `X-Wapps-Intent:
 //                        epoch-reset` basligi YOK.
 //
-// Bu uc verb Go ikilisinde CALISMAYA DEVAM EDIYOR; Rust ikilisi onlari
+// Bu iki verb Go ikilisinde CALISMAYA DEVAM EDIYOR; Rust ikilisi onlari
 // TANIMIYOR. Ayrisma BILINCLI ve differential korpusunda ADLANDIRILMIS
-// durumda (bkz. cases.py, DR_EXCLUDED).
+// durumda (bkz. cases.py, DR bloğunun baslik yorumu). Yarim bir alt komut
+// YAZILMADI: bir kurtarma toreninin yarisi, olmamasindan daha kotudur.
+//
+// `restore` BU SERITTE INDI ve onu mumkun kilan sey bir onceki turun kendi
+// iddiasini CURUTMESIYDI: "XChaCha `ring`de yok, yani yeni bir crate lazim"
+// olcumu yerinde DOGRUYDU ama sonucu yanlisti — XChaCha = HChaCha20 +
+// ring'in ZATEN tasidigi ChaCha20-Poly1305. Cargo.toml'a TEK bir crate
+// eklenmedi (bkz. cryptoid.rs, docs/PORT-dr.md §7.1).
 //
 // AJAN POLITIKASI — ve bu bir duzenleme ayrintisi degil: `dr` KOKTE mount'lu
 // (Go'da rootCmd.AddCommand(secrets.DrCmd)), yani SecretsCmd.PersistentPreRunE
@@ -210,6 +210,11 @@ pub fn run_verify<W: Write>(w: &mut W, snapshot_dir: &Path) -> Result<(), Error>
     let projects = snapshot_projects(snapshot_dir)?;
     for project in &projects {
         let (man, ptr) = load_snapshot_project(snapshot_dir, project)?;
+        // Manifest'teki wrap kid'leri: bu projenin ciphertext'ini acabilecek
+        // MASTER_KEK NESLINI adlandirirlar. Normalde tek bir kid vardir;
+        // rotasyon sirasinda iki nesil BIR ARADA olabilir, o yuzden kume
+        // olarak toplanip deterministik sirayla basiliyor.
+        let mut kid_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for e in &man.entries {
             let bp = snapshot_dir
                 .join("secrets")
@@ -244,13 +249,24 @@ pub fn run_verify<W: Write>(w: &mut W, snapshot_dir: &Path) -> Result<(), Error>
                     ),
                 ));
             }
+            kid_set.insert(if e.wrap.kid.is_empty() {
+                "-".to_string()
+            } else {
+                e.wrap.kid.clone()
+            });
         }
+        let kids = if kid_set.is_empty() {
+            "-".to_string()
+        } else {
+            kid_set.into_iter().collect::<Vec<_>>().join(",")
+        };
         let _ = writeln!(
             w,
-            "  {:<20} epoch={} keys={} manifest={}",
+            "  {:<20} epoch={} keys={} kid={} manifest={}",
             project,
             ptr.epoch,
             man.entries.len(),
+            kids,
             short(&ptr.manifest_sha256)
         );
     }
@@ -462,15 +478,23 @@ pub fn run_split_core<W: Write>(
 
 /// run_combine_core, >=threshold paydan MASTER_KEK'i geri kurar ve 0600 yazar.
 ///
-/// BU FONKSIYON YANLIS PAYLARDA DA BASARIR. Bu bir kusur degil Shamir'in
-/// kendisi: butunluk SAGLAMAZ. Tek savunma basilan kid'dir — ve asagidaki
-/// uyari satiri, operatore o kid'i karsilastirmasini soyleyen TEK sey. Uyari
-/// duserse bir kurtarma toreni SESSIZCE yanlis tamamlanir ve bu ancak sifre
-/// cozulemedigi anda, yani EN KOTU ANDA anlasilir.
+/// BU FONKSIYON, `expect_kid` VERILMEDIKCE, YANLIS PAYLARDA DA BASARIR. Bu bir
+/// kusur degil Shamir'in kendisi: butunluk SAGLAMAZ — yanlis ya da eksik
+/// paylar hata vermeden 32 baytlik BASKA bir anahtar uretir. Tek ayirt edici
+/// isaret kid'dir.
+///
+/// `expect_kid` o karsilastirmayi OPERATORUN GOZUNDEN alip ARACA veriyor.
+/// Zorunlu DEGIL ve bu bilincli: operatorun elinde replika olmayabilir
+/// (`wapps dr verify` kid'i replikadan basar, ama bu fiil hava-bosluklu bir
+/// makinede paylar disinda hicbir seyle de calisabilmeli).
+/// Verilmediginde uyari satiri artik SADECE riski degil OTOMATIK YOLU da
+/// soyluyor — eski metin "bu kid'i dogrula" diyordu ama karsilastirilacak
+/// degerin NEREDE oldugunu soylemiyordu.
 pub fn run_combine_core<W: Write>(
     w: &mut W,
     share_paths: &[PathBuf],
     out: &Path,
+    expect_kid: &str,
 ) -> Result<(), Error> {
     if share_paths.len() < 2 {
         return Err(Error::new(
@@ -498,6 +522,24 @@ pub fn run_combine_core<W: Write>(
     }
     let kid = cryptoid::kek_kid(&master)
         .map_err(|e| Error::new(Code::Internal, format!("derive kid: {e}")))?;
+    // Operator bu degeri bir terminalden ELLE tasiyor: bosluk ve BUYUK harf
+    // tolere edilir. Karsilastirmanin kendisi tam esitlik.
+    let want = expect_kid.trim().to_lowercase();
+    if !want.is_empty() && want != kid {
+        // FAIL-CLOSED, ve SIRA onemli: dosya HENUZ yazilmadi. Once yazip sonra
+        // hata vermek, reddedilen bir torenden geriye YANLIS anahtari tasiyan
+        // 0600 bir dosya birakirdi.
+        wipe(&mut master);
+        for s in shares.iter_mut() {
+            wipe(s);
+        }
+        return Err(Error::new(
+            Code::ActionUnavailable,
+            format!(
+                "reconstructed key's kid {kid} does not match --expect-kid {want} — too few or mismatched shares (NOTHING was written; run 'wapps dr verify --snapshot <dir>' to read the replica's kid)"
+            ),
+        ));
+    }
     write_secret_file_0600(out, format!("{}\n", hexs(&master)).as_bytes())?;
     wipe(&mut master);
     for s in shares.iter_mut() {
@@ -508,19 +550,283 @@ pub fn run_combine_core<W: Write>(
         "✓ MASTER_KEK reconstructed → {} (0600, kid {kid})",
         out.display()
     );
-    let _ = writeln!(
-        w,
-        "  ⚠ VERIFY this kid matches split's / the live Worker's kid BEFORE use — too few or"
-    );
-    let _ = writeln!(
-        w,
-        "    mismatched shares yield a silently-WRONG 32-byte key (no error). Then:"
-    );
+    if expect_kid.trim().is_empty() {
+        let _ = writeln!(
+            w,
+            "  ⚠ kid NOT verified — too few or mismatched shares yield a silently-WRONG"
+        );
+        let _ = writeln!(
+            w,
+            "    32-byte key (no error). Re-run with --expect-kid <kid> to make this check"
+        );
+        let _ = writeln!(
+            w,
+            "    automatic; 'wapps dr verify --snapshot <dir>' prints the replica's kid."
+        );
+    } else {
+        let _ = writeln!(
+            w,
+            "  ✓ kid MATCHES --expect-kid (these shares reconstruct the expected key)"
+        );
+    }
     let _ = writeln!(
         w,
         "  npx wrangler secret put MASTER_KEK < {}   # then: rm {}",
         out.display(),
         out.display()
+    );
+    Ok(())
+}
+
+/// b64_decode, standart base64'u (RFC 4648, DOLGULU) cozer — Go'nun
+/// `base64.StdEncoding.DecodeString`inin karsiligi.
+///
+/// ELDE YAZILDI cunku agacta base64 crate'i YOK ve `dr` icin bir tane eklemek
+/// Cargo.toml'daki gerekceyi (bkz. `ring`) bir satirlik bir cozumleyici icin
+/// delmek olurdu.
+///
+/// KATI, ve katilik burada bir PARITE sartidir — Go'nun StdEncoding'i de
+/// katidir:
+///   * uzunluk 4'un kati OLMALI (aksi halde CorruptInputError),
+///   * dolgu ('=') YALNIZCA sonda ve en fazla iki tane,
+///   * alfabe disi HER karakter (yenisatir DAHIL) reddedilir.
+///
+/// Gevsek bir cozumleyici, Go'nun REDDETTIGI bir manifest'i KABUL ederdi ve
+/// bu bir ayrisma olurdu.
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a') as u32 + 26),
+            b'0'..=b'9' => Some((c - b'0') as u32 + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(4) {
+        return None;
+    }
+    if b.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut pad = 0usize;
+    while pad < 2 && b[b.len() - 1 - pad] == b'=' {
+        pad += 1;
+    }
+    let body = &b[..b.len() - pad];
+    // Govdede dolgu KALMAMALI (ornegin "A=B=" reddedilir).
+    if body.contains(&b'=') {
+        return None;
+    }
+    let mut out = Vec::with_capacity(b.len() / 4 * 3);
+    for chunk in body.chunks(4) {
+        let mut acc: u32 = 0;
+        for &c in chunk {
+            acc = (acc << 6) | val(c)?;
+        }
+        match chunk.len() {
+            4 => {
+                out.push((acc >> 16) as u8);
+                out.push((acc >> 8) as u8);
+                out.push(acc as u8);
+            }
+            3 => {
+                let acc = acc << 6;
+                out.push((acc >> 16) as u8);
+                out.push((acc >> 8) as u8);
+            }
+            2 => {
+                let acc = acc << 12;
+                out.push((acc >> 16) as u8);
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+// --- dr restore ----------------------------------------------------------------------
+//
+// Kurtarma toreninin KENDISI: >=2 Shamir payi + bir B2 snapshot'i -> MASTER_KEK
+// -> per-proje KEK (§2.3) -> WKW1 DEK unwrap (§2.4) -> WSB1 blob acma (§3.5.4)
+// -> 0600 env dosyasi. SIFIR Cloudflare bagimliligi.
+//
+// PORTLANABILDI cunku "ring'de XChaCha yok" ile "XChaCha portlanamaz" AYNI SEY
+// DEGIL: XChaCha = HChaCha20 (bir permutasyon) + ring'in ZATEN tasidigi duz
+// ChaCha20-Poly1305. Bkz. cryptoid.rs'teki turetim ve docs/PORT-dr.md §7.1 —
+// Cargo.toml'a TEK bir crate eklenmedi.
+//
+// DEGERLER ASLA BASILMAZ. Ne stdout'a, ne hata metnine: bir hata mesajina
+// dusen tek sey anahtar ADI'dir. Cikti yalnizca SAYI verir ("N value(s)").
+
+/// write_restored_env_file, KEY=value satirlarini 0600 ATOMIK yazar
+/// (tmp + rename), ASLA stdout'a.
+///
+/// O_EXCL YOK ve bu `write_secret_file_0600`dan BILINCLI bir ayrim: Go da
+/// burada `os.WriteFile` + rename kullaniyor, yani var olan bir --out dosyasi
+/// EZILIR. Bir kurtarma torenini "dosya zaten var" diye yarida kesmek, o
+/// dosyanin onceki (muhtemelen basarisiz) bir denemeden kalmis olmasi
+/// ihtimalinde toreni tikardi. Parite bilincli.
+///
+/// TUZAK — VE KAPATILDI: tmp dosyayi duz bir yazici ile acmak, tmp ONCEDEN
+/// VARSA modunu DEGISTIRMEZ; 0644 kalmis bir artik uzerine yazilirsa gizli
+/// degerler dunyaya okunur olurdu. tmp bu yuzden O_EXCL ile acilir.
+fn write_restored_env_file(path: &Path, lines: &[Vec<u8>]) -> Result<(), Error> {
+    let tmp = PathBuf::from(format!("{}.tmp", path.display()));
+    // Go: strings.Join(lines, "\n") + "\n". BOS proje de tek bir yenisatir
+    // yazar (Join(nil) == "") — bir tuhaflik ama sahadaki davranis.
+    let mut body: Vec<u8> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if i > 0 {
+            body.push(b'\n');
+        }
+        body.extend_from_slice(l);
+    }
+    body.push(b'\n');
+    // Artik bir tmp varsa once kaldir ki O_EXCL modu garanti etsin.
+    let _ = std::fs::remove_file(&tmp);
+    write_secret_file_0600(&tmp, &body)?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        Error::new(
+            Code::Internal,
+            format!(
+                "finalize {}: rename {} {}: {}",
+                path.display(),
+                tmp.display(),
+                path.display(),
+                goerr::bare_errno(&e)
+            ),
+        )
+    })?;
+    Ok(())
+}
+
+/// restore_project_from_snapshot, restore seremonisinin cekirdegidir (TTY
+/// guard'i CAGIRANDA — `split`/`combine` ile ayni ayrim, test edilebilirlik
+/// icin).
+///
+/// SIRA GUVENLIK ACISINDAN ONEMLI ve Go ile AYNEN korunmali:
+///   1. paylar -> MASTER_KEK -> kid
+///   2. snapshot zinciri (pointer -> manifest hash) dogrulanir
+///   3. HER giris icin ONCE kid karsilastirilir (yanlis nesil = ERKEN dusus),
+///      SONRA icerik adresi, SONRA unwrap, SONRA blob acilir
+///
+/// kid kontrolu one alinmazsa yanlis bir MASTER_KEK ancak AEAD'de duserdi ve
+/// hata "tamper" gibi gorunurdu — operatoru YANLIS teshise gonderirdi.
+pub fn restore_project_from_snapshot<W: Write>(
+    w: &mut W,
+    snapshot_dir: &Path,
+    project: &str,
+    share_paths: &[PathBuf],
+    out_path: &Path,
+) -> Result<(), Error> {
+    let mut shares = read_share_files(share_paths)?;
+    let mut master = cryptoid::shamir_combine(&shares).map_err(|e| {
+        Error::new(
+            Code::Internal,
+            format!("reconstruct MASTER_KEK from shares: {e}"),
+        )
+    })?;
+    if master.len() != 32 {
+        return Err(Error::new(
+            Code::Internal,
+            format!(
+                "reconstructed MASTER_KEK is {} bytes, want 32 (wrong/mismatched shares?)",
+                master.len()
+            ),
+        ));
+    }
+    let kid = cryptoid::kek_kid(&master)
+        .map_err(|e| Error::new(Code::Internal, format!("derive kid: {e}")))?;
+
+    let (man, ptr) = load_snapshot_project(snapshot_dir, project)?;
+
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    for e in &man.entries {
+        if e.wrap.kid != kid {
+            return Err(Error::new(
+                Code::Internal,
+                format!(
+                    "wrap kid {} on {} does not match the reconstructed key's kid {kid} — wrong MASTER_KEK generation (older shares? see §2.5 rotation)",
+                    e.wrap.kid, e.key_name
+                ),
+            ));
+        }
+        let wrap_bytes = b64_decode(&e.wrap.wrap).ok_or_else(|| {
+            Error::new(
+                Code::Internal,
+                format!("wrap for {} not base64", e.key_name),
+            )
+        })?;
+        let bp = snapshot_dir
+            .join("secrets")
+            .join(project)
+            .join("blobs")
+            .join(&e.blob_hash);
+        let blob = std::fs::read(&bp).map_err(|err| {
+            Error::new(
+                Code::Internal,
+                format!(
+                    "blob missing for {}: {}",
+                    e.key_name,
+                    goerr::open_error(&bp.display().to_string(), &err)
+                ),
+            )
+        })?;
+        cryptoid::verify_blob_hash(&blob, &e.blob_hash).map_err(|err| {
+            Error::new(
+                Code::BlobHashMismatch,
+                format!("blob content-address mismatch for {}: {err}", e.key_name),
+            )
+        })?;
+        let slot = cryptoid::Slot::new(project, &e.key_name, e.key_version);
+        let mut dek =
+            cryptoid::unwrap_dek_with_kek(&master, project, &slot, &wrap_bytes).map_err(|err| {
+                Error::new(
+                    Code::Internal,
+                    format!(
+                        "DEK unwrap failed for {} (tamper or key mismatch): {err}",
+                        e.key_name
+                    ),
+                )
+            })?;
+        let pt = cryptoid::open_blob(&blob, &dek, &slot).map_err(|err| {
+            Error::new(
+                Code::Internal,
+                format!("blob open failed for {}: {err}", e.key_name),
+            )
+        })?;
+        wipe(&mut dek);
+        // Go: `e.KeyName + "=" + string(pt)`. `string(pt)` GECERSIZ UTF-8
+        // baytlari AYNEN tasir — Go string'i bir bayt dizisidir. Rust'ta
+        // `String::from_utf8_lossy` onlari U+FFFD'ye cevirirdi ve yazilan
+        // DOSYA AYRISIRDI (bir sir her zaman gecerli UTF-8 degildir; ornegin
+        // ham bir anahtar baytı). Satirlar bu yuzden BAYT olarak tasiniyor.
+        let mut line: Vec<u8> = Vec::with_capacity(e.key_name.len() + 1 + pt.len());
+        line.extend_from_slice(e.key_name.as_bytes());
+        line.push(b'=');
+        line.extend_from_slice(&pt);
+        lines.push(line);
+    }
+
+    write_restored_env_file(out_path, &lines)?;
+    wipe(&mut master);
+    for s in shares.iter_mut() {
+        wipe(s);
+    }
+    let _ = writeln!(
+        w,
+        "✓ RESTORED {project} (epoch {}): {} value(s) → {} (0600; values never printed)",
+        ptr.epoch,
+        lines.len(),
+        out_path.display()
+    );
+    let _ = writeln!(
+        w,
+        "NEXT (human half): re-provision the estate from this file, then ROTATE every restored value — see 'wapps rotate-plan'."
     );
     Ok(())
 }

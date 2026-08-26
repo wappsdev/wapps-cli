@@ -241,6 +241,15 @@ fn run() -> Result<(), CmdError> {
         // yaprak basina FARKLI: `verify` guard'siz, `split`/`combine` PolicyTTY.
         Some(("dr", dm)) => match dm.subcommand() {
             Some(("verify", vm)) => run_dr_verify(vm.get_one::<String>("snapshot").cloned()),
+            Some(("restore", rm)) => run_dr_restore(
+                rm.get_one::<String>("project").cloned(),
+                rm.get_one::<String>("snapshot").cloned(),
+                rm.get_one::<String>("out").cloned(),
+                rm.get_flag("confirm"),
+                rm.get_many::<String>("share")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default(),
+            ),
             Some(("split", sm)) => run_dr_split(
                 sm.get_one::<String>("out-dir").cloned(),
                 sm.get_one::<String>("parts").cloned(),
@@ -252,6 +261,7 @@ fn run() -> Result<(), CmdError> {
                     .map(|v| v.cloned().collect())
                     .unwrap_or_default(),
                 cm.get_one::<String>("out").cloned(),
+                cm.get_one::<String>("expect-kid").cloned(),
             ),
             _ => {
                 let _ = cli::build().find_subcommand_mut("dr").unwrap().print_help();
@@ -490,6 +500,58 @@ fn run_dr_verify(snapshot: Option<String>) -> Result<(), CmdError> {
     drverb::run_verify(&mut out, std::path::Path::new(&dir)).map_err(CmdError::Cli)
 }
 
+/// run_dr_restore, gercek felaket toreni. GUARD SIRASI Go ile AYNEN ayni ve
+/// bu OLCULEBILIR bir sozlesme: once TTY guard'i (ajan modunda HICBIR bayrak
+/// bakilmadan reddedilir — bayrak hatalari bile sizmaz), sonra --project /
+/// --snapshot, sonra --out, sonra pay sayisi, EN SON --confirm.
+fn run_dr_restore(
+    project: Option<String>,
+    snapshot: Option<String>,
+    out: Option<String>,
+    confirm: bool,
+    shares: Vec<String>,
+) -> Result<(), CmdError> {
+    // TTY-only seremoni: ajan modunda ASLA (§7.1 dr restore REFUSED).
+    agentmode::guard(agentmode::POLICY_TTY, agentmode::is_agent()).map_err(CmdError::Cli)?;
+    let project = project.unwrap_or_default();
+    let snapshot = snapshot.unwrap_or_default();
+    if project.is_empty() || snapshot.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "dr restore: --project and --snapshot are required",
+        )));
+    }
+    let out = out.unwrap_or_default();
+    if out.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "dr restore: --out <env-file> is required (values are NEVER printed)",
+        )));
+    }
+    if shares.len() < 2 {
+        return Err(CmdError::Cli(Error::new(
+            Code::ActionUnavailable,
+            "dr restore needs ≥2 Shamir share files (--share PATH --share PATH); the assembled MASTER_KEK is NEVER persisted",
+        )));
+    }
+    if !confirm {
+        return Err(CmdError::Cli(Error::new(
+            Code::ActionUnavailable,
+            "dr restore is a disaster ceremony; re-run with --confirm once the air-gapped machine holds ≥2 shares and the snapshot copy",
+        )));
+    }
+    let paths: Vec<std::path::PathBuf> = shares.iter().map(std::path::PathBuf::from).collect();
+    let mut w = std::io::stdout();
+    drverb::restore_project_from_snapshot(
+        &mut w,
+        std::path::Path::new(&snapshot),
+        &project,
+        &paths,
+        std::path::Path::new(&out),
+    )
+    .map_err(CmdError::Cli)
+}
+
 fn run_dr_split(
     out_dir: Option<String>,
     parts: Option<String>,
@@ -551,7 +613,11 @@ fn run_dr_split(
     res.map_err(CmdError::Cli)
 }
 
-fn run_dr_combine(shares: Vec<String>, out: Option<String>) -> Result<(), CmdError> {
+fn run_dr_combine(
+    shares: Vec<String>,
+    out: Option<String>,
+    expect_kid: Option<String>,
+) -> Result<(), CmdError> {
     agentmode::guard(agentmode::POLICY_TTY, agentmode::is_agent()).map_err(CmdError::Cli)?;
     if shares.len() < 2 {
         return Err(CmdError::Cli(Error::new(
@@ -568,7 +634,13 @@ fn run_dr_combine(shares: Vec<String>, out: Option<String>) -> Result<(), CmdErr
     }
     let paths: Vec<std::path::PathBuf> = shares.iter().map(std::path::PathBuf::from).collect();
     let mut w = std::io::stdout();
-    drverb::run_combine_core(&mut w, &paths, std::path::Path::new(&out)).map_err(CmdError::Cli)
+    drverb::run_combine_core(
+        &mut w,
+        &paths,
+        std::path::Path::new(&out),
+        &expect_kid.unwrap_or_default(),
+    )
+    .map_err(CmdError::Cli)
 }
 
 /// parse_int_flag, cobra'nin IntVar'inin karsiligi: bayrak yoksa VARSAYILAN,

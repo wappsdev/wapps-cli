@@ -1704,6 +1704,102 @@ def dr_h(name, argv, files=None, stdin=None):
 def dr_a(name, argv, files=None, stdin=None):
     return (f"agent_{name}", argv, AGENT, None, stdin, {"yaml": None, "files": files or {}})
 
+
+# --- dr restore: GERCEK bir snapshot fikstuu -------------------------------------
+#
+# Yukaridaki `_dr_snapshot` blob'lari UYDURMA duz baytlar — `verify` yalnizca
+# icerik ADRESINI dogruladigi icin bu yetiyordu. `restore` ise onlari GERCEKTEN
+# ACIYOR, yani fikstuun gercek kripto tasimasi sart:
+#   master = 0x42*32 (frozen `shamir.secret_hex`), kid = 425ed4e4a36b30ea
+#   -> yani ASAGIDAKI _SHARE_1/_SHARE_2 tam da bu master'i geri kuruyor.
+#   wrap  = GERCEK WKW1 (§2.4), blob = GERCEK WSB1 (§3.5.4)
+# Baytlar Go implementasyonu (internal/cryptoid) tarafindan SABIT nonce'larla
+# URETILDI ve buraya donduruldu. GERCEK SIR YOK: master bir test vektoru.
+#
+# Blob'lar BAYT olarak veriliyor (bytes.fromhex): sifreli veri metin degildir ve
+# metin modunda yazilirsa UTF-8 kodlamasi onlari bozar (bkz. probe.py).
+_RESTORE_KID = "425ed4e4a36b30ea"
+_RESTORE_MANIFEST = (
+    '{"entries":[{"blobHash":"be4ce647f3f370c5d9c42bb83eff3260d158d55a4ea1b469b06576146b1c499c","keyName":"DATABASE_URL","keyVersion":1,"wrap":{"kid":"425ed4e4a36b30ea","recipient":"worker-kek:v1","wrap":"V0tXMVBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUDInofKxTr4Tynfzyvd/0HvLzwer6qk/Fg6opIcnfYZ2gTUvAoeDJg/KXpONFZEFrA=="}},{"blobHash":"dd71fe25146eb516321d0dfa7c05ba8d35835be38f6fd98d8639d24220193860","keyName":"API_TOKEN","keyVersion":2,"wrap":{"kid":"425ed4e4a36b30ea","recipient":"worker-kek:v1","wrap":"V0tXMVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUW7U06UZyWF7miDurmCyb10WAqaFFmpad3JqGOxbWzGSZeFGKoLkXFyQD/FAVG6+yQ=="}}],"epoch":7,"project":"alpha","schema":"wapps-secrets/data-manifest/v2"}'
+)
+_RESTORE_BLOBS = {
+    "be4ce647f3f370c5d9c42bb83eff3260d158d55a4ea1b469b06576146b1c499c":
+        "575342312020202020202020202020202020202020202020202020203c61b33bd0299d9839212c18c994315668e1a46d1e96a6281dd2c16cdc7be65a9e44efaeb230798557bdc8fced3f3d7d5ac0e244d7104cb30429a602674b997f9e31628805fe082b956fc144a46ced91b26b1b860093a7cf3750b3851f075a89f9bc5c6d7b537e02ad4357d9089928d543d9286a0309992fdac1cd7fb65102da492dfcd4b809f52a19d054575e72d970bbaaa75908c3d15ea5b8cfac575c311fe74860c76e67fe59035557023ae540bf1a8925d239c655e21d2834e3ba3bb1e4f10f670d8763a109877a3c48628fc61e4fbc0c7803cfc8d255697dc95f32fb107261c2a04387c08b5a3d295a41d8d8a1999ee18e1bcb2bf6e0c5a56604dab0b953fe212fce916b746df6030feb9f394e",
+    "dd71fe25146eb516321d0dfa7c05ba8d35835be38f6fd98d8639d24220193860":
+        "57534231212121212121212121212121212121212121212121212121826e90a05f585cf6a24d62245a26c8e2671925a9cd0af5a8aa740ee20ca7dcd50881ca1b8f144b696da263a57703a5770b1cd99ca0d0384263a5f4fc0589210ed36cb2e46764ff5c6139bd33a838d612a8cb4c105bcea140866ec711f48120c67c9ccd237c616093224d65fe02fa18cc8eda7eabcec14410193317d2641cbbd7e09abd28980360a4a280a65cb801983e36969d81d8e6688f8a911cd8dfa9cf2020b2aab8ef78fb0cce4d8e2e39bc9e3ae420097b5deb17570f78c7db707a2bf5d6f1c7487fe295b80c6da2683f01b08677eb2467837ace370985e99d81cbb683b87f47a0d4c495d248d9441f9292d678aec4e0424e03e00a5a22a1ff21accbdf4b859d47a1c476022d5a636e9b52cc9a",
+}
+
+def _restore_snapshot():
+    """`restore` icin gercek, acilabilir bir replika snapshot'i."""
+    f = {}
+    for bh, hx in _RESTORE_BLOBS.items():
+        f["snap/secrets/alpha/blobs/" + bh] = bytes.fromhex(hx)
+    f["snap/secrets/alpha/manifests/7.json"] = _RESTORE_MANIFEST
+    f["snap/secrets/alpha/current"] = _json.dumps({
+        "schema": "wapps-secrets/current/v1", "project": "alpha", "epoch": 7,
+        "manifestSha256": _hashlib.sha256(_RESTORE_MANIFEST.encode()).hexdigest(),
+    }, separators=(",", ":"))
+    f.update(_SHARE_FILES)
+    return f
+
+_SNAP_RESTORE = _restore_snapshot()
+
+def _restore_bad_blob():
+    """Blob'un icerigi bozuk -> icerik adresi YALAN. AEAD'den ONCE dusmeli."""
+    f = dict(_SNAP_RESTORE)
+    for k in list(f):
+        if k.startswith("snap/secrets/alpha/blobs/"):
+            f[k] = b"kurcalanmis-baytlar"
+            break
+    return f
+
+def _restore_bad_wrap_b64():
+    """wrap alani base64 DEGIL -> ayristirmada dusmeli."""
+    f = dict(_SNAP_RESTORE)
+    man = _json.loads(_RESTORE_MANIFEST)
+    man["entries"][0]["wrap"]["wrap"] = "bu-base64-degil!!"
+    mb = _json.dumps(man, separators=(",", ":"))
+    f["snap/secrets/alpha/manifests/7.json"] = mb
+    f["snap/secrets/alpha/current"] = _json.dumps({
+        "schema": "wapps-secrets/current/v1", "project": "alpha", "epoch": 7,
+        "manifestSha256": _hashlib.sha256(mb.encode()).hexdigest(),
+    }, separators=(",", ":"))
+    return f
+
+def _restore_empty_manifest():
+    """SIFIR girdili bir manifest — bos ama GECERLI bir proje.
+
+    Go: strings.Join(nil, "\n") + "\n" == "\n", yani BOS proje de tek bir
+    yenisatir yazar. Bu bir tuhaflik ve tam da bu yuzden olculuyor: bir port
+    burada "hic dosya yazma" ya da "bos dosya yaz" diyebilirdi ve ucu de
+    makul gorunurdu. Elle olculdu (iki ikili de b"\n", 0600, exit 0), sonra
+    korpusa alindi ki bir daha ELLE olculmesin.
+    """
+    man = _json.dumps({"schema": "wapps-secrets/data-manifest/v2",
+                       "project": "alpha", "epoch": 7, "entries": []},
+                      separators=(",", ":"))
+    f = dict(_SHARE_FILES)
+    f["snap/secrets/alpha/manifests/7.json"] = man
+    f["snap/secrets/alpha/current"] = _json.dumps({
+        "schema": "wapps-secrets/current/v1", "project": "alpha", "epoch": 7,
+        "manifestSha256": _hashlib.sha256(man.encode()).hexdigest(),
+    }, separators=(",", ":"))
+    return f
+
+def _restore_tampered_share():
+    """BULGUNUN TA KENDISI, ve burada bir OLCU haline geliyor.
+
+    Bir payin ilk bayti degistirilince Shamir SESSIZCE yanlis bir 32 baytlik
+    anahtar uretir — `dr combine` bunu HATA VERMEDEN yazar. `dr restore` ise
+    manifest'teki `wrap.kid` ile karsilastirdigi icin ERKEN duser. Bu vaka o
+    ayrimi sahada pinliyor: ayni kurcalanmis pay, iki farkli fiil, iki farkli
+    sonuc — ve dogru olan restore'unki.
+    """
+    f = dict(_SNAP_RESTORE)
+    bad = ("ff" + _SHARE_1[2:])
+    f["s1.hex"] = bad + "\n"
+    return f
+
 DR_CASES = [
     # --- verify: AJAN KAPISI YOK. Bu bir bosluk degil bir KARAR ve burada
     # OLCULUYOR: ayni cagri insan ve ajan modunda AYNI seyi yapmali. Bir port
@@ -1797,6 +1893,111 @@ DR_CASES = [
     dr_h("dr_combine_tampered_share_silently_succeeds",
          ["dr", "combine", "--share", "bad.hex", "--share", "s2.hex", "--out", "m.hex"],
          dict(_SHARE_FILES, **{"bad.hex": "ff" + _SHARE_1[2:] + "\n"})),
+
+    # --- restore: PolicyTTY, ve BASARILI yol DETERMINISTIK (paylar sabit,
+    # blob/wrap baytlari dondurulmus) -> yazilan env dosyasinin ICERIGI ve
+    # MODU da karsilastiriliyor. O dosya duz metin SIR tasiyor, yani 0600
+    # olmasi bir sozlesme ve `written` modu tasidigi icin OLCULUYOR.
+    dr_a("dr_restore_refused",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+    # Guard BAYRAKLARDAN ONCE: ajan modunda eksik bayrak hatasi bile SIZMAMALI.
+    dr_a("dr_restore_refused_before_flag_check", ["dr", "restore"]),
+
+    # Bayrak kapilari, Go'daki SIRAYLA: project/snapshot -> out -> pay -> confirm.
+    dr_h("dr_restore_no_project",
+         ["dr", "restore", "--snapshot", "snap", "--share", "s1.hex",
+          "--share", "s2.hex", "--out", "env.out", "--confirm"], _SNAP_RESTORE),
+    dr_h("dr_restore_no_snapshot",
+         ["dr", "restore", "--project", "alpha", "--share", "s1.hex",
+          "--share", "s2.hex", "--out", "env.out", "--confirm"], _SNAP_RESTORE),
+    dr_h("dr_restore_no_out",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--confirm"], _SNAP_RESTORE),
+    dr_h("dr_restore_one_share",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--out", "env.out", "--confirm"], _SNAP_RESTORE),
+    # --confirm YOK: seremoni bir yanlislikla baslamamali.
+    dr_h("dr_restore_no_confirm",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out"], _SNAP_RESTORE),
+
+    # GERCEK TOREN: iki pay -> MASTER_KEK -> KEK -> WKW1 unwrap -> WSB1 acma
+    # -> 0600 env dosyasi. Bu vaka Rust'in ELDE YAZILMIS HChaCha20'sini
+    # Go'nun x/crypto chacha20poly1305'ine karsi SAHADA olcuyor: bir bit
+    # kayarsa yazilan dosya ayrisir.
+    dr_h("dr_restore_ok",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+    # Farkli pay CIFTI, AYNI anahtar -> AYNI env dosyasi.
+    dr_h("dr_restore_other_pair",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s3.hex", "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+
+    # KURCALANMIS PAY: `dr combine` bunu SESSIZCE kabul ediyordu (yukaridaki
+    # vaka). `restore` manifest'teki kid ile karsilastirdigi icin DUSER.
+    dr_h("dr_restore_tampered_share_is_caught_by_the_kid",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _restore_tampered_share()),
+
+    dr_h("dr_restore_unknown_project",
+         ["dr", "restore", "--project", "yokboyle", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+    dr_h("dr_restore_missing_snapshot_dir",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "yok-boyle-dizin",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+    dr_h("dr_restore_missing_share_file",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "yok.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+    # Icerik adresi AEAD'den ONCE dogrulanmali: hata BLOB_HASH_MISMATCH
+    # olmali, "blob open failed" DEGIL.
+    dr_h("dr_restore_bad_blob",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _restore_bad_blob()),
+    # wrap alani base64 degil -> elde yazilmis cozumleyicinin KATILIGI burada
+    # Go'nun StdEncoding'ine karsi olculuyor.
+    dr_h("dr_restore_bad_wrap_base64",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _restore_bad_wrap_b64()),
+    # BOS proje: tek bir yenisatir, 0600, exit 0. `written` icerigi de
+    # tasidigi icin "hic yazma" ile "bos yaz" arasindaki fark GORUNUR.
+    dr_h("dr_restore_empty_manifest",
+         ["dr", "restore", "--project", "alpha", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _restore_empty_manifest()),
+
+    # --- BULGUNUN KAPATILMASI: kid artik BASILIYOR ve KARSILASTIRILABILIYOR --
+    #
+    # `dr verify` kid'i basar (beklenen degerin KAYNAGI), `dr combine
+    # --expect-kid` onu tuketir (KARSILASTIRICI). Bu vakalar ikisini de
+    # sahada pinliyor; ikisi ayni commit'te iki tarafa da indi.
+    dr_h("dr_combine_expect_kid_match",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex",
+          "--expect-kid", _RESTORE_KID], _SHARE_FILES),
+    # BUYUK HARF + BOSLUK tolere edilmeli: operator degeri elle tasiyor.
+    dr_h("dr_combine_expect_kid_uppercase",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex",
+          "--expect-kid", "  " + _RESTORE_KID.upper() + " "], _SHARE_FILES),
+    # SESSIZ ARIZA ARTIK GURULTULU: ayni kurcalanmis pay, ayni fiil, ama
+    # --expect-kid ile artik EXIT != 0 ve HICBIR DOSYA YAZILMIYOR. `written`
+    # bu vakada m.hex'i GORMEMELI — fail-closed'un olcusu tam olarak bu.
+    dr_h("dr_combine_expect_kid_mismatch_writes_nothing",
+         ["dr", "combine", "--share", "bad.hex", "--share", "s2.hex", "--out", "m.hex",
+          "--expect-kid", _RESTORE_KID],
+         dict(_SHARE_FILES, **{"bad.hex": "ff" + _SHARE_1[2:] + "\n"})),
+    # BOS --expect-kid, bayrak HIC verilmemis gibi davranmali (kontrol yok).
+    dr_h("dr_combine_expect_kid_empty_is_inert",
+         ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex",
+          "--expect-kid", ""], _SHARE_FILES),
 ]
 
 CASES += DR_CASES

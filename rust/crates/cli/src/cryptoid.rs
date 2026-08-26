@@ -1,33 +1,37 @@
 // cryptoid — `wapps dr`in kripto cekirdegi (SPEC §2.2–§2.5, §3.5, §3.9).
 //
-// KAPSAM, ve NEDEN EKSIK: bu modul Go'daki internal/cryptoid'in `dr`in
-// PORTLANMIS alt komutlarinin ihtiyac duydugu alt kumesini tasir — kid
-// turetimi (§2.2), per-proje KEK (§2.3), slot AAD (§3.5.3), icerik adresi
-// (§3.5.4) ve Shamir (§3.9).
+// KAPSAM: bu modul Go'daki internal/cryptoid'in `dr`in ihtiyac duydugu alt
+// kumesini tasir — kid turetimi (§2.2), per-proje KEK (§2.3), slot AAD
+// (§3.5.3), icerik adresi (§3.5.4), Shamir (§3.9), ve `dr restore` ile
+// birlikte XChaCha20-Poly1305 uzerinden WKW1 unwrap (§2.4) + WSB1 acma
+// (§3.5.4).
 //
-// `UnwrapDEKWithKEK` (WKW1) ve `OpenBlob` (WSB1) BILEREK YOK. Ikisi de
-// XChaCha20-Poly1305 istiyor (24 BAYTLIK nonce) ve bu agacin tek kripto
-// kutuphanesi olan `ring` onu TASIMIYOR — olculdu: `ring 0.17.14` kaynaginda
-// `xchacha` SIFIR kez geciyor ve `aead::nonce::NONCE_LEN` 96/8 = 12 bayt.
-// Yani `dr restore` YENI BIR CRATE olmadan portlanamaz ve bu bir BAGIMLILIK
-// POLITIKASI karari (bkz. docs/PORT-dr.md §3, ve Cargo.toml'daki `ring`
-// gerekcesi: ikinci bir kripto denetim yuzeyi tasimanin bedeli). O karar
-// alinana kadar bu modul YALANCI bir tam-port GORUNTUSU vermiyor.
-// ULASILABILIRLIK — YESIL BIR GATE'IN ALTINA SAKLANMAMASI GEREKEN BIR BOSLUK:
-// bu modulun HER fonksiyonu testlerden yesil, ama HEPSI bir verb'den
-// ULASILABILIR DEGIL. Olculdu (uretim kodundaki cagri sayisi):
+// BIR ONCEKI TURUN BURAYA YAZDIGI IDDIA CURUTULDU, ve nasil curutuldugu
+// onemli. Iddia suydu: "`UnwrapDEKWithKEK` ve `OpenBlob` XChaCha20-Poly1305
+// istiyor, `ring` onu tasimiyor, yani `dr restore` YENI BIR CRATE olmadan
+// portlanamaz." OLCUMUN ILK YARISI DOGRUYDU ve bagimsiz olarak yeniden
+// dogrulandi: `ring 0.17.14` kaynaginda `xchacha` SIFIR kez geciyor,
+// `NONCE_LEN` = 96/8 = 12. Ama SONUC yanlisti — "ring'de XChaCha yok" ile
+// "XChaCha portlanamaz" ayni sey degil:
 //
-//   kek_kid 2, blob_hash 4, verify_blob_hash 1, shamir_split 3,
-//   shamir_combine 2, WRAP_RECIPIENT 1   -> hepsi CANLI
-//   derive_project_kek 0, Slot::aad 0     -> BUGUN OLU
+//     XChaCha = HChaCha20 (bir PERMUTASYON) + ring'in ZATEN tasidigi
+//               duz ChaCha20-Poly1305
 //
-// `derive_project_kek` ve `Slot` YALNIZCA `dr restore`un musterisi, ve o alt
-// komut portlanmadi. Yani frozen vektore karsi yesil duran iki test, bugun
-// hicbir kullanicinin varamayacagi bir kodu koruyor. SILINMEDILER cunku
-// tasidiklari sey capraz-dil bir SOZLESME (Go/TS ile bayt paritesi) ve o
-// sozlesmeyi simdi pinlemek, restore yazilirken yeniden turetmekten ucuz.
-// Ama "test var" ile "davranis sevk ediliyor" AYNI SEY DEGIL, ve bunu burada
-// yazmak o iki cumleyi birbirine karistirmamak icin.
+// Yeni crate SIFIR (bkz. asagidaki XChaCha bolumu ve docs/PORT-dr.md §7.1).
+//
+// ULASILABILIRLIK — ONCEKI TURUN BURAYA YAZDIGI BOSLUK KAPANDI. O tur soyle
+// yazmisti: "derive_project_kek 0, Slot::aad 0 -> BUGUN OLU; frozen vektore
+// karsi yesil duran iki test, hicbir kullanicinin varamayacagi bir kodu
+// koruyor." `dr restore` indigi icin o iki fonksiyon artik CANLI ve zincir
+// uctan uca izlenebilir:
+//
+//   clap `dr restore` -> run_dr_restore -> restore_project_from_snapshot
+//     -> unwrap_dek_with_kek -> derive_project_kek + Slot::aad
+//                            -> xchacha20_poly1305_open -> hchacha20
+//     -> open_blob -> unpad -> is_valid_bucket
+//
+// Kural aynen duruyor ve bu modulun her yeni fonksiyonu icin sorulmali:
+// "test var" ile "davranis sevk ediliyor" AYNI SEY DEGIL.
 //
 use ring::digest;
 use ring::hkdf;
@@ -357,4 +361,239 @@ pub fn shamir_combine(shares: &[Vec<u8>]) -> Result<Vec<u8>, String> {
         *out = result;
     }
     Ok(secret)
+}
+
+// --- XChaCha20-Poly1305 (§2.4 WKW1, §3.5.4 WSB1) ---------------------------------
+//
+// `ring` XChaCha20-Poly1305 TASIMIYOR (olculdu: kaynakta `xchacha` sifir kez,
+// `NONCE_LEN` = 96/8 = 12). Ama XChaCha, ChaCha'nin YERINE gecen bir sifre
+// DEGIL, onun onune konan bir ANAHTAR TURETME adimidir:
+//
+//   XChaCha20-Poly1305(key, nonce24, aad) =
+//       ChaCha20-Poly1305(HChaCha20(key, nonce24[0..16]),
+//                         0x00000000 ‖ nonce24[16..24], aad)
+//
+// Yani gereken tek sey HChaCha20, ve o bir PROTOKOL degil bir PERMUTASYON:
+// ChaCha20'nin cift-tur cekirdegi, SON TOPLAMA ADIMI OLMADAN, durumun ilk ve
+// son dortlulerini birlestirerek 32 bayt dondurur. Durum tasimaz, dallanmaz,
+// uzunluga bagli degildir.
+//
+// BU BIR CRATE KARARIDIR VE OLCULEREK ALINDI (docs/PORT-dr.md §7.1):
+//   RustCrypto `chacha20poly1305`  -> +14 crate, `cargo deny` 0, IKINCI denetim yuzeyi
+//   HChaCha20 elde + `ring`in AEAD'i -> +0 crate, `cargo deny` 0, tek yuzey
+// Aday deny'i GECIYORDU — yani karar bir gate karari degil bir POLITIKA
+// karari, ve Cargo.toml'daki `ring` gerekcesi (`sha2` uc crate ekleyecegi ve
+// "iki ayri denetim yuzeyi" olacagi icin REDDEDILDI) ayni gerekceyi +14
+// crate'e KAT KAT daha guclu uyguluyor.
+//
+// "Elde kripto yazmak" itirazi burada gecerli DEGIL cunku olcu tahmine
+// birakilmiyor: `open_blob` frozen `blob_hex` vektorune karsi BAYT DUZEYINDE
+// pinli (Go/TS uretimi gercek bir blob), `unwrap_dek_with_kek` ise Go'nun
+// URETTIGI frozen bir WKW1 wrap'ine karsi. Turetim bir bit kayarsa AEAD
+// auth'u duser ve testler kirmizi olur. Shamir'in (GF(2^8)) ayni gerekceyle
+// elde yazilmis olmasiyla AYNI karar.
+
+/// XCHACHA_NONCE_LEN, XChaCha20-Poly1305'in nonce uzunlugu (24 bayt).
+pub const XCHACHA_NONCE_LEN: usize = 24;
+
+/// quarter_round, ChaCha20'nin dortte-bir turu (RFC 8439 §2.1).
+#[inline]
+fn quarter_round(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+    s[a] = s[a].wrapping_add(s[b]);
+    s[d] = (s[d] ^ s[a]).rotate_left(16);
+    s[c] = s[c].wrapping_add(s[d]);
+    s[b] = (s[b] ^ s[c]).rotate_left(12);
+    s[a] = s[a].wrapping_add(s[b]);
+    s[d] = (s[d] ^ s[a]).rotate_left(8);
+    s[c] = s[c].wrapping_add(s[d]);
+    s[b] = (s[b] ^ s[c]).rotate_left(7);
+}
+
+/// hchacha20, HChaCha20 alt-anahtar turetimi: 32 baytlik anahtar + 16 baytlik
+/// nonce -> 32 baytlik alt-anahtar (RFC draft-irtf-cfrg-xchacha §2.2).
+///
+/// ChaCha20 blok fonksiyonundan TEK farki: 20 turdan sonra baslangic durumu
+/// GERI EKLENMEZ; cikti dogrudan durumun 0..4 ve 12..16 kelimelerinden
+/// (little-endian) toplanir. O toplama adimini yanlislikla eklemek sessizce
+/// YANLIS ama ayni boyda bir anahtar uretirdi — frozen vektor tam olarak bunu
+/// yakalar.
+fn hchacha20(key: &[u8; 32], nonce16: &[u8; 16]) -> [u8; 32] {
+    let w = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let mut s: [u32; 16] = [
+        0x6170_7865,
+        0x3320_646e,
+        0x7962_2d32,
+        0x6b20_6574,
+        w(&key[0..4]),
+        w(&key[4..8]),
+        w(&key[8..12]),
+        w(&key[12..16]),
+        w(&key[16..20]),
+        w(&key[20..24]),
+        w(&key[24..28]),
+        w(&key[28..32]),
+        w(&nonce16[0..4]),
+        w(&nonce16[4..8]),
+        w(&nonce16[8..12]),
+        w(&nonce16[12..16]),
+    ];
+    for _ in 0..10 {
+        // sutunlar
+        quarter_round(&mut s, 0, 4, 8, 12);
+        quarter_round(&mut s, 1, 5, 9, 13);
+        quarter_round(&mut s, 2, 6, 10, 14);
+        quarter_round(&mut s, 3, 7, 11, 15);
+        // capraz
+        quarter_round(&mut s, 0, 5, 10, 15);
+        quarter_round(&mut s, 1, 6, 11, 12);
+        quarter_round(&mut s, 2, 7, 8, 13);
+        quarter_round(&mut s, 3, 4, 9, 14);
+    }
+    let mut out = [0u8; 32];
+    for i in 0..4 {
+        out[i * 4..i * 4 + 4].copy_from_slice(&s[i].to_le_bytes());
+        out[16 + i * 4..16 + i * 4 + 4].copy_from_slice(&s[12 + i].to_le_bytes());
+    }
+    out
+}
+
+/// xchacha20_poly1305_open, XChaCha20-Poly1305 acar: HChaCha20 ile alt-anahtar
+/// turetir, kalan 8 baytlik nonce'u 0x00000000 ile onekleyerek `ring`in duz
+/// ChaCha20-Poly1305'ine devreder. `ct` ETIKETI ICERIR (sondaki 16 bayt).
+///
+/// FAIL-CLOSED: her ihlal (kisa girdi, auth hatasi) `None`. Cagiran taraf bunu
+/// kendi hata koduna cevirir — bu fonksiyon SEBEP AYIRT ETMEZ, cunku "yanlis
+/// anahtar" ile "kurcalanmis ciphertext" arasindaki farki disari sizdirmak bir
+/// oracle olurdu.
+fn xchacha20_poly1305_open(
+    key: &[u8; 32],
+    nonce24: &[u8],
+    ct_with_tag: &[u8],
+    aad: &[u8],
+) -> Option<Vec<u8>> {
+    if nonce24.len() != XCHACHA_NONCE_LEN {
+        return None;
+    }
+    let mut n16 = [0u8; 16];
+    n16.copy_from_slice(&nonce24[0..16]);
+    let subkey = hchacha20(key, &n16);
+
+    // ChaCha20-Poly1305 nonce'u: dort SIFIR bayt ‖ nonce24'un son 8 bayti.
+    let mut n12 = [0u8; 12];
+    n12[4..12].copy_from_slice(&nonce24[16..24]);
+
+    let unbound = ring::aead::UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &subkey).ok()?;
+    let lesskey = ring::aead::LessSafeKey::new(unbound);
+    let nonce = ring::aead::Nonce::assume_unique_for_key(n12);
+
+    let mut buf = ct_with_tag.to_vec();
+    let pt = lesskey
+        .open_in_place(nonce, ring::aead::Aad::from(aad), &mut buf)
+        .ok()?;
+    Some(pt.to_vec())
+}
+
+// --- §3.5.2 padding + §3.5.4 WSB1 konteyneri ------------------------------------
+
+/// BLOB_MAGIC, v1 blob konteyner sihirli baytlari (§3.5.4).
+pub const BLOB_MAGIC: &[u8; 4] = b"WSB1";
+/// WRAP_MAGIC, WKW1 wrap cerceve sihirli baytlari (§2.4).
+pub const WRAP_MAGIC: &[u8; 4] = b"WKW1";
+
+const BUCKET_256: usize = 256;
+const BUCKET_1K: usize = 1024;
+const BUCKET_4K: usize = 4096;
+/// BLOB_CAP, toplam depolanan blob objesi ust siniri (§5.7): 64 KB.
+const BLOB_CAP: usize = 65536;
+/// BLOB_OVERHEAD, magic(4) + nonce(24) + AEAD tag(16).
+const BLOB_OVERHEAD: usize = 4 + XCHACHA_NONCE_LEN + 16;
+/// LEN_PREFIX, padlenmis formdaki uint32-BE uzunluk oneki.
+const LEN_PREFIX: usize = 4;
+
+/// WRAP_TOTAL_LEN, bir WKW1 wrap'inin toplam uzunlugu: magic(4) + nonce(24) +
+/// ciphertext(32 + 16 tag) = 76 (§2.4).
+pub const WRAP_TOTAL_LEN: usize = 4 + XCHACHA_NONCE_LEN + 32 + 16;
+
+/// max_bucket, blob kapasitesine sigan en buyuk 4 KiB kati kova.
+fn max_bucket() -> usize {
+    (BLOB_CAP - BLOB_OVERHEAD) / BUCKET_4K * BUCKET_4K
+}
+
+/// is_valid_bucket, decrypt'te bir kova boyutunun TANINAN bir kova olup
+/// olmadigini dogrular. Bu bir tamper savunmasidir: AEAD gecmis olsa bile
+/// kova disi bir uzunluk formatin ihlalidir.
+fn is_valid_bucket(size: usize) -> bool {
+    if size == BUCKET_256 || size == BUCKET_1K {
+        return true;
+    }
+    size >= BUCKET_4K && size <= max_bucket() && size.is_multiple_of(BUCKET_4K)
+}
+
+/// unpad, padlenmis formu cozer: uint32-BE uzunluk oneki ‖ plaintext ‖ SIFIR
+/// dolgu (§3.5.2). Dolgu baytlarinin sifir oldugu ve uzunlugun kovaya sigdigi
+/// DOGRULANIR; ihlal `None` (BLOB_MALFORMED).
+fn unpad(padded: &[u8]) -> Option<Vec<u8>> {
+    if padded.len() < LEN_PREFIX || !is_valid_bucket(padded.len()) {
+        return None;
+    }
+    let l = u32::from_be_bytes([padded[0], padded[1], padded[2], padded[3]]) as usize;
+    // `end` tasmasi: l bir u32, LEN_PREFIX+l usize'da tasmaz (64-bit), ama
+    // kova asimi Go'daki `end > len(padded)` ile AYNI sekilde reddedilir.
+    let end = LEN_PREFIX.checked_add(l)?;
+    if end > padded.len() {
+        return None;
+    }
+    if padded[end..].iter().any(|&b| b != 0) {
+        return None;
+    }
+    Some(padded[LEN_PREFIX..end].to_vec())
+}
+
+/// open_blob, bir "WSB1" blob'unu cozer: magic + AEAD (AAD = slot) dogrulanir,
+/// padding kaldirilir (§3.5.4). Her ihlal `Err` (BLOB_MALFORMED, tamper).
+///
+/// Hata AYRIMI YOK ve bu bilincli: "yanlis DEK" ile "kurcalanmis bayt"
+/// arasindaki farki disari vermek bir oracle olurdu (Go'nun ErrBlobMalformed
+/// tekilligiyle ayni karar).
+pub fn open_blob(blob: &[u8], dek: &[u8; 32], slot: &Slot) -> Result<Vec<u8>, String> {
+    slot.validate()?;
+    if blob.len() < BLOB_OVERHEAD {
+        return Err("cryptoid: BLOB_MALFORMED".into());
+    }
+    if &blob[..4] != BLOB_MAGIC {
+        return Err("cryptoid: BLOB_MALFORMED".into());
+    }
+    let nonce = &blob[4..4 + XCHACHA_NONCE_LEN];
+    let ct = &blob[4 + XCHACHA_NONCE_LEN..];
+    let padded = xchacha20_poly1305_open(dek, nonce, ct, &slot.aad())
+        .ok_or_else(|| "cryptoid: BLOB_MALFORMED".to_string())?;
+    unpad(&padded).ok_or_else(|| "cryptoid: BLOB_MALFORMED".to_string())
+}
+
+/// unwrap_dek_with_kek, bir WKW1 wrap'ini projenin KEK'i altinda acar (§2.4).
+///
+/// AAD, blob AEAD ile AYNI slot baglamasidir — bir wrap baska bir projeye,
+/// anahtara ya da versiyona REPLAY EDILEMEZ. Her ihlal WRAP_INVALID
+/// (fail-closed). Cerceve uzunlugu SABIT (76) ve bu once kontrol edilir.
+pub fn unwrap_dek_with_kek(
+    master: &[u8],
+    project: &str,
+    slot: &Slot,
+    wrap: &[u8],
+) -> Result<[u8; 32], String> {
+    slot.validate()?;
+    if wrap.len() != WRAP_TOTAL_LEN || &wrap[..4] != WRAP_MAGIC {
+        return Err("cryptoid: WRAP_INVALID".into());
+    }
+    let kek = derive_project_kek(master, project)?;
+    let nonce = &wrap[4..4 + XCHACHA_NONCE_LEN];
+    let ct = &wrap[4 + XCHACHA_NONCE_LEN..];
+    let pt = xchacha20_poly1305_open(&kek, nonce, ct, &slot.aad())
+        .ok_or_else(|| "cryptoid: WRAP_INVALID".to_string())?;
+    if pt.len() != 32 {
+        return Err("cryptoid: WRAP_INVALID".into());
+    }
+    let mut dek = [0u8; 32];
+    dek.copy_from_slice(&pt);
+    Ok(dek)
 }
