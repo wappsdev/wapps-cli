@@ -6,6 +6,7 @@ Tasinan rotalar:
   GET    /v1/projects/{p}/keys        -> anahtar ADLARI (list, exec/apply 1. adim)
   POST   /v1/projects/{p}/read        -> okuma (get, ve exec/apply'in 2. adimi)
   PUT    /v1/projects/{p}/keys/{KEY}  -> tek anahtar yazimi (set)
+  POST   /v1/projects/{p}/import      -> TOPLU atomik yazim (import-env)
   DELETE /v1/projects/{p}/keys/{KEY}  -> tek anahtar silme (rm)
   GET    /v1/projects                 -> proje ADLARI (projects list)
   DELETE /v1/admin/projects/{p}       -> projeyi tumuyle silme (projects rm)
@@ -70,6 +71,43 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._drain()
+
+        # POST /v1/projects/{p}/import — TOPLU atomik yazim (import-env).
+        #
+        # BU ROTA BILEREK MUSKUL: bir sahte gate'in en kolay hatasi, YANLIS bir
+        # isteğe DOGRU cevabi vermektir. Onceki bir dilimde `POST /read` tam
+        # olarak bunu yapiyordu (her coklu istegi kosulsuz `__ALL__`e cevirip
+        # BOS bir ad kumesi gonderen istemciye de tam sonucu donuyordu) ve
+        # CANLI bir `keyName` hatasini gizliyordu. Bu yuzden burada:
+        #
+        #   1. ZARFIN ADI dogrulaniyor. Govde `{"values": {...}}` DEGILSE
+        #      (ornegin duz bir harita, ya da `secrets:`/`keys:` gibi baska bir
+        #      ad) 400 doner — yani yanlis bir tel bicimi GORUNUR.
+        #   2. BOS kume 400. "Hicbir sey gondermek" basari SAYILMAZ.
+        #   3. Sonuc, GERCEKTEN GONDERILEN ad kumesinden surulur: adlardan biri
+        #      SCRIPT'te hata tasiyorsa o hata doner. Bir istemci yanlis/bos
+        #      adlar gonderirse beklenen hata YERINE 200 alir ve fark
+        #      differential'da yuzeye cikar.
+        #
+        # DEGERLER OKUNUYOR AMA SAKLANMIYOR: bir sahte gate'in bile bir degeri
+        # diske/loga yazmasi, bu portun kapatmaya calistigi yuzeyin ta kendisi.
+        m = re.match(r"^/v1/projects/([^/]+)/import$", self.path)
+        if m:
+            try:
+                doc = json.loads(body or b"{}") or {}
+            except ValueError:
+                return self._send(400, {"error": "MALFORMED_IMPORT"})
+            vals = doc.get("values")
+            if not isinstance(vals, dict) or not vals:
+                return self._send(400, {"error": "MALFORMED_IMPORT"})
+            if any(not isinstance(v, str) for v in vals.values()):
+                return self._send(400, {"error": "MALFORMED_IMPORT"})
+            for k in sorted(vals):
+                status, payload = SCRIPT.get(k, (200, None))
+                if status != 200:
+                    return self._send(status, payload)
+            return self._send(200, {"ok": True, "imported": len(vals)})
+
         m = re.match(r"^/v1/projects/([^/]+)/read$", self.path)
         if not m:
             return self._send(404, {"error": "NO_ROUTE"})

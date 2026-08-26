@@ -143,6 +143,12 @@ pub fn build() -> Command {
                         ),
                 )
                 .subcommand(
+                    Command::new("import-env")
+                        .about("Bulk import KEY=VALUE pairs from an env file into the store")
+                        // Arite ELLE (cobra ExactArgs(1)).
+                        .arg(Arg::new("file").num_args(0..).help("Env file path")),
+                )
+                .subcommand(
                     Command::new("env")
                         .about("Emit the project's secrets as .envrc-style export lines")
                         .arg(

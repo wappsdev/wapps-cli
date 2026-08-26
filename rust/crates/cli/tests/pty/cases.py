@@ -802,3 +802,115 @@ ENV_CASES = [
 ]
 
 CASES += ENV_CASES
+
+
+# --- `import-env` ------------------------------------------------------------
+#
+# Bu dilimin SIR YAZAN fiili. Kapi sirasi:
+#
+#   arite -> ajan `allow` -> baglama -> config -> dosya -> GET /keys ->
+#   POST /import -> hedefleri yaz (STDERR) -> basari satiri (STDOUT)
+#
+# UC SEY BURADA OLCULUYOR ve hicbiri baska bir fiilden tahmin edilemiyor:
+#
+#  1. HEDEF YAZIM RAPORU STDERR'E gidiyor. `apply` ayni yaziciyi cagiriyor ama
+#     raporu STDOUT'a basiyor (Go: applyTargetsAfterWrite(..., os.Stderr) vs
+#     applyTargets(..., cmd.OutOrStdout())). Differential ikisini ayri
+#     pty'lerde yakaladigi icin bu bir ayrinti degil bir OLCUM.
+#  2. AYRISTIRILAN DEGERLER hedef dosyaya iniyor, ve o dosya bayt-bayt
+#     karsilastiriliyor. Yani `.env` ayristiricisinin DEGER tarafi burada
+#     gorunur hale geliyor — aksi halde yalnizca ADLAR olculurdu.
+#  3. `import-env` EPOCH PIN'INI ILERLETIYOR, ama import yuzunden DEGIL:
+#     ondan once cagrilan GET /keys yuzunden. `human_import_advances_the_pin`
+#     bunu pinliyor.
+#
+# SAHTE GATE'IN /import ROTASI KASITLI MUSKUL (bkz. fakegate.py): govde
+# `{"values": {...}}` degilse ya da bos ise 400 doner, ve sonuc GERCEKTEN
+# GONDERILEN ad kumesinden surulur. Yani "yanlis bir isteğe dogru cevap"
+# vermiyor — onceki dilimin `POST /read`te bulup kapattigi vakumun aynisi.
+#
+# GERCEK SIR YOK: asagidaki dosyalarda gecen her deger uydurma bir test dizesi.
+IMPORT_FILES = {
+    "in.env": "# not a secret, a test string\nexport A_KEY=first-test-string\n"
+              "B_KEY = \"second test string\"\n\nC_KEY='third-test-string'\n",
+    "empty.env": "# only a comment\n\n   \n",
+    "nodelim.env": "A_KEY=fine\nbaretokenplaceholder\n",
+    # Gate'in SCRIPT'inde 403 tasiyan bir ad: /import sonucu GERCEKTEN
+    # gonderilen adlardan suruldugu icin bu vaka GRANT_DENIED bekliyor.
+    "denied.env": "DENIED_KEY=test-string\n",
+    "rate.env": "RATE_KEY=test-string\n",
+    # Gate'in __ALL__ kumesindeki adlar: UZERINE YAZMA uyarisi tetiklenir.
+    "overlap.env": "ALPHA=new-test-string\nNEWKEY=other-test-string\n",
+}
+
+IMPORT_CASES = [
+    # === arite, ajan kapisindan ONCE =======================================
+    ("agent_import_env_missing_arg_is_an_arity_error",
+     ["secrets", "import-env"], AGENT, None, None, None),
+    ("human_import_env_too_many_args",
+     ["secrets", "import-env", "a", "b"], HUMAN, None, None, None),
+
+    # === baglama kapisi ====================================================
+    # `--project <ad>` + ajan: baglama fail-closed (dosya HIC okunmadan).
+    ("agent_import_env_binding_refused",
+     P + ["secrets", "import-env", "in.env"], AGENT, None, None, None),
+    ("agent_import_env_config_unpinned",
+     ["secrets", "import-env", "in.env"], AGENT, None, None, cfg(VALID_CFG, IMPORT_FILES)),
+
+    # === config kapisi dosya okumasindan ONCE ==============================
+    # Var olmayan bir dosya verilse bile ret CONFIG'ten gelir, "read" DEGIL.
+    ("human_import_env_config_precedes_the_file_read",
+     P + ["secrets", "import-env", "nope.env"], HUMAN, None, None, None),
+    ("human_import_env_no_config",
+     ["secrets", "import-env", "in.env"], HUMAN, None, None, None),
+
+    # === dosya yolu ========================================================
+    ("human_import_env_missing_file",
+     ["secrets", "import-env", "nope.env"], HUMAN, None, b"y\n", cfg(VALID_CFG, IMPORT_FILES)),
+    # Bos girdi: UYARI + cikis 0, ve gate'e HIC gidilmez.
+    ("human_import_env_empty_input_is_not_an_error",
+     ["secrets", "import-env", "empty.env"], HUMAN, None, b"y\n", cfg(VALID_CFG, IMPORT_FILES)),
+    # Ayirac YOK: hata SATIRIN UZUNLUGUNU verir, ICERIGINI ASLA.
+    ("human_import_env_line_without_a_delimiter",
+     ["secrets", "import-env", "nodelim.env"], HUMAN, None, b"y\n", cfg(VALID_CFG, IMPORT_FILES)),
+
+    # === basari yolu =======================================================
+    # Hedef bildirilmemis: yalnizca basari satiri (STDOUT).
+    ("human_import_env_writes_the_store",
+     ["secrets", "import-env", "in.env"], HUMAN, None, b"y\n", cfg(VALID_CFG, IMPORT_FILES)),
+    # Hedef BILDIRILMIS: "wrote .env.local" STDERR'e, basari satiri STDOUT'a,
+    # ve YAZILAN DOSYA bayt-bayt karsilastiriliyor (ayristiricinin DEGER
+    # tarafinin olculdugu tek yer).
+    ("human_import_env_auto_applies_targets_to_stderr",
+     ["secrets", "import-env", "in.env"], HUMAN, None, b"y\n",
+     cfg(CFG_TARGETS, IMPORT_FILES)),
+    # UZERINE YAZMA uyarisi: gate'in ad duzlemiyle kesisim (STDERR).
+    ("human_import_env_warns_about_overwritten_keys",
+     ["secrets", "import-env", "overlap.env"], HUMAN, None, b"y\n",
+     cfg(VALID_CFG, IMPORT_FILES)),
+
+    # === gate hata dallari (baglam "import <proje>") =======================
+    ("human_import_env_grant_denied",
+     ["secrets", "import-env", "denied.env"], HUMAN, None, b"y\n", cfg(VALID_CFG, IMPORT_FILES)),
+    ("human_import_env_rate_limited",
+     ["secrets", "import-env", "rate.env"], HUMAN, None, b"y\n", cfg(VALID_CFG, IMPORT_FILES)),
+    ("human_import_env_no_session",
+     ["secrets", "import-env", "in.env"], dict(HUMAN, WAPPS_SESSION_TOKEN=""),
+     None, b"y\n", cfg(VALID_CFG, IMPORT_FILES)),
+
+    # === epoch pin =========================================================
+    # ILERLER — ama import yuzunden DEGIL: ondan once cagrilan GET /keys
+    # yuzunden. Pin 3'te tohumlaniyor, gate 7 sunuyor → 7.
+    ("human_import_env_advances_the_pin_via_the_keys_call",
+     ["secrets", "import-env", "in.env"], HUMAN, pinfile(3), b"y\n",
+     cfg(VALID_CFG, IMPORT_FILES)),
+    # ...ve GERI SARMAZ: pin 9 iken sunulan 7 bir ROLLBACK'tir. GET /keys'in
+    # hatasi YUTULDUGU icin bu vaka o yutmanin SINIRINI da gosteriyor —
+    # epoch reddi bir clierr hatasi olarak yuzeye cikiyor mu, yoksa yutulup
+    # import yine mi kosuyor? Cevabi Go veriyor.
+    ("human_import_env_with_a_rolled_back_pin",
+     ["secrets", "import-env", "in.env"], HUMAN, pinfile(9), b"y\n",
+     cfg(VALID_CFG, IMPORT_FILES)),
+]
+
+CASES += IMPORT_CASES

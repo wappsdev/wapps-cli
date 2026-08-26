@@ -394,6 +394,56 @@ pub fn read_all(project: &str) -> Result<BTreeMap<String, String>, Error> {
     Ok(read(project, &names)?.values)
 }
 
+/// import_body, POST /import govdesini uretir: `{"values": {...}}`.
+///
+/// AYRI BIR FONKSIYON, ve sebebi olculmus bir sinif: bu zarfin ADI tel
+/// bicimidir (Go: `map[string]any{"values": values}`), Rust'in bir alan adi
+/// DEGIL. Ayri durunca AG'A CIKMADAN test edilebiliyor (tests/storewire.rs) —
+/// tipki okuma tarafindaki `keyName` gibi, yanlis bir ad burada da sessizce
+/// gecerdi.
+pub fn import_body(values: &BTreeMap<String, String>) -> String {
+    // BTreeMap: Go'nun map'i sirasiz ama JSON nesnesi olarak esdeger. Sirali
+    // olmasi govdeyi DETERMINISTIK yapar, yani testte bayt karsilastirilabilir.
+    serde_json::json!({ "values": values }).to_string()
+}
+
+/// import_values, POST /v1/projects/{p}/import cagirir — TOPLU atomik yazim.
+///
+/// TEK EPOCH: yarim bir import diye bir sey yoktur. Bu, `set`i N kez
+/// cagirmaktan farkli bir GARANTI, ve import-env'in var olma sebebi.
+///
+/// EPOCH PIN'E DOKUNMAZ (`set`/`delete` gibi): bir yazim sunulan bir epoch
+/// OKUMUYOR. import-env'in pini yine de ilerletebilir — ama o, ONCESINDE
+/// cagrilan GET /keys yuzundendir, bu fonksiyon yuzunden DEGIL.
+///
+/// HATA BAGLAMI "import <proje>".
+pub fn import_values(project: &str, values: &BTreeMap<String, String>) -> Result<(), Error> {
+    if values.is_empty() {
+        return Err(Error::new(Code::Internal, "import: no values"));
+    }
+    let headers = session::auth_headers()?;
+    let url = format!(
+        "{}/v1/projects/{}/import",
+        session::gate_url(),
+        urlencode_path_segment(project)
+    );
+    let mut req = agent().post(&url).set("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = format!("import {project}");
+    // send_string: govde import_body ile ELDE uretiliyor ki tel bicimi tek bir
+    // yerde dursun ve test edilebilsin.
+    match req.send_string(&import_body(values)) {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, &ctx)),
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
 /// delete, DELETE /v1/projects/{p}/keys/{KEY} cagirir — TEK anahtar silme.
 ///
 /// EPOCH PIN'E DOKUNMAZ, ve bu bir eksiklik degil Go'nun sozlesmesi: pin

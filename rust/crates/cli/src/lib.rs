@@ -12,6 +12,7 @@ pub mod epochpin;
 pub mod execverb;
 pub mod goerr;
 pub mod gojson;
+pub mod importenv;
 pub mod initverb;
 pub mod listverb;
 pub mod projects;

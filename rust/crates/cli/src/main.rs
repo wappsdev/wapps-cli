@@ -13,6 +13,7 @@ use wapps::envwrite;
 use wapps::epochpin;
 use wapps::execverb;
 use wapps::gojson::quote as go_quote;
+use wapps::importenv;
 use wapps::initverb;
 use wapps::projectsverb;
 use wapps::rmverb;
@@ -107,6 +108,20 @@ fn run() -> Result<(), CmdError> {
                     )));
                 }
                 run_rm(&keys[0], config, project, rm.get_flag("yes"))
+            }
+            Some(("import-env", im)) => {
+                let files: Vec<String> =
+                    im.get_many::<String>("file").map(|v| v.cloned().collect()).unwrap_or_default();
+                // ARITE ONCE — cobra ValidateArgs PersistentPreRunE'dan once
+                // kosuyor. Olculdu: ajan modunda eksik arguman bir arite
+                // hatasi, bir baglama/ajan reddi DEGIL.
+                if files.len() != 1 {
+                    return Err(CmdError::Plain(format!(
+                        "accepts 1 arg(s), received {}",
+                        files.len()
+                    )));
+                }
+                run_import_env(&files[0], config, project)
             }
             Some(("env", em)) => run_env(
                 config,
@@ -387,6 +402,78 @@ fn run_projects_rm(project: &str, yes: bool) -> Result<(), CmdError> {
         "{}",
         projectsverb::rm_success_line(&res.project, res.deleted_objects, res.pointer_events_kept)
     );
+    Ok(())
+}
+
+// run_import_env, `wapps secrets import-env <dosya>` — bu dilimin SIR YAZAN
+// fiili.
+//
+// KAPI SIRASI:
+//   1. arite            → cagiranda, ajan kapisindan ONCE
+//   2. ajan politikasi  → `allow` (set ile ayni sinif: deger BASMIYOR, ALIYOR)
+//   3. baglama kapisi
+//   4. config gereksinimi → require_store_config (`--project <ad>` ATLATMAZ)
+//   5. dosyayi oku + ayristir
+//   6. GET /keys  → yalnizca UZERINE YAZILACAK adlari onceden soylemek icin.
+//      Hatasi YUTULUYOR (Go: `if kr, kerr := ...; kerr == nil`). Ad duzlemi,
+//      yani audit'e value.read DUSMEZ. YAN ETKI: bu cagri EPOCH PIN'INI
+//      ILERLETIR — import'un kendisi ilerletmez.
+//   7. POST /import → TEK atomik epoch
+//   8. bildirilen hedefleri yaz (apply_targets_after_write) — cikti STDERR'e
+//   9. basari satiri → STDOUT
+//
+// 8'in STDERR'e gitmesi `apply`den AYRILDIGI yer (orada stdout). Differential
+// ikisini ayri pty'lerde yakaladigi icin bu olculuyor.
+fn run_import_env(
+    env_file: &str,
+    config: Option<String>,
+    project: Option<String>,
+) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
+
+    let cfg = ctx.require_store_config("import-env").map_err(CmdError::Cli)?;
+
+    let data = std::fs::read(env_file).map_err(|e| {
+        CmdError::Plain(format!(
+            "secrets.import-env: read {env_file}: {}",
+            wapps::goerr::open_error(env_file, &e)
+        ))
+    })?;
+    let sets = importenv::parse_env_file(env_file, &data)
+        .map_err(|e| CmdError::Plain(format!("secrets.import-env: {e}")))?;
+
+    let mut errw = std::io::stderr();
+    if sets.is_empty() {
+        // HATA DEGIL: cikis 0. Bos bir dosya bir yazim TALEBI degildir.
+        let _ = write!(errw, "{}", importenv::EMPTY_INPUT_WARNING);
+        return Ok(());
+    }
+
+    // Hangi adlarin UZERINE yazilacagini onceden soyleyebilmek icin AD DUZLEMI
+    // ile kesisim. Hata YUTULUYOR — bu bilgi bir kolayliktir, bir kapi degil.
+    let existing: std::collections::BTreeSet<String> = match store::keys(&cfg.project) {
+        Ok(kr) => kr.keys.into_iter().map(|k| k.key_name).collect(),
+        Err(_) => Default::default(),
+    };
+    let overridden: Vec<String> =
+        sets.keys().filter(|k| existing.contains(*k)).cloned().collect();
+
+    store::import_values(&cfg.project, &sets).map_err(CmdError::Cli)?;
+
+    // Auto-apply: bildirilen hedefler HEMEN yazilir ki tuketim tarafi
+    // (.env.local vb.) ikinci bir komut beklemeden import'u yansitsin.
+    let archive = values_to_archive_json(&sets)
+        .map_err(|e| CmdError::Plain(format!("secrets.import-env: {e}")))?;
+    applyverb::apply_targets_after_write(&cfg, archive.as_bytes(), cfg.config_root(), &mut errw)
+        .map_err(CmdError::Plain)?;
+
+    let mut out = std::io::stdout();
+    let _ = write!(out, "{}", importenv::success_line(sets.len(), env_file, &cfg.project));
+    if !overridden.is_empty() {
+        let _ = write!(errw, "{}", importenv::override_line(&overridden));
+    }
     Ok(())
 }
 

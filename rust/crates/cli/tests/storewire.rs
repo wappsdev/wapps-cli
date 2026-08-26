@@ -35,3 +35,35 @@ fn the_snake_case_field_is_not_the_wire_name() {
         "`key_name` tel adi DEGIL; okunmus olmasi yanlis alanin baglandigini gosterir"
     );
 }
+
+// --- POST /import: TOPLU yazimin govdesi ------------------------------------
+//
+// Bu, `keyName` sinifinin YAZIM tarafidir. Okuma tarafinda yanlis bir alan adi
+// BOS anahtar adlari uretip okumayi sessizce cokertiyordu; yazim tarafinda
+// yanlis bir zarf adi (`secrets:`, `keys:`, duz harita) gate'e ANLAMSIZ bir
+// govde gonderir. Sahte gate bu govdeyi artik DOGRULUYOR (eksik/bos `values`
+// → 400), yani bir ayrisma differential'da da gorunur; buradaki test onu
+// AG'A CIKMADAN yakalar.
+//
+// Oracle: internal/store/worker.go:358 —
+//   json.Marshal(map[string]any{"values": values})
+use std::collections::BTreeMap;
+
+#[test]
+fn the_import_body_wraps_the_values_in_a_values_envelope() {
+    let mut v = BTreeMap::new();
+    v.insert("BETA".to_string(), "second-test-string".to_string());
+    v.insert("ALPHA".to_string(), "first-test-string".to_string());
+    assert_eq!(
+        wapps::store::import_body(&v),
+        r#"{"values":{"ALPHA":"first-test-string","BETA":"second-test-string"}}"#
+    );
+}
+
+#[test]
+fn an_import_body_never_carries_a_bare_key_map() {
+    let mut v = BTreeMap::new();
+    v.insert("A".to_string(), "x".to_string());
+    let body = wapps::store::import_body(&v);
+    assert!(body.starts_with(r#"{"values":"#), "zarf `values` olmali: {body}");
+}
