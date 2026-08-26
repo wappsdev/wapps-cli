@@ -229,3 +229,61 @@ func TestWriteTofuOutputsAsEnv_MalformedJSON(t *testing.T) {
 		t.Errorf("expected error to mention 'parse values', got: %v", err)
 	}
 }
+
+// TestRunEnv_WriteCannotInheritAWideTempMode, ÖNCEDEN DURAN dünya-okunur bir
+// `<hedef>.tmp`in düz metin sırrı 0644 ile diske bırakamadığını ölçer.
+//
+// open(2): "the mode argument shall be ignored if the file exists". Eski
+// yazıcı O_EXCL'siz O_CREATE|O_TRUNC kullanıyordu, yani istenen 0600 var olan
+// bir dosyada HİÇ uygulanmıyordu. Bu bir İDDİA testidir, bir karşılaştırma
+// değil: differential iki ikilinin PAYLAŞTIĞI bir kusuru göremez ve bu kusur
+// iki taraftada birden canlıydı.
+func TestRunEnv_WriteCannotInheritAWideTempMode(t *testing.T) {
+	tmp := envSetup(t, map[string]string{"FOO": "bar"})
+	outPath := filepath.Join(tmp, ".env.local")
+
+	stale := outPath + ".tmp"
+	if err := os.WriteFile(stale, []byte("stale"), 0600); err != nil {
+		t.Fatalf("seed stale temp: %v", err)
+	}
+	// WriteFile umask'a tabidir; modu AÇIKÇA kur.
+	if err := os.Chmod(stale, 0644); err != nil {
+		t.Fatalf("chmod stale temp: %v", err)
+	}
+
+	if err := runEnv(outPath, "TF_VAR_", &bytes.Buffer{}); err != nil {
+		t.Fatalf("runEnv: %v", err)
+	}
+
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0600 {
+		t.Errorf("a stale 0644 %s widened the secret: mode = %o, want 0600", filepath.Base(stale), mode)
+	}
+}
+
+// TestWriteEnvFileAtomic_ErrorNamesTheTargetNotTheTemp, hata cümlesinin
+// RASTGELE geçici dosya adını TAŞIMADIĞINI ölçer.
+//
+// Neden bir test: temp adı artık rastgele, yani adı metne koyan bir yazıcı
+// aynı hata için iki koşuda iki FARKLI cümle üretir. Bu, pty differential'ını
+// deterministik olmayan bir vakayla kırar ve kullanıcıya tanımadığı bir yol
+// gösterir. Cümle Go ikilisinden ÖLÇÜLDÜ; Rust karşılığı
+// an_unwritable_target_names_the_target_with_the_go_sentence.
+func TestWriteEnvFileAtomic_ErrorNamesTheTargetNotTheTemp(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "nodir", "out.env")
+
+	err := writeEnvFileAtomic(target, []byte(`{"A":{"value":"x"}}`), "")
+	if err == nil {
+		t.Fatal("writeEnvFileAtomic into a missing dir: want error, got nil")
+	}
+	want := "env: write " + target + ": no such file or directory"
+	if err.Error() != want {
+		t.Errorf("error text =\n  %q\nwant\n  %q", err.Error(), want)
+	}
+	if strings.Contains(err.Error(), ".tmp") {
+		t.Errorf("error text carries the random temp name (non-deterministic): %q", err.Error())
+	}
+}

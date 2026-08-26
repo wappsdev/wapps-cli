@@ -13,7 +13,7 @@
 /// None donmesi bilincli: cagiran o durumda Rust'in KENDI dizesine duser
 /// (uydurmaz). Olculmemis bir kolda sessizce yanlis bir metin uretmek, farkli
 /// bir metin uretmekten kotudur.
-fn errno_text(e: &std::io::Error) -> Option<&'static str> {
+pub(crate) fn errno_text(e: &std::io::Error) -> Option<&'static str> {
     use std::io::ErrorKind;
     Some(match e.kind() {
         ErrorKind::NotFound => "no such file or directory",
@@ -56,4 +56,16 @@ pub fn spawn_error(name: &str, e: &std::io::Error) -> String {
         );
     }
     format!("exec: {}: {}", crate::gojson::quote(name), e)
+}
+
+/// bare_errno, YALNIZCA errno metnini doner (yol/op ONEKI YOK).
+///
+/// Cagrildigi yer: sarmalayan Go hatasinin icindeki *os.PathError'in `.Err`i
+/// alinip basildigi durumlar. Yol RASTGELE bir gecici dosya oldugunda metne
+/// KOYULAMAZ — ayni hata iki kosuda iki farkli cumle uretirdi.
+pub fn bare_errno(e: &std::io::Error) -> String {
+    match errno_text(e) {
+        Some(d) => d.to_string(),
+        None => format!("{e}"),
+    }
 }

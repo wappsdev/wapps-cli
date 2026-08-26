@@ -1,23 +1,25 @@
 // `secrets env --write <dosya>`in YAZICISI.
 //
-// ORACLE: cmd/secrets/env.go (writeEnvFileAtomic). Bu yazici, `apply`in
-// kullandigi atomicfile::write DEGIL, ve farklar SIR TASIYAN bir dosyanin
-// diskteki izin penceresini belirledigi icin taklit edilmek zorunda:
+// ORACLE: cmd/secrets/env.go (writeEnvFileAtomic). Yazici artik `apply`in da
+// kullandigi atomicfile::write'a devrediyor — eskiden AYRI bir yaziciydi ve
+// farklar SIR TASIYAN bir dosyanin diskteki izin penceresini belirliyordu:
 //
-//   atomicfile::write        writeEnvFileAtomic
+//   atomicfile::write        eski writeEnvFileAtomic
 //   ----------------------   ------------------------------------------
 //   `.{ad}.{pid}.{ns}.tmp`   `{ad}.tmp`  (SABIT, tahmin edilebilir ad)
 //   create_new (O_EXCL)      O_CREATE|O_TRUNC  (VAR OLANI yeniden kullanir)
 //   mode acikca verilir      0600 ISTENIR ama var olan dosyanin modu KALIR
 //   fsync VAR                fsync YOK
 //
-// Ucuncu satir bir BULGU ve bu dosyada `a_preexisting_temp_file_keeps_its_mode`
-// ile PINLI: hedefin yaninda onceden 0644 bir `<hedef>.tmp` duruyorsa, O_CREATE
-// o dosyanin modunu DEGISTIRMEZ ve rename sonrasi duz metin sir 0644 ile
-// kalir. Bu Go'da BUGUN boyle; port onu ne genisletiyor ne daraltiyor —
-// AYNISINI yapiyor, ve differential'da (human_env_write_reuses_a_wide_temp)
-// iki ikilinin ayni modu urettigi olculuyor. Daraltmak "duzeltme" gibi
-// gorunurdu ama sahadaki ikiliyle ayrisma demek olurdu; bulgu raporlaniyor.
+// Ucuncu satir bir BULGUYDU: hedefin yaninda onceden 0644 bir `<hedef>.tmp`
+// duruyorsa open(2) modu YOK SAYIYOR ("the mode argument shall be ignored if
+// the file exists") ve rename sonrasi duz metin sir 0644 ile kaliyordu. Kusur
+// IKI IKILIDE de canliydi, yani pty differential'in GOREMEDIGI sinifta:
+// differential iki tarafin AYNI seyi yaptigini olcer, DOGRU seyi yaptigini
+// degil. O yuzden asagidaki
+// `a_preexisting_wide_temp_cannot_widen_the_secret` bir KARSILASTIRMA degil
+// bir IDDIA'dir — ve karsiligi Go tarafinda
+// TestRunEnv_WriteCannotInheritAWideTempMode olarak AYNI commit'te duruyor.
 use std::os::unix::fs::PermissionsExt;
 use wapps::envverb;
 
@@ -75,20 +77,25 @@ fn an_existing_target_is_replaced_wholesale() {
 }
 
 #[test]
-fn a_preexisting_temp_file_keeps_its_mode() {
-    // BULGU, taklit: Go O_CREATE|O_TRUNC kullaniyor, O_EXCL DEGIL. Var olan bir
-    // `<hedef>.tmp` yeniden kullaniliyor ve modu 0600'e CEKILMIYOR.
+fn a_preexisting_wide_temp_cannot_widen_the_secret() {
+    // EskI BULGU, artik KAPALI: yazici O_EXCL'siz O_CREATE|O_TRUNC kullaniyordu
+    // ve open(2) var olan bir dosyada mod argumanini YOK SAYIYOR, yani onceden
+    // duran 0644 bir `<hedef>.tmp` duz metin sirri dunya-okunur birakiyordu.
+    // Yazici artik atomicfile'a devrediyor: RASTGELE adli, O_EXCL ile acilan,
+    // modu ACIKCA kurulan bir gecici dosya. Bayat dosya YENIDEN KULLANILMIYOR.
+    //
+    // Bu bir IDDIA testidir, bir karsilastirma DEGIL: kusur iki ikilide de
+    // canliydi ve differential PAYLASILAN bir kusuru goremez.
     let d = tmpdir("widetmp");
     let target = d.join("out.env");
     let tmp = d.join("out.env.tmp");
-    std::fs::write(&tmp, "").unwrap();
+    std::fs::write(&tmp, "bayat").unwrap();
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
     envverb::write_env_file_atomic(&target, ARCHIVE, "").expect("yazim");
     let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-    assert_eq!(
-        mode, 0o644,
-        "Go'nun O_CREATE|O_TRUNC'i var olan modu korur; port AYNISINI yapmali"
-    );
+    assert_eq!(mode, 0o600, "bayat bir 0644 `.tmp` sirri GENISLETEMEZ");
+    // Bayat dosyaya DOKUNULMAMIS olmali: yazici artik onu hic acmiyor.
+    assert_eq!(std::fs::read_to_string(&tmp).unwrap(), "bayat", "bayat `.tmp` YENIDEN KULLANILDI");
 }
 
 #[test]
@@ -98,16 +105,24 @@ fn a_bad_archive_names_the_parse_error_and_writes_nothing() {
     let err = envverb::write_env_file_atomic(&target, b"not json", "").unwrap_err();
     assert!(err.starts_with("env: parse values: "), "hata metni: {err}");
     assert!(!target.exists(), "ayristirma hatasinda hedef OLUSMAMALI");
-    assert!(!d.join("out.env.tmp").exists(), "ayristirma hatasinda gecici dosya SILINMELI");
+    assert_eq!(
+        std::fs::read_dir(&d).unwrap().count(),
+        0,
+        "ayristirma hatasinda diskte HICBIR sey olusmamali"
+    );
 }
 
 #[test]
-fn an_unopenable_temp_path_names_it_with_the_go_sentence() {
+fn an_unwritable_target_names_the_target_with_the_go_sentence() {
+    // Hata metni HEDEFI adlandirir, gecici dosyayi DEGIL: temp adi rastgele ve
+    // ayni hata iki kosuda iki farkli cumle uretirdi. Beklenen cumle Go
+    // ikilisinden OLCULDU, tahmin EDILMEDI.
     let d = tmpdir("noopen");
     let target = d.join("nodir").join("out.env");
     let err = envverb::write_env_file_atomic(&target, ARCHIVE, "").unwrap_err();
-    assert!(
-        err.starts_with(&format!("env: open temp {}.tmp: ", target.display())),
+    assert_eq!(
+        err,
+        format!("env: write {}: no such file or directory", target.display()),
         "hata metni: {err}"
     );
 }

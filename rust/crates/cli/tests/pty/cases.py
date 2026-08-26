@@ -789,14 +789,30 @@ ENV_CASES = [
     # --write: stdout BOS, dosya 0600. Icerik ve MOD karsilastiriliyor.
     ("human_env_write_emits_nothing_to_stdout",
      ["secrets", "env", "--write", "out.env"], HUMAN, None, b"y\n", cfg(VALID_CFG)),
-    # BULGU (bkz. src/envverb.rs): Go O_CREATE|O_TRUNC kullaniyor, O_EXCL DEGIL.
-    # Onceden duran bir `<hedef>.tmp` YENIDEN KULLANILIYOR ve modu 0600'e
-    # CEKILMIYOR — duz metin sir 0644 ile kaliyor. Vaka bunu DUZELTMIYOR,
-    # iki ikilinin AYNI modu urettigini olcuyor. probe.py `.tmp` sonekli
-    # dosyalari atliyor ama `out.env`in MODU karsilastiriliyor.
-    ("human_env_write_reuses_a_wide_temp",
+    # ESKI BULGU (bkz. src/envverb.rs), artik KAPALI: yazici O_EXCL'siz
+    # O_CREATE|O_TRUNC kullaniyordu, onceden duran bir `<hedef>.tmp` YENIDEN
+    # KULLANILIYORDU ve modu 0600'e CEKILMIYORDU — duz metin sir 0644 ile
+    # kaliyordu. IKI ikili de duzeltildi (ayni commit), yani bu vaka ayrisma
+    # gormedi ne once ne simdi. DIFFERENTIAL'IN KOR NOKTASI TAM OLARAK BURASI:
+    # kusur PAYLASILDIGI icin bu vaka onu HIC gormedi ve yesil kaldi. Onu
+    # yakalayan sey IDDIA testleriydi (Go: TestRunEnv_WriteCannotInheritAWide-
+    # TempMode, Rust: a_preexisting_wide_temp_cannot_widen_the_secret).
+    # Vaka yine de degerli: `out.env`in MODU karsilastiriliyor, yani iki taraf
+    # duzeltmeyi AYNI sekilde uyguladi mi, onu olcuyor.
+    ("human_env_write_ignores_a_preexisting_wide_temp",
      ["secrets", "env", "--write", "out.env"], HUMAN, None, b"y\n",
      cfg(VALID_CFG, {"out.env.tmp": ""})),
+    # Bayat `.tmp` bir DIZIN ise: eski yazici onu acmaya calisip patlardi.
+    # Yeni yazici o adi HIC kullanmiyor, yani yazim BASARILI olmali. Iki
+    # tarafin ayni sonuca vardigini olcer.
+    ("human_env_write_when_the_temp_name_is_a_directory",
+     ["secrets", "env", "--write", "out.env"], HUMAN, None, b"y\n",
+     cfg(VALID_CFG, {"out.env.tmp/keep": ""})),
+    # Hedefin DIZINI yok: hata cumlesi HEDEFI adlandirir, rastgele temp adini
+    # DEGIL. Deterministik olmasaydi bu vaka her kosuda ayrisirdi.
+    ("human_env_write_into_a_missing_dir",
+     ["secrets", "env", "--write", "nodir/out.env"], HUMAN, None, b"y\n",
+     cfg(VALID_CFG)),
     # `--project <ad>` config gereksinimini ATLATMIYOR: env `store_project`
     # DEGIL `require_store_config` kullaniyor.
     ("human_env_project_flag_still_needs_a_config",

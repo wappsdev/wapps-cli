@@ -3,6 +3,7 @@ package secrets
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
+	"github.com/wappsdev/wapps-cli/internal/atomicfile"
 )
 
 var (
@@ -61,29 +63,43 @@ func runEnv(writePath, prefix string, stdoutW io.Writer) error {
 	return runEnvStore(cfg, writePath, prefix, stdoutW)
 }
 
-// writeEnvFileAtomic emits env output to a temp file at writePath+".tmp",
-// then renames into place. Atomic so a power loss or signal mid-write
-// can't leave a partially-decrypted .env.local on disk.
+// writeEnvFileAtomic, env çıktısını writePath'e ATOMİK ve 0600 ile yazar.
+//
+// NEDEN atomicfile.Write — ve neden ARTIK kendi yazıcısı DEĞİL: burada eskiden
+// ikinci bir "atomik yazıcı" duruyordu ve depoda ZATEN duran birinden üç
+// noktada ayrılıyordu. Üçüncüsü bir GÜVENLİK kusuruydu:
+//
+//   atomicfile.Write          eski yazıcı (burası)
+//   -----------------------   ---------------------------------------------
+//   `.<ad>.<rastgele>.tmp`    `<hedef>.tmp` — SABİT, tahmin edilebilir ad
+//   O_EXCL (CreateTemp)       O_CREATE|O_TRUNC — VAR OLANI yeniden kullanır
+//   mod açıkça uygulanır      0600 İSTENİR ama var olan dosyanın modu KALIR
+//   fsync VAR                 fsync YOK
+//
+// open(2): "the mode argument shall be ignored if the file exists". Yani
+// hedefin yanında önceden duran 0644 modlu bir `<hedef>.tmp` varsa istenen
+// 0600 HİÇ uygulanmıyor, O_TRUNC içeriği siliyor, düz metin sır oraya
+// yazılıyor ve rename onu hedefe taşıyor → DÜNYA-OKUNUR SIR DOSYASI. Rastgele
+// ad + O_EXCL bu pencerenin tamamını kapatır: bayat dosya artık HİÇ açılmıyor.
+//
+// HATA METNİ geçici dosyanın adını TAŞIMAZ: o ad rastgeledir, yani aynı hata
+// iki koşuda iki farklı cümle üretirdi. Adlandırılan şey HEDEF — kullanıcının
+// yazdığı ve tanıyabileceği yol.
 func writeEnvFileAtomic(writePath string, valuesJSON []byte, prefix string) error {
-	tmp := writePath + ".tmp"
-	// Open with 0600 — env files contain plaintext secrets and must not be
-	// world-readable.
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("env: open temp %s: %w", tmp, err)
-	}
-	if err := writeTofuOutputsAsEnv(valuesJSON, prefix, f); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
+	// Biçimlendirme ÖNCE tampona: bir ayrıştırma hatası halinde diskte hiçbir
+	// şey oluşmaz (eski yazıcı önce dosyayı açıp sonra siliyordu).
+	var buf bytes.Buffer
+	if err := writeTofuOutputsAsEnv(valuesJSON, prefix, &buf); err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("env: close temp: %w", err)
-	}
-	if err := os.Rename(tmp, writePath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("env: rename %s -> %s: %w", tmp, writePath, err)
+	if err := atomicfile.Write(writePath, buf.Bytes(), 0600); err != nil {
+		// PathError'ın içindeki errno alınır; sarmalayan metin rastgele temp
+		// adını taşıyor ve deterministik değil.
+		var pe *os.PathError
+		if errors.As(err, &pe) {
+			return fmt.Errorf("env: write %s: %v", writePath, pe.Err)
+		}
+		return fmt.Errorf("env: write %s: %v", writePath, err)
 	}
 	return nil
 }

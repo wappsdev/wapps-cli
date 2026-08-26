@@ -12,6 +12,14 @@ All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachange
   Agents matching the literal string `"NOT_AVAILABLE"` on stderr must switch to `"ACTION_UNAVAILABLE"`. Behaviour, exit codes and `retryable: false` are unchanged.
 
 ### Fixed
+- **`secrets env --write` could leave a world-readable secrets file.** It carried its own atomic writer instead of using `internal/atomicfile`, which has been in the tree doing the same job correctly for `apply`. The copy diverged in three places, and the third was the bug: it opened a **fixed, predictable** temp path `<target>.tmp` with `O_CREATE|O_TRUNC` and **no `O_EXCL`**. POSIX `open(2)` says "the mode argument shall be ignored if the file exists" — so when a `<target>.tmp` was already sitting next to the target with mode 0644, the requested 0600 was never applied, `O_TRUNC` emptied it, the plaintext secret was written into it, and `rename` moved it onto the target. The result was a **0644 file full of decrypted secrets**. The copy also skipped `fsync`, so a power loss could leave the new name pointing at empty or stale content.
+
+  `env --write` now delegates to `atomicfile.Write`: a **randomly named** temp opened with `O_EXCL`, mode applied explicitly, `fsync` before `rename`. A stale `<target>.tmp` is no longer opened at all — it is left untouched and the secret lands at 0600 regardless of what was there.
+
+  **Behaviour change in the error path:** the failure sentence now names the **target** rather than the temp file (`env: write <target>: <errno>`, previously `env: open temp <target>.tmp: …` / `env: rename … -> …`). The temp name is random now, so putting it in the message would produce a different sentence on every run. Anything matching the old strings must switch.
+
+  How this was missed: the flaw was live in **both** binaries, and the Go↔Rust pty differential can only see where the two *disagree*. It is measured now by an assertion on each side (`TestRunEnv_WriteCannotInheritAWideTempMode`, `a_preexisting_wide_temp_cannot_widen_the_secret`), not by a comparison.
+
 - **This code's recovery line described a refusal it was never used for.** It read "this action needs a live Cloudflare Access session; run it from a human terminal", which matched none of its call sites — and 9 of the 11 emitted it verbatim, since only `login` and the bulk-read cap override it. An agent refused for `dr combine needs >=2 --share files` was told to go find a terminal. The line now names the real next step, and says why retrying cannot help.
 
 ### Added
