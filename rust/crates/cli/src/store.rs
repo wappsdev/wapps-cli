@@ -4,8 +4,10 @@
 use crate::clierr::{Code, Error};
 use crate::epochpin;
 use crate::session;
+use rustls_pki_types::pem::PemObject;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// WorkerError, gate'in makine-okunur hata govdesidir.
 #[derive(Debug, Default, Deserialize)]
@@ -143,6 +145,68 @@ pub fn map_http_error(status: u16, body: &str, retry_after: u64, ctx: &str) -> E
 // (Go tarafiyla ayni varsayilan).
 const DEFAULT_RETRY_AFTER: u64 = 60;
 
+// --- KOK GUVEN DEPOSU (plan §9.5, sik C) ---------------------------------
+//
+// Taban GOMULU (`webpki-roots`), ustune `SSL_CERT_FILE` ve `SSL_CERT_DIR`
+// ayarliysa ONLAR DA ekleniyor. Neden env: TLS denetleyen bir proxy arkasindaki
+// CI runner'in kendi CA'sini surece tanitmasinin tek tasinabilir yolu bu, ve Go
+// tarafi (crypto/x509, root_unix.go) Linux'ta zaten ayni iki degiskeni okuyor.
+//
+// DURUSTLUK NOTU — bu parite DEGIL, iki yerde:
+//  * darwin'de root_unix.go'nun build etiketi devrede DEGIL, yani Go orada bu
+//    degiskenleri HIC okumuyor. Rust artik okuyor: ayrisma kapanmiyor, YONU
+//    degisiyor (once Rust katiydi, simdi Go kati).
+//  * Linux'ta bile Go env degiskenini gorunce sistem demetinin YERINE koyuyor;
+//    burada ise gomulu tabana EKLENIYOR, yani kabul yuzeyi daha genis kaliyor.
+// Ikisi de tests/tlstrust.rs'te olculuyor ve orada yaziliyor.
+//
+// Bozuk/okunamayan girdi SESSIZCE atlanir, ret sebebi olmaz: bir CA demetindeki
+// tek cursuk sertifika butun HTTPS'i kapatmamali (Go'nun AppendCertsFromPEM'i de
+// boyle davraniyor). Yol adlari ve ayristirma hatalari transcript'e YAZILMAZ.
+
+// add_pem_file, tek bir PEM dosyasindaki sertifikalari depoya ekler.
+fn add_pem_file(store: &mut rustls::RootCertStore, path: &std::path::Path) {
+    let Ok(iter) = rustls_pki_types::CertificateDer::pem_file_iter(path) else { return };
+    for der in iter.flatten() {
+        let _ = store.add(der);
+    }
+}
+
+// root_store, gomulu tabani kurar ve env ile bildirilen koklerin USTUNE ekler.
+fn root_store() -> rustls::RootCertStore {
+    let mut store =
+        rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    if let Some(f) = std::env::var_os("SSL_CERT_FILE") {
+        add_pem_file(&mut store, std::path::Path::new(&f));
+    }
+    if let Some(d) = std::env::var_os("SSL_CERT_DIR") {
+        // OpenSSL'in c_rehash duzeni uzantisiz `<hash>.0` dosyalari birakiyor,
+        // yani ada gore filtreleme YAPILMIYOR: her girdi PEM olarak denenir.
+        if let Ok(entries) = std::fs::read_dir(&d) {
+            for e in entries.flatten() {
+                add_pem_file(&mut store, &e.path());
+            }
+        }
+    }
+    store
+}
+
+// agent, kok deposu ELDE KURULMUS bir ureq ajani doner. `ureq::post` yerine bunu
+// kullanmak zorunlu: serbest fonksiyon ureq'in kendi varsayilan yapilandirmasina
+// gidiyor ve oraya ekleme yapmanin yolu yok.
+fn agent() -> ureq::Agent {
+    // builder_with_provider, builder()'in aksine surec genelinde bir kripto
+    // saglayicisi kurulmus olmasini SART kosmuyor — ureq'in kendi yolunun aynisi.
+    let cfg = rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+    .expect("ring saglayicisi TLS1.2+1.3 ile uyumlu")
+    .with_root_certificates(root_store())
+    .with_no_client_auth();
+    ureq::AgentBuilder::new().tls_config(Arc::new(cfg)).build()
+}
+
 /// read, POST /v1/projects/{p}/read cagirir ve degerleri doner.
 pub fn read(project: &str, keys: &[String]) -> Result<ReadResult, Error> {
     let headers = session::auth_headers()?;
@@ -154,7 +218,7 @@ pub fn read(project: &str, keys: &[String]) -> Result<ReadResult, Error> {
         session::gate_url(),
         urlencode_path_segment(project)
     );
-    let mut req = ureq::post(&url).set("Content-Type", "application/json");
+    let mut req = agent().post(&url).set("Content-Type", "application/json");
     for (k, v) in &headers {
         req = req.set(k, v);
     }

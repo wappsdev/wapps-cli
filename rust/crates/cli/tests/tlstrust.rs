@@ -1,19 +1,35 @@
-// GUVEN DEPOSU KAPISI — plan §9.5'in sahibine biraktigi karari OLCULEBILIR
-// yapan test.
+// GUVEN DEPOSU KAPISI — plan §9.5'in sahibine biraktigi karar VERILDI, ve bu
+// dosya kararin sonucunu kaydediyor.
 //
-// NEDEN VAR: Adim 6'nin 32 differential vakasinin TAMAMI `http://` uzerinden
-// kosuyor. Sertifika dogrulamasi bugun hicbir kapi tarafindan sinanmiyor, yani
-// Go ile Rust arasindaki bir guven-deposu ayrismasi yesil bir agacta GORUNMEZ.
-// Olculdu: Rust ikilisi gomulu Mozilla koklerini tasiyor
-// (webpki-roots <- ureq'in varsayilan `tls` ozelligi, kimse secmedi), Go tarafi
-// ise uretimde RootCAs'i HIC set etmiyor (auth.go) — yani platform deposunu
-// kullaniyor.
+// KARAR (sik C): gomulu `webpki-roots` TABAN olarak kaliyor, ve `SSL_CERT_FILE`
+// ile `SSL_CERT_DIR` ayarliysa onlar da bu tabanin USTUNE ekleniyor
+// (`crates/cli/src/store.rs`, `root_store`). Sik B (rustls-native-certs) OLCULDU
+// ve REDDEDILDI: darwin'de alti crate ekliyor ve `cargo deny`yi dusuruyor
+// (`rustls-pemfile` bakimsiz), yani secilmesi bir guvenlik uyarisina kalici
+// `ignore` yazmak demekti.
 //
-// BU TEST BIR DOGRULUK IDDIA ETMIYOR. Hangi tarafin "dogru" oldugu sahibinin
-// karari; test yalnizca BUGUNKU hali pinliyor. Karar verildigi gun bu test
-// KIRILIR, ve kirilmasi kararin gerceklestiginin kanitidir. Ozellikle
-// `rs_refuses_ca_from_env`: platform/native koklere gecilirse Rust tarafi
-// SSL_CERT_FILE'i onurlandirmaya baslar ve buradaki bekleyis duser.
+// BU TEST HALA BIR DOGRULUK IDDIA ETMIYOR. "Dogru davraniyor" demiyor; "bugun
+// boyle davraniyor, degisirse haberin olsun" diyor. Onceki surumunun kurdugu
+// ayrim budur ve korunuyor — degisen tek sey PINLENEN davranis.
+//
+// KARARIN DURUST BILANCOSU — iki yarisi da burada yazili:
+//
+//   Linux'ta PARITE KAZANILDI. Go'nun crypto/x509'u (root_unix.go) SSL_CERT_FILE
+//   ve SSL_CERT_DIR'i okuyor; Rust artik da okuyor. §9.5'in anlattigi "TLS
+//   denetleyen proxy arkasindaki CI runner" Linux'ta kosuyor, yani kazanc tam
+//   oraya dusuyor.
+//
+//   macOS'ta PARITE KAZANILMADI — AYRISMA TERS CEVRILDI. root_unix.go'nun build
+//   etiketi darwin'i DISLIYOR, yani Go orada bu iki env degiskenini HIC okumuyor.
+//   Once Rust katiydi (env'i yok sayiyordu) ve Go gevsekti (Linux'ta env'i
+//   okuyordu); simdi darwin'de Rust env'i onurlandiriyor ve Go saymiyor. Ayrisma
+//   KAPANMADI, yonu DEGISTI. Bunu olcen satirlar asagida `cfg!(target_os =
+//   "macos")` dallarinda ve gerekcesi her birinin yaninda yazili.
+//
+//   Linux'ta bile parite TAM DEGIL, ve bu da saklanmiyor: Go env degiskenini
+//   gorunce sistem demetinin YERINE koyuyor (loadSystemRoots: `files =
+//   []string{f}`), Rust ise gomulu tabana EKLIYOR. Yani kabul yuzeyi Rust'ta
+//   daha GENIS kaliyor. Bu sik C'nin tanimi, kazara degil.
 //
 // Gate SAHTE, TLS'li ve YEREL. CA + sunucu sertifikasi kosum aninda uretiliyor,
 // gecici dizine yaziliyor, kosum sonunda siliniyor. Agaca hicbir sertifika,
@@ -74,12 +90,24 @@ fn side(v: &serde_json::Value, scenario: &str, which: &str) -> Side {
     }
 }
 
-// REFUSAL_CODE / REFUSAL_TAIL: reddin sozlesmeye ait yarisi. Ayrisan tek sey
+// REFUSAL_CODE / REFUSAL_RECOVERY: reddin sozlesmeye ait yarisi. Ayrisan tek sey
 // isletim sistemi seviyesindeki ayrinti (Go net/http'nin dizesini, ureq kendi
 // dizesini gomuyor) — pty differential'inda `human_gate_down` ile AYNI aile.
 const REFUSAL_CODE: &str = "NETWORK_REQUIRED: secrets gate unreachable: ";
 const REFUSAL_RECOVERY: &str =
     "reconnect and retry; the store has no offline mode (values are server-decrypted)";
+
+// RS_REFUSAL_DETAIL, RET ZARFININ kok deposu degisiminden ETKILENMEYEN yarisi.
+// Sik C secilmeden once olculdu: ret metni A, B ve C sikkinda BIREBIR ayni;
+// degisen tek sey KABUL. Bu sabit o olcumu teste cakiyor — kok deposunu
+// degistiren bir sonraki degisiklik reddi de kaydirirsa burada gorunur.
+const RS_REFUSAL_DETAIL: &str =
+    "Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer";
+
+// GATE_VALUE, sahte gate'in dondurdugu TEST dizesi (tlsgate.py). Gercek bir sir
+// DEGIL. Kabulu `exit == 0` ile degil BUNUNLA olcuyoruz: cikis kodu el sikismanin
+// gectigini soyler ama govdenin cozuldugunu soylemez.
+const GATE_VALUE: &str = "value-for-plain";
 
 fn assert_refused(s: &Side, who: &str, scenario: &str) {
     assert_eq!(s.exit, 1, "{who}/{scenario}: cikis kodu 1 bekleniyordu\n{}", s.stderr);
@@ -92,6 +120,20 @@ fn assert_refused(s: &Side, who: &str, scenario: &str) {
     assert!(
         s.stderr.contains(REFUSAL_RECOVERY),
         "{who}/{scenario}: red zarfi kurtarma satirini tasimiyor:\n{}",
+        s.stderr
+    );
+}
+
+fn assert_accepted(s: &Side, who: &str, scenario: &str) {
+    assert_eq!(
+        s.exit, 0,
+        "{who}/{scenario}: cikis kodu 0 bekleniyordu\nstderr:\n{}",
+        s.stderr
+    );
+    assert!(
+        s.stdout.contains(GATE_VALUE),
+        "{who}/{scenario}: el sikisma gecti ama govde gelmedi\nstdout:\n{}\nstderr:\n{}",
+        s.stdout,
         s.stderr
     );
 }
@@ -123,11 +165,20 @@ fn trust_store_divergence_is_pinned() {
     let v: serde_json::Value = serde_json::from_str(&raw).expect("tls raporu JSON degil");
 
     // --- (b) CA HICBIR YERDE: ikisi de reddetmeli ---
+    // Sik C bu vakayi DEGISTIRMEMELI. Gomulu taban tek basina yeterli olsaydi
+    // kapinin kendisi olcmuyor olurdu.
     let go_b = side(&v, "ca_nowhere", "go");
     let rs_b = side(&v, "ca_nowhere", "rs");
     assert_refused(&go_b, "go", "ca_nowhere");
     assert_refused(&rs_b, "rs", "ca_nowhere");
     assert_eq!(go_b.exit, rs_b.exit, "ca_nowhere: cikis kodlari ayrisiyor");
+    // RET ZARFI degismedi mi: sik C oncesi olculen metnin AYNISI bekleniyor.
+    assert!(
+        rs_b.stderr.contains(RS_REFUSAL_DETAIL),
+        "ca_nowhere/rs: ret zarfi kok deposu degisimiyle KAYDI — sik C yanlis \
+         uygulanmis olabilir:\n{}",
+        rs_b.stderr
+    );
     // Reddin GOVDESI ayrisiyor ve bu BILINEN bir ayrisma; "esit" diye
     // pinlemek sahte bir sadakat olurdu. Ayrismanin varligi pinleniyor ki
     // birisi ikisini esitlerse ya da ayrismayi buyutursa gorunsun.
@@ -137,31 +188,61 @@ fn trust_store_divergence_is_pinned() {
     );
 
     // --- (a) CA yalnizca surece-yerel bir kanalda ---
-    // Rust: HER platformda reddeder, cunku kokler ikiliye GOMULU ve hicbir
-    // env degiskeni onlara ekleme yapamaz. Bu satir kararin tetigi.
+    // Rust: HER platformda KABUL eder. Sik C'nin tetigi tam olarak bu satir;
+    // onceki surumde burada `assert_refused` yaziyordu ve kararin verildigi gun
+    // kirilmasi bekleniyordu. Kirildi, ve yerine kabul yazildi.
     for sc in ["ca_in_ssl_cert_file", "ca_in_ssl_cert_dir"] {
         let rs = side(&v, sc, "rs");
-        assert_refused(&rs, "rs", sc);
+        assert_accepted(&rs, "rs", sc);
+        // Ret zarfi degismedigi gibi kabul de SESSIZ olmali: gate'in ham
+        // govdesi transcript'e sizmamali.
+        assert!(
+            !rs.stdout.contains("epoch"),
+            "rs/{sc}: gate'in ham govdesi stdout'a sizdi:\n{}",
+            rs.stdout
+        );
     }
 
-    // Go: platform deposuna baglidir, yani beklenti PLATFORMA gore degisir.
+    // Go: platform deposuna baglidir, yani beklenti PLATFORMA gore degisir ve
+    // Go URETIM KODU bu dilimde HIC DEGISMEDI — asagidaki iki dal sik C'den
+    // once ne yaziyorsa aynisini yaziyor.
     //   darwin  -> crypto/x509 SSL_CERT_FILE'i HIC okumaz (root_unix.go'nun
     //              build etiketi darwin'i disliyor); reddeder.
     //   diger unix -> okur; KABUL eder. §9.5'in anlattigi CI runner burasi.
-    let go_file = side(&v, "ca_in_ssl_cert_file", "go");
-    if cfg!(target_os = "macos") {
-        assert_refused(&go_file, "go", "ca_in_ssl_cert_file");
-    } else {
-        assert_eq!(
-            go_file.exit, 0,
-            "go/ca_in_ssl_cert_file: bu platformda KABUL bekleniyordu\n{}",
-            go_file.stderr
-        );
+    for sc in ["ca_in_ssl_cert_file", "ca_in_ssl_cert_dir"] {
+        let go_s = side(&v, sc, "go");
+        let rs_s = side(&v, sc, "rs");
+        if cfg!(target_os = "macos") {
+            assert_refused(&go_s, "go", sc);
+            // TERS CEVRILME, tek satirda olculmus hali: darwin'de artik KATI
+            // olan taraf Go, GEVSEK olan taraf Rust. Sik C oncesi bu esitlik
+            // TUTUYORDU (ikisi de reddediyordu). Kirilmasi kararin sahada
+            // gerceklestiginin kanitidir; birisi bu ayrismayi kapatirsa —
+            // Rust'i geri katilastirarak ya da Go'ya kok kumesi koyarak —
+            // asagidaki satir onu yakalar.
+            assert_ne!(
+                go_s.exit, rs_s.exit,
+                "{sc}: darwin'de iki taraf yine ayni sonucu veriyor — ters \
+                 cevrilme kaybolmus, yorumu guncelle"
+            );
+        } else {
+            assert_accepted(&go_s, "go", sc);
+            // Linux: iki taraf da KABUL. Cikis kodu duzeyinde parite; kabul
+            // YUZEYI hala esit degil (Go yer degistirir, Rust ekler) ve bu
+            // ayrisma bu kapiyla olculemez — dosya basligindaki bilancoya
+            // yazili.
+            assert_eq!(
+                go_s.exit, rs_s.exit,
+                "{sc}: bu platformda iki taraf da kabul etmeliydi"
+            );
+        }
     }
 
     // --- (c) gercek, herkesin guvendigi zincir ---
     // AG gerektirdigi icin varsayilan olarak kosmuyor. Sessizce atlanmiyor:
-    // atlandigi rapora yaziliyor ve burada basiliyor.
+    // atlandigi rapora yaziliyor ve burada basiliyor. Sik C bu vakayi da
+    // DEGISTIRMEMELI: gomulu taban yerinde durdugu icin herkesin guvendigi
+    // zincir iki tarafta da kabul olmayi surdurur.
     if v["_meta"]["public_chain_ran"].as_bool().unwrap_or(false) {
         let go_c = side(&v, "public_chain", "go");
         let rs_c = side(&v, "public_chain", "rs");

@@ -607,9 +607,12 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "rustix",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "ureq",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

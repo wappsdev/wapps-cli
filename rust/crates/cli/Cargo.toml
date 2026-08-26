@@ -24,3 +24,20 @@ serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 # stdin'in TTY olup olmadigi — agentmode'un ekseni.
 rustix = { version = "0.38", features = ["termios", "stdio"] }
+# rustls / webpki-roots / rustls-pki-types: HEPSI zaten `ureq`in grafiginde vardi
+# (asagidaki `tls` ozelligi getiriyor). Burada DOGRUDAN bagimlilik yapilmalarinin
+# tek sebebi kok deposunu ELDE KURMAK (store.rs, `root_store`): `ureq`in
+# varsayilani gomulu kokleri VERIYOR ama uzerine ekleme yapmanin yolunu vermiyor.
+# Surumler `ureq`in istedikleriyle BIREBIR ayni tutuldu — amac Cargo.lock'a tek
+# bir yeni crate sokmamak, ve olculdu: sokmuyor (93 crate, oncesiyle ayni).
+#
+# `rustls-native-certs` ve `rustls-pemfile` BILEREK YOK. Platform deposunu okuma
+# sikki (B) olculdu: darwin'de alti crate ekliyor ve `cargo deny`yi dusuruyor
+# (`rustls-pemfile` bakimsiz, guvenli yukseltme yok). PEM okumasi bunun yerine
+# `rustls-pki-types`in kendi `PemObject`i uzerinden yapiliyor — RUSTSEC-2025-0134
+# duyurusunun isaret ettigi yol.
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+# `std`: `PemObject::pem_file_iter` bu ozelligin arkasinda. Yeni bagimlilik
+# getirmiyor (`std = ["alloc"]`).
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "0.26"
