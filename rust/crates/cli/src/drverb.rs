@@ -1,17 +1,26 @@
 // `wapps dr` — felaket kurtarma verb'leri (server-decrypt SPEC §8.4).
 //
-// PORTLANAN: verify, restore, split, combine.
+// PORTLANAN: verify, restore, split, combine, bootstrap.
 // PORTLANMAYAN, ve NEDEN — bu liste bir eksiklik itirafi degil bir SINIR:
 //
-//   bootstrap            `internal/tofu` PreflightEnv + BootstrapEnvVars
-//                        portunu gerektiriyor; Rust'ta `tofu` modulu YOK.
-//   accept-epoch-reset   store'da `AuditHead` rotasi ve `X-Wapps-Intent:
-//                        epoch-reset` basligi YOK.
+//   accept-epoch-reset   store'da `AuditHead` rotasi (GET /v1/audit/head) ve
+//                        `X-Wapps-Intent: epoch-reset` basligi YOK; sahte
+//                        gate'te de o rota yok. UC yeni yuzey demek, ve
+//                        yarim birakilamayacak bir toren.
 //
-// Bu iki verb Go ikilisinde CALISMAYA DEVAM EDIYOR; Rust ikilisi onlari
-// TANIMIYOR. Ayrisma BILINCLI ve differential korpusunda ADLANDIRILMIS
-// durumda (bkz. cases.py, DR bloğunun baslik yorumu). Yarim bir alt komut
-// YAZILMADI: bir kurtarma toreninin yarisi, olmamasindan daha kotudur.
+// Bu verb Go ikilisinde CALISMAYA DEVAM EDIYOR; Rust ikilisi onu TANIMIYOR.
+// Ayrisma BILINCLI ve differential korpusunda ADLANDIRILMIS durumda. Yarim
+// bir alt komut YAZILMADI: bir kurtarma toreninin yarisi, olmamasindan daha
+// kotudur.
+//
+// `bootstrap` BU SERITTE INDI, ve `restore`un kalibini AYNEN tekrarladi:
+// disarida birakilma GEREKCESI olculdu ve YARISI BAYAT cikti. "Rust'ta
+// `tofu` modulu YOK" deniyordu; oysa `REQUIRED_ENV_VARS` (bes girdi, adlar
+// VE ipuclari) `doctorverb.rs` icinde ZATEN duruyordu. Gercekten eksik olan
+// iki sey vardi — `PreflightEnv`in METNI ve `BootstrapEnvVars` katalogu —
+// ve ikisi de saf veri/bicimleme: ne ag, ne disk, ne yeni crate. Katalog
+// KOPYALANMADI; sahiplik Go'daki yerine (`tofu.rs`) tasindi ve `doctorverb`
+// onu yeniden ihrac ediyor, yoksa superset degismezi anlamsizlasirdi.
 //
 // `restore` BU SERITTE INDI ve onu mumkun kilan sey bir onceki turun kendi
 // iddiasini CURUTMESIYDI: "XChaCha `ring`de yok, yani yeni bir crate lazim"
@@ -25,9 +34,13 @@
 // Her yaprak kendi guard'ini ELDE cagiriyor ve `verify` BILEREK guard'siz
 // (hicbir sir kullanmiyor, `doctor`/`status` ile ayni gerekce). Port bu sirayi
 // AYNEN korumali — fazladan bir kapi eklemek de bir ayrisma olurdu.
+use crate::agentmode;
+use crate::cli::CmdError;
 use crate::clierr::{Code, Error};
 use crate::cryptoid::{self};
+use crate::execverb;
 use crate::goerr;
+use crate::tofu;
 use serde::Deserialize;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -829,4 +842,199 @@ pub fn restore_project_from_snapshot<W: Write>(
         "NEXT (human half): re-provision the estate from this file, then ROTATE every restored value — see 'wapps rotate-plan'."
     );
     Ok(())
+}
+
+// --- dr bootstrap ---------------------------------------------------------------
+//
+// `wapps dr bootstrap` — store'a ULASILAMAYAN senaryolar (bricked Worker,
+// mimari §4.3 F3) icin TTY-only runbook fiili (§3.3, plan P1.3).
+//
+// Akis: prompt (yankisiz, skip-if-set) → preflight → exec (scrub'li) →
+// FARKLILASTIRILMIS burn epilogue'u. Hicbir deger diske / store'a / pin'e
+// yazilmaz; degerler yalnizca cocuk surecin env'inde yasar.
+//
+// BU FIILIN SESSIZ ARIZA BICIMI, ve neden `bootstrap` bu sinifin ders kitabi
+// ornegi: yanlis tamamlanmis bir bootstrap ile dogru tamamlanmis biri AYNI
+// GORUNUR. Komut calisir, cikis kodu 0'dir, epilogue basilir. Tek fark
+// cocugun echo'ladigi token'in transcript'te `***` mi ACIK METIN mi
+// oldugudur — ve operator apply BASARILI oldugu icin o satiri okumaz. Fark
+// ancak token sizdiktan SONRA, yani EN KOTU ANDA anlasilir. Bu yuzden scrub
+// kumesinin IKI kaynagi da (promptlanan VE kalitilan) test edilmis
+// durumda: kalitilan dal hic prompt gormedigi icin unutulmasi en kolay
+// olanidir ve unutuldugunda HICBIR SEY dusmez.
+
+/// BootstrapPrompt, yankisiz TTY istemi DIKISI (Go'daki `bootstrapPrompt`
+/// paket-duzeyi seam'i). `(deger, stdin_tty_mi)` doner. Uretimde
+/// `setverb::prompt_no_echo`, testte scripted bir istem.
+pub type BootstrapPrompt<'a> = &'a dyn Fn(&str) -> Result<(String, bool), String>;
+
+/// bootstrap_var_union, katalog ile operatorun `--var` eklerinin BIRLESIMI.
+///
+/// Katalog sirasi korunur, mukerrer adlar TEKILLESTIRILIR — katalogla
+/// cakisan bir `--var` ikinci kez promptlanmaz (operator ayni token'i iki kez
+/// yazmaz).
+fn bootstrap_var_union(extra: &[String]) -> Vec<(String, String, String)> {
+    let mut vars: Vec<(String, String, String)> = tofu::BOOTSTRAP_ENV_VARS
+        .iter()
+        .map(|v| {
+            (
+                v.name.to_string(),
+                v.hint.to_string(),
+                v.constant.to_string(),
+            )
+        })
+        .collect();
+    let mut seen: std::collections::HashSet<String> =
+        vars.iter().map(|(n, _, _)| n.clone()).collect();
+    for name in extra {
+        let name = name.trim();
+        if name.is_empty() || seen.contains(name) {
+            continue;
+        }
+        seen.insert(name.to_string());
+        vars.push((
+            name.to_string(),
+            "operator-supplied (--var)".to_string(),
+            String::new(),
+        ));
+    }
+    vars
+}
+
+/// run_bootstrap_core, fiilin test edilebilir cekirdegi (Go: `runDrBootstrap`).
+///
+/// `lookup` ve `prompt` DIKIS: ebeveyn env'ini mutasyona ugratmadan
+/// skip-if-set ve preflight senaryolari yurunebiliyor.
+///
+/// HATA SINIFI IKI TURLU ve bu Go'yu AYNEN izliyor: ajan reddi / arite /
+/// prompt hatasi KODLU (`clierr`), preflight ve runner hatasi KODSUZ
+/// (`fmt.Errorf`). Insan modunda ikincisi kod oneki OLMADAN basiliyor.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bootstrap_core<O: Write, E: Write>(
+    args: &[String],
+    extra_vars: &[String],
+    skip_preflight: bool,
+    is_agent: bool,
+    out: &mut O,
+    errw: &mut E,
+    lookup: &dyn Fn(&str) -> String,
+    prompt: BootstrapPrompt<'_>,
+    runner: execverb::ExecRunner<'_>,
+) -> Result<execverb::ExitAction, CmdError> {
+    // (0) TTY-only kapisi HER SEYDEN ONCE: ajan modunda TEK BIR PROMPT bile
+    // atilmadan reddedilir (§3.3 degismezi — token'lar transcript'e giremez).
+    agentmode::guard(agentmode::POLICY_TTY, is_agent).map_err(CmdError::Cli)?;
+    if args.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "dr bootstrap: a command is required after -- (e.g. wapps dr bootstrap -- tofu apply)",
+        )));
+    }
+
+    // (1) Katalog ∪ --var uzerinden degerleri topla.
+    let vars = bootstrap_var_union(extra_vars);
+    let mut injected: Vec<String> = Vec::with_capacity(vars.len());
+    let mut scrub: Vec<String> = Vec::with_capacity(vars.len());
+    // collected, preflight'in "enjekte edilen + kalitilan" BIRLESIK gorunumu.
+    let mut collected: Vec<(String, String)> = Vec::with_capacity(vars.len());
+    let mut warned_non_tty = false;
+    for (name, hint, constant) in &vars {
+        let inherited = lookup(name);
+        if !inherited.is_empty() {
+            // Skip-if-set: ebeveyn env'inde ZATEN var — cocuk onu kalitimla
+            // alir, PROMPTLANMAZ ve yeniden enjekte EDILMEZ (yalnizca AD
+            // yazilir, deger asla).
+            let _ = writeln!(errw, "  {name}: already set — inherited, not prompted");
+            // Kalitilan da olsa promptable bir token HASSAS: scrub kumesine
+            // girer ki "echo eden apply *** basar" garantisi onun icin de
+            // tutsun. Sabit AWS_REGION=auto scrub'a GIRMEZ (asiri-redaksiyon).
+            if constant.is_empty() {
+                scrub.push(inherited);
+            }
+            continue;
+        }
+        if !constant.is_empty() {
+            // Sabit degerli girdi: hicbir kosulda promptlanmaz.
+            injected.push(format!("{name}={constant}"));
+            collected.push((name.clone(), constant.clone()));
+            continue;
+        }
+        let (val, is_tty) = prompt(&format!("{name} — {hint} (Enter = skip): ")).map_err(|e| {
+            CmdError::Cli(Error::new(
+                Code::Internal,
+                format!("dr bootstrap: read {name}: {e}"),
+            ))
+        })?;
+        if !is_tty && !warned_non_tty {
+            let _ = writeln!(
+                errw,
+                "  ⚠ stdin is not a TTY — piped values may be captured by shell history"
+            );
+            warned_non_tty = true;
+        }
+        if val.is_empty() {
+            // Enter = skip: bu apply icin gerekmeyen provisioning token'i
+            // atlanabilir; kontrattan eksik kalani asagida preflight yakalar.
+            let _ = writeln!(errw, "  {name}: skipped (empty input)");
+            continue;
+        }
+        injected.push(format!("{name}={val}"));
+        collected.push((name.clone(), val.clone()));
+        scrub.push(val);
+    }
+
+    // (2) Backend env kontrati preflight'i: enjekte edilen + kalitilan birlesik.
+    if !skip_preflight {
+        let merged = |name: &str| -> String {
+            match collected.iter().find(|(n, _)| n == name) {
+                Some((_, v)) => v.clone(),
+                None => lookup(name),
+            }
+        };
+        if let Some(perr) = tofu::preflight_env(&merged) {
+            return Err(CmdError::Plain(format!("dr bootstrap: {perr}")));
+        }
+    }
+
+    // (3) Exec — ortak inject→scrub→run→flush→exit blogu.
+    //
+    // Sifir-disi cikis kodu cagirana AYNEN dondurulur; epilogue bu yuzden
+    // YALNIZCA BASARILI bitiste basilir. Is bitmeden burn edilmez (§3.3
+    // "mint-use-burn: is biter bitmez") — basarisiz bir apply'da operator
+    // ayni token'larla yeniden dener.
+    let action = execverb::run_with_injected_env(args, &injected, &scrub, out, errw, runner)
+        .map_err(CmdError::Plain)?;
+    if let execverb::ExitAction::Exit(code) = action {
+        return Ok(execverb::ExitAction::Exit(code));
+    }
+
+    // (4) Farklilastirilmis burn epilogue'u (§3.3 tablosu + §5.5 zarf hatirlatmasi).
+    print_bootstrap_burn_epilogue(errw);
+    Ok(execverb::ExitAction::Ok)
+}
+
+/// print_bootstrap_burn_epilogue, §3.3'un DUZELTILMIS burn tablosu.
+///
+/// UC SINIF, ve ayrim onemli: burn YALNIZCA seremoni/gecici token'a ve
+/// rotasyonla degistirilen ESKI token'a uygulanir. Store'a self-host edilen
+/// standing credential'lar KALICIDIR — hayat dongusu rotasyondur, burn degil.
+/// "Hepsini burn et" demek, operatorun kendi store'unu bricklemesidir.
+fn print_bootstrap_burn_epilogue<W: Write>(w: &mut W) {
+    let _ = write!(
+        w,
+        r#"
+✓ bootstrap command finished — burn checklist (differentiated, §3.3):
+  BURN NOW      every CEREMONY/TEMP token minted just for this run (e.g. the
+                R2-admin ceremony token): delete it from the dashboard now.
+  BURN AFTER    a token you ROTATED OUT here: burn the OLD one only AFTER its
+                successor is written to the store.
+  DO NOT BURN   standing tokens SELF-HOSTED in the store (Token A/B, R2 state
+                creds, ...): keep them — their lifecycle is rotation, not burn.
+  SHELL         unset TF_VAR_state_passphrase from your shell NOW (just the
+                passphrase env var — NOT the TF_ENCRYPTION block) and make sure
+                no value landed in shell history.
+  PAPER (§5.5)  if state_passphrase or the audit-chain head changed, re-record
+                the head hash on paper and RE-SEAL the Shamir envelopes.
+"#
+    );
 }

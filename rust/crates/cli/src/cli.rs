@@ -339,13 +339,12 @@ pub fn build() -> Command {
         // `doctor` ile ayni gerekce). `projects list`in baglama kapisini hic
         // gormemesiyle AYNI yapisal sebep.
         //
-        // IKI ALT KOMUT BURADA YOK ve bu bir unutma DEGIL: `bootstrap` ve
-        // `accept-epoch-reset` portlanmadi (ilki `internal/tofu` portunu,
-        // ikincisi store'da `AuditHead` + `X-Wapps-Intent` basligini
-        // istiyor — ikisi de Rust store'da YOK). Onlari clap agacina
-        // "yakinda" diye eklemek, Go'nun CALISAN bir toreninin yerine bir
-        // hata mesaji koymak olurdu; Rust ikilisi onlari TANIMIYOR ve fark
-        // differential korpusunda ADLANDIRILMIS durumda.
+        // BIR ALT KOMUT BURADA YOK ve bu bir unutma DEGIL:
+        // `accept-epoch-reset` portlanmadi (store'da `AuditHead` rotasi +
+        // `X-Wapps-Intent` basligi, ve sahte gate'te o rota — ucu de YOK).
+        // Onu clap agacina "yakinda" diye eklemek, Go'nun CALISAN bir
+        // toreninin yerine bir hata mesaji koymak olurdu; Rust ikilisi onu
+        // TANIMIYOR ve fark differential korpusunda ADLANDIRILMIS durumda.
         //
         // `restore` ARTIK VAR. Onceki tur onu "XChaCha20-Poly1305 ring'de yok,
         // yani yeni bir CRATE gerekiyor" diye disarida birakmisti; olcum o
@@ -457,6 +456,38 @@ pub fn build() -> Command {
                                 .help("refuse unless the reconstructed key's kid equals this (get it from `wapps dr verify`); without it the check is left to your eyes"),
                         )
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                // `bootstrap` ARTIK VAR. Onceki tur onu "internal/tofu portu
+                // gerekiyor, Rust'ta tofu modulu YOK" diye disarida
+                // birakmisti; olcum o gerekcenin YARISININ BAYAT oldugunu
+                // gosterdi: `REQUIRED_ENV_VARS` (bes girdi, adlar VE ipuclari)
+                // `doctorverb.rs` icinde ZATEN duruyordu. Eksik olan yalnizca
+                // `PreflightEnv`in METNI ile `BootstrapEnvVars` katalogu idi —
+                // ikisi de saf veri/bicimleme, ag da disk de YOK.
+                //
+                // `trailing_var_arg` + `allow_hyphen_values`: `-- tofu apply
+                // -target=x` sonrasindaki HER SEY cocuga ait (`exec` ile ayni
+                // gerekce; aksi halde clap `-target`i KENDI bayragi sanardi).
+                .subcommand(
+                    Command::new("bootstrap")
+                        .about("TTY-only: prompt for bootstrap tokens (no echo) and run a command with them injected")
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true)
+                        .arg(Arg::new("argv").num_args(0..).help("Command and arguments"))
+                        // StringArrayVar -> Append: `--var` TEKRARLANABILIR.
+                        .arg(
+                            Arg::new("var")
+                                .long("var")
+                                .value_name("string")
+                                .action(ArgAction::Append)
+                                .help("extra env var NAME to prompt and inject (repeatable; skipped if already set)"),
+                        )
+                        .arg(
+                            Arg::new("skip-preflight")
+                                .long("skip-preflight")
+                                .action(ArgAction::SetTrue)
+                                .help("skip the tofu backend env contract preflight (non-tofu commands)"),
+                        ),
                 ),
         )
         // `projects` KOKTE mount'lu, `secrets` altinda DEGIL — ve bu bir

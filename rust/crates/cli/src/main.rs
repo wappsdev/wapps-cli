@@ -284,6 +284,30 @@ fn run() -> Result<(), CmdError> {
                 cm.get_one::<String>("out").cloned(),
                 cm.get_one::<String>("expect-kid").cloned(),
             ),
+            Some(("bootstrap", bm)) => {
+                let argv: Vec<String> = bm
+                    .get_many::<String>("argv")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
+                // ARITE ONCE, ve bu SIRA GOZLEMLENEBILIR: Go'da
+                // `cobra.MinimumNArgs(1)` ajan guard'indan (RunE'nin ICINDE)
+                // ONCE kosuyor, yani ajan modunda KOMUTSUZ bir cagri
+                // AGENT_MODE_REFUSED degil bir ARITE hatasi verir. `dr split`
+                // bunun TERSI (Args kisiti yok -> ret once gelir) ve iki
+                // davranis da differential'da ayri ayri olculuyor.
+                if argv.is_empty() {
+                    return Err(CmdError::Plain(
+                        "requires at least 1 arg(s), only received 0".to_string(),
+                    ));
+                }
+                run_dr_bootstrap(
+                    &argv,
+                    &bm.get_many::<String>("var")
+                        .map(|v| v.cloned().collect::<Vec<String>>())
+                        .unwrap_or_default(),
+                    bm.get_flag("skip-preflight"),
+                )
+            }
             _ => {
                 let _ = cli::build().find_subcommand_mut("dr").unwrap().print_help();
                 std::process::exit(0);
@@ -632,6 +656,47 @@ fn run_dr_split(
     // HIJYENI olarak ayrisirdi — bilincli olarak parite tercih edildi.
     master.clear();
     res.map_err(CmdError::Cli)
+}
+
+// run_dr_bootstrap, `wapps dr bootstrap` — cekirdegi URETIM dikisleriyle baglar.
+//
+// BU FONKSIYON OLMADAN `run_bootstrap_core` OLU KOD OLURDU. Bu depoda olculmus
+// bir kural var: "test var" ile "davranis sevk ediliyor" AYNI SEY DEGIL
+// (`derive_project_kek` uretimden sifir kez cagriliyor; `slot_for` sifir
+// cagriyla SILINDI). Cekirdegin uc dikisi burada, ve YALNIZCA burada,
+// gercek karsiliklarina baglaniyor:
+//   lookup  -> surecin gercek ortami
+//   prompt  -> setverb::prompt_no_echo (YANKISIZ; `dr split` ile ayni giris)
+//   runner  -> execverb::default_exec_runner (gercek alt-surec)
+fn run_dr_bootstrap(
+    argv: &[String],
+    extra_vars: &[String],
+    skip_preflight: bool,
+) -> Result<(), CmdError> {
+    let mut out = std::io::stdout();
+    let mut errw = std::io::stderr();
+    let action = drverb::run_bootstrap_core(
+        argv,
+        extra_vars,
+        skip_preflight,
+        agentmode::is_agent(),
+        &mut out,
+        &mut errw,
+        &|k| std::env::var(k).unwrap_or_default(),
+        // Istem STDERR'e yaziliyor (Go: promptValueNoEcho -> os.Stderr) ve
+        // deger YANKILANMIYOR. Ikinci deger stdin'in TTY olup olmadigi:
+        // cekirdek bununla "boru gecmisi" uyarisini TEK KEZ basiyor.
+        &|prompt| {
+            let mut e = std::io::stderr();
+            setverb::prompt_no_echo(&mut e, prompt)
+        },
+        &|name, args, env, so, se| execverb::default_exec_runner(name, args, env, so, se),
+    )?;
+    match action {
+        // Alt-surecin cikis kodu AYNEN yansitiliyor (Go'da os.Exit).
+        execverb::ExitAction::Exit(code) => std::process::exit(code),
+        execverb::ExitAction::Ok => Ok(()),
+    }
 }
 
 fn run_dr_combine(

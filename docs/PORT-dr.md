@@ -303,8 +303,8 @@ pini degil. `restore` portlanirken bu bosluk bilinerek girilmeli.
 | `verify` | **EVET** | differential (8 vaka) + `tests/drverb.rs` iddialari |
 | `split` | **EVET** | **YALNIZCA IDDIA** — RNG yuzunden differential'lanamaz |
 | `combine` | **EVET** | differential (13 vaka, yazilan dosya+mod dahil) + iddia |
-| `restore` | hayir | §7.1 (crate GEREKMIYOR; yol acik) |
-| `bootstrap` | hayir | `internal/tofu` portu gerekiyor |
+| `restore` | **EVET** | differential + `tests/drverb.rs` iddialari |
+| `bootstrap` | **EVET** | differential (15 vaka) + `tests/drbootstrap.rs` (14 iddia) + `tests/tofu.rs` (6 iddia) |
 | `accept-epoch-reset` | hayir | store'da `AuditHead` + intent basligi yok |
 
 `shamir_split` RNG'yi **parametre aliyor** (§4a'nin uyardigi tasarim kisiti),
@@ -432,13 +432,53 @@ mod `0600`, exit 0 — iddia DOĞRU. Sonra vaka korpusa alındı
 **Ders:** elle koşulan bir karşılaştırma, ölçtüğü şeyin GERÇEKTEN koştuğunu
 ayrıca kanıtlamalı. "Fark yok" ile "hiçbir şey olmadı" aynı görünür.
 
-### 8.7 KALAN İKİ ALT KOMUT, ve tam olarak neyin eksik olduğu
-
-Girilmedi (yarım bir alt komut bırakmamak için) ve gerekenler:
+### 8.7 KALAN ALT KOMUT, ve tam olarak neyin eksik olduğu
 
 | alt komut | Rust'ta EKSİK olan |
 |---|---|
-| `bootstrap` | `internal/tofu` portu: `PreflightEnv` + `BootstrapEnvVars`. Rust'ta `tofu` modülü YOK. |
-| `accept-epoch-reset` | store'da `AuditHead` rotası **ve** `X-Wapps-Intent: epoch-reset` başlığı YOK; ayrıca `internal/intent` portu. |
+| `accept-epoch-reset` | store'da `AuditHead` rotası **ve** `X-Wapps-Intent: epoch-reset` başlığı YOK; `internal/intent` portu; ayrıca `fakegate.py`'de `/v1/audit/head` rotası YOK (yani differential'ı bugün ölçemez). |
 
-İkisi de Go ikilisinde ÇALIŞMAYA DEVAM EDİYOR.
+Go ikilisinde ÇALIŞMAYA DEVAM EDİYOR.
+
+### 8.8 `bootstrap` indi — ve gerekçesinin YARISI BAYATMIŞ ÇIKTI
+
+Yukarıdaki tablo `bootstrap` için "Rust'ta `tofu` modülü YOK" diyordu.
+**Ölçüldü ve yarısı yanlıştı:** `REQUIRED_ENV_VARS` — beş girdi, adlar VE
+ipuçlarıyla — `doctorverb.rs` içinde ZATEN duruyordu (`doctor --for tofu`
+onu kullanıyor). Gerçekten eksik olan iki şeydi:
+
+* `PreflightEnv`'in **metni** (eksik listesi + kurtarma parçacığı), ve
+* `BootstrapEnvVars` **kataloğu** (9 girdi, biri sabit).
+
+İkisi de saf veri/biçimleme: ağ yok, disk yok, **yeni crate yok**. Bu,
+`restore`'un kalıbının tekrarıdır: dışarıda bırakma gerekçesini bir argümanla
+değil bir ÖLÇÜMLE çürütmek.
+
+Katalog **kopyalanmadı**: sahiplik Go'daki yerine (`tofu.rs`) taşındı ve
+`doctorverb` onu yeniden ihraç ediyor. Kopyalansaydı iki liste sessizce
+ayrışabilir ve superset değişmezi (`BOOTSTRAP_ENV_VARS ⊇ REQUIRED_ENV_VARS`)
+anlamını yitirirdi.
+
+**Bu fiilin sessiz arıza biçimi** ölçüldü ve `dr`'ın sınıfına uyuyor: yanlış
+tamamlanmış bir bootstrap ile doğru tamamlanmış biri AYNI GÖRÜNÜR — komut
+çalışır, çıkış kodu 0'dır, burn epilogue'u basılır. Tek fark, çocuğun
+echo'ladığı token'ın transcript'te `***` mi ACIK METIN mi olduğudur, ve
+operatör apply BAŞARILI olduğu için o satırı okumaz. En kolay unutulanı
+**kalıtılan** (skip-if-set) token: hiçbir prompt görmediği için scrub kümesine
+eklenmesi atlanabilir ve atlandığında HİÇBİR ŞEY düşmez. Mutasyonla
+doğrulandı (M1): iddia da differential de yakalıyor.
+
+### 8.9 ÖLÇÜLDÜ: `bootstrap`ın non-TTY uyarısı ÖLÜ BİR DAL (iki ikilide de)
+
+`is_tty == false` dalı ("piped values may be captured by shell history")
+üretimden **ULAŞILAMIYOR**: `agentmode.IsAgent()` non-TTY stdin'i DAİMA ajan
+sayıyor, `PolicyTTY` kapısı tek bir prompt atılmadan reddediyor ve
+`WAPPS_AGENT_MODE=0` override'ı YALNIZCA TTY'de onurlandırılıyor. İki ikilide
+de ölçüldü: boruyla beslenen çağrı `AGENT_MODE_REFUSED` alıyor.
+
+Uyarıyı tamamen silen bir mutasyon (M8) ÖNCE denendi ve **hiçbir şey düşmedi**
+— ne 13 iddia, ne 434 vakalık differential. Dal SİLİNMEDİ (oracle taşıyor ve
+`dr bootstrap` başka bir politikaya taşınırsa canlanır) ama metni artık
+dikiş üzerinden bir iddia tutuyor. **Differential ona yapısal olarak KÖR
+kalır** ve bu bir eksiklik değil bir olgudur: pty harness'inin stdin'i her
+zaman bir TTY'dir.

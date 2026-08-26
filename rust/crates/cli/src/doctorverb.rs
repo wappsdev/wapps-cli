@@ -17,39 +17,15 @@
 // ORACLE: cmd/doctor.go, internal/tofu/preflight.go (RequiredEnvVars),
 // internal/session/session.go (Load/Expired/TTL).
 
-/// RequiredEnvVar, `tofu output -json`in baslangicta istedigi TEK bir degisken.
-pub struct RequiredEnvVar {
-    pub name: &'static str,
-    pub hint: &'static str,
-}
-
-/// REQUIRED_ENV_VARS, `--for tofu`un kontrol ettigi kontrat.
-///
-/// SIRA ONEMLI ve gozlemlenebilir: hem ✓ satirlari hem ✗ satirlari bu sirayi
-/// izliyor (Go tek dongude once mevcutlari basiyor, eksikleri BIRIKTIRIP
-/// sonra basiyor — yani iki blok ayri ama ikisi de bu sirada).
-pub const REQUIRED_ENV_VARS: &[RequiredEnvVar] = &[
-    RequiredEnvVar {
-        name: "AWS_ACCESS_KEY_ID",
-        hint: "R2 backend credentials (map from WAPPS_R2_ACCESS_KEY_ID)",
-    },
-    RequiredEnvVar {
-        name: "AWS_SECRET_ACCESS_KEY",
-        hint: "R2 backend credentials (map from WAPPS_R2_SECRET_ACCESS_KEY)",
-    },
-    RequiredEnvVar {
-        name: "AWS_ENDPOINT_URL_S3",
-        hint: "R2 backend endpoint (map from WAPPS_R2_ENDPOINT)",
-    },
-    RequiredEnvVar {
-        name: "AWS_REGION",
-        hint: "R2 backend region (must be 'auto' for Cloudflare R2)",
-    },
-    RequiredEnvVar {
-        name: "TF_VAR_state_passphrase",
-        hint: "Tofu encryption block (map from WAPPS_TOFU_STATE_PASSPHRASE)",
-    },
-];
+// RequiredEnvVar + REQUIRED_ENV_VARS ARTIK BURADA TANIMLI DEGIL.
+//
+// Go'da bu kontrat `internal/tofu`ya ait ve UC cagiran onu paylasiyor. Rust'ta
+// tek cagiran `doctor` oldugu surece burada durmasi dogruydu; `dr bootstrap`
+// IKINCI cagiran olunca sahiplik Go'daki yerine geri tasindi. KOPYA
+// CIKARILMADI: iki liste ayri ayri yasasaydi, kontrata eklenen bir degisken
+// birinde gorunup digerinde gorunmeyebilir ve `tofu.rs`teki superset
+// degismezi SESSIZCE anlamsizlasirdi.
+pub use crate::tofu::{RequiredEnvVar, REQUIRED_ENV_VARS};
 
 /// FULL_TOOLS, tam bataryanin aradigi CLI araclari.
 ///

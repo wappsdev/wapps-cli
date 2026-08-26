@@ -165,6 +165,14 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     //          +4  BESINCI DURUM vakasi     EQUAL=413 DIFFERENT=2  <-- AYRISMA
     //          duzeltmeden sonra            EQUAL=417 DIFFERENT=0
     //          +2  KISA BICIM (-p/-c)        EQUAL=419 DIFFERENT=0
+    //          +15 `dr bootstrap`             EQUAL=434 DIFFERENT=0
+    //          +1  BESINCI DURUM (`dr bootstrap`) EQUAL=435 DIFFERENT=0
+    //
+    // TABAN 434'E CIKARILDI ve bunun bir sebebi var: bu iddia korpusun
+    // BUYUKLUGUNU tutan TEK mekanizma. Taban eskisi gibi 419'da biraksaydi,
+    // `dr bootstrap`in on bes vakasinin TAMAMI korpustan sessizce dusebilir
+    // ve gate YINE YESIL kalirdi. Canli vaka sayisi (CASES - EXCLUDED)
+    // OLCULDU: 439 - 4 = 435, yani bu esik "en az" degil TAM sayidir.
     //
     //        `set` ve `get`te iki kez cikan kor nokta UCUNCU KEZ CIKMADI:
     //        `--config` kalan ON BIR `Ctx::resolve` fiilinin (list/status/rm/
@@ -228,6 +236,6 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 419, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 435, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

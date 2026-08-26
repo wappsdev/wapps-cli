@@ -1995,6 +1995,111 @@ DR_CASES = [
           "--expect-kid", _RESTORE_KID],
          dict(_SHARE_FILES, **{"bad.hex": "ff" + _SHARE_1[2:] + "\n"})),
     # BOS --expect-kid, bayrak HIC verilmemis gibi davranmali (kontrol yok).
+    # --- bootstrap: PolicyTTY + cobra.MinimumNArgs(1) ---------------------------
+    #
+    # SIRA ONCE OLCULUYOR ve `split` ile TERS: `bootstrap`in `Args` kisiti VAR,
+    # yani cobra ariteyi RunE'den (ajan guard'i orada) ONCE dogruluyor.
+    # Komutsuz bir ajan cagrisi bu yuzden AGENT_MODE_REFUSED DEGIL bir arite
+    # hatasi verir. `dr_split_refused_before_flag_check` bunun tersini tutuyor;
+    # ikisi bir arada olmadan bir port sirayi sessizce degistirebilirdi.
+    dr_a("dr_bootstrap_refused", ["dr", "bootstrap", "--", "/bin/echo", "hi"]),
+    dr_a("dr_bootstrap_arity_is_checked_before_the_agent_guard", ["dr", "bootstrap"]),
+    dr_h("dr_bootstrap_no_command", ["dr", "bootstrap"]),
+
+    # PREFLIGHT REDDI — ve bu vakanin tasidigi sey buyuk: `PreflightEnv`in TAM
+    # metni (eksik liste + KURTARMA parcacigi) Rust'ta HIC yoktu. Butun
+    # promptlar Enter ile geciliyor (stdin sekiz bos satir), yani kontratin
+    # BES degiskeni de eksik kaliyor.
+    #
+    # Hata KODSUZ basilmali: Go'da `fmt.Errorf("dr bootstrap: %w", ...)`, yani
+    # insan yolunda "Error: dr bootstrap: tofu preflight: ..." — kod oneki YOK.
+    # `clierr`e sarilmis bir port burada "Error: INTERNAL: ..." basar ve AYRISIR.
+    dr_h("dr_bootstrap_preflight_names_every_missing_var", ["dr", "bootstrap", "--", "/bin/echo", "hi"],
+         stdin=b"\n" * 8),
+
+    # Kontratin TAMAMI env'de: hicbiri promptlanmaz, hepsi "already set" notu
+    # alir ve preflight GECER — komut calisir, epilogue basilir.
+    ("human_dr_bootstrap_a_complete_contract_is_inherited_not_prompted",
+     ["dr", "bootstrap", "--", "/bin/echo", "ok"],
+     dict(HUMAN, AWS_ACCESS_KEY_ID="akid_value_1234", AWS_SECRET_ACCESS_KEY="asak_value_1234",
+          AWS_ENDPOINT_URL_S3="https://ep.example", AWS_REGION="auto",
+          TF_VAR_state_passphrase="passphrase_1234"),
+     None, b"\n" * 4, {"yaml": None, "files": {}}),
+
+    # --skip-preflight: eksik kontratla bile calisir (tofu-disi komutlar).
+    dr_h("dr_bootstrap_skip_preflight_runs_the_command",
+         ["dr", "bootstrap", "--skip-preflight", "--", "/bin/echo", "hello"], stdin=b"\n" * 8),
+
+    # Her promptable katalog adi TAM ADIYLA ve KATALOG SIRASINDA soruluyor;
+    # sabit AWS_REGION prompt akisinda GORUNMEMELI (stdin SEKIZ deger tasiyor,
+    # dokuz DEGIL — dokuzuncu girdi sabittir).
+    dr_h("dr_bootstrap_prompts_every_promptable_name_in_catalog_order",
+         ["dr", "bootstrap", "--skip-preflight", "--", "/bin/echo", "done"],
+         stdin=(b"akid_value_1234\nasak_value_1234\nhttps://ep.example\npassphrase_1234\n"
+                b"cf_tok_value_1234\ncfr2_tok_value_1234\nhcloud_tok_value_1234\n"
+                b"coolify_tok_value_1234\n")),
+
+    # --var: katalog DISI bir ad promptlanip enjekte edilir; katalogla CAKISAN
+    # bir --var ikinci kez promptlanMAZ (birlesim semantigi). Cakisma vakasinda
+    # stdin yine SEKIZ satir: dokuzuncu bir prompt olsaydi akis kayardi ve
+    # cikti ayrisirdi.
+    dr_h("dr_bootstrap_an_extra_var_is_prompted_and_injected",
+         ["dr", "bootstrap", "--skip-preflight", "--var", "TF_VAR_extra_token",
+          "--", "/bin/echo", "x"], stdin=b"\n" * 9),
+    dr_h("dr_bootstrap_a_catalog_overlapping_var_is_prompted_once",
+         ["dr", "bootstrap", "--skip-preflight", "--var", "TF_VAR_hcloud_token",
+          "--", "/bin/echo", "x"], stdin=b"\n" * 8),
+
+    # --- SESSIZ ARIZA SINIFI: token sizintisi -------------------------------------
+    #
+    # BU IKI VAKA BU BLOGUN VAR OLMA SEBEBI. `bootstrap`in yanlis cevabi ile
+    # dogru cevabi AYNI GORUNUR: komut calisir, cikis kodu 0'dir, epilogue
+    # basilir. TEK fark, cocugun echo'ladigi token'in transcript'te `***` mi
+    # yoksa ACIK METIN mi oldugudur — ve operator apply BASARILI oldugu icin o
+    # satiri okumaz bile. Fark ancak token sizdiktan SONRA anlasilir.
+    #
+    # Cocuk `/bin/sh -c 'echo $VAR'`: enjekte edilen degeri GERCEKTEN yaziyor.
+    # Deger scrub tabaninin (4 bayt) USTUNDE, yani atlanmasinin mesru bir
+    # sebebi yok.
+    dr_h("dr_bootstrap_a_child_echoing_a_prompted_token_prints_stars",
+         ["dr", "bootstrap", "--skip-preflight", "--",
+          "/bin/sh", "-c", "echo TOKEN=$TF_VAR_hcloud_token"],
+         stdin=(b"akid_value_1234\nasak_value_1234\nhttps://ep.example\npassphrase_1234\n"
+                b"cf_tok_value_1234\ncfr2_tok_value_1234\nhcloud_tok_value_1234\n"
+                b"coolify_tok_value_1234\n")),
+
+    # KALITILAN token da sizdiramaz — ve bu, ikisinin arasinda UNUTULMASI EN
+    # KOLAY olani: kalitilan degisken hicbir prompt gormedigi icin scrub
+    # kumesine eklenmesi atlanabilir ve atlandiginda HICBIR SEY dusmez.
+    ("human_dr_bootstrap_a_child_echoing_an_inherited_token_prints_stars",
+     ["dr", "bootstrap", "--skip-preflight", "--",
+      "/bin/sh", "-c", "echo TOKEN=$TF_VAR_hcloud_token"],
+     dict(HUMAN, TF_VAR_hcloud_token="inherited_hcloud_token_1234"),
+     None, b"\n" * 7, {"yaml": None, "files": {}}),
+
+    # Sabit AWS_REGION=auto scrub kumesine GIRMEZ: "auto" gibi bir sabiti
+    # redakte etmek ilgisiz ciktiyi bozardi (asiri-redaksiyon). Cocuk onu ACIK
+    # yazmali.
+    dr_h("dr_bootstrap_the_constant_region_is_not_redacted",
+         ["dr", "bootstrap", "--skip-preflight", "--", "/bin/sh", "-c", "echo REGION=$AWS_REGION"],
+         stdin=b"\n" * 8),
+
+    # Sifir-disi cocuk cikis kodu AYNEN yansir, ve epilogue BASILMAZ: is
+    # bitmedi, burn talimati erken verilmez.
+    dr_h("dr_bootstrap_a_nonzero_child_exit_code_is_mirrored",
+         ["dr", "bootstrap", "--skip-preflight", "--", "/bin/sh", "-c", "exit 7"],
+         stdin=b"\n" * 8),
+
+    # Baslatilamayan komut: hata METNI Go'nun "fork/exec ...: ..." dizesi
+    # (goerr::spawn_error). Kodsuz "exec: ..." onekiyle.
+    dr_h("dr_bootstrap_a_missing_command_reports_gos_spawn_error",
+         ["dr", "bootstrap", "--skip-preflight", "--", "yok-boyle-komut"], stdin=b"\n" * 8),
+
+    # `--project` ATIL: `dr` kokte mount'lu, Ctx cozulmuyor. Kimlik kolu
+    # taksonomisinin `proj` kolu da bu vakayla geziliyor.
+    dr_h("dr_bootstrap_project_flag_is_inert",
+         P + ["dr", "bootstrap", "--skip-preflight", "--", "/bin/echo", "x"], stdin=b"\n" * 8),
+
     dr_h("dr_combine_expect_kid_empty_is_inert",
          ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex",
           "--expect-kid", ""], _SHARE_FILES),
@@ -2405,6 +2510,12 @@ ARM_WAIVERS = {
         "cfg": "ayni sebep",
         "rooted": "ayni sebep",
     },
+    "dr bootstrap": {
+        "cfg": "run_dr_bootstrap(argv, extra_vars, skip_preflight) — Ctx::resolve "
+               "CAGRILMIYOR; buradaki tek `--project` vakasi bayragin ATIL "
+               "oldugunu olcuyor, kimlik cozdugunu DEGIL",
+        "rooted": "ayni sebep: yerel config bu fiile hic girmiyor",
+    },
     "secrets policy": {
         "proj": "policy GLOBAL bir dokuman; run_policy_* config almiyor",
         "cfg": "ayni sebep",
@@ -2499,6 +2610,25 @@ BOTH_FLAG_CASES += [
      _sub(VALID_CFG)),
 ]
 CASES += BOTH_FLAG_CASES[-2:]
+
+
+# `dr bootstrap` de BESINCI DURUMU almali, ve bunu VARSAYMAK yetmez.
+#
+# Go'da `DrCmd` KOKE mount'lu, yani root'un `PersistentPreRunE`u (mutual
+# exclusion oradan geliyor) BU AGAC ICIN DE kosuyor — `doctor` ile ayni
+# yapisal sebep. Rust'ta ret dispatch'ten ONCE ve FIILDEN BAGIMSIZ. Ikisi de
+# ayni yere varmali ve ret DUZ olmali (kod oneki YOK).
+#
+# Bu vaka `agent_tofu_both_identity_flags_are_inert`in TERSINI pinliyor:
+# `tofu` root'a mount'lu AMA `DisableFlagParsing` acik oldugu icin muaf;
+# `dr` root'a mount'lu ve muaf DEGIL. Ikisi ayni cumleyle aciklanamaz, o
+# yuzden ikisinin de vakasi var.
+BOOTSTRAP_BOTH_FLAG_CASES = [
+    ("human_dr_bootstrap_both_identity_flags_are_rejected",
+     ["--config", "sub/.wapps.yaml"] + P + ["dr", "bootstrap", "--", "/bin/echo", "hi"],
+     HUMAN, None, None, _sub(VALID_CFG)),
+]
+CASES += BOOTSTRAP_BOTH_FLAG_CASES
 
 
 # --- KISA BICIMLER: `-p` / `-c` ----------------------------------------------
