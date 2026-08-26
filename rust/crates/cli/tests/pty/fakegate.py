@@ -2,8 +2,9 @@
 """secrets-gate'in SAHTE'si. Gercek bir gate'e HIC baglanmiyoruz ve hicbir
 gercek sir kullanilmiyor: degerler bu dosyada uretilen sabit test dizeleri.
 
-Iki rota tasiniyor:
-  POST /v1/projects/{p}/read        -> okuma (get)
+Uc rota tasiniyor:
+  GET  /v1/projects/{p}/keys        -> anahtar ADLARI (exec/apply'in 1. adimi)
+  POST /v1/projects/{p}/read        -> okuma (get, ve exec/apply'in 2. adimi)
   PUT  /v1/projects/{p}/keys/{KEY}  -> tek anahtar yazimi (set)
 
 YAZILAN DEGER ASLA KAYDEDILMIYOR: PUT govdesi Content-Length kadar okunup
@@ -24,13 +25,33 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(n)
 
+    def do_GET(self):
+        # GET /v1/projects/{p}/keys — METADATA duzlemi (deger DONMEZ).
+        # Read'in "tum anahtarlar" yolu IKI ADIMLI: once bu rota ad kumesini
+        # verir, sonra POST /read o adlarla cagrilir. Bu rota olmadan olcum
+        # 501'e dusuyordu ve exec/apply'in gercek hattini HIC gezmiyordu.
+        m = re.match(r"^/v1/projects/([^/]+)/keys$", self.path)
+        if not m:
+            return self._send(404, {"error": "NO_ROUTE"})
+        status, payload = SCRIPT.get("__ALL__", (404, {"error": "KEY_NOT_FOUND"}))
+        if status != 200:
+            return self._send(status, payload)
+        vals = payload.get("values") or {}
+        return self._send(200, {"project": unquote(m.group(1)),
+                                "epoch": payload.get("epoch", 0),
+                                "keys": [{"key_name": k} for k in sorted(vals)]})
+
     def do_POST(self):
         body = self._drain()
         m = re.match(r"^/v1/projects/([^/]+)/read$", self.path)
         if not m:
             return self._send(404, {"error": "NO_ROUTE"})
         keys = (json.loads(body or b"{}") or {}).get("keys") or []
-        key = keys[0] if keys else ""
+        # exec/apply COKLU ad yolluyor (GET /keys'ten aldiklarini). Tek bir
+        # senaryo anahtariyla eslesmeyen coklu istek "__ALL__" senaryosuna
+        # duser — bu, bulk okuma yoludur. Tek anahtarli istekler (get/set)
+        # eskisi gibi kendi senaryolarina gider.
+        key = keys[0] if len(keys) == 1 else "__ALL__"
         status, payload = SCRIPT.get(key, (404, {"error": "KEY_NOT_FOUND", "key": key}))
         return self._send(status, payload)
 

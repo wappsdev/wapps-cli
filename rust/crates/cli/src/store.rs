@@ -313,3 +313,79 @@ fn urlencode_path_segment(s: &str) -> String {
     }
     out
 }
+
+/// KeysResult, GET /keys yanitidir (METADATA duzlemi — deger DONMEZ).
+#[derive(Debug, Deserialize)]
+pub struct KeysResult {
+    #[serde(default)]
+    pub epoch: u64,
+    #[serde(default)]
+    pub keys: Vec<KeyInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KeyInfo {
+    #[serde(default)]
+    pub key_name: String,
+}
+
+/// keys, GET /v1/projects/{p}/keys cagirir: anahtar ADLARINI metadata
+/// duzleminden ceker. Store::read CAGRILMAZ, yani audit'e value.read DUSMEZ;
+/// liste Worker'da principal'in read grant'ina filtrelenir (§4.3.3).
+///
+/// HATA BAGLAMI "list <proje>" (read'deki "read <proje>" DEGIL) — Go'daki
+/// mapHTTPError(r, "list "+project) ile ayni.
+pub fn keys(project: &str) -> Result<KeysResult, Error> {
+    let headers = session::auth_headers()?;
+    let url = format!(
+        "{}/v1/projects/{}/keys",
+        session::gate_url(),
+        urlencode_path_segment(project)
+    );
+    let mut req = agent().get(&url);
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = format!("list {project}");
+    match req.call() {
+        Ok(resp) => {
+            let text = resp.into_string().map_err(|e| {
+                Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
+            })?;
+            let out = serde_json::from_str::<KeysResult>(&text)
+                .map_err(|e| Error::new(Code::Internal, format!("decode {ctx}: {e}")))?;
+            epochpin::check_and_advance(&epochpin::default_path()?, project, out.epoch, false)?;
+            Ok(out)
+        }
+        Err(ureq::Error::Status(status, resp)) => {
+            let retry_after = resp
+                .header("Retry-After")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_RETRY_AFTER);
+            let text = resp.into_string().unwrap_or_default();
+            Err(map_http_error(status, &text, retry_after, &ctx))
+        }
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+/// read_all, principal'in OKUYABILDIGI tum anahtarlari ceker.
+///
+/// IKI ADIMLI ve bu OLCULDU (Go: WorkerStore.Read, keys bos dali): once
+/// GET /keys ile ad kumesi cozulur, SONRA o adlarla POST /read yapilir.
+/// `POST /read` govdesine BOS bir liste gondermek AYNI SEY DEGILDIR — gate
+/// farkli davranir, ve differential bunu 501 olarak yuzeye cikardi.
+///
+/// Kume BOSSA read cagrisi HIC yapilmaz (ve dolayisiyla epoch pini de
+/// read yolundan ilerlemez — yalnizca keys yolundan ilerlemis olur).
+pub fn read_all(project: &str) -> Result<BTreeMap<String, String>, Error> {
+    let kr = keys(project)?;
+    let names: Vec<String> = kr.keys.iter().map(|k| k.key_name.clone()).collect();
+    if names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    Ok(read(project, &names)?.values)
+}

@@ -1,9 +1,13 @@
 pub mod agentmode;
 pub mod atomicfile;
+pub mod applyverb;
 pub mod binding;
 pub mod clierr;
 pub mod cli;
+pub mod configctx;
+pub mod envwrite;
 pub mod epochpin;
+pub mod execverb;
 pub mod goerr;
 pub mod gojson;
 pub mod projects;

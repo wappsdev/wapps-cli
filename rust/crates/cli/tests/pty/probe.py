@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bir ikiliyi tum vakalarda pty altinda kosturur ve sonucu JSON dokerler."""
-import json, os, socket, subprocess, sys, time
+import json, os, shutil, socket, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
 from cases import CASES, GATE_SCRIPT, FIXTURE_FILES
@@ -43,6 +43,11 @@ def main():
             name, argv, extra = case[0], case[1], case[2]
             seed = case[3] if len(case) > 3 else None
             stdin_data = case[4] if len(case) > 4 else None
+            # 6. eleman: bu vaka icin bir `.wapps.yaml` (ve istege bagli
+            # onceden yazilmis hedef dosyalari). Verilirse vaka KENDI dizininde
+            # kosar; verilmezse workdir'de (orada .wapps.yaml YOK, yani
+            # "config yok" dali DETERMINISTIK olculur).
+            cfgseed = case[5] if len(case) > 5 else None
             # {FIX} -> fikstur dizini (mutlak). Iki ikili de ayni dizeyi gorur.
             argv = [a.replace("{FIX}", fixdir) for a in argv]
             env = {
@@ -55,13 +60,21 @@ def main():
                 # yolunu atlatmak icin.
                 "WAPPS_SESSION_TOKEN": "fake-token-not-a-secret",
                 "WAPPS_NO_UPDATE_CHECK": "1",
+                # GIT_CEILING_DIRECTORIES — OLCUMUN GECERLILIGI icin, uslup
+                # degil: baglama kimligi (repoIdentity) git'e soruyor, ve bu
+                # scratch dizini bir git worktree'sinin ICINDE olabilir
+                # (TMPDIR'in nereye baktigina bagli). O durumda kimlik, cevreleyen
+                # deponun origin URL'i + alt yolu olurdu — yani olcum, calistigi
+                # makinenin dizin agacina gore DEGISIRDI. Tavan, git'in workdir'in
+                # uzerine cikmasini engeller: kimlik DAIMA mutlak yola duser.
+                "GIT_CEILING_DIRECTORIES": workdir,
             }
             env.update(extra)
             env = {k: v for k, v in env.items() if v != ""}
             os.makedirs(env["HOME"], exist_ok=True)
             # her vaka temiz bir epoch-pin ile kossun; tohum verilmisse
             # dosya IKI ikili icin de AYNI baytlarla kuruluyor
-            import shutil; shutil.rmtree(os.path.join(cfg, "wapps"), ignore_errors=True)
+            shutil.rmtree(os.path.join(cfg, "wapps"), ignore_errors=True)
             pinpath = os.path.join(cfg, "wapps", "epochs.json")
             if seed is not None:
                 os.makedirs(os.path.dirname(pinpath), exist_ok=True)
@@ -70,13 +83,54 @@ def main():
             # bulunsaydi config-gerektiren dallar sessizce baska bir yola
             # saparsa ve olcum kosuma gore degisirdi. workdir'de .wapps.yaml
             # YOK, yani "config yok" dali DETERMINISTIK olarak olculuyor.
-            out, err, code = run([binary] + argv, env, cwd=workdir,
+            casedir = workdir
+            if cfgseed is not None:
+                # Vaka dizini HER kosumda sifirdan kuruluyor ki iki ikili AYNI
+                # baslangic durumunu gorsun (apply idempotens vakalari icin sart).
+                casedir = os.path.join(workdir, "cases", name)
+                shutil.rmtree(casedir, ignore_errors=True)
+                os.makedirs(casedir, exist_ok=True)
+                with open(os.path.join(casedir, ".wapps.yaml"), "w") as f:
+                    f.write(cfgseed.get("yaml", ""))
+                for rel, content in (cfgseed.get("files") or {}).items():
+                    fp = os.path.join(casedir, rel)
+                    os.makedirs(os.path.dirname(fp), exist_ok=True)
+                    with open(fp, "w") as f:
+                        f.write(content)
+            out, err, code = run([binary] + argv, env, cwd=casedir,
                                  stdin_data=stdin_data)
             # Pin dosyasinin SON hali de sozlesmenin parcasi: reddedilen bir
             # okumanin pin'i geri sarmadigi ancak boyle gorunur.
             pin = open(pinpath, "rb").read().hex() if os.path.exists(pinpath) else None
+            # BAGLAMA defteri de sozlesmenin parcasi: bir ikili reddedip yine de
+            # pinleseydi (ya da tersi) cikti esit gorunurdu.
+            bindpath = os.path.join(cfg, "wapps", "repo-pins.json")
+            bind = open(bindpath, "rb").read().hex() if os.path.exists(bindpath) else None
+            # apply'in YAZDIGI hedef dosyalar: cikti satirlari ("wrote x")
+            # esit olup dosya ICERIGI ayrisabilirdi. Mod da tasiniyor cunku
+            # bu dosyalar duz metin sir tasiyor ve 0600 olmalari sozlesme.
+            written = None
+            if cfgseed is not None:
+                written = {}
+                for root_, _, fs in os.walk(casedir):
+                    for fn in sorted(fs):
+                        # `.wapps.yaml` girdinin kendisi. `.tmp` sonekliler
+                        # atomik yazicinin gecici dosyalari (normalde rename
+                        # sonrasi kalmazlar; kalmislarsa da isim rastgele).
+                        #
+                        # DIKKAT: burada "nokta ile baslayanlari atla" YAZMAK
+                        # olcumu SESSIZCE BOSALTIR — asil hedefin adi
+                        # `.env.local`. Bu bir kez yazildi ve iki apply vakasi
+                        # hicbir sey karsilastirmadan "esit" gorundu.
+                        if fn == ".wapps.yaml" or fn.endswith(".tmp"):
+                            continue
+                        fp = os.path.join(root_, fn)
+                        rel = os.path.relpath(fp, casedir)
+                        written[rel] = [open(fp, "rb").read().hex(),
+                                        oct(os.stat(fp).st_mode & 0o777)]
             results[name] = {"stdout_hex": out.hex(), "stderr_hex": err.hex(),
-                             "exit": code, "pinfile_hex": pin}
+                             "exit": code, "pinfile_hex": pin,
+                             "bindfile_hex": bind, "written": written}
     finally:
         gate.terminate(); gate.wait()
     with open(outpath, "w") as f:

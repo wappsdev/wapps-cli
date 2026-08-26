@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""`secrets exec` ve `secrets apply`in ONUNDEKI kapilari OLCER.
-
-Bu bir port testi DEGIL — bir PREMIS pini. Bu dilim `set`i portladi ama
-exec/apply'i portlamadi ve sebep bir tahmin degil, asagida olculen sey:
+"""`secrets exec` ve `secrets apply`in ONUNDEKI iki kapiyi OLCER.
 
   1. `--project <ad>` bu iki verb icin config gereksinimini ATLATMIYOR.
      get/set `storeProject` kullaniyor (proje ADI yeter); exec/apply
@@ -10,12 +7,13 @@ exec/apply'i portlamadi ve sebep bir tahmin degil, asagida olculen sey:
   2. .wapps.yaml VARSA ve --project YOKSA, repo->proje baglamasi ETKILESIMLI
      bir onay istiyor ("Bind them? [y/N]").
 
-Yani iki verb'un onunde iki AYRI portlanmamis altsistem var: .wapps.yaml
-yukleme/dogrulama (bir YAML ayristiricisi = yeni bir bagimlilik karari) ve
-baglama pin defteri. Biri degisirse bu test kirilir ve sonraki dilimi yazan
-kisi planin degistigini OGRENIR — bir yorumun bayatlamasiyla degil.
+Onceki dilimde bu betik yalnizca GO'yu olcuyordu, cunku bu iki kapinin
+arkasindaki altsistemler (config yukleme/dogrulama ve baglama pin defteri)
+portlanmamisti. Ikisi de indi; betik artik ISTENEN ikiliyi olcuyor ve cagiran
+taraf ikisini de gezip AYNI kapilari bekliyor.
 
-Yalnizca GO ikilisi olculur: burada kanitlanan sey oracle'in on kosulu.
+Gate SAHTE ve yereldir; gercek bir gate'e HIC baglanilmaz ve buradaki hicbir
+deger gercek bir sir DEGILDIR.
 """
 import json, os, socket, subprocess, sys, time
 
@@ -27,8 +25,14 @@ WITH_CFG = "version: 2\nbackend: store\nproject: testproj\ntargets:\n  - path: .
 
 
 def main():
-    go_bin, outpath, workdir = sys.argv[1], sys.argv[2], sys.argv[3]
+    binary, outpath, workdir = sys.argv[1], sys.argv[2], sys.argv[3]
     here = os.path.dirname(os.path.abspath(__file__))
+    # Her ikili KENDI dizinlerinde kosar: paylasilan bir XDG dizini, ilk
+    # kosumun biraktigi bir pin'i ikinciye miras birakirdi ve ikinci ikili
+    # baglama sorusunu HIC gormezdi (sessizce bos bir olcum).
+    tag = os.path.basename(outpath).replace(".json", "")
+    workdir = os.path.join(workdir, "gates", tag)
+    os.makedirs(workdir, exist_ok=True)
 
     s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
     gate = subprocess.Popen([sys.executable, os.path.join(here, "fakegate.py"),
@@ -66,11 +70,16 @@ def main():
     try:
         for vname, argv in verbs.items():
             # --project VERILMIS ama config YOK -> config kapisi
-            o, e, c = run([go_bin, "--project", "testproj"] + argv, env, cwd=nocfg)
+            o, e, c = run([binary, "--project", "testproj"] + argv, env, cwd=nocfg)
             res[f"{vname}_project_flag_no_config"] = {
                 "stderr": e.decode("utf-8", "replace"), "exit": c}
-            # config VAR ama --project YOK -> baglama onayi
-            o, e, c = run([go_bin] + argv, env, cwd=withcfg, timeout=6)
+            # config VAR ama --project YOK -> baglama onayi.
+            #
+            # stdin'e "n" veriliyor: cevapsiz birakmak sureci timeout'a kadar
+            # BLOKLARDI (okuma bir pty'den geliyor) ve olcum yavas + kill'e
+            # bagli olurdu. "n" ile prompt METNI yine olculur, ret deterministik
+            # olur ve pin YAZILMAZ.
+            o, e, c = run([binary] + argv, env, cwd=withcfg, stdin_data=b"n\n")
             res[f"{vname}_config_no_project"] = {
                 "stderr": e.decode("utf-8", "replace"), "exit": c}
     finally:

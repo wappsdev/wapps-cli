@@ -12,7 +12,12 @@ for name in sorted(go):
         print(f"MISSING  {name}"); neq += 1; continue
     same = (g["stdout_hex"] == r["stdout_hex"] and g["stderr_hex"] == r["stderr_hex"]
             and g["exit"] == r["exit"]
-            and g.get("pinfile_hex") == r.get("pinfile_hex"))
+            and g.get("pinfile_hex") == r.get("pinfile_hex")
+            # Baglama defteri: bir ikili reddedip yine de pinleseydi (ya da
+            # tersi) yalnizca ciktiya bakan bir karsilastirma bunu KACIRIRDI.
+            and g.get("bindfile_hex") == r.get("bindfile_hex")
+            # apply'in yazdigi dosyalarin ICERIGI ve MODU.
+            and g.get("written") == r.get("written"))
     if same:
         eq += 1; continue
     neq += 1
@@ -24,6 +29,16 @@ for name in sorted(go):
             print(f"   {f} RS: {b.decode('utf-8','replace')!r}")
     if g["exit"] != r["exit"]:
         print(f"   exit GO={g['exit']} RS={r['exit']}")
+    if g.get("bindfile_hex") != r.get("bindfile_hex"):
+        def dec(v): return None if v is None else bytes.fromhex(v).decode("utf-8", "replace")
+        print(f"   repo-pins.json GO: {dec(g.get('bindfile_hex'))!r}")
+        print(f"   repo-pins.json RS: {dec(r.get('bindfile_hex'))!r}")
+    if g.get("written") != r.get("written"):
+        def decw(w):
+            if w is None: return None
+            return {k: (bytes.fromhex(v[0]).decode("utf-8", "replace"), v[1]) for k, v in w.items()}
+        print(f"   written GO: {decw(g.get('written'))!r}")
+        print(f"   written RS: {decw(r.get('written'))!r}")
     if g.get("pinfile_hex") != r.get("pinfile_hex"):
         def dec(v): return None if v is None else bytes.fromhex(v).decode("utf-8", "replace")
         print(f"   epochs.json GO: {dec(g.get('pinfile_hex'))!r}")

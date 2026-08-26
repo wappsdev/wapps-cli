@@ -68,6 +68,39 @@ pub fn build() -> Command {
                         ),
                 )
                 .subcommand(
+                    Command::new("exec")
+                        .about("Run a command with the project's secrets injected as env vars")
+                        // trailing_var_arg + allow_hyphen_values: `exec -- pnpm dev`
+                        // sonrasindaki HER SEY cocuga ait. Aksi halde clap
+                        // `--watch` gibi bir cocuk bayragini KENDI bayragi
+                        // sanip reddederdi.
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true)
+                        .arg(Arg::new("argv").num_args(0..).help("Command and arguments"))
+                        .arg(
+                            Arg::new("prefix")
+                                .long("prefix")
+                                .value_name("string")
+                                .help("prefix prepended to each env var name (default: none — keys are stored under their final name)"),
+                        )
+                        .arg(
+                            Arg::new("break-glass")
+                                .long("break-glass")
+                                .action(ArgAction::SetTrue)
+                                .help("deploy-intent only: TTY-only CF-outage override; HARD-REFUSED in agent mode"),
+                        )
+                        .arg(
+                            Arg::new("intent")
+                                .long("intent")
+                                .value_name("string")
+                                .help("freshness intent: dev (tolerate cache) | deploy (fresh-or-fail)"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("apply")
+                        .about("Write every declared consumption target from the store"),
+                )
+                .subcommand(
                     Command::new("get")
                         .about("Print a single secret value (TTY only; refused in agent mode)")
                         // Arite KONTROLU elle yapiliyor (cobra'nin ExactArgs(1)'i

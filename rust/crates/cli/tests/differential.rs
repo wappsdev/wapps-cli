@@ -79,14 +79,18 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         "bayt karsilastirmasi",
     );
     // Karsilastirmanin GERCEKTEN vaka gezdiginin kaniti: bos bir kume de
-    // "fark yok" derdi. Taban 32'den 60'a cikti: `secrets set` 28 vaka ekledi
-    // (deger yakalama, baglama kapisi, yazim rotasi, kapi SIRASI).
+    // "fark yok" derdi. Taban 32 → 60 (`secrets set`) → 102: `exec` ve `apply`
+    // 42 vaka ekledi (config yukleme+dogrulama, baglama pin defteri, iki
+    // kapinin SIRASI, canli scrubber, apply'in yazicisi ve idempotensi).
+    //
+    // Karsilastirilan alan sayisi da arttI: cikti/cikis/epoch-pini'ne ek olarak
+    // repo-pins.json ve apply'in YAZDIGI dosyalarin icerigi + modu.
     let equal: usize = report
         .rsplit("EQUAL=")
         .next()
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 60, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 102, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }
