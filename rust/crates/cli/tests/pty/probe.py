@@ -3,7 +3,7 @@
 import json, os, socket, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
-from cases import CASES, GATE_SCRIPT
+from cases import CASES, GATE_SCRIPT, FIXTURE_FILES
 
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
@@ -27,11 +27,24 @@ def main():
 
     cfg = os.path.join(workdir, "xdgcfg")
     os.makedirs(cfg, exist_ok=True)
+
+    # Fikstur dosyalari (set --from-file icin). workdir IKI ikili icin de AYNI,
+    # yani hata mesajlarina giren mutlak yollar da ayni — aksi halde yol farki
+    # sahte bir ayrisma uretirdi.
+    fixdir = os.path.join(workdir, "fixtures")
+    os.makedirs(fixdir, exist_ok=True)
+    for rel, content in FIXTURE_FILES.items():
+        with open(os.path.join(fixdir, rel), "w") as f:
+            f.write(content)
+
     results = {}
     try:
         for case in CASES:
             name, argv, extra = case[0], case[1], case[2]
             seed = case[3] if len(case) > 3 else None
+            stdin_data = case[4] if len(case) > 4 else None
+            # {FIX} -> fikstur dizini (mutlak). Iki ikili de ayni dizeyi gorur.
+            argv = [a.replace("{FIX}", fixdir) for a in argv]
             env = {
                 "PATH": "/usr/bin:/bin",
                 "HOME": os.path.join(workdir, "fakehome"),
@@ -53,7 +66,12 @@ def main():
             if seed is not None:
                 os.makedirs(os.path.dirname(pinpath), exist_ok=True)
                 with open(pinpath, "w") as f: f.write(seed)
-            out, err, code = run([binary] + argv, env)
+            # cwd ACIKCA workdir: miras alinan bir cwd'de bir .wapps.yaml
+            # bulunsaydi config-gerektiren dallar sessizce baska bir yola
+            # saparsa ve olcum kosuma gore degisirdi. workdir'de .wapps.yaml
+            # YOK, yani "config yok" dali DETERMINISTIK olarak olculuyor.
+            out, err, code = run([binary] + argv, env, cwd=workdir,
+                                 stdin_data=stdin_data)
             # Pin dosyasinin SON hali de sozlesmenin parcasi: reddedilen bir
             # okumanin pin'i geri sarmadigi ancak boyle gorunur.
             pin = open(pinpath, "rb").read().hex() if os.path.exists(pinpath) else None

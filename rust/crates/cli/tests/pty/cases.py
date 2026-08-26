@@ -18,6 +18,20 @@ GATE_SCRIPT = {
     "MISSING_VAL":[200, {"epoch": 7, "values": {}}],
 }
 
+# set --from-file fikstur dosyalari. GERCEK SIR YOK: bunlar uydurma test
+# dizeleri. Dosya ADI ve UZUNLUK differential'a girer, deger GIRMEZ (basari
+# satiri yalnizca anahtar adi + proje basiyor).
+FIXTURE_FILES = {
+    "plain.txt":    "file-sourced-test-string",
+    # Sondaki newline SOYULUYOR (trimTrailingNewline) — `printf %s > f` yerine
+    # `echo > f` yazan operator ayni degeri yazmis olsun diye.
+    "trailing.txt": "file-sourced-test-string\n",
+    # Bos dosya -> "empty value rejected".
+    "empty.txt":    "",
+    # YALNIZCA newline -> soyulunca bos kalir -> ayni ret.
+    "newline.txt":  "\n",
+}
+
 AGENT = {"CLAUDECODE": "1"}          # pty'de stdin TTY ama ajan isareti VAR
 HUMAN = {"WAPPS_AGENT_MODE": "0"}    # override YALNIZCA TTY'de onurlandirilir
 P = ["--project", "testproj"]
@@ -111,3 +125,104 @@ CASES = [
     # yakalar.
     ("human_unredacted_token_flag", P + ["secrets", "get", "--AKIAIOSFODNN7EXAMPLEZZ12"], HUMAN),
 ]
+
+
+# --- `secrets set` ----------------------------------------------------------
+#
+# set'in get'ten AYRILDIGI uc yer, ve her birinin burada bir vakasi var:
+#
+#  1. AJAN MODU SERBEST. set'in politikasi `allow` (get'inki `refuse_agent`).
+#     Yani ajan yolu Guard'i GECIYOR ve bir sonraki kapiya — repo->proje
+#     baglamasina — dusuyor. `--project <ad>` + ajan = BINDING_UNPINNED. Bu
+#     kapi get icin ERISILEMEZDI (Guard once reddediyordu), yani bu portun
+#     ILK kez olctugu kod yolu.
+#  2. DEGER YAKALAMA. --from-file ya da YANKISIZ prompt. Prompt dali bir TTY
+#     istiyor; pty olmadan olculemez (borulu bir kosum non-TTY dalina duser).
+#  3. YAZMA ROTASI. PUT /keys/{KEY}; hata baglami "set <KEY>" (get'te
+#     "read <proje>").
+#
+# EPOCH PIN: Set epoch pin'ine DOKUNMAZ (Go'da yalnizca Keys/Read
+# checkAndAdvanceEpochPin cagiriyor). Pin dosyasi differential'in dorduncu
+# karsilastirilan alani oldugu icin, bir tarafin yazim sirasinda pin'i
+# oynatmasi burada gorunur.
+def s_h(name, argv, stdin=None):
+    return (f"human_set_{name}", P + ["secrets", "set"] + argv, HUMAN, None, stdin)
+
+def s_a(name, argv, stdin=None):
+    return (f"agent_set_{name}", P + ["secrets", "set"] + argv, AGENT, None, stdin)
+
+SET_CASES = [
+    # --- ajan modu: baglama kapisi (yeni kod yolu) ---
+    s_a("binding_refused",           ["PLAIN_KEY", "--from-file", "{FIX}/plain.txt"]),
+    # Ajan reddi deger YAKALAMADAN ONCE olmali: var olmayan bir dosya versek
+    # bile hata BINDING_UNPINNED kalmali, "read --from-file" DEGIL. Sira
+    # bozulursa (once dosya okunursa) bu vaka ayrisir.
+    s_a("binding_refused_before_file", ["PLAIN_KEY", "--from-file", "{FIX}/nope.txt"]),
+    s_a("binding_refused_missing_arg", []),
+
+    # --- insan modu: --from-file yolu ---
+    s_h("from_file",                 ["PLAIN_KEY", "--from-file", "{FIX}/plain.txt"]),
+    s_h("from_file_trailing_newline",["PLAIN_KEY", "--from-file", "{FIX}/trailing.txt"]),
+    s_h("from_file_empty",           ["PLAIN_KEY", "--from-file", "{FIX}/empty.txt"]),
+    s_h("from_file_only_newline",    ["PLAIN_KEY", "--from-file", "{FIX}/newline.txt"]),
+
+    # --- insan modu: YANKISIZ prompt (pty'nin varlik sebebi) ---
+    # Yazilan baytlar stdin pty'sine gidiyor; ECHO kapali oldugu icin ciktiya
+    # GERI YANKILANMAMALI. Yankilansaydi deger stdout/stderr hex'ine girerdi ve
+    # bu vaka onu gosterirdi.
+    s_h("prompt_tty",        ["PLAIN_KEY"], b"prompted-test-string\n"),
+    s_h("prompt_empty",      ["PLAIN_KEY"], b"\n"),
+    # \r ICRNL ile \n'e cevrilir; ReadPassword ikisinde de satiri bitirir.
+    s_h("prompt_cr",         ["PLAIN_KEY"], b"prompted-test-string\r"),
+    # \b (backspace) ReadPassword'un dongusunde son bayti SILER.
+    s_h("prompt_backspace",  ["PLAIN_KEY"], b"prompted-test-stringX\b\n"),
+
+    # --- insan modu: gate hata dallari (baglam "set <KEY>") ---
+    s_h("denied",            ["DENIED_KEY",   "--from-file", "{FIX}/plain.txt"]),
+    s_h("not_found",         ["GONE_KEY",     "--from-file", "{FIX}/plain.txt"]),
+    s_h("rate_limited",      ["RATE_KEY",     "--from-file", "{FIX}/plain.txt"]),
+    s_h("cas_conflict",      ["CONFLICT_KEY", "--from-file", "{FIX}/plain.txt"]),
+    s_h("epoch_conflict",    ["EPOCH_KEY",    "--from-file", "{FIX}/plain.txt"]),
+    s_h("unauthorized",      ["UNAUTH_KEY",   "--from-file", "{FIX}/plain.txt"]),
+    s_h("audit_unavailable", ["AUDIT_KEY",    "--from-file", "{FIX}/plain.txt"]),
+    s_h("bad_request",       ["BADREQ_KEY",   "--from-file", "{FIX}/plain.txt"]),
+    s_h("unexpected_status", ["TEAPOT_KEY",   "--from-file", "{FIX}/plain.txt"]),
+
+    # --- arite + bayrak hatalari ---
+    s_h("missing_arg",   []),
+    s_h("too_many_args", ["A", "B"]),
+    s_h("unknown_flag",  ["PLAIN_KEY", "--bogus"]),
+
+    # --- oturum yoklugu: istek aga HIC cikmamali ---
+    ("human_set_no_session", P + ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None),
+
+    # --- epoch pin'e DOKUNULMADIGININ kaniti ---
+    # Pin 3'te tohumlanip basarili bir yazim yapiliyor. Gate 7. epoch'u
+    # "sunuyor" ama set okuma yapmadigi icin pin 3'te KALMALI. Bir taraf
+    # yazim yolunda pin'i ilerletseydi dorduncu alan ayrisirdi.
+    ("human_set_leaves_pin_alone",
+     P + ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     HUMAN, pinfile(3), None),
+
+    # --- --project YOKKEN: config kapisi ---
+    # Bu iki vaka SIRAYI pinliyor. Go'da baglama kontrolu (PersistentPreRunE)
+    # RunE'den ONCE kosuyor ama `--project` bossa ve ortada .wapps.yaml YOKSA
+    # sessizce geciyor; ret bir adim sonra, storeProject'ten "no .wapps.yaml
+    # found" olarak geliyor. Yani AJAN modunda bile burada BINDING_UNPINNED
+    # DEGIL NOT_FOUND bekleniyor — bu portun kolayca yanlis yapabilecegi yer.
+    # (probe cwd'yi workdir'e sabitliyor; orada .wapps.yaml yok.)
+    ("human_set_no_project", ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     HUMAN, None, None),
+    ("agent_set_no_project", ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     AGENT, None, None),
+
+    # --from-file YOK: dosya sistemi hata metni. Go'nun *PathError'i
+    # "open <yol>: no such file or directory" basiyor; Rust'in std hatasi
+    # "No such file or directory (os error 2)". Bu POSIX dizesi ELDE
+    # uretiliyor (bkz. src/setverb.rs) — Go'nun ic hata tablosunu taklit
+    # etmek degil, AYNI mesaji yazmak.
+    s_h("from_file_missing", ["PLAIN_KEY", "--from-file", "{FIX}/nope.txt"]),
+]
+
+CASES += SET_CASES

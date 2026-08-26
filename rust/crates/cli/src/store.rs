@@ -256,6 +256,50 @@ pub fn read(project: &str, keys: &[String]) -> Result<ReadResult, Error> {
     }
 }
 
+/// set, PUT /v1/projects/{p}/keys/{KEY} cagirir — TEK anahtar yazimi.
+///
+/// EPOCH PIN'E DOKUNMAZ, ve bu bir eksiklik degil Go'nun sozlesmesi: pin
+/// yalnizca Keys/Read yollarinda (checkAndAdvanceEpochPin) ilerliyor. Bir yazim
+/// sunulan bir epoch OKUMUYOR, dolayisiyla pinleyecek bir sey de yok. Bunu
+/// "tamamlamak" — yazim sonrasi pin'i oynatmak — sahadaki ikiliyle ayrisirdi;
+/// differential pin dosyasinin son halini de karsilastirdigi icin gorunurdu
+/// (human_set_leaves_pin_alone).
+///
+/// HATA BAGLAMI "set <KEY>" (read'deki "read <proje>" DEGIL) — Go'daki
+/// mapHTTPError(r, "set "+key) ile ayni.
+pub fn set(project: &str, key: &str, value: &str) -> Result<(), Error> {
+    let headers = session::auth_headers()?;
+    let body = serde_json::json!({ "value": value });
+    let url = format!(
+        "{}/v1/projects/{}/keys/{}",
+        session::gate_url(),
+        urlencode_path_segment(project),
+        urlencode_path_segment(key)
+    );
+    let mut req = agent().put(&url).set("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = format!("set {key}");
+    match req.send_json(body) {
+        // Govde OKUNMUYOR: Go tarafi da 200'de govdeye bakmiyor. Bir yazim
+        // yanitinin icerigi transcript'e tasinacak bir sey tasimaz.
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(status, resp)) => {
+            let retry_after = resp
+                .header("Retry-After")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_RETRY_AFTER);
+            let text = resp.into_string().unwrap_or_default();
+            Err(map_http_error(status, &text, retry_after, &ctx))
+        }
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
 // urlencode_path_segment, proje adini tek bir yol segmentine kacirir.
 fn urlencode_path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

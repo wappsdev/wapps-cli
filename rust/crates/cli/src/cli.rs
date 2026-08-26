@@ -56,6 +56,18 @@ pub fn build() -> Command {
             Command::new("secrets")
                 .about("Read and write this project's secrets in the gate")
                 .subcommand(
+                    Command::new("set")
+                        .about("Write a secret value into the store (interactive, no echo)")
+                        // Arite ELLE kontrol ediliyor (cobra ExactArgs(1) gibi).
+                        .arg(Arg::new("key").num_args(0..).help("Secret key name"))
+                        .arg(
+                            Arg::new("from-file")
+                                .long("from-file")
+                                .value_name("string")
+                                .help("read the value from this file instead of prompting (keeps it out of argv and shell history)"),
+                        ),
+                )
+                .subcommand(
                     Command::new("get")
                         .about("Print a single secret value (TTY only; refused in agent mode)")
                         // Arite KONTROLU elle yapiliyor (cobra'nin ExactArgs(1)'i

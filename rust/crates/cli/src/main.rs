@@ -5,6 +5,7 @@ use wapps::agentmode;
 use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
 use wapps::gojson::quote as go_quote;
+use wapps::setverb;
 use wapps::store;
 
 fn main() -> ExitCode {
@@ -40,6 +41,21 @@ fn run() -> Result<(), CmdError> {
 
     match matches.subcommand() {
         Some(("secrets", sm)) => match sm.subcommand() {
+            Some(("set", sm2)) => {
+                let keys: Vec<String> =
+                    sm2.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default();
+                // ARITE ONCE. Olculdu (differential
+                // agent_set_binding_refused_missing_arg): cobra ValidateArgs'i
+                // PersistentPreRunE'dan ONCE kosuyor, yani ajan modunda bile
+                // eksik arguman BINDING_UNPINNED degil arite hatasi veriyor.
+                if keys.len() != 1 {
+                    return Err(CmdError::Plain(format!(
+                        "accepts 1 arg(s), received {}",
+                        keys.len()
+                    )));
+                }
+                run_set(&keys[0], project, sm2.get_one::<String>("from-file").cloned())
+            }
             Some(("get", gm)) => {
                 let keys: Vec<String> =
                     gm.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default();
@@ -62,6 +78,53 @@ fn run() -> Result<(), CmdError> {
             std::process::exit(0);
         }
     }
+}
+
+// run_set, `wapps secrets set <KEY>`.
+//
+// KAPI SIRASI Go'dan OLCULDU ve burasi portun kolayca yanlis yapacagi yer:
+//
+//   1. arite            (cobra ValidateArgs — PersistentPreRunE'dan ONCE)
+//   2. baglama kapisi   (secretsPreRunE; `--project` + ajan → BINDING_UNPINNED)
+//   3. proje cozumu     (RunE → storeProject; config yoksa NOT_FOUND)
+//   4. deger yakalama   (--from-file | yankisiz prompt)
+//   5. store yazimi     (PUT)
+//
+// 2 ile 4'un sirasi gozlemlenebilir: var olmayan bir dosyayla ajan modunda
+// cagirmak "read --from-file" DEGIL BINDING_UNPINNED vermeli
+// (agent_set_binding_refused_before_file).
+//
+// set'in ajan-modu politikasi `allow` (get'inki `refuse_agent`), yani
+// agentmode::guard BURADA CAGRILMAZ — set gizli bir deger BASMIYOR, aliyor.
+fn run_set(
+    key: &str,
+    project: Option<String>,
+    from_file: Option<String>,
+) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    setverb::binding_gate(project.as_deref(), agent).map_err(CmdError::Cli)?;
+
+    let project = match project {
+        Some(p) => p,
+        None => {
+            return Err(CmdError::Cli(
+                Error::new(Code::NotFound, "set: no .wapps.yaml found").with_recovery(
+                    "run this from a project directory, or pass --config <path>/.wapps.yaml (see 'wapps secrets init')",
+                ),
+            ))
+        }
+    };
+
+    let mut err_out = std::io::stderr();
+    let value = setverb::capture_value(&mut err_out, key, from_file.as_deref())
+        .map_err(CmdError::Plain)?;
+
+    store::set(&project, key, &value).map_err(CmdError::Cli)?;
+
+    // Basari satiri stdout'a; yalnizca ANAHTAR ADI ve PROJE — deger DEGIL.
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "✓ Set {key} (store: {project})");
+    Ok(())
 }
 
 fn run_get(key: &str, project: Option<String>) -> Result<(), CmdError> {

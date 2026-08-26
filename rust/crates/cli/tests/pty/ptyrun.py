@@ -13,6 +13,13 @@ kaybolabiliyor. Olculdu: `cargo test` altinda bir vaka bos stderr ile geldi,
 ayni vaka tek basina 5 kez kosunca hic kirilmadi. Bu yuzden ebeveyn slave'leri
 surec BITENE ve masterlar BOSALTILANA kadar acik tutuyor. Sessizce yanlis
 "esit"/"farkli" ureten bir differential, hic differential olmamasindan kotudur.
+
+STDIN YAZIMI (`stdin_data`) — `secrets set` icin SART: Go tarafi degeri
+`term.ReadPassword` ile YANKISIZ okuyor, yani okuyucunun bir TTY olmasi
+gerekiyor. Boru ile beslenen bir olcum non-TTY dalina duser (uyari satiri +
+farkli okuma yolu) ve asil no-echo dalini HIC calistirmaz. Baytlar master
+tarafina yaziliyor; slave'de ECHO kapali oldugu icin geri yankilanmiyorlar ve
+cikti sayilmiyorlar.
 """
 import os, pty, select, subprocess, sys, json, termios
 
@@ -30,7 +37,7 @@ def _drain(fds, buf, timeout):
             got = True
     return got
 
-def run(argv, env, cwd=None, timeout=30):
+def run(argv, env, cwd=None, timeout=30, stdin_data=None):
     m_in, s_in = pty.openpty()
     m_out, s_out = pty.openpty()
     m_err, s_err = pty.openpty()
@@ -42,6 +49,11 @@ def run(argv, env, cwd=None, timeout=30):
 
     p = subprocess.Popen(argv, stdin=s_in, stdout=s_out, stderr=s_err,
                          env=env, cwd=cwd, close_fds=True)
+
+    # stdin baytlari master'a YAZILIYOR (slave'e degil): cocuk okuyana kadar
+    # pty tamponunda bekler, yani spawn ile okuma arasindaki yaris onemsiz.
+    if stdin_data:
+        os.write(m_in, stdin_data)
 
     buf = {m_out: b"", m_err: b""}
     fds = [m_out, m_err]
@@ -68,5 +80,7 @@ def run(argv, env, cwd=None, timeout=30):
 
 if __name__ == "__main__":
     spec = json.load(sys.stdin)
-    out, err, code = run(spec["argv"], dict(spec.get("env") or {}), spec.get("cwd"))
+    sd = spec.get("stdin_hex")
+    out, err, code = run(spec["argv"], dict(spec.get("env") or {}), spec.get("cwd"),
+                         stdin_data=bytes.fromhex(sd) if sd else None)
     json.dump({"stdout_hex": out.hex(), "stderr_hex": err.hex(), "exit": code}, sys.stdout)
