@@ -114,14 +114,14 @@ pub fn report_error<W: Write>(w: &mut W, err: &CmdError, agent: bool) {
             clierr::emit(w, &clierr::Error::new(Code::Internal, msg.clone()))
         }
         (false, CmdError::Cli(e)) => {
-            let _ = write!(w, "Error: {e}\n");
+            let _ = writeln!(w, "Error: {e}");
             if !e.recovery.is_empty() {
-                let _ = write!(w, "  → {}\n", e.recovery);
+                let _ = writeln!(w, "  → {}", e.recovery);
             }
         }
         // Duz hatada kurtarma satiri YOK — Go'da RecoveryOf("") doner.
         (false, CmdError::Plain(msg)) => {
-            let _ = write!(w, "Error: {msg}\n");
+            let _ = writeln!(w, "Error: {msg}");
         }
     }
 }

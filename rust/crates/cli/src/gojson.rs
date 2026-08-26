@@ -31,11 +31,11 @@ impl Formatter for GoEscape {
                 '\u{2029}' => "\\u2029",
                 _ => continue,
             };
-            w.write_all(frag[last..i].as_bytes())?;
+            w.write_all(&frag.as_bytes()[last..i])?;
             w.write_all(esc.as_bytes())?;
             last = i + c.len_utf8();
         }
-        w.write_all(frag[last..].as_bytes())
+        w.write_all(&frag.as_bytes()[last..])
     }
 }
 

@@ -1,0 +1,58 @@
+# cargo-deny — bagimlilik politikasinin TRANSITIF yarisi.
+#
+# NEDEN AYRI BIR DOSYA (wapps-platform'unkini paylasmiyoruz):
+# o dosyadaki yasaklarin GEREKCESI kendi `reason` alanlarinda yazili ve uc
+# tanesi acikca wasm32'ye ait — "wasm32'de derlenmiyor", "This wasm target is
+# unsupported by mio", "wasm'da karsiligi yok". Bu ikili wasm'da HIC kosmuyor,
+# yani o gerekceler burada gecerli degil. Bir kurali gerekcesinden koparip
+# tasimak, kurali korumak degil taklit etmektir.
+#
+# AMA yasaklar GEVSETILMEDI — ve gevsetmeye gerek de kalmadi. Olculdu: bu
+# crate'in grafiginde tokio, mio, socket2, uuid ve rsa YOK (115 crate). Bunu
+# mumkun kilan tek karar `ureq`: bloklayan bir HTTP istemcisi. Async bir istemci
+# secilseydi tokio grafige girerdi ve o zaman gercekten bir muafiyet konusmasi
+# gerekirdi. Yasaklar burada DURUYOR ki, birisi ileride async bir istemciye
+# gecerse bu kapi otesini sessizce gecirmesin — o an bir KARAR ani olsun.
+
+[graph]
+# Yalnizca native ucluler: bu ikili goreleaser ile linux/darwin x amd64/arm64
+# olarak sevk ediliyor. wasm32 BURADA YOK, cunku CLI wasm'da kosmuyor.
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+]
+all-features = true
+
+[bans]
+multiple-versions = "warn"
+# `version = "*"` bir bagimliligi denetlenemez yapiyor.
+wildcards = "deny"
+deny = [
+    { crate = "tokio", reason = "async calisma zamani; bloklayan istemciyle gerekmiyor, girmesi bir KARAR olmali" },
+    { crate = "mio", reason = "tokio'nun tasiyicisi" },
+    { crate = "socket2", reason = "ham soket; bu ikilinin ihtiyaci yok" },
+    { crate = "uuid", reason = "rastgelelik kaynagi kararini acikca istiyoruz" },
+]
+
+[licenses]
+# Guven yuzeyi bu tarafta gercek: 115 crate, ve bu bir SIRLAR CLI'si.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+private = { ignore = true }
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
