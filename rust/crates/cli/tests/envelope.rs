@@ -37,3 +37,37 @@ fn line_and_paragraph_separators_are_escaped_like_go() {
     let s = String::from_utf8(buf).unwrap();
     assert!(s.contains("a\\u2028b\\u2029c"), "got: {s}");
 }
+
+// Zarf, mesaji ve KURTARMAyi safelog'dan gecirir. Beklenen bayt dizisi Go
+// ikilisinden pty altinda olculdu:
+//   {"error":"INTERNAL","message":"unknown flag: --[REDACTED:24]",...}
+#[test]
+fn envelope_redacts_secret_shaped_text_before_it_is_written() {
+    let e = clierr::Error::new(Code::Internal, "unknown flag: --AKIAIOSFODNN7EXAMPLEZZ12");
+    let mut buf = Vec::new();
+    clierr::emit(&mut buf, &e);
+    let s = String::from_utf8(buf).unwrap();
+    assert!(s.contains("unknown flag: --[REDACTED:24]"), "got: {s}");
+    assert!(!s.contains("AKIAIOSFODNN7EXAMPLEZZ12"), "ham jeton zarfa girdi: {s}");
+}
+
+// Kurtarma satiri da dis metin tasiyabiliyor (ornegin bir CAS catismasinda
+// yazarlarin adlari). Go, Emit'te message VE recovery'yi redakte ediyor.
+#[test]
+fn envelope_redacts_the_recovery_line_too() {
+    let e = clierr::Error::new(Code::CasConflict, "conflict")
+        .with_recovery("re-run; writer AbC123AbC123AbC123AbC123 holds the lock");
+    let mut buf = Vec::new();
+    clierr::emit(&mut buf, &e);
+    let s = String::from_utf8(buf).unwrap();
+    assert!(s.contains("writer [REDACTED:24] holds"), "got: {s}");
+}
+
+// ASIMETRI, kasitli ve Go'dan birebir: insan yolu ("Error: <cumle>")
+// RedactPatterns'tan GECMEZ. Go'da (*Error).Error() onu cagirmiyor; burada da
+// cagirmamali, yoksa sahadaki ikiliyle ayrisiriz.
+#[test]
+fn the_human_summary_is_not_redacted_like_the_envelope() {
+    let e = clierr::Error::new(Code::Internal, "unknown flag: --AKIAIOSFODNN7EXAMPLEZZ12");
+    assert_eq!(e.to_string(), "INTERNAL: unknown flag: --AKIAIOSFODNN7EXAMPLEZZ12");
+}

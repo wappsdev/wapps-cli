@@ -1,0 +1,127 @@
+[
+  {
+    "name": "empty",
+    "in": "",
+    "want": ""
+  },
+  {
+    "name": "plain_text",
+    "in": "plain English error message with no secrets",
+    "want": "plain English error message with no secrets"
+  },
+  {
+    "name": "lowercase_path",
+    "in": "could not open /home/user/long/path/to/config/file.yaml",
+    "want": "could not open /home/user/long/path/to/config/file.yaml"
+  },
+  {
+    "name": "short_identifiers",
+    "in": "user_id=abc123 session_id=ghj456",
+    "want": "user_id=abc123 session_id=ghj456"
+  },
+  {
+    "name": "all_lower_long",
+    "in": "averylongallloweridentifierwithnocapsordigits",
+    "want": "averylongallloweridentifierwithnocapsordigits"
+  },
+  {
+    "name": "all_upper_long",
+    "in": "VERYLONGALLUPPERIDENTIFIERWITHNOLOWERSORDIGITS",
+    "want": "VERYLONGALLUPPERIDENTIFIERWITHNOLOWERSORDIGITS"
+  },
+  {
+    "name": "digits_only_long",
+    "in": "123456789012345678901234567890",
+    "want": "123456789012345678901234567890"
+  },
+  {
+    "name": "underscores_only_long",
+    "in": "___________________________",
+    "want": "___________________________"
+  },
+  {
+    "name": "exactly_23_chars",
+    "in": "AbC123AbC123AbC123AbC12",
+    "want": "AbC123AbC123AbC123AbC12"
+  },
+  {
+    "name": "exactly_24_chars",
+    "in": "AbC123AbC123AbC123AbC123",
+    "want": "[REDACTED:24]"
+  },
+  {
+    "name": "fake_jwt_in_sentence",
+    "in": "error from API: token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJlLXBsYWNlaG9sZGVy expired",
+    "want": "error from API: token [REDACTED] expired"
+  },
+  {
+    "name": "fake_key_shaped_25",
+    "in": "AWS error: invalid key AKIAIOSFODNN7EXAMPLEKEY12",
+    "want": "AWS error: invalid key [REDACTED:25]"
+  },
+  {
+    "name": "unknown_flag_token",
+    "in": "unknown flag: --AKIAIOSFODNN7EXAMPLEZZ12",
+    "want": "unknown flag: --[REDACTED:24]"
+  },
+  {
+    "name": "unknown_flag_jwt",
+    "in": "unknown flag: --eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJlLXBsYWNlaG9sZGVy",
+    "want": "unknown flag: [REDACTED]"
+  },
+  {
+    "name": "trailing_dashes",
+    "in": "tok AbC123AbC123AbC123AbC123-- end",
+    "want": "tok [REDACTED:24]-- end"
+  },
+  {
+    "name": "leading_word_joined",
+    "in": "abc-AbC123AbC123AbC123AbC123",
+    "want": "[REDACTED:28]"
+  },
+  {
+    "name": "equals_terminated",
+    "in": "KEY=AbC123AbC123AbC123AbC123=",
+    "want": "[REDACTED:28]="
+  },
+  {
+    "name": "non_ascii_before_token",
+    "in": "héAbC123AbC123AbC123AbC123",
+    "want": "hé[REDACTED:24]"
+  },
+  {
+    "name": "mixed_case_path",
+    "in": "/Users/AdnanKurt/Projects/wapps-cli/internal",
+    "want": "/[REDACTED:43]"
+  },
+  {
+    "name": "jwt_and_token",
+    "in": "tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJlLXBsYWNlaG9sZGVy and AbC123AbC123AbC123AbC123",
+    "want": "tok [REDACTED] and [REDACTED:24]"
+  },
+  {
+    "name": "newline_separated",
+    "in": "line1\nAbC123AbC123AbC123AbC123\nline2",
+    "want": "line1\n[REDACTED:24]\nline2"
+  },
+  {
+    "name": "angle_and_ampersand_flag",
+    "in": "unknown flag: --\u003ca\u003e\u0026b",
+    "want": "unknown flag: --\u003ca\u003e\u0026b"
+  },
+  {
+    "name": "epoch_downgrade_message",
+    "in": "served epoch 7 \u003c pinned 9 for \"testproj\"",
+    "want": "served epoch 7 \u003c pinned 9 for \"testproj\""
+  },
+  {
+    "name": "epoch_downgrade_recovery",
+    "in": "possible rollback attack — do NOT force; if the store was LEGITIMATELY rebuilt, a human must run the paper-verified ceremony: wapps dr accept-epoch-reset --project testproj",
+    "want": "possible rollback attack — do NOT force; if the store was LEGITIMATELY rebuilt, a human must run the paper-verified ceremony: wapps dr accept-epoch-reset --project testproj"
+  },
+  {
+    "name": "action_unavailable_recovery",
+    "in": "the message names what is missing — a required flag, a confirmation, or a capability this build lacks; supply it and re-run, because an identical retry cannot change the result",
+    "want": "the message names what is missing — a required flag, a confirmation, or a capability this build lacks; supply it and re-run, because an identical retry cannot change the result"
+  }
+]

@@ -7,6 +7,7 @@
 // kurtarma metinleri ve bayraklar oradan bire bir alinmistir. Bir metni burada
 // "duzeltmek" sahadaki ikililerle ayrisma demektir.
 use crate::gojson;
+use crate::safelog;
 use serde::Serialize;
 use std::fmt;
 use std::io::Write;
@@ -172,9 +173,20 @@ fn clip(s: &str) -> String {
 }
 
 /// emit, hatayi zarf olarak w'ye TEK satir JSON yazar.
+///
+/// SIRA Go ile AYNI ve onemli: once safelog::redact_patterns, SONRA clip.
+/// Ters sirada, 400 bayta kisaltilmis bir jetonun kuyrugu desene uymaz ve
+/// maskelenmeden gecerdi.
+///
+/// Kurtarma satiri da redakte edilir: Go'nun Emit'i her iki alani da
+/// geciriyor ve kurtarma metni dis bir kaynagi isimlendirebiliyor.
 pub fn emit<W: Write>(w: &mut W, e: &Error) {
-    let message = clip(&e.message);
-    let recovery = clip(if e.recovery.is_empty() { e.code.spec().0 } else { &e.recovery });
+    let message = clip(&safelog::redact_patterns(&e.message));
+    let recovery = clip(&safelog::redact_patterns(if e.recovery.is_empty() {
+        e.code.spec().0
+    } else {
+        &e.recovery
+    }));
     let env = Envelope {
         error: e.code.as_str(),
         message: &message,
