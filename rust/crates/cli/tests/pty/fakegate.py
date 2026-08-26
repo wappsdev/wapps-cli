@@ -250,7 +250,16 @@ class H(BaseHTTPRequestHandler):
         key = unquote(m.group(2))
         status, payload = SCRIPT.get(key, (404, {"error": "KEY_NOT_FOUND", "key": key}))
         if status == 200:
-            payload = {"ok": True}
+            # COMMIT YANITI, gercek writer-do'nun sekliyle: {project, epoch,
+            # manifestSha256, keyVersions} (worker/src/writer-do.ts). Onceden
+            # burasi {"ok": true} donuyordu — gercek gate'in ASLA donmedigi bir
+            # sekil. O uydurma sekil, "bir yazim epoch GORMUYOR" yanlisini
+            # olculemez kiliyordu: istemci epoch'u atiyordu, sahte gate de
+            # gondermiyordu, yani kimse farki goremiyordu.
+            payload = {"project": unquote(m.group(1)),
+                       "epoch": payload.get("epoch", 0),
+                       "manifestSha256": "a" * 64,
+                       "keyVersions": {key: 1}}
         return self._send(status, payload)
 
     def do_DELETE(self):

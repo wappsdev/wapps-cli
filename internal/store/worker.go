@@ -347,6 +347,35 @@ func (w *WorkerStore) Set(ctx context.Context, project, key, value string, opts 
 	if r.status != http.StatusOK {
 		return mapHTTPError(r, "set "+key)
 	}
+	// Commit yanıtının epoch'u pin'e karşı KONTROL EDİLİR.
+	//
+	// Bu çağrının gerekçesi ÖLÇÜLDÜ: writer-do commit yanıtı
+	// `{project, epoch, manifestSha256, keyVersions}` döndürüyor
+	// (worker/src/writer-do.ts) ve dispatchWrite onu istemciye AYNEN
+	// geçiriyor. Yani `set` epoch'u ZATEN elinde tutuyordu; onu JSON
+	// sınırında atıyordu. "set epoch'u hiç görmüyor" DOĞRU DEĞİL.
+	//
+	// Kontrol yazımdan SONRA, çünkü epoch ancak commit'le doğar. Yazımı geri
+	// almaz — işi, geri sarılmış bir store'a yazıldığını operatöre BAĞIRMAK
+	// ve pin'i yüksekte tutmaktır (yoksa sonraki okumalar da sessizleşirdi).
+	// Bu yüzden zarar bir okumanınkinden farklı ve mesaj bunu söylemeli.
+	var out struct {
+		Epoch uint64 `json:"epoch"`
+	}
+	if err := decodeJSON(r.body, &out, "set "+key); err != nil {
+		return err
+	}
+	// epoch 0 GEÇERLİ BİR COMMIT DEĞİL (writer-do: epoch = prevEpoch+1 ≥ 1),
+	// yani 0 "alan yoktu" demektir. Bunu checkAndAdvanceEpochPin'e vermek
+	// operatöre "served epoch 0 < pinned N — possible rollback attack" dedirtir
+	// ve onu gereksiz bir DR seremonisine yollar. Kapı yine KAPALI, ama suçlama
+	// DOĞRU sınıfta: protokol ihlali.
+	if out.Epoch == 0 {
+		return clierr.Newf(clierr.Internal, "set %s: gate returned no epoch on a committed write", key)
+	}
+	if err := w.checkAndAdvanceEpochPin(project, out.Epoch); err != nil {
+		return err
+	}
 	return nil
 }
 

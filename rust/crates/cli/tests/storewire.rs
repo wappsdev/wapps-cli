@@ -67,3 +67,40 @@ fn an_import_body_never_carries_a_bare_key_map() {
     let body = wapps::store::import_body(&v);
     assert!(body.starts_with(r#"{"values":"#), "zarf `values` olmali: {body}");
 }
+
+// --- COMMIT YANITININ EPOCH'U: yazim tarafinin pin girdisi ------------------
+//
+// Bu blok, "bir yazim sunulan bir epoch OKUMUYOR" iddiasini CURUTUR. Tel onu
+// tasiyor: worker/src/writer-do.ts commit yanitini
+// `{project, epoch, manifestSha256, keyVersions}` olarak donduruyor ve
+// index.ts'teki dispatchWrite DO yanitini istemciye AYNEN geciriyor. Yani
+// `set` epoch'u yanitta ALIYORDU; JSON sinirinda ATIYORDU.
+//
+// Karar PUR bir fonksiyonda duruyor, cunku store::set ag I/O yapiyor ve
+// testten ERISILEMEYEN bir guvenlik kapisi kimsenin savunamayacagi bir kapidir.
+
+#[test]
+fn a_commit_response_carries_the_new_epoch() {
+    let body = r#"{"project":"vaulter","epoch":12,"manifestSha256":"ab","keyVersions":{"A":3}}"#;
+    assert_eq!(
+        wapps::store::committed_epoch(body, "set A").expect("epoch okunmali"),
+        12
+    );
+}
+
+// epoch 0 GECERLI BIR COMMIT DEGIL (writer-do: epoch = prevEpoch+1 >= 1), yani
+// 0 "alan yoktu" demektir. Onu pin kontroluna vermek operatore
+// "served epoch 0 < pinned N — possible rollback attack" dedirtir ve onu
+// GEREKSIZ bir DR seremonisine yollar. Kapi yine KAPALI ama suclama DOGRU
+// sinifta: protokol ihlali.
+#[test]
+fn a_commit_response_without_an_epoch_is_a_protocol_error_not_a_rollback_accusation() {
+    let body = r#"{"project":"vaulter","manifestSha256":"ab"}"#;
+    let err = wapps::store::committed_epoch(body, "set A").expect_err("epoch'suz 200 gecmemeli");
+    assert_eq!(
+        err.code,
+        wapps::clierr::Code::Internal,
+        "eksik epoch bir protokol ihlali; rollback SUCLAMASI degil: {err}"
+    );
+    assert_ne!(err.code, wapps::clierr::Code::EpochDowngrade);
+}

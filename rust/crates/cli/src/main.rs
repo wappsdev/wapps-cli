@@ -74,7 +74,7 @@ fn run() -> Result<(), CmdError> {
                         keys.len()
                     )));
                 }
-                run_set(&keys[0], project, sm2.get_one::<String>("from-file").cloned())
+                run_set(&keys[0], config, project, sm2.get_one::<String>("from-file").cloned())
             }
             Some(("exec", em)) => {
                 let argv: Vec<String> =
@@ -1111,24 +1111,42 @@ fn run_init(
 //
 // set'in ajan-modu politikasi `allow` (get'inki `refuse_agent`), yani
 // agentmode::guard BURADA CAGRILMAZ — set gizli bir deger BASMIYOR, aliyor.
+// run_set, `wapps secrets set <KEY>`.
+//
+// KAPI SIRASI, Go'dan OLCULDU (set.go RunE + SecretsCmd.PersistentPreRunE):
+//
+//   1. arite            (cobra ExactArgs(1) — PersistentPreRunE'dan ONCE)
+//   2. ajan politikasi  (`set` -> allow, agentgate.go:30; yani gecer)
+//   3. baglama kapisi   (secretsPreRunE — confused-deputy korumasi)
+//   4. proje cozumu     (storeProject("set") -> NOT_FOUND)
+//   5. deger yakalama, sonra tek-anahtar PUT
+//
+// BURADA BIR PORT BOSLUGU VARDI ve OLCULDU: run_set eskiden Ctx'i HIC
+// cozmuyordu; `--project` yoksa dogrudan "set: no .wapps.yaml found" diyordu.
+// Yani KENDI .wapps.yaml'i olan bir dizinde Go BINDING_UNPINNED verirken (3.
+// adim) Rust NOT_FOUND veriyordu, ve pinli bir depoda Go YAZARKEN Rust
+// calismiyordu.
+//
+// Bu ayrisma differential'da GORUNMUYORDU: butun `set` vakalari ya
+// `--project testproj` veriyordu ya da .wapps.yaml'i OLMAYAN workdir'de
+// kosuyordu, yani config kolu HIC gezilmemisti. Uc vaka eklendi
+// (agent_set_config_unpinned, human_set_binding_{declined,accepted}) ve
+// duzeltmeden ONCE DIFFERENT=3 raporladilar.
+//
+// Sira artik run_exec/run_apply ile AYNI mekanizmayi kullaniyor (Ctx::resolve
+// -> gate -> store_project); `set`in kendi kopyasi olsaydi zamanla ayrisirdi.
 fn run_set(
     key: &str,
+    config: Option<String>,
     project: Option<String>,
     from_file: Option<String>,
 ) -> Result<(), CmdError> {
     let agent = agentmode::is_agent();
-    setverb::binding_gate(project.as_deref(), agent).map_err(CmdError::Cli)?;
-
-    let project = match project {
-        Some(p) => p,
-        None => {
-            return Err(CmdError::Cli(
-                Error::new(Code::NotFound, "set: no .wapps.yaml found").with_recovery(
-                    "run this from a project directory, or pass --config <path>/.wapps.yaml (see 'wapps secrets init')",
-                ),
-            ))
-        }
-    };
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
+    // store_project, Go'daki storeProject("set"): ciplak `--project <ad>`
+    // dogrudan proje ADI olur, yoksa .wapps.yaml ZORUNLU.
+    let project = ctx.store_project("set").map_err(CmdError::Cli)?;
 
     let mut err_out = std::io::stderr();
     let value = setverb::capture_value(&mut err_out, key, from_file.as_deref())

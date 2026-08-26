@@ -256,14 +256,45 @@ pub fn read(project: &str, keys: &[String]) -> Result<ReadResult, Error> {
     }
 }
 
+/// committed_epoch, bir 200 commit yanitindan yeni epoch'u cikarir.
+///
+/// PUR ve `pub`, cunku `set` ag I/O yapiyor: karar burada dursun ki testten
+/// ERISILEBILSIN. Testten erisilemeyen bir guvenlik kapisi kimsenin
+/// savunamayacagi bir kapidir.
+///
+/// epoch 0 GECERLI BIR COMMIT DEGIL (writer-do: epoch = prevEpoch+1 >= 1), yani
+/// 0 "alan yoktu" demektir; pin kontroluna verilseydi operatore
+/// "served epoch 0 < pinned N — possible rollback attack" der ve onu GEREKSIZ
+/// bir DR seremonisine yollardi. Kapi yine KAPALI, suclama DOGRU sinifta.
+pub fn committed_epoch(body: &str, ctx: &str) -> Result<u64, Error> {
+    #[derive(serde::Deserialize)]
+    struct Commit {
+        #[serde(default)]
+        epoch: u64,
+    }
+    let out: Commit = serde_json::from_str(body)
+        .map_err(|e| Error::new(Code::Internal, format!("{ctx}: decode response: {e}")))?;
+    if out.epoch == 0 {
+        return Err(Error::new(
+            Code::Internal,
+            format!("{ctx}: gate returned no epoch on a committed write"),
+        ));
+    }
+    Ok(out.epoch)
+}
+
 /// set, PUT /v1/projects/{p}/keys/{KEY} cagirir — TEK anahtar yazimi.
 ///
-/// EPOCH PIN'E DOKUNMAZ, ve bu bir eksiklik degil Go'nun sozlesmesi: pin
-/// yalnizca Keys/Read yollarinda (checkAndAdvanceEpochPin) ilerliyor. Bir yazim
-/// sunulan bir epoch OKUMUYOR, dolayisiyla pinleyecek bir sey de yok. Bunu
-/// "tamamlamak" — yazim sonrasi pin'i oynatmak — sahadaki ikiliyle ayrisirdi;
-/// differential pin dosyasinin son halini de karsilastirdigi icin gorunurdu
-/// (human_set_leaves_pin_alone).
+/// EPOCH PIN'I ILERLETIR. Eski yorum burada "bir yazim sunulan bir epoch
+/// OKUMUYOR" diyordu; bu OLCULDU ve YANLIS cikti. Tel epoch'u tasiyor:
+/// worker/src/writer-do.ts commit yanitini
+/// `{project, epoch, manifestSha256, keyVersions}` olarak donduruyor ve
+/// index.ts'teki dispatchWrite DO yanitini istemciye AYNEN geciriyor. Yani
+/// `set` epoch'u ZATEN aliyordu, JSON sinirinda ATIYORDU.
+///
+/// Kontrol yazimdan SONRA, cunku epoch ancak commit'le dogar. Yazimi geri
+/// ALMAZ; isi, geri sarilmis bir store'a yazildigini operatore BAGIRMAK ve
+/// pin'i yuksekte tutmak (yoksa sonraki okumalar da sessizlesirdi).
 ///
 /// HATA BAGLAMI "set <KEY>" (read'deki "read <proje>" DEGIL) — Go'daki
 /// mapHTTPError(r, "set "+key) ile ayni.
@@ -282,9 +313,14 @@ pub fn set(project: &str, key: &str, value: &str) -> Result<(), Error> {
     }
     let ctx = format!("set {key}");
     match req.send_json(body) {
-        // Govde OKUNMUYOR: Go tarafi da 200'de govdeye bakmiyor. Bir yazim
-        // yanitinin icerigi transcript'e tasinacak bir sey tasimaz.
-        Ok(_) => Ok(()),
+        // Govde OKUNUYOR: commit yaniti yeni epoch'u tasiyor ve o epoch pin
+        // kontrolunun GIRDISI. Govdede sir YOK (proje adi, epoch, manifest
+        // hash, keyVersion'lar), yani okumak transcript'e deger tasimaz.
+        Ok(resp) => {
+            let text = resp.into_string().unwrap_or_default();
+            let epoch = committed_epoch(&text, &ctx)?;
+            epochpin::check_and_advance(&epochpin::default_path()?, project, epoch, false)
+        }
         Err(ureq::Error::Status(status, resp)) => {
             let retry_after = resp
                 .header("Retry-After")

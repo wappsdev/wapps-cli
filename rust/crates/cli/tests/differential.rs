@@ -90,6 +90,13 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // → 282: `rotate skip` 10 vaka ekledi.
     // → 298: `doctor` 16 vaka ekledi.
     // → 300: `env --write`in atomicfile'a gecisi 2 vaka ekledi.
+    // → 302: `set`in epoch pini 2 vaka ekledi (biri YENIDEN ADLANDIRILDI:
+    //        human_set_leaves_pin_alone -> human_set_advances_the_pin, cunku
+    //        pinlenen davranis YANLIS olcuye dayaniyordu).
+    // → 305: `set`in config kolu 3 vaka ekledi. O kol HIC gezilmemisti; vakalar
+    //        duzeltmeden ONCE DIFFERENT=3 raporladi (Go BINDING_UNPINNED,
+    //        Rust NOT_FOUND) — yani bu uc vaka, epoch vakalarinin AKSINE,
+    //        karsilastirma uzerinden GERCEKTEN bir kusur buldu.
     //
     // Eklenen vakalarin AGIRLIK MERKEZI su soru: her fiilin ajan-modu
     // politikasi ne, ve kapi sirasi ne? Cevap fiil basina FARKLI (bkz.
@@ -106,6 +113,6 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 300, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(equal >= 305, "differential yalnizca {equal} vaka gezdi:\n{report}");
     let _ = std::fs::remove_dir_all(&work);
 }

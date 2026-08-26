@@ -8,7 +8,6 @@
 //
 // HICBIR YERDE DEGER LOGLANMAZ: bu dosyadaki hata ve uyari metinlerinin hicbiri
 // yakalanan degeri (ya da uzunlugunu) tasimaz.
-use crate::clierr::{Code, Error};
 use std::io::Write;
 
 /// PROMPT_SUFFIX, prompt metninin sonu ("Value for <KEY>: ").
@@ -185,27 +184,14 @@ pub fn capture_value<W: Write>(
     Ok(captured.value)
 }
 
-/// binding_gate, repo->proje baglama kontrolunun BU BUILD'de erisilebilir
-/// koludur (Go: checkRepoBinding).
-///
-/// `--project <ad>` ortada baglanacak bir repo OLMADIGI anlamina gelir.
-/// Bir INSAN icin bu, hedefi komut satirinda acikca adlandirmaktir. Bir AJAN
-/// icin degildir: pin tam olarak "A repo'sundaki ajan B projesini okumasin"
-/// icindir ve ajanin `--project` yazabilmesi onu yetkili yapmaz → fail-closed.
-///
-/// Go'nun DIGER kolu (projectOverride bos → .wapps.yaml yukle → repo
-/// parmak izini pin defterinde ara) BU BUILD'de erisilemez, cunku config
-/// yukleme henuz portlanmadi ve config'siz Go da o kolda sessizce geciyor.
-pub fn binding_gate(project: Option<&str>, is_agent: bool) -> Result<(), Error> {
-    match project {
-        Some(p) if is_agent => Err(Error::new(
-            Code::BindingUnpinned,
-            format!(
-                "--project {} names a project with no local repo; an agent may not target a project this way",
-                crate::gojson::quote(p)
-            ),
-        )
-        .with_recovery("a human must run this in a terminal, or work inside the project's repo")),
-        _ => Ok(()),
-    }
-}
+// BAGLAMA KAPISI BURADA DEGIL, ve bu bir eksiklik degil bir DUZELTME:
+//
+// Burada `binding_gate` adli dar bir kapi duruyordu. Yalnizca `--project <ad>`
+// kolunu kapiyor, digerini "bu build'de erisilemez" diye geciyordu — cunku
+// run_set Ctx'i HIC cozmuyordu. O varsayim OLCULDU ve YANLIS cikti: config
+// yukleme portlanmisti, yani `set` .wapps.yaml'i olan bir dizinde Go'nun
+// vardigi BINDING_UNPINNED'e HIC varmiyordu.
+//
+// Kapi artik run_set icinde, exec/apply ile AYNI `gate()` uzerinden
+// (configctx::check_repo_binding). Dar kopya SILINDI: birakilsaydi, ileride
+// onu cagiran biri baglama kontrolunu sessizce tek kola geri daraltirdi.

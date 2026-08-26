@@ -387,3 +387,81 @@ func TestPolicyAndRotatePlanAndWhoami(t *testing.T) {
 		t.Fatalf("rotate-plan: %+v %v", plan, err)
 	}
 }
+
+// TestSet_EpochDowngradeTripwire, bir YAZIMIN döndürdüğü epoch'un da pin'e
+// karşı kontrol edildiğini ölçer.
+//
+// Neden bu test var: rollback'i durduran TEK kontrol checkAndAdvanceEpochPin
+// ve bugün yalnızca Keys + Read onu çağırıyor. `set` çağırmıyordu — ama
+// çağırmamasının gerekçesi "elde epoch yok" DEĞİL. Tel bunu ÖLÇÜLEBİLİR
+// biçimde taşıyor: writer-do commit yanıtı `{project, epoch, manifestSha256,
+// keyVersions}` ve dispatchWrite onu istemciye AYNEN geçiriyor
+// (worker/src/writer-do.ts:428, worker/src/index.ts dispatchWrite). Yani Set
+// epoch'u yanıtta ALIYOR ve JSON sınırında atıyordu.
+//
+// Kontrol yazımdan SONRA yapılır — çünkü epoch ancak commit'ten sonra doğar.
+// Yazım geri alınamaz; bu kapının işi zararı önlemek değil, geri sarılmış bir
+// store'a yazıldığını operatöre BAĞIRMAK ve pin'i yüksekte tutmak.
+func TestSet_EpochDowngradeTripwire(t *testing.T) {
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost { // /read
+			writeJSON(w, 200, map[string]any{"epoch": uint64(9), "values": map[string]string{"A": "1"}})
+			return
+		}
+		// PUT /keys/{K} — commit yanıtı GERİ SARILMIŞ bir epoch taşıyor.
+		writeJSON(w, 200, map[string]any{"project": "vaulter", "epoch": uint64(4), "manifestSha256": "deadbeef"})
+	}))
+	// Önce pin'i 9'a çek.
+	if _, err := st.Read(context.Background(), "vaulter", []string{"A"}); err != nil {
+		t.Fatal(err)
+	}
+	err := st.Set(context.Background(), "vaulter", "A", "yeni", WriteOpts{})
+	if !clierr.Is(err, clierr.EpochDowngrade) {
+		t.Fatalf("want EPOCH_DOWNGRADE from a rolled-back write response, got %v", err)
+	}
+	// İKİNCİ YARI: pin İNMEMELİ. İnseydi sonraki okumalar da sessizce
+	// geri sarılmış store'u kabul ederdi.
+	if got, err := st.pinnedEpoch("vaulter"); err != nil || got != 9 {
+		t.Fatalf("pin must stay at 9, got %d (err %v)", got, err)
+	}
+}
+
+// TestSet_MissingEpochIsAProtocolErrorNotARollbackAccusation, epoch TAŞIMAYAN
+// bir 200 commit yanıtının nasıl raporlandığını sabitler.
+//
+// Bu testin varlık sebebi, epoch kontrolünü Set'e eklemenin YAN ETKİSİ:
+// gövdede `epoch` yoksa Go sıfır-değeri 0 üretir ve 0 < pinned olduğu için
+// checkAndAdvanceEpochPin "served epoch 0 < pinned N — possible rollback
+// attack — do NOT force" der ve operatörü bir DR seremonisine yönlendirir.
+// Oysa ortada rollback YOK, bozuk/eski bir yanıt şekli var. Yanlış suçlama
+// gereksiz bir seremoniyi tetikleyebilir.
+//
+// Hata SINIFI ayrılıyor ama kapı yine KAPALI: yazım yine hata veriyor.
+// Ölçüldü: writer-do'nun "set" için TEK 200 yolu epoch taşıyor, yani bu dal
+// bugün sahada erişilemez — yarınki bir şekil kaymasında erişilir olur.
+//
+// Ayrıca DURUMA BAĞLI olduğu için sinsi: pin 0 iken 0<0 yanlıştır ve hata
+// HİÇ çıkmaz; yalnızca daha önce bir okuma yapmış operatörde patlar.
+func TestSet_MissingEpochIsAProtocolErrorNotARollbackAccusation(t *testing.T) {
+	st, _ := newTestStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost { // /read → pin'i 9'a çek
+			writeJSON(w, 200, map[string]any{"epoch": uint64(9), "values": map[string]string{"A": "1"}})
+			return
+		}
+		// PUT: 200 ama gövdede epoch YOK.
+		writeJSON(w, 200, map[string]any{"project": "vaulter", "manifestSha256": "deadbeef"})
+	}))
+	if _, err := st.Read(context.Background(), "vaulter", []string{"A"}); err != nil {
+		t.Fatal(err)
+	}
+	err := st.Set(context.Background(), "vaulter", "A", "yeni", WriteOpts{})
+	if err == nil {
+		t.Fatal("a 200 write response with no epoch must not pass silently")
+	}
+	if clierr.Is(err, clierr.EpochDowngrade) {
+		t.Fatalf("must NOT accuse a rollback when the response simply carried no epoch, got %v", err)
+	}
+	if !clierr.Is(err, clierr.Internal) {
+		t.Fatalf("want Internal (protocol violation), got %v", err)
+	}
+}

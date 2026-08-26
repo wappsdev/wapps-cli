@@ -223,13 +223,32 @@ SET_CASES = [
     ("human_set_no_session", P + ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
      dict(HUMAN, WAPPS_SESSION_TOKEN=""), None, None),
 
-    # --- epoch pin'e DOKUNULMADIGININ kaniti ---
-    # Pin 3'te tohumlanip basarili bir yazim yapiliyor. Gate 7. epoch'u
-    # "sunuyor" ama set okuma yapmadigi icin pin 3'te KALMALI. Bir taraf
-    # yazim yolunda pin'i ilerletseydi dorduncu alan ayrisirdi.
-    ("human_set_leaves_pin_alone",
+    # --- epoch pin'i YAZIM yolunda da ILERLIYOR ---
+    # Bu vaka eskiden "human_set_leaves_pin_alone" idi ve pin'in 3'te KALMASINI
+    # bekliyordu; gerekcesi "bir yazim sunulan bir epoch OKUMUYOR" idi. Bu
+    # OLCULDU ve YANLIS cikti: commit yaniti epoch tasiyor (writer-do.ts), yani
+    # `set` epoch'u aliyor ve eskiden ATIYORDU.
+    #
+    # Pin 3'te tohumlaniyor, gate 7 sunuyor -> pin 7'ye ILERLEMELI (dorduncu
+    # alan pin dosyasinin son baytlari).
+    #
+    # DIKKAT — bu vakanin TEK BASINA kanitlayabilecegi sey SINIRLI: iki ikili
+    # de ayni anda degisti, yani DIFFERENT=0 hem duzeltmeden ONCE hem SONRA.
+    # Karsilastirma bu kusuru bulamaz. Bulan sey, iki taraftaki IDDIA testleri:
+    # Go'da TestSet_EpochDowngradeTripwire, Rust'ta storewire.rs'teki iki vaka.
+    ("human_set_advances_the_pin",
      P + ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
      HUMAN, pinfile(3), None),
+
+    # GERI SARILMIS store'a yazim: pin 9, gate 7 sunuyor -> EPOCH_DOWNGRADE.
+    # Yazim tarafinin rollback tripwire'i; okuma tarafindaki karsiligi
+    # `human_get_*` pin vakalari.
+    ("human_set_onto_a_rolled_back_store",
+     P + ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     HUMAN, pinfile(9), None),
+    ("agent_set_onto_a_rolled_back_store",
+     P + ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     AGENT, pinfile(9), None),
 
     # --- --project YOKKEN: config kapisi ---
     # Bu iki vaka SIRAYI pinliyor. Go'da baglama kontrolu (PersistentPreRunE)
@@ -296,6 +315,29 @@ EXEC_APPLY_CASES = [
      P + ["secrets", "apply"], AGENT, None, None, None),
 
     # === KAPI 2: config VAR, `--project` YOK → baglama ====================
+    # --- KENDI .wapps.yaml'I OLAN bir dizinden `set` ---
+    #
+    # BU BIR KOR NOKTAYDI ve olcerek bulundu: yukaridaki set vakalarinin
+    # HEPSI ya `--project testproj` veriyor ya da .wapps.yaml'I OLMAYAN
+    # workdir'de kosuyor. Yani `set`in config COZUMU HIC gezilmemisti, ve
+    # gezilmedigi icin su ayrisma yesil bir gate'in altinda duruyordu:
+    #
+    #   Go   -> BINDING_UNPINNED ("repo->project binding ... is not pinned")
+    #   Rust -> NOT_FOUND        ("set: no .wapps.yaml found")
+    #
+    # Go .wapps.yaml'i OKUYUP baglama kapisina variyordu; Rust dosyaya HIC
+    # bakmadan dusuyordu. exec/apply'in AYNI vakalari (agent_exec_config_
+    # unpinned, human_exec_binding_accepted) zaten vardi — eksik olan set'ti.
+    ("agent_set_config_unpinned",
+     ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     AGENT, None, None, cfg(VALID_CFG)),
+    ("human_set_binding_declined",
+     ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     HUMAN, None, b"n\n", cfg(VALID_CFG)),
+    ("human_set_binding_accepted",
+     ["secrets", "set", "PLAIN_KEY", "--from-file", "{FIX}/plain.txt"],
+     HUMAN, None, b"y\n", cfg(VALID_CFG)),
+
     # Ajan: pinsiz baglama fail-closed. Uydurulmus bir .wapps.yaml kendi basina
     # bir proje TALEP EDEMEZ.
     ("agent_exec_config_unpinned",
