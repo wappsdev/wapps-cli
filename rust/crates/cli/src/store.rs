@@ -325,7 +325,11 @@ pub struct KeysResult {
 
 #[derive(Debug, Deserialize)]
 pub struct KeyInfo {
-    #[serde(default)]
+    // TEL ADI `keyName` (camelCase) — Rust'in alan adi DEGIL. Oracle:
+    // internal/store/store.go:54 `json:"keyName"`, ve gate'in kendisi
+    // (worker/test/admin-policy.test.ts). Yanlis alan sessizce BOS ad uretir
+    // ve `read_all` gate'e `["",""]` gonderir; olcusu tests/storewire.rs.
+    #[serde(rename = "keyName", default)]
     pub key_name: String,
 }
 
