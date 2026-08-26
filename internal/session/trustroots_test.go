@@ -4,18 +4,40 @@ package session
 //
 // Ölçüm: bu tarafta üretim kodunda RootCAs HİÇ set edilmiyor (auth.go yalnızca
 // MinVersion'a dokunuyor), yani kök sertifika kümesi PLATFORMUN — macOS'ta
-// Security.framework, Linux'ta sistem CA demeti ya da SSL_CERT_FILE. Rust
-// ikilisi ise webpki-roots'u İKİLİYE GÖMÜLÜ taşıyor (ureq'in varsayılan `tls`
-// özelliğiyle bedava geldi, kimse seçmedi).
+// Security.framework, Linux'ta sistem CA demeti ya da SSL_CERT_FILE.
 //
-// Bu test bir DOĞRULUK İDDİA ETMİYOR: hangi tarafın doğru olduğu sahibinin
-// kararı. Yalnızca bugünkü hâli kaydediyor. Karar "gömülü kökler" yönünde
-// verilir ve Go tarafına da sabit bir kök kümesi konursa bu test kırılır — ve
-// kırılması, sahadaki ikililerin güven yüzeyinin sessizce değişmediğinin
-// kanıtıdır.
+// §9.5'in KARARI VERİLDİ (şık C) ve BU DOSYANIN İDDİALARI DEĞİŞMEDİ: karar
+// yalnızca Rust ikilisini bağlıyor. Orada gömülü webpki-roots taban olarak
+// kalıyor ve SSL_CERT_FILE/SSL_CERT_DIR ayarlıysa üstüne ekleniyor. Go üretim
+// kodu bu dilimde HİÇ değişmedi — sahada kurulu ikililer var — yani Go hâlâ
+// kök kümesini platforma devrediyor ve aşağıdaki iki test bunu ölçmeye devam
+// ediyor.
+//
+// Bu test bir DOĞRULUK İDDİA ETMİYOR. "Doğru davranıyor" demiyor; "bugün böyle
+// davranıyor, değişirse haberin olsun" diyor. Birisi Go tarafına da sabit bir
+// kök kümesi koyarsa kırılır — ve kırılması, sahadaki ikililerin güven
+// yüzeyinin sessizce değişmediğinin kanıtıdır.
+//
+// KARARIN BU TARAFA DÜŞEN DÜRÜST YARISI — davranış testi değil ama burada
+// yazılı olması gerekiyor, çünkü ayrışmanın öteki ucu bu dosya:
+//
+//	Linux'ta crypto/x509 (root_unix.go) SSL_CERT_FILE ve SSL_CERT_DIR'i okuyor;
+//	Rust artık okuyor, yani kabul/ret ekseninde parite kazanıldı. §9.5'in
+//	anlattığı, TLS denetleyen proxy arkasındaki CI runner Linux'ta.
+//
+//	macOS'ta parite KAZANILMADI, ayrışma TERS ÇEVRİLDİ. root_unix.go'nun build
+//	etiketi darwin'i dışlıyor, yani Go orada bu iki değişkeni HİÇ okumuyor.
+//	Önce katı olan taraf Rust'tı; şimdi darwin'de katı olan taraf GO. Ayrışma
+//	kapanmadı, yönü değişti.
+//
+//	Linux'ta bile parite tam değil: Go env değişkenini görünce sistem demetinin
+//	YERİNE koyuyor (loadSystemRoots: files = []string{f}), Rust ise gömülü
+//	tabana EKLİYOR. Rust'ın kabul yüzeyi daha geniş kalıyor ve bu, şık C'nin
+//	tanımı — kaza değil.
 //
 // Ayrışmanın davranış tarafı wapps-cli/rust/crates/cli/tests/tlstrust.rs'te
-// iki ikili birden TLS'li sahte bir gate'e karşı koşularak ölçülüyor.
+// iki ikili birden TLS'li sahte bir gate'e karşı koşularak ölçülüyor; yukarıdaki
+// üç paragrafın her biri orada bir assert'e karşılık geliyor.
 
 import (
 	"crypto/tls"
