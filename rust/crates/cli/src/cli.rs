@@ -258,6 +258,23 @@ pub fn build() -> Command {
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 ),
         )
+        // `doctor` KOKTE mount'lu ve AJAN KAPISI YOK — ne PersistentPreRunE
+        // (kok mount), ne RunE'de bir kontrol. Bu bir bosluk degil bir karar:
+        // teshis, "baska her sey hata veriyor" anindaki ilk komut ve DEGER
+        // BASMIYOR (`secrets status` ile ayni gerekce).
+        .subcommand(
+            Command::new("doctor")
+                .about("Check all dependencies + access (onboarding preflight)")
+                .arg(
+                    Arg::new("for")
+                        .long("for")
+                        .value_name("string")
+                        .help("scope the check: 'tofu' validates only the env needed by 'wapps secrets sync'; empty/'all' runs the full check"),
+                )
+                // cobra'da doctorCmd'in Args'i YOK -> ArbitraryArgs: fazladan
+                // arguman SESSIZCE yutulur. Olculdu.
+                .arg(Arg::new("ignored").num_args(0..).hide(true)),
+        )
         // `rotate` KOKTE mount'lu, `secrets` altinda DEGIL — ve bunun
         // gozlemlenebilir sonucu var: Go'da SecretsCmd.PersistentPreRunE
         // KOSMUYOR, yani ajan kapisi ve baglama kapisi bu agac icin HIC

@@ -8,6 +8,7 @@ use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
 use wapps::configctx::{self, Ctx};
 use wapps::confirm;
+use wapps::doctorverb;
 use wapps::envverb;
 use wapps::envwrite;
 use wapps::epochpin;
@@ -203,6 +204,9 @@ fn run() -> Result<(), CmdError> {
                 std::process::exit(0);
             }
         },
+        Some(("doctor", dm)) => {
+            run_doctor(dm.get_one::<String>("for").map(String::as_str).unwrap_or_default())
+        }
         Some(("rotate", rm)) => match rm.subcommand() {
             Some(("skip", sm)) => {
                 let args: Vec<String> =
@@ -606,6 +610,144 @@ fn run_policy_set(path: &str, yes: bool) -> Result<(), CmdError> {
         policyverb::short12(&res.sha256)
     );
     Ok(())
+}
+
+// run_doctor, `wapps doctor` — onboarding preflight.
+//
+// KAPI: YOK. Ne ajan politikasi, ne baglama, ne config. Kokte mount'lu ve
+// RunE'de de bir kontrol yok, yani ajan modunda AYNEN kosar. Bu bir unutma
+// degil bir karar (`secrets status` ile ayni gerekce): teshis, baska her sey
+// hata verdiginde ilk kosulan komut, ve DEGER BASMIYOR.
+//
+// NE YAZMADIGI DA SOZLESME: fiil bir CF Access oturumunu ve bir CI
+// service-token ciftini OKUYOR; ikisi de kimlik bilgisi. Disari cikan tek sey
+// VARLIK ve SURE. Olcusu tests/doctorleak.rs — ve o test differential'da DEGIL,
+// cunku differential iki ikiliyi karsilastiriyor ve IKISI de sizdirsa vaka
+// "esit" gorunurdu.
+fn run_doctor(mode: &str) -> Result<(), CmdError> {
+    let mut out = std::io::stdout();
+    match mode {
+        "tofu" => {
+            let (text, ok) = doctorverb::tofu_env_report(tool_on_path("tofu"), &|k| {
+                std::env::var(k).unwrap_or_default()
+            });
+            let _ = write!(out, "{text}");
+            if ok {
+                return Ok(());
+            }
+            // DUZ hata (clierr DEGIL): Go `fmt.Errorf` kullaniyor, yani insan
+            // yolunda KURTARMA SATIRI BASILMAZ. Ayrimi CmdError::Plain tasiyor.
+            Err(CmdError::Plain("doctor --for tofu: env not ready".to_string()))
+        }
+        "" | "all" => {
+            let (text, ok) = doctor_full_report();
+            let _ = write!(out, "{text}");
+            if ok {
+                return Ok(());
+            }
+            Err(CmdError::Plain("doctor reported failures".to_string()))
+        }
+        other => Err(CmdError::Plain(format!(
+            "doctor: unknown --for mode {} (allowed: tofu, all)",
+            go_quote(other)
+        ))),
+    }
+}
+
+// tool_on_path, uretim PATH aramasidir (Go: exec.LookPath).
+fn tool_on_path(name: &str) -> bool {
+    let path = std::env::var("PATH").unwrap_or_default();
+    doctorverb::look_path(name, &path, &doctorverb::is_executable_file)
+}
+
+// doctor_full_report, tam bataryayi kosar.
+//
+// SIRA SOZLESME: araclar → tofu state backend creds → Coolify → oturumlar.
+// Her adim kendi ✓/✗ satirini basar ve `all_ok`u AND'ler; hicbir adim digerini
+// KISA DEVRE ETTIRMEZ, cunku bir operator TUM eksikleri tek kosumda gormeli.
+fn doctor_full_report() -> (String, bool) {
+    let mut out = String::new();
+    let mut all_ok = true;
+
+    for (display, lookup) in doctorverb::FULL_TOOLS {
+        if tool_on_path(lookup) {
+            out.push_str(&format!("✓ {display} present\n"));
+        } else {
+            out.push_str(&format!("✗ {display} not found in PATH\n"));
+            all_ok = false;
+        }
+    }
+
+    // ETIKET BILEREK "tofu state backend", "R2 access" DEGIL: bir sirri okumak
+    // istemcide R2 kimlik bilgisi ISTEMIYOR (gate onlari tutuyor). Yalnizca
+    // state'i R2'de duran `tofu` bunlari istiyor, yani burada bos bir deger
+    // sirlarin calisip calismadigi hakkinda HICBIR SEY soylemiyor.
+    if std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default().is_empty() {
+        out.push_str("✗ tofu state backend: AWS_ACCESS_KEY_ID not set (only needed for tofu, not for secrets)\n");
+        all_ok = false;
+    } else {
+        out.push_str("✓ tofu state backend creds set\n");
+    }
+
+    let (line, ok) = probe_coolify();
+    out.push_str(&line);
+    all_ok = all_ok && ok;
+
+    // Oturumlar. Gate host'u BURADA ciktiya girebiliyor (yalnizca yok/dolmus
+    // dallarinda), o yuzden differential o iki vakada gate URL'ini sabitliyor.
+    let host = statusverb::host_of(&session::gate_url());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let dir = epochpin::default_path()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("session")))
+        .unwrap_or_default();
+    let env = |k: &str| std::env::var(k).ok();
+    let read = doctorverb::session_state(&env, &dir.join(statusverb::host_file(&host)), now);
+    // ADMIN oturumunun saklama anahtari `<host>-admin`: read oturumundan AYRI
+    // tutuluyor cunku iki AYRI CF Access uygulamasinin iki ayri jetonu ve
+    // suresi var (read saatler, write 15 dk).
+    let admin_key = format!("{host}-admin");
+    let admin = doctorverb::session_state(&env, &dir.join(statusverb::host_file(&admin_key)), now);
+    let (lines, ok) = doctorverb::render_session_lines(&host, &read, &admin);
+    out.push_str(&lines);
+    all_ok = all_ok && ok;
+
+    if !all_ok {
+        return (out, false);
+    }
+    out.push_str("\nAll checks passed.\n");
+    (out, true)
+}
+
+// probe_coolify, Coolify API'sine KISA bir /health probu atar.
+//
+// 5xx BIR HATA, altindaki her sey (404 dahil) "canli": soru "API ayakta mi",
+// "bu rota var mi" DEGIL. User-Agent "curl/8" Go tarafiyla ayni — bazi
+// kenarlar bilinmeyen ajanlari farkli karsiliyor.
+fn probe_coolify() -> (String, bool) {
+    let url = doctorverb::coolify_health_endpoint(
+        &std::env::var("COOLIFY_URL").unwrap_or_default(),
+    );
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(5))
+        .build();
+    match agent.get(&url).set("User-Agent", "curl/8").call() {
+        Ok(_) => ("✓ Coolify API reachable\n".to_string(), true),
+        Err(ureq::Error::Status(code, _)) if code >= 500 => {
+            (format!("✗ Coolify API server error (HTTP {code})\n"), false)
+        }
+        Err(ureq::Error::Status(_, _)) => ("✓ Coolify API reachable\n".to_string(), true),
+        // TASIMA HATASI METNI Go'nun net/http prozasi ("Get \"...\": dial tcp
+        // ...: connect: connection refused") ve o metin PORT EDILMIYOR —
+        // `human_gate_down` ile AYNI sinif. Differential'daki her doctor vakasi
+        // COOLIFY_URL'i sahte gate'e cevirdigi icin bu kola HIC girilmiyor.
+        Err(ureq::Error::Transport(t)) => {
+            (format!("✗ Coolify API unreachable: {t}\n"), false)
+        }
+    }
 }
 
 // run_rotate_skip, `wapps rotate skip <run-id> <project>/<key> --reason <why>`.

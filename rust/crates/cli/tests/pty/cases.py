@@ -1375,3 +1375,106 @@ ROTATE_SKIP_CASES = [
 ]
 
 CASES += ROTATE_SKIP_CASES
+
+
+# --- `wapps doctor` ----------------------------------------------------------
+#
+# TESHIS FIILI, ve bu differential'da UC seyi ozel yapiyor:
+#
+#  1. AJAN KAPISI YOK. Kokte mount'lu (PersistentPreRunE kosmaz) ve RunE'de de
+#     bir kontrol yok, yani ajan modunda AYNEN kosar. `agent_doctor_*` ile
+#     `human_doctor_*` STDOUT'lari BIREBIR ayni; ayrisan tek sey stderr'in
+#     BICIMI (zarf vs "Error:"). Bir kapi eklenseydi ajan tarafi bos stdout ile
+#     donerdi ve fark aninda gorunurdu.
+#
+#  2. COOLIFY PROBU GERCEK BIR HTTP ISTEGI. Olculdu: dokunulmamis bir agacta Go
+#     ikilisi bu probda CANLI INTERNETE (coolify.meapps.dev) cikiyor. Butun
+#     vakalar COOLIFY_URL'i `{GATE}` ile sahte gate'e cevirir — hem harness'in
+#     "gercek bir servise HIC baglanma" kurali icin, hem de olcum aga bagli
+#     olmasin diye. Sahte gate bilinmeyen rotaya 404 doner ve doctor 5xx
+#     ALTINI "canli" sayar, yani sonuc DETERMINISTIK "reachable".
+#
+#  3. GATE HOST'U CIKTIYA GIREBILIYOR. "oturum yok" ve "oturum dolmus"
+#     satirlari host'u BASIYOR, ve sahte gate'in portu iki probe kosumunda
+#     FARKLI. O iki vaka bu yuzden WAPPS_SECRETS_GATE'i SABIT bir dizeye
+#     ceviriyor — doctor gate'e zaten HIC istek atmiyor, yalnizca host adini
+#     okuyor.
+#
+# OLCULEMEYEN (ve bu yuzden tests/doctorverb.rs'e giden) IKI SEY:
+#   * SIFIR OLMAYAN oturum TTL'i. TTL = expires_at - now, ve iki probe kosumu
+#     arasinda ~40 sn geciyor; ayni env "59m59s" ve "59m20s" uretirdi. Go'nun
+#     Duration bicimi orada Go'dan olculmus bir tabloyla pinli.
+#   * "okuma oturumu CANLI ama admin oturumu YOK" bilesimi. session.Load env
+#     jetonunu HOST'TAN BAGIMSIZ okuyor, yani WAPPS_SESSION_TOKEN doluyken
+#     IKISI de canli; ayrik hale ancak dosya-tabanli oturumla gelinir ve
+#     probe.py XDG altina dosya TOHUMLAMIYOR.
+#
+# GERCEK SIR YOK: buradaki jetonlar uydurma test dizeleridir ve doctor zaten
+# hicbir jetonu BASMIYOR — tam olarak bunu olcen ayri bir test var
+# (tests/doctorleak.rs), ve o differential'da DEGIL cunku IKI ikili de
+# sizdirsaydi vaka "esit" gorunurdu.
+
+COOLIFY = {"COOLIFY_URL": "{GATE}"}
+# Fikstur dizini PATH'te: oradaki tek program `tofu` shim'i, yani "arac
+# BULUNDU" dali da olculuyor. `/usr/bin:/bin` ile ayni dal ✗ tarafina duser.
+TOFU_ON_PATH = dict(COOLIFY, PATH="{FIX}")
+# Sabit gate: host CIKTIYA girecegi icin porta bagimli olamaz.
+FIXED_GATE = {"WAPPS_SECRETS_GATE": "https://gate.example.invalid"}
+
+DOCTOR_CASES = [
+    # === tam batarya =====================================================
+    ("human_doctor_full_battery", ["doctor"], dict(HUMAN, **COOLIFY)),
+    # AJAN KAPISI YOK: stdout BIREBIR yukaridakiyle ayni olmali. Yalnizca
+    # stderr bicimi degisir.
+    ("agent_doctor_runs_without_any_agent_gate", ["doctor"], dict(AGENT, **COOLIFY)),
+    # PATH'te bir arac VARSA ✓ dali: "opentofu" GORUNEN ad, "tofu" ARANAN ad.
+    ("human_doctor_finds_a_tool_under_its_lookup_name",
+     ["doctor"], dict(HUMAN, **TOFU_ON_PATH)),
+    # `--for all`, bayraksiz cagriyla AYNI batarya.
+    ("human_doctor_for_all_is_the_full_battery",
+     ["doctor", "--for", "all"], dict(HUMAN, **COOLIFY)),
+    # cobra'da Args YOK → fazladan arguman SESSIZCE yutulur.
+    ("human_doctor_extra_arg_is_ignored", ["doctor", "EXTRA"], dict(HUMAN, **COOLIFY)),
+    ("human_doctor_unknown_for_mode",
+     ["doctor", "--for", "wat"], dict(HUMAN, **COOLIFY)),
+    ("agent_doctor_unknown_flag", ["doctor", "--bogus"], dict(AGENT, **COOLIFY)),
+
+    # === oturum dallari (host CIKTIYA girer → SABIT gate) ================
+    ("human_doctor_no_session",
+     ["doctor"], dict(HUMAN, **COOLIFY, **FIXED_GATE, WAPPS_SESSION_TOKEN="")),
+    ("agent_doctor_no_session",
+     ["doctor"], dict(AGENT, **COOLIFY, **FIXED_GATE, WAPPS_SESSION_TOKEN="")),
+    # DOLMUS oturum "yok" ile AYNI CUMLE DEGIL — operator hangisinin oldugunu
+    # bilmeli. Gecmiste bir expiry (1) veriliyor, yani sonuc saatten bagimsiz.
+    ("human_doctor_expired_session_is_not_the_same_sentence_as_a_missing_one",
+     ["doctor"], dict(HUMAN, **COOLIFY, **FIXED_GATE, WAPPS_SESSION_EXPIRES="1")),
+    # Bozuk bir WAPPS_SESSION_EXPIRES ("expiry bilinmiyor"a duser, Go:
+    # ParseInt hatasinda exp 0 kalir) → oturum CANLI, TTL 0s.
+    ("human_doctor_unparsable_expiry_is_treated_as_unknown",
+     ["doctor"], dict(HUMAN, **COOLIFY, **FIXED_GATE, WAPPS_SESSION_EXPIRES="not-a-number")),
+
+    # === --for tofu ======================================================
+    ("human_doctor_for_tofu_all_missing",
+     ["doctor", "--for", "tofu"], dict(HUMAN, **COOLIFY)),
+    # KISMI: mevcutlar kontrat SIRASINDA once, eksikler yine kontrat sirasinda
+    # sonra. Iki blok Go'da AYRI dongulerden geliyor ve sira gozlemlenebilir.
+    ("human_doctor_for_tofu_prints_present_before_missing_in_contract_order",
+     ["doctor", "--for", "tofu"],
+     dict(HUMAN, **COOLIFY, AWS_REGION="auto", AWS_ACCESS_KEY_ID="fake-id-not-a-secret")),
+    # HEPSI hazir → cikis 0 ve KAPANIS satiri. Tek sifir-cikisli doctor dali.
+    ("human_doctor_for_tofu_ready",
+     ["doctor", "--for", "tofu"],
+     dict(HUMAN, **TOFU_ON_PATH,
+          AWS_ACCESS_KEY_ID="fake-id-not-a-secret",
+          AWS_SECRET_ACCESS_KEY="fake-secret-not-a-secret",
+          AWS_ENDPOINT_URL_S3="https://r2.example.invalid",
+          AWS_REGION="auto",
+          TF_VAR_state_passphrase="fake-passphrase-not-a-secret")),
+    # Binary VAR ama env eksik: iki ✗ sinifi ayni raporda.
+    ("human_doctor_for_tofu_finds_the_binary_but_not_the_env",
+     ["doctor", "--for", "tofu"], dict(HUMAN, **TOFU_ON_PATH)),
+    ("agent_doctor_for_tofu_all_missing",
+     ["doctor", "--for", "tofu"], dict(AGENT, **COOLIFY)),
+]
+
+CASES += DOCTOR_CASES
