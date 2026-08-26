@@ -16,6 +16,22 @@ EDILEMEZ. Olculen alti nokta:
   secrets env        + ajan (print-form) -> AGENT_MODE_REFUSED (RunE'de)
   secrets env --write+ ajan              -> AGENT_MODE_REFUSED DEGIL: config kapisi
   secrets import-env + ajan + --project  -> BINDING_UNPINNED   (allow)
+  wapps tofu         + ajan + pinsiz cfg -> BINDING_UNPINNED   (KOK mount, kapi ELLE)
+  secrets rotate-plan+ ajan (bayraksiz)  -> CONTROL_PLANE_REQUIRED (kapi ARGUMANDAN once)
+  rotate skip        + ajan (--reason'siz)-> INTERNAL          (kapi ARGUMANDAN SONRA)
+  rotate skip        + ajan + --reason   -> AGENT_MODE_REFUSED (RunE'nin ICINDE)
+  wapps doctor       + ajan              -> KAPI YOK (hicbir ret kodu yok)
+
+`tofu` satiri `projects list` satiriyla YAN YANA okunmali: IKISI DE kokte
+mount'lu, yani ikisinde de PersistentPreRunE kosmuyor — ama `projects list`
+kapisiz kaliyor, `tofu` kapiyi RunE'de ELLE yeniden uyguluyor. Kok mount tek
+basina "kapi yok" DEMEK DEGIL; hangisinin hangisi oldugu OLCULMEK zorunda.
+Bu satirin duzelmesi `wapps tofu`yu her sirri okuyan, kapisiz bir yola cevirir.
+
+`rotate-plan` ile `rotate skip` satirlari da YAN YANA: kardes gorunuyorlar ve
+kapi siralari BIRBIRININ AYNASI. Birinde ajan kapisi arguman kontrolunden
+ONCE, digerinde SONRA — cunku biri PersistentPreRunE'lu bir agacta, digeri
+kokte.
 
 Ucuncu ve dorduncu satir YAN YANA duruyor cunku carpici olan o: iki fiil de
 "yalnizca ADlar" sinifinda ve ikisi de ajana serbest, ama `secrets list`
@@ -42,7 +58,11 @@ from cases import GATE_SCRIPT
 
 CFG = "version: 2\nproject: testproj\n"
 
-# (ad, argv, mevcut_config_var_mi)
+# (ad, argv, mevcut_config_var_mi[, ek_env])
+#
+# Ek env yalnizca `doctor` icin gerekiyor ve gercek bir sebebi var: doctor
+# COOLIFY_URL'e GERCEK bir HTTP istegi atiyor ve ayarlanmazsa canli internete
+# cikardi. Sahte gate'e ceviriliyor.
 PROBES = [
     ("secrets_list",   ["--project", "testproj", "secrets", "list"], False),
     ("secrets_status", ["secrets", "status"], True),
@@ -59,6 +79,16 @@ PROBES = [
     # `--write` print-form reddini GECER; ret bir sonraki kapidan gelir.
     ("secrets_env_write", ["secrets", "env", "--write", "out.env"], False),
     ("secrets_import_env", ["--project", "testproj", "secrets", "import-env", "x.env"], False),
+    # KOK MOUNT ama KAPI VAR: `projects list` ile AYNI mount, TERS sonuc.
+    ("tofu", ["tofu", "plan"], True),
+    # Kapi ARGUMAN KONTROLUNDEN ONCE (PersistentPreRunE).
+    ("secrets_rotate_plan", ["secrets", "rotate-plan"], False),
+    # ...ve kardesinde TERSI: kapi `--reason` kontrolunden SONRA.
+    ("rotate_skip_no_reason", ["rotate", "skip", "run1", "p/k"], False),
+    ("rotate_skip_with_reason",
+     ["rotate", "skip", "run1", "p/k", "--reason", "public constant"], False),
+    # KAPI YOK: hicbir ret kodu cikmamali.
+    ("doctor", ["doctor"], False, {"COOLIFY_URL": "__GATE__"}),
 ]
 
 
@@ -85,7 +115,9 @@ def main():
 
     res = {}
     try:
-        for name, argv, with_cfg in PROBES:
+        for probe in PROBES:
+            name, argv, with_cfg = probe[0], probe[1], probe[2]
+            extra = probe[3] if len(probe) > 3 else {}
             casedir = os.path.join(workdir, name)
             os.makedirs(casedir, exist_ok=True)
             if with_cfg:
@@ -102,6 +134,8 @@ def main():
                 "GIT_CEILING_DIRECTORIES": workdir,
                 "CLAUDECODE": "1",   # pty'de stdin TTY ama AJAN isareti var
             }
+            env.update({k: v.replace("__GATE__", f"http://127.0.0.1:{port}")
+                        for k, v in extra.items()})
             os.makedirs(env["HOME"], exist_ok=True)
             os.makedirs(env["XDG_CONFIG_HOME"], exist_ok=True)
             o, e, c = run([binary] + argv, env, cwd=casedir)

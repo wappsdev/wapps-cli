@@ -18,6 +18,17 @@
 //   projects list   allow             YOK — kok mount
 //   projects rm     control           YOK — kok mount
 //   init            allow             VAR, ve YAZIMDAN ONCE
+//   tofu            allow             VAR — kok mount'a RAGMEN, ELLE
+//   rotate-plan     control           MUAF; kapi ARGUMANDAN ONCE
+//   rotate skip     (elle)            YOK; kapi ARGUMANDAN SONRA
+//   doctor          YOK               YOK
+//
+// Son dort satir bu tablonun neden bir TABLO oldugunu gosteriyor: `tofu`,
+// `rotate skip` ve `doctor` UCU DE kokte mount'lu, yani ucunde de
+// SecretsCmd.PersistentPreRunE kosmuyor — ve ucu de FARKLI davraniyor. tofu
+// kapiyi RunE'de elle yeniden uyguluyor, rotate skip yalnizca ajan reddini
+// elle yapiyor, doctor hicbir sey yapmiyor. Kok mount tek basina hicbir sey
+// SOYLEMIYOR.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -174,6 +185,81 @@ fn assert_policies(v: &serde_json::Value, side: &str) {
         err.contains("BINDING_UNPINNED") && code == 1,
         "[{side}] import-env ajan modunda baglama kapisina takilmali.\nstderr: {err:?}"
     );
+
+    // tofu: KOKTE mount'lu, yani PersistentPreRunE KOSMUYOR — ve tam bu yuzden
+    // kapi RunE'de ELLE yeniden uygulaniyor. Bu satirin duzelmesi (yani
+    // baglama kapisinin sessizce dusmesi) `wapps tofu`yu her sirri okuyan,
+    // kapisiz bir yola cevirir: `secrets exec`in confused-deputy korumasinin
+    // etrafindan dolasan bir yol.
+    let (err, code) = obs(v, "tofu");
+    assert!(
+        err.contains("BINDING_UNPINNED") && code == 1,
+        "[{side}] `wapps tofu` kok mount'a RAGMEN baglama kapisina takilmali.\nstderr: {err:?}"
+    );
+    // ...ve `projects list` AYNI mount'ta kapisiz kaliyor. Kok mount tek basina
+    // "kapi yok" DEMEK DEGIL; iki satir yan yana durdugu icin bu gorunuyor.
+    let (_, plist) = obs(v, "projects_list");
+    assert!(
+        plist == 0,
+        "[{side}] projects list ile tofu ayni mount'ta AYNI sonucu vermemeli"
+    );
+
+    // rotate-plan: KONTROL DUZLEMI, ve kapi ARGUMAN KONTROLUNDEN ONCE.
+    // `--identity` verilmemis olmasina RAGMEN ret CONTROL_PLANE_REQUIRED —
+    // arguman hatasi DEGIL.
+    let (err, code) = obs(v, "secrets_rotate_plan");
+    assert!(
+        err.contains("CONTROL_PLANE_REQUIRED") && code == 1,
+        "[{side}] rotate-plan kapisi --identity kontrolunden ONCE ates etmeli.\nstderr: {err:?}"
+    );
+
+    // rotate skip: TERS SIRA. `--reason` yokken ret INTERNAL, ajan reddi
+    // DEGIL — cunku kok mount yuzunden kapi RunE'nin icinde ve o kontrolun
+    // ALTINDA. Kardes gorunen iki fiilin siralari birbirinin aynasi.
+    let (err, code) = obs(v, "rotate_skip_no_reason");
+    assert!(
+        err.contains("INTERNAL") && !err.contains("AGENT_MODE_REFUSED") && code == 1,
+        "[{side}] rotate skip'te --reason kontrolu ajan kapisindan ONCE kosmali.\nstderr: {err:?}"
+    );
+    // ...ve `--reason` verilince ajan kapisi ATES EDIYOR. Bu satir, kapinin
+    // ALIVE oldugunun kaniti: yukaridaki INTERNAL tek basina "kapi yok"
+    // anlamina da gelebilirdi.
+    let (err, code) = obs(v, "rotate_skip_with_reason");
+    assert!(
+        err.contains("AGENT_MODE_REFUSED") && code == 1,
+        "[{side}] rotate skip `--reason` verilince ajan modunda reddedilmeli.\nstderr: {err:?}"
+    );
+    // Reddin CUMLESI de kendine ait — `rm` ve `trust-repo` gibi.
+    assert!(
+        err.contains("presence-admin ceremony"),
+        "[{side}] rotate skip kendi ret cumlesini basmali.\nstderr: {err:?}"
+    );
+
+    // doctor: HICBIR kapi yok. Ajan modunda hicbir ret kodu cikmamali — ne
+    // ajan reddi, ne kontrol duzlemi, ne baglama. Cikis 1'dir ama sebebi
+    // TESHIS SONUCU (bu cevrede araclar/env eksik), bir RET degil.
+    let (err, code) = obs(v, "doctor");
+    for refusal in ["AGENT_MODE_REFUSED", "CONTROL_PLANE_REQUIRED", "BINDING_UNPINNED"] {
+        assert!(
+            !err.contains(refusal),
+            "[{side}] doctor'un ajan-modu kapisi YOKTUR; {refusal} gorundu.\nstderr: {err:?}"
+        );
+    }
+    let (dout, _) = obs_out(v, "doctor");
+    assert!(
+        dout.contains("secrets-gate session") && code == 1,
+        "[{side}] doctor ajan modunda da TAM raporu basmali.\nstdout: {dout:?}"
+    );
+}
+
+// obs_out, bir gozlemin STDOUT'unu doner. doctor icin gerekli: onun raporu
+// stdout'a gidiyor ve "kapi yok" iddiasinin kaniti raporun BASILMIS olmasi.
+fn obs_out<'a>(v: &'a serde_json::Value, key: &str) -> (&'a str, i64) {
+    let o = v.get(key).unwrap_or_else(|| panic!("{key} gozlemi yok"));
+    (
+        o.get("stdout").and_then(|s| s.as_str()).unwrap_or(""),
+        o.get("exit").and_then(|c| c.as_i64()).unwrap_or(-1),
+    )
 }
 
 #[test]
