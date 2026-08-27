@@ -4,6 +4,7 @@ import hashlib, json, os, shutil, socket, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
 from cases import CASES, GATE_SCRIPT, FIXTURE_FILES
+from workdir import demand_usable
 
 def bindpath_for(cfg):
     return os.path.join(cfg, "wapps", "repo-pins.json")
@@ -15,6 +16,12 @@ def main():
     binary = sys.argv[1]
     outpath = sys.argv[2]
     workdir = sys.argv[3]
+    # ILK IS: calisma dizini KANONIK olmali ve hicbir deponun ICINDE olmamali.
+    # Ikisinin de belirtisi ayni: tohumlanan repo pini tutmaz, baglama kapisi
+    # onay istemine girer, stdin'siz bir pty EOF vermez ve vaka 30 sn sonra
+    # SIGKILL yer — yani olcum bir DAVRANIS degil bir ZAMAN ASIMI olur. Bu
+    # SESSIZ arizaydi; artik 97 ile GURULTULU (bkz. workdir.py).
+    demand_usable(workdir)
     port = free_port()
     here = os.path.dirname(os.path.abspath(__file__))
     gate = subprocess.Popen([sys.executable, os.path.join(here, "fakegate.py"),
@@ -91,14 +98,12 @@ def main():
                 # yolunu atlatmak icin.
                 "WAPPS_SESSION_TOKEN": "fake-token-not-a-secret",
                 "WAPPS_NO_UPDATE_CHECK": "1",
-                # GIT_CEILING_DIRECTORIES — OLCUMUN GECERLILIGI icin, uslup
-                # degil: baglama kimligi (repoIdentity) git'e soruyor, ve bu
-                # scratch dizini bir git worktree'sinin ICINDE olabilir
-                # (TMPDIR'in nereye baktigina bagli). O durumda kimlik, cevreleyen
-                # deponun origin URL'i + alt yolu olurdu — yani olcum, calistigi
-                # makinenin dizin agacina gore DEGISIRDI. Tavan, git'in workdir'in
-                # uzerine cikmasini engeller: kimlik DAIMA mutlak yola duser.
-                "GIT_CEILING_DIRECTORIES": workdir,
+                # BURADA BIR ZAMANLAR `GIT_CEILING_DIRECTORIES` VARDI ve
+                # YETMIYORDU: git tavani OZ ATA olarak arar, yani tavan ile
+                # dizinin KENDISI ayni oldugunda (vaka workdir'de kosuyorsa —
+                # korpusun cogunlugu oyle) hicbir sey yapmaz. Kimligin depoya
+                # kacmasi artik TEK ve TEKBICIMLI bir hukumle kapali: calisma
+                # dizini hicbir deponun icinde olmaz (workdir.py).
             }
             env.update(extra)
             # {GATE} -> sahte gate'in koku. argv'deki {FIX} ile AYNI mekanizma,

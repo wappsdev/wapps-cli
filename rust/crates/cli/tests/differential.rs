@@ -21,22 +21,85 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-// scratch, depo AGACININ DISINDA bir calisma dizini verir. Bu kritik: scratch
-// bir git worktree'nin icine duserse bu deponun binding testleri dokunulmamis
-// bir agacta bile kiriliyor.
+// Harness'in olcum YAPMADIGINI soyleyen cikis kodu. 0 (gecti) ve cargo'nun
+// test basarisizligi olan 101'den AYRI olmasi sart: bir okuyucu "ikililer
+// ayristi" ile "olcum hic yapilmadi"yi ayirt edebilmeli. cargo'nun bu kodu
+// oldugu gibi ilettigi OLCULDU.
+const EXIT_NOT_MEASURED: i32 = 97;
+
+// scratch, HICBIR GIT DEPOSUNUN ICINDE OLMAYAN bir calisma dizini verir.
+//
+// BU BIR USLUP DEGIL, OLCUMUN HUKMU: ayni agacta, ayni commit'te, tek fark
+// `TMPDIR` olan iki kosum TERS KARAR verdi — depo-disi TMPDIR'la exit 0 ve
+// 121 sn, broker harness'inin verdigi (bir git worktree'sinin ICINDEKI)
+// TMPDIR'la exit 101, 26 zaman asimi ve 954 sn. Sebep: baglama kimligi git'e
+// soruluyor, git calisma dizininden YUKARI CIKIP cevreleyen depoyu buluyor,
+// tohumlanan pinler tutmuyor ve on uc vaka onay isteminde SIGKILL yiyor.
+//
+// ESKI KORUMA IKI YERDEN DE YETMIYORDU ve ikisi de OLCULEREK elendi:
+//   * buradaki `!d.starts_with(repo_root())` iddiasi yalnizca BU depoyu
+//     taniyordu; cagiranin TMPDIR'i BASKA bir deponun icindeyse sessizce
+//     geciyordu — tuzagin yurudugu delik tam olarak buydu;
+//   * probe.py'nin `GIT_CEILING_DIRECTORIES=<workdir>`'i yalnizca workdir'in
+//     GERCEK ALTINDAKI dizinleri koruyordu (git tavani OZ ATA olarak arar),
+//     yani vakayi workdir'in KENDISINDE kosan cogunluk korumasizdi.
+//
+// Yerine tek hukum: dizini harness SECER (cagiranin TMPDIR'i bir ONERIDIR,
+// depo icindeyse atlanir) ve secim `git`e SORULARAK dogrulanir. Hicbir aday
+// uymuyorsa olcum yapilmaz ve harness 97 ile patlar.
 fn scratch() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("wapps-pty-diff-{}", std::process::id()));
-    std::fs::create_dir_all(&d).expect("scratch olusturulamadi");
+    let out = Command::new("python3")
+        .arg(pty_dir().join("workdir.py"))
+        .arg(format!("wapps-pty-diff-{}", std::process::id()))
+        .output()
+        .expect("workdir.py calistirilamadi");
+    exit_if_not_measured(&out, "workdir.py");
     assert!(
-        !d.starts_with(repo_root()),
-        "scratch dizini depo agacinin ICINDE ({}); binding testleri kirilir",
+        out.status.success(),
+        "workdir.py basarisiz (exit {:?})\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let d = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
+    assert!(
+        d.is_dir(),
+        "workdir.py var olmayan bir dizin verdi: {}",
         d.display()
     );
     d
 }
 
+fn pty_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pty")
+}
+
+// Bir alt surec "olcum yapilmadi" dediyse (97) bu testin FAIL etmesi yaniltici
+// olurdu: fail "ikililer ayristi" diye okunur. Kod OLDUGU GIBI disari tasiniyor.
+//
+// Mesaj `eprintln!` ile YAZILMIYOR ve bunun sebebi olculdu: libtest o makroyu
+// YAKALIYOR, ve surec `exit` ile bittigi icin yakalanan tampon HIC basilmiyordu
+// — geriye yalnizca ciplak bir 97 kaliyordu. Sebebini soylemeyen bir patlama,
+// yerini aldigi sessiz arizadan cok da iyi degildir. Dogrudan fd 2'ye yaziliyor.
+fn exit_if_not_measured(out: &std::process::Output, what: &str) {
+    if out.status.code() == Some(EXIT_NOT_MEASURED) {
+        use std::io::Write;
+        let mut err = std::io::stderr();
+        let _ = err.write_all(&out.stderr);
+        let _ = writeln!(
+            err,
+            "differential: {what} olcumu REDDETTI (exit {EXIT_NOT_MEASURED}) — \
+             bu bir AYRISMA DEGIL, olcumun HIC yapilmadigi anlamina gelir."
+        );
+        let _ = err.flush();
+        std::process::exit(EXIT_NOT_MEASURED);
+    }
+}
+
 fn run(cmd: &mut Command, what: &str) -> String {
-    let out = cmd.output().unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
+    exit_if_not_measured(&out, what);
     assert!(
         out.status.success(),
         "{what} basarisiz (exit {:?})\nstdout:\n{}\nstderr:\n{}",
@@ -51,19 +114,26 @@ fn run(cmd: &mut Command, what: &str) -> String {
 fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     let root = repo_root();
     let work = scratch();
-    let pty_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pty");
+    let pty_dir = pty_dir();
 
     // Oracle'i kaynaktan derle — sahadaki sozlesme Go'nun BUGUNKU davranisi.
     let go_bin = work.join("wapps-go");
     run(
-        Command::new("go").arg("build").arg("-o").arg(&go_bin).arg("./main.go").current_dir(&root),
+        Command::new("go")
+            .arg("build")
+            .arg("-o")
+            .arg(&go_bin)
+            .arg("./main.go")
+            .current_dir(&root),
         "go build (oracle)",
     );
 
     let go_json = work.join("go-probe.json");
     let rs_json = work.join("rs-probe.json");
-    for (bin, out) in [(go_bin.as_path(), &go_json), (Path::new(env!("CARGO_BIN_EXE_wapps")), &rs_json)]
-    {
+    for (bin, out) in [
+        (go_bin.as_path(), &go_json),
+        (Path::new(env!("CARGO_BIN_EXE_wapps")), &rs_json),
+    ] {
         run(
             Command::new("python3")
                 .arg(pty_dir.join("probe.py"))
@@ -75,7 +145,10 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     }
 
     let report = run(
-        Command::new("python3").arg(pty_dir.join("diff.py")).arg(&go_json).arg(&rs_json),
+        Command::new("python3")
+            .arg(pty_dir.join("diff.py"))
+            .arg(&go_json)
+            .arg(&rs_json),
         "bayt karsilastirmasi",
     );
     // Karsilastirmanin GERCEKTEN vaka gezdiginin kaniti: bos bir kume de
@@ -168,6 +241,14 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     //          +15 `dr bootstrap`             EQUAL=434 DIFFERENT=0
     //          +1  BESINCI DURUM (`dr bootstrap`) EQUAL=435 DIFFERENT=0
     //
+    // ESIK ARTIK IKI SEYI BIRDEN TUTUYOR, cunku EQUAL'in ANLAMI degisti:
+    // zaman asimina ugramis (ya da hicbir sey gozlemlemeyen) bir vaka EQUAL'e
+    // SAYILMIYOR. Eskiden sayiliyordu ve bu bir kez gercekten yanilttı —
+    // "EQUAL=419 DIFFERENT=0 UNSOUND=26" satirini okuyan biri 419 vakanin
+    // karsilastirildigini sanmisti, oysa on ucu yalnizca 30 sn'lik bir
+    // timeout olcmustu. Artik oyle bir kosumda EQUAL bu esigin ALTINA duser,
+    // yani asagidaki iddia sessiz timeout'lari da yakalar.
+    //
     // TABAN 434'E CIKARILDI ve bunun bir sebebi var: bu iddia korpusun
     // BUYUKLUGUNU tutan TEK mekanizma. Taban eskisi gibi 419'da biraksaydi,
     // `dr bootstrap`in on bes vakasinin TAMAMI korpustan sessizce dusebilir
@@ -230,12 +311,25 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     //        Ayrisma tests/identityflags.rs'te IDDIA olarak da duruyor:
     //        duzeltmeden sonra DIFFERENT 0'a doner ve karsilastirmada kanit
     //        KALMAZ.
+    // Ozet satiri GECEN kosumda da gorunsun (`-- --nocapture`): "EQUAL=n
+    // DIFFERENT=0 UNSOUND=0" tek basina okunabilir bir kanittir, ve UNSOUND
+    // artik EQUAL'e SAYILMADIGI icin bir zaman asimi bu satiri sessizce
+    // suslemez — esigi DUSURUR.
+    for line in report
+        .lines()
+        .filter(|l| l.starts_with("EQUAL=") || l.starts_with("UYARI:"))
+    {
+        println!("{line}");
+    }
     let equal: usize = report
         .rsplit("EQUAL=")
         .next()
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(equal >= 435, "differential yalnizca {equal} vaka gezdi:\n{report}");
+    assert!(
+        equal >= 435,
+        "differential yalnizca {equal} vaka gezdi:\n{report}"
+    );
     let _ = std::fs::remove_dir_all(&work);
 }
