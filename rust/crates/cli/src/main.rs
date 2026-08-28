@@ -41,6 +41,51 @@ fn main() -> ExitCode {
     }
 }
 
+// --- YEREL `--project`, KOKUNKINI GOLGELER --------------------------------------
+//
+// `dr restore` ve `dr accept-epoch-reset` KENDI `--project` bayraklarini
+// tasiyor, ve o bayrak bir KIMLIK bayragi DEGIL: `Ctx::resolve` cagrilmiyor,
+// deger dogrudan fiilin argumani olarak okunuyor (snapshot icindeki proje adi
+// / pini indirilecek proje). cobra'da bir yapragin yerel bayragi kokun ayni
+// adli persistent bayragini GOLGELIYOR ve golge KOMUT SATIRINDAKI YERDEN
+// BAGIMSIZ — butun bayraklar yapragin flagset'ine karsi ayristiriliyor.
+//
+// clap'te ise ikisi AYRI arguman ve hangisinin dolacagini KONUM belirliyor.
+// Duzeltilmeden once bu IKI yerde ayrisiyordu ve ikisi de OLCULDU:
+//
+//   wapps --project p dr accept-epoch-reset
+//        GO: calisir (deger yapraga ulasir) · RS: "--project is required"
+//   wapps --config c --project p dr accept-epoch-reset
+//        GO: calisir (kokun `--project`i HIC dolmadigi icin karsilikli
+//            dislama ATESLEMEZ) · RS: "--config and --project are mutually
+//            exclusive"
+//
+// DOGRU TARAF GO ve gerekce olculdu, hizalama degil: karsilikli dislama bir
+// KIMLIK kurali; kimlik bayragi OLMAYAN bir bayraga carpmasi yanlis. Kural
+// KALDIRILMIYOR — yerel `--project`i OLMAYAN yapraklarda (`dr verify` dahil)
+// aynen suruyor, ve kontrol vakasi korpusta.
+
+// LOCAL_PROJECT_LEAVES, `dr` altinda KENDI `--project`ini tasiyan yapraklar.
+// Tek bir yerde duruyor ki `shadows_root_project` ile dispatch'teki geri
+// dusum AYRISAMASIN: biri digerini unutursa golge yarim kalirdi.
+const LOCAL_PROJECT_LEAVES: &[&str] = &["restore", "accept-epoch-reset"];
+
+// shadows_root_project, cagrilan yaprak kokun `--project`ini golgeliyor mu.
+fn shadows_root_project(matches: &clap::ArgMatches) -> bool {
+    matches!(matches.subcommand(), Some(("dr", dm))
+        if dm.subcommand_name().is_some_and(|n| LOCAL_PROJECT_LEAVES.contains(&n)))
+}
+
+// shadowed_project, yapragin degerini, yoksa kokte KALMIS olani doner.
+//
+// SIRA "yerel once": clap'te yerel arguman ancak alt komuttan SONRA yazilmis
+// bir `--project` ile dolar, yani ikisi birden verildiginde yerel olan DAIMA
+// komut satirinda SONRAKIDIR. cobra tek bir degiskene yazdigi icin orada da
+// sonuncu kazanir — yani bu `or` Go'nun "son yazan kazanir"inin AYNISI.
+fn shadowed_project(leaf: &clap::ArgMatches, root: &Option<String>) -> Option<String> {
+    leaf.get_one::<String>("project").cloned().or_else(|| root.clone())
+}
+
 fn run() -> Result<(), CmdError> {
     let matches = match cli::build().try_get_matches() {
         Ok(m) => m,
@@ -74,7 +119,11 @@ fn run() -> Result<(), CmdError> {
     // DEGIL, "exec: no .wapps.yaml found" veriyor. Ayni istisna zaten
     // asagida da var (tofu dali iki bayragi da GORMEZDEN geliyor); bu satir
     // onunla ayni gercegi tasiyor.
-    if config.is_some() && project.is_some() && matches.subcommand_name() != Some("tofu") {
+    if config.is_some()
+        && project.is_some()
+        && matches.subcommand_name() != Some("tofu")
+        && !shadows_root_project(&matches)
+    {
         // `Plain` — `Cli` DEGIL. Go'da bu hata duz bir `fmt.Errorf`, yani
         // insan yolunda kod oneki ve kurtarma satiri YOK. `Plain` ajan
         // modunda zaten INTERNAL zarfina sariliyor, yani iki bicim de dogru.
@@ -263,7 +312,7 @@ fn run() -> Result<(), CmdError> {
         Some(("dr", dm)) => match dm.subcommand() {
             Some(("verify", vm)) => run_dr_verify(vm.get_one::<String>("snapshot").cloned()),
             Some(("restore", rm)) => run_dr_restore(
-                rm.get_one::<String>("project").cloned(),
+                shadowed_project(rm, &project),
                 rm.get_one::<String>("snapshot").cloned(),
                 rm.get_one::<String>("out").cloned(),
                 rm.get_flag("confirm"),
@@ -307,6 +356,9 @@ fn run() -> Result<(), CmdError> {
                         .unwrap_or_default(),
                     bm.get_flag("skip-preflight"),
                 )
+            }
+            Some(("accept-epoch-reset", am)) => {
+                run_dr_accept_epoch_reset(shadowed_project(am, &project))
             }
             _ => {
                 let _ = cli::build().find_subcommand_mut("dr").unwrap().print_help();
@@ -697,6 +749,165 @@ fn run_dr_bootstrap(
         execverb::ExitAction::Exit(code) => std::process::exit(code),
         execverb::ExitAction::Ok => Ok(()),
     }
+}
+
+// HEAD_PREFIX_LEN, operatorun KAGITTAN yazdigi hex onekinin uzunlugu.
+const HEAD_PREFIX_LEN: usize = 12;
+
+// is_hex12, Go'daki `^[0-9a-f]{12}$` regexinin karsiligi — regex crate'i YOK.
+//
+// Desen bir KARAKTER SINIFI + sabit uzunluk, yani bir ayristirici gerekmiyor;
+// `regex`i yalnizca bunun icin agaca almak, docs/PORT-kalan-yuzey.md §4.1'in
+// `deploy` icin olctugu kararla ayni sinifta olurdu.
+//
+// KUCUK HARF SART ve bu bir ayrinti degil: cagiran metni ONCE ToLower ediyor,
+// yani buraya buyuk harf ULASAMAZ. Sinifi `[0-9a-fA-F]` yapmak Go ile ayni
+// sonucu verirdi ama Go'nun REDDETTIGI bir girdiyi kabul eden bir yol acardi.
+fn is_hex12(s: &str) -> bool {
+    s.len() == HEAD_PREFIX_LEN
+        && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+// run_dr_accept_epoch_reset, `wapps dr accept-epoch-reset` — epoch pinini
+// INDIREN TEK yol.
+//
+// Pin (epochpin.rs) tam olarak bir seyi yakalamak icin var: degistirilmis ya
+// da yeniden kurulmus bir store. Onu indirmenin mesru tek yolu bu seremoni ve
+// kural sert (kritik H4):
+//
+//   1. canli audit-chain head'i gate'ten cekilir (GET /v1/audit/head);
+//   2. operator KAGIT ZARFTAKI head hash'inin ilk 12 hex'ini YAZAR — kagit
+//      degeri yazmak out-of-band dogrulamanin KENDISIDIR, bir y/n DEGIL;
+//   3. uyusmazlik -> HARD ABORT: store substitution varsayilir, pin'e
+//      DOKUNULMAZ ve kabul eden store HIC kurulmaz;
+//   4. eslesme -> TEK bir pin-indiren okuma (`X-Wapps-Intent: epoch-reset`).
+//
+// KAPI SIRASI GOZLEMLENEBILIR ve Go ile AYNEN ayni: ajan reddi HER SEYDEN
+// once — bayrak hatalari bile sizmaz, gate'e tek istek cikmaz, prompt hic
+// gorunmez (`dr split` ile ayni yon, `dr bootstrap` ile ters).
+//
+// BILINEN AYRISMA — prompt HATA yolu: Go `clierr.Wrapf(..., perr, "dr
+// accept-epoch-reset: read paper head prefix")` ile sarip altindaki HAM
+// hatayi basiyor ("... : EOF"); buradaki `prompt_no_echo` kendi metnini
+// ("read value: <std::io hatasi>") tasiyor. Kod (INTERNAL), onek ve cikis
+// kodu ESIT; ayrisan sey isletim sistemi seviyesindeki dize. Bu yol pty
+// altinda TETIKLENEMIYOR (bir pty master'i asla EOF vermez, okuma bloklanir
+// ve olculen sey bir davranis degil bir zaman asimi olurdu), o yuzden
+// differential'a KONMADI — sahte bir sadakat olurdu.
+fn run_dr_accept_epoch_reset(project: Option<String>) -> Result<(), CmdError> {
+    // (0) TTY-only guard HER SEYDEN ONCE (kritik H4 — sosyal muhendislik kolu).
+    agentmode::guard(agentmode::POLICY_TTY, agentmode::is_agent()).map_err(CmdError::Cli)?;
+    let project = project.unwrap_or_default();
+    if project.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "dr accept-epoch-reset: --project is required",
+        )));
+    }
+
+    // (1) Canli audit head. Bu okuma pin'e DOKUNMAZ.
+    let (seq, hash) = store::audit_head().map_err(CmdError::Cli)?;
+    // `len` BAYT sayar (Go'daki `len(hash)` gibi) ve metne de bayt sayisi
+    // girer. Bir hex hash zaten ASCII; bayt saymak ayni zamanda asagidaki
+    // dilimlemeyi de guvenli kiliyor.
+    if hash.len() < HEAD_PREFIX_LEN {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            format!(
+                "dr accept-epoch-reset: gate returned a malformed head hash (len {})",
+                hash.len()
+            ),
+        )));
+    }
+
+    // ON KONTROL, DEFAULT-FALSE store ile: bu cagri pin'i ASLA INDIREMEZ.
+    // Uc dal ve ucu de ayri: basari -> indirilecek bir sey yok (seremoni
+    // no-op); EPOCH_DOWNGRADE -> durum ozeti basilir ve devam edilir;
+    // BASKA bir hata -> AYNEN yayilir. Ucuncusu unutulmasi en kolay olani:
+    // "hata varsa demek ki downgrade" diyen bir port, coken bir gate'i
+    // seremoniye devam etme sebebi sayardi.
+    //
+    // YAN ETKI KASITLI: bu okuma default-false oldugu icin pin'i ILERLETIR
+    // (served > pinned oldugunda). Yani "indirecek bir sey yok" dali bile
+    // diske yazabilir, ve differential pin dosyasini karsilastiriyor.
+    match store::keys(&project) {
+        Ok(_) => {
+            println!(
+                "epoch pin for {} is already <= the served epoch — nothing to reset.",
+                go_quote(&project)
+            );
+            return Ok(());
+        }
+        Err(e) if e.code != Code::EpochDowngrade => return Err(CmdError::Cli(e)),
+        // EPOCH_DOWNGRADE mesaji pinned/served ciftini ICERIYOR; operatore
+        // durum ozeti olarak AYNEN basiliyor.
+        Err(e) => println!("gate state: {e}"),
+    }
+    // Sondaki bos satir Go'daki "\n\n"in ta kendisi — istem ondan sonra gelir.
+    println!("live audit head: seq={seq} hash={hash}\n");
+
+    // (2) Out-of-band dogrulama. Metin STDERR'e: ekrandan KOPYALAMAK
+    // dogrulama DEGILDIR, zarfi acmak dogrulamadir.
+    let mut errw = std::io::stderr();
+    let _ = writeln!(
+        errw,
+        "Open the paper envelope from the custodian kit. Do NOT copy from this screen —"
+    );
+    let _ = writeln!(
+        errw,
+        "type the value recorded on paper at the last successful dr verify."
+    );
+    // YANKISIZ okuma (`dr split`/`bootstrap` ile AYNI giris). Yazilan 12-hex
+    // bir SIR degil, ama ayni yardimci kullaniliyor: ikinci bir istem yuzeyi
+    // acmak, birinin gun gelip yankilamaya baslamasi demekti.
+    let (typed, _) = setverb::prompt_no_echo(
+        &mut errw,
+        &format!("First {HEAD_PREFIX_LEN} hex chars of the PAPER head hash: "),
+    )
+    .map_err(|e| {
+        CmdError::Cli(Error::new(
+            Code::Internal,
+            format!("dr accept-epoch-reset: read paper head prefix: {e}"),
+        ))
+    })?;
+    let typed = typed.trim().to_lowercase();
+    if !is_hex12(&typed) {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            format!(
+                "dr accept-epoch-reset: expected exactly {HEAD_PREFIX_LEN} hex chars from the paper envelope"
+            ),
+        )));
+    }
+    // Gate'ten gelen hash de KUCUK HARFE indiriliyor: kagida buyuk harf
+    // yazilmis bir zarf ile buyuk harf donen bir gate ayni seremoniyi
+    // gecirmeli. `to_ascii_lowercase` yeterli ve DOGRU: `is_hex12` yazilan
+    // degerin saf ASCII oldugunu zaten kanitladi, yani ASCII disi bir gate
+    // hash'i her halukarda uyusmaz.
+    if typed.as_bytes() != hash.as_bytes()[..HEAD_PREFIX_LEN].to_ascii_lowercase() {
+        // (3) HARD ABORT. Pin'e DOKUNULMAZ; kabul eden store HIC kurulmaz.
+        return Err(CmdError::Cli(
+            Error::new(
+                Code::EpochDowngrade,
+                "paper head hash does NOT match the live audit head — store substitution assumed; open an incident (risk register #8)",
+            )
+            .with_recovery(
+                "do NOT retry with a different value; verify the custodian envelopes and open an incident",
+            ),
+        ));
+    }
+
+    // (4) Eslesme: TEK pin-indiren okuma.
+    let res = store::keys_accepting_epoch_reset(&project).map_err(CmdError::Cli)?;
+    println!(
+        "✓ epoch pin for {} reset to served epoch {} (audit head seq={seq} verified against paper).",
+        go_quote(&project),
+        res.epoch
+    );
+    println!(
+        "NEXT: re-record the CURRENT head hash on paper and re-seal the envelopes (verify → paper → seal)."
+    );
+    Ok(())
 }
 
 fn run_dr_combine(

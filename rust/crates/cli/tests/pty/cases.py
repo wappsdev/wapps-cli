@@ -1705,6 +1705,24 @@ def dr_a(name, argv, files=None, stdin=None):
     return (f"agent_{name}", argv, AGENT, None, stdin, {"yaml": None, "files": files or {}})
 
 
+# --- dr accept-epoch-reset yardimcilari -----------------------------------------
+#
+# `dr_h`/`dr_a`dan AYRILAR ve sebebi olculdu: seremoni hicbir dosya YAZMIYOR
+# (tek cikti pin dosyasi, o da XDG_CONFIG_HOME altinda), ama bir pin dosyasi
+# TOHUMLAMAK zorunda. Yani 4. eleman (pin tohumu) dolu, 6. eleman (vaka
+# dizini) BOS — `dr_h` bunun tam TERSINI yapiyor.
+_AER = ["dr", "accept-epoch-reset"]
+# Sahte gate'in varsayilan audit head hash'inin ILK 12 hex'i (fakegate.py
+# AUDIT_HEAD_DEFAULT). GERCEK bir hash DEGIL, uydurma bir test dizesi.
+_AER_TYPED = b"ab12cd34ef56\n"
+
+def aer_h(name, argv, pins=None, stdin=None, env=None):
+    return (f"human_{name}", argv, dict(HUMAN, **(env or {})), pins, stdin)
+
+def aer_a(name, argv, pins=None, stdin=None, env=None):
+    return (f"agent_{name}", argv, dict(AGENT, **(env or {})), pins, stdin)
+
+
 # --- dr restore: GERCEK bir snapshot fikstuu -------------------------------------
 #
 # Yukaridaki `_dr_snapshot` blob'lari UYDURMA duz baytlar — `verify` yalnizca
@@ -2103,6 +2121,152 @@ DR_CASES = [
     dr_h("dr_combine_expect_kid_empty_is_inert",
          ["dr", "combine", "--share", "s1.hex", "--share", "s2.hex", "--out", "m.hex",
           "--expect-kid", ""], _SHARE_FILES),
+
+    # --- accept-epoch-reset: `dr`in SON fiili, ve pin'i INDIREN TEK yol -------
+    #
+    # Bu seremoni digerlerinden bir seyle ayriliyor: BASARISI da BASARISIZLIGI
+    # da CIKTIDA degil DISKTE. Sonuc `~/.config/wapps/epochs.json`in son hali,
+    # ve probe.py o dosyayi her vakada bayt-bayt tasiyor. Bu yuzden asagidaki
+    # vakalarin cogu ciktiyi degil PIN DOSYASINI olcuyor: kagit eslesmedigi
+    # halde pin'i indiren bir port da, eslestigi halde INDIRMEYEN bir port da
+    # ciktida DOGRU gorunurdu.
+    #
+    # `--project` BURADA YEREL bir bayrak, kalitilan kimlik bayragi DEGIL:
+    # kokun `-p`sini golgeliyor ve `Ctx::resolve` HIC cagrilmiyor (Go:
+    # runDrAcceptEpochReset dogrudan bayragi okuyor). `cfg`/`rooted` kollari
+    # bu yuzden muaf (ARM_WAIVERS), `proj` ve `bare` GEZILIYOR.
+    #
+    # UC SENARYO `WAPPS_SESSION_TOKEN` UZERINDEN suruluyor ve bu bir hile
+    # degil bir OLCU: `GET /v1/audit/head`in ne yolu ne sorgusu var, yani
+    # istemcinin gonderdigi TEK degisken alan kimlik basligi. Senaryoyu oradan
+    # surmek, basligin yeni rotaya GERCEKTEN enjekte edildigini de olcer
+    # (fakegate.py AUDIT_HEADS).
+
+    # AJAN KAPISI HER SEYDEN ONCE: gate'e tek bir istek bile cikmadan, ve pin
+    # dosyasina DOKUNMADAN reddedilir. Ikinci vaka sirayi pinliyor — bayraklar
+    # EKSIK olsa bile cikti "eksik bayrak" degil ajan reddi olmali (`dr split`
+    # ile ayni yon, `dr bootstrap` ile TERS).
+    aer_a("dr_accept_epoch_reset_refused", _AER + P, pinfile(9)),
+    aer_a("dr_accept_epoch_reset_refused_before_flag_check", _AER),
+
+    # `--project` YOK -> INTERNAL. Kimlik kolu taksonomisinin `bare` kolu.
+    aer_h("dr_accept_epoch_reset_no_project", _AER),
+
+    # Oturum yok: yeni rota da AYNI kimlik kapisindan geciyor, istek aga HIC
+    # cikmiyor. Pin'e dokunulmuyor.
+    aer_h("dr_accept_epoch_reset_no_session", _AER + P, pinfile(9),
+          env={"WAPPS_SESSION_TOKEN": ""}),
+
+    # Audit DO erisilemez -> fail-closed. Hata BAGLAMI "audit head" (Go:
+    # mapHTTPError(r, "audit head")) ve pin DOKUNULMAMIS kaliyor.
+    aer_h("dr_accept_epoch_reset_audit_head_unavailable", _AER + P, pinfile(9),
+          env={"WAPPS_SESSION_TOKEN": "audit-down"}),
+
+    # 12 hex'ten KISA bir head hash: seremoni Keys'e HIC gitmeden duser ve
+    # uzunlugu METINDE isimlendirir ("len 3").
+    aer_h("dr_accept_epoch_reset_malformed_head_hash", _AER + P, pinfile(9),
+          env={"WAPPS_SESSION_TOKEN": "audit-short"}),
+
+    # ON KONTROL: pin YOKKEN (0) sunulan 7 zaten buyuk -> seremoni NO-OP.
+    # Ve bir YAN ETKI olculuyor: bu on kontrol default-false bir store ile
+    # yapiliyor, yani pin'i INDIREMEZ ama ILERLETIR — dosya 7 ile bitmeli.
+    # Pin'i hic yazmayan bir port da ciktida ayni gorunurdu.
+    aer_h("dr_accept_epoch_reset_is_a_noop_when_there_is_no_pin", _AER + P),
+    # served == pinned: yine no-op, ve bu kez dosyaya YAZIM DA YOK.
+    aer_h("dr_accept_epoch_reset_is_a_noop_when_the_pin_equals_the_served_epoch",
+          _AER + P, pinfile(7)),
+
+    # ON KONTROLUN EPOCH_DOWNGRADE OLMAYAN HATASI YUTULMAZ. `audit-keysdown`
+    # senaryosunda audit head SAGLAM ama /keys 503 doner: seremoni orada
+    # durmali ve hatayi AYNEN yaymali ("list testproj" baglamiyla). `err !=
+    # nil` gordugu her yerde promptla devam eden bir port burada AYRISIR.
+    aer_h("dr_accept_epoch_reset_a_precheck_error_is_not_swallowed", _AER + P,
+          pinfile(9), env={"WAPPS_SESSION_TOKEN": "audit-keysdown"}),
+
+    # HARD ABORT — BU BLOGUN VAR OLMA SEBEBI. Kagit degeri tutmadiginda pin'e
+    # DOKUNULMAZ ve accepting store HIC kurulmaz. Yanlis cevabin ciktisi
+    # zaten bir hata satiri; TEK gercek fark pin dosyasinin 9'da kalmasi.
+    aer_h("dr_accept_epoch_reset_a_paper_mismatch_hard_aborts_and_keeps_the_pin",
+          _AER + P, pinfile(9), stdin=b"0000000000ab\n"),
+
+    # Kagit onekinin BICIMI: 11 karakter (kisa), 12 karakter ama HEX DEGIL,
+    # ve BOS. Ucu de ayni reddi vermeli — yani kontrol bir uzunluk kontrolu
+    # DEGIL, bir hex sinifi kontrolu.
+    aer_h("dr_accept_epoch_reset_a_short_paper_prefix_is_refused", _AER + P,
+          pinfile(9), stdin=b"ab12cd34ef5\n"),
+    aer_h("dr_accept_epoch_reset_a_non_hex_paper_prefix_is_refused", _AER + P,
+          pinfile(9), stdin=b"ab12cd34efgh\n"),
+    aer_h("dr_accept_epoch_reset_an_empty_paper_prefix_is_refused", _AER + P,
+          pinfile(9), stdin=b"\n"),
+
+    # ESLESME: TEK pin-indiren okuma. Sahte gate `X-Wapps-Intent: epoch-reset`
+    # TASIYAN bir /keys okumasina DAHA DUSUK bir epoch (5) doner, yani basari
+    # satirindaki sayi ve DISKE YAZILAN pin birlikte basligin gonderildigini
+    # olcer. Basligi unutan bir port 7 basar ve 7 yazar.
+    aer_h("dr_accept_epoch_reset_lowers_the_pin_on_a_paper_match", _AER + P,
+          pinfile(9), stdin=_AER_TYPED),
+
+    # YAZILAN degerin TrimSpace + ToLower'i: bosluklu ve BUYUK HARFLI bir
+    # giris de eslesmeli (operator kagittan buyuk harf okuyabilir).
+    aer_h("dr_accept_epoch_reset_the_typed_prefix_is_trimmed_and_lowercased",
+          _AER + P, pinfile(9), stdin=b"  AB12CD34EF56  \n"),
+
+    # GATE'ten gelen hash BUYUK HARFLI oldugunda da eslesmeli — ToLower iki
+    # tarafa da uygulaniyor. Ekrana basilan satir ham hash'i AYNEN tasir.
+    aer_h("dr_accept_epoch_reset_an_uppercase_gate_hash_still_matches", _AER + P,
+          pinfile(9), stdin=_AER_TYPED, env={"WAPPS_SESSION_TOKEN": "audit-upper"}),
+
+    # --- YEREL `--project` KOKUNKINI GOLGELIYOR ------------------------------
+    #
+    # BU BLOK BIR TUZAGI KAPATIYOR ve tuzak `dr accept-epoch-reset`e OZEL
+    # DEGIL: `dr restore` de yillardir ayni sekilde ayrisiyordu, kimse
+    # olcmedigi icin gorunmuyordu.
+    #
+    # cobra'da bir yapragin YEREL bayragi, kokun ayni adli PERSISTENT
+    # bayragini GOLGELER — ve golge KOMUT SATIRINDAKI YERDEN BAGIMSIZDIR:
+    # butun bayraklar yapragin flagset'ine karsi ayristirilir. clap'te ise
+    # kokun ve yapragin `--project`i IKI AYRI arguman ve hangisinin dolacagini
+    # KONUM belirler. Iki gozlemlenebilir sonuc dogar ve ikisi de asagida:
+    #
+    #   1. Alt komuttan ONCE yazilan `--project` Go'da yapraga ULASIR,
+    #      Rust'ta kokte KALIR (ve yaprak "--project is required" der);
+    #   2. `--config` + `--project` bu iki yaprakta KARSILIKLI DISLAYAN
+    #      DEGILDIR — cunku Go'da kokun `--project`i hic dolmaz. Rust ise
+    #      KIMLIK kuralini KIMLIK OLMAYAN bir bayraga karsi ateslerdi.
+    #
+    # DOGRU TARAF OLCULEREK secildi, hizalanarak degil: bu iki yaprakta
+    # `--project` bir KIMLIK bayragi degil (`Ctx::resolve` cagrilmiyor),
+    # seremoninin/kurtarmanin KENDI zorunlu argumani. Bir kimlik kuralinin
+    # ona carpmasi yanlis. Kontrol vakasi `dr verify`: YEREL `--project`i
+    # OLMAYAN bir yaprakta ret IKI IKILIDE DE surmeli, yani kural
+    # kaldirilmiyor, yalnizca golgelenen yerde uygulanmiyor.
+    aer_h("dr_accept_epoch_reset_a_root_project_flag_reaches_the_local_one",
+          ["--project", "testproj"] + _AER),
+    aer_h("dr_accept_epoch_reset_config_and_a_shadowed_project_are_not_exclusive",
+          ["--config", "x.yaml", "--project", "testproj"] + _AER),
+    # SONUNCU KAZANIR: ikisi birden verildiginde yaprak kendi degerini alir.
+    aer_h("dr_accept_epoch_reset_the_local_project_wins_over_the_root_one",
+          ["--project", "yokboyle"] + _AER + ["--project", "testproj"]),
+]
+
+# `dr restore` AYNI GOLGEYI YASIYOR ve duzeltme onu da tasiyor, yani olcusu de
+# burada olmali: davranisi degistirilen her yaprak korpusta gorunur.
+DR_CASES += [
+    dr_h("dr_restore_a_root_project_flag_reaches_the_local_one",
+         ["--project", "alpha", "dr", "restore", "--snapshot", "snap",
+          "--share", "s1.hex", "--share", "s2.hex", "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+    dr_h("dr_restore_config_and_a_shadowed_project_are_not_exclusive",
+         ["--config", "x.yaml", "--project", "alpha", "dr", "restore",
+          "--snapshot", "snap", "--share", "s1.hex", "--share", "s2.hex",
+          "--out", "env.out", "--confirm"],
+         _SNAP_RESTORE),
+    # KONTROL: `dr verify`in YEREL `--project`i YOK, yani golge de yok ve
+    # karsilikli dislama IKI IKILIDE DE surmeli. Bu vaka olmadan yukaridaki
+    # duzeltme kurali topyekun kaldirabilirdi ve gate yine yesil kalirdi.
+    dr_h("dr_verify_config_and_project_are_still_mutually_exclusive",
+         ["--config", "x.yaml", "--project", "p", "dr", "verify", "--snapshot", "snap"],
+         _SNAP_OK),
 ]
 
 CASES += DR_CASES
@@ -2509,6 +2673,12 @@ ARM_WAIVERS = {
                 "config GEREKMIYOR (projects list'in AKSINE, ve bu olculdu)",
         "cfg": "ayni sebep",
         "rooted": "ayni sebep",
+    },
+    "dr accept-epoch-reset": {
+        "cfg": "run_dr_accept_epoch_reset(project) — `--project` burada "
+               "SEREMONININ KENDI zorunlu bayragi (kokun `-p`sini golgeliyor), "
+               "kimlik bayragi DEGIL; Ctx::resolve cagrilmiyor",
+        "rooted": "ayni sebep: yerel `.wapps.yaml` bu fiile hic girmiyor",
     },
     "dr bootstrap": {
         "cfg": "run_dr_bootstrap(argv, extra_vars, skip_preflight) — Ctx::resolve "

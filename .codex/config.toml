@@ -1,0 +1,6 @@
+[mcp_servers."dual-orchestrator-agent-broker"]
+command = "bun"
+args = ["/Users/adnankurt/Documents/Projects/dual-orchestrator-agent-broker/src/main.ts"]
+
+[mcp_servers."dual-orchestrator-agent-broker".env]
+AGENT_BROKER_LAUNCHER_PROVIDER = "codex"

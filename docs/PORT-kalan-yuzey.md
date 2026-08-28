@@ -59,6 +59,10 @@ ağaçları), `02-envanter.txt`, `03-version-ve-yerel-project.txt`,
 
 Gezilen düğüm sayısı: **Go 50**, **Rust 31**. Rust'ta olmayan yol: **19**.
 
+> **Dilim 1'den sonra:** `dr accept-epoch-reset` indi, yani Rust **32** düğüm
+> taşıyor ve eksik yol **18**. Aşağıdaki tablolar ÖLÇÜM ANININ fotoğrafı;
+> yalnızca bu satır güncellendi ki ölçümün kendisi tahrif edilmesin.
+
 Aşağıdaki tabloda "yerel bayraklar" kök kalıtsal bayrakları (`-c/--config`,
 `-p/--project`, `-v/--verbose`, `-h/--help`) DIŞARIDA bırakır — cobra onları
 her alt komutun yardımında tekrar basar, clap basmaz, ve bu bir yetenek farkı
@@ -109,7 +113,6 @@ değil bir yardım-dizgi farkıdır.
 | `login` | `--check --write` | `cmd/login.go` 414 (whoami+token ile paylaşımlı) |
 | `whoami` | — | ↑ aynı dosya |
 | `token` / `token exchange` | `--key --project --ttl --verb` | ↑ aynı dosya |
-| `dr accept-epoch-reset` | `--project` | `cmd/secrets/dr_epoch_reset.go` 172 |
 | `secrets sync` | `--all-apps --app --coolify-url --dry-run --force --prefix --target` | `sync.go` 206 + `sync_coolify.go` 456 |
 | `coolify` | — | `cmd/coolify/` 455 |
 | `coolify deploy-app` | `--compose-file --env-from-shell --name --project-uuid --server-uuid` | ↑ |
@@ -258,7 +261,6 @@ Sıfır vakası olan her şey, portlanmamış olan şey:
 | ölçülmeyen | neden sıfır |
 |---|---|
 | `login`, `whoami`, `token exchange` | Rust'ta yok |
-| `dr accept-epoch-reset` | Rust'ta yok |
 | `secrets sync` | Rust'ta yok |
 | `coolify` (5 alt komut) | Rust'ta yok |
 | `deploy` | Rust'ta yok |
@@ -404,7 +406,7 @@ başına −2, üstüne fiilin kendi hata dalları.
 
 ---
 
-### Dilim 1 — `dr accept-epoch-reset` · **ilk dilim**
+### Dilim 1 — `dr accept-epoch-reset` · **İNDİ**
 
 **Neden ilk:** `dr`ın altıncı ve son alt komutu; indiği anda `dr` fiili
 KAPANIYOR. Uçtan uca bütün boruyu geziyor (yeni verb + yeni store rotası +
@@ -416,13 +418,33 @@ ediyor.
 |---|---|
 | fiiller | `dr accept-epoch-reset` |
 | Go kaynağı | `cmd/secrets/dr_epoch_reset.go` 172 satır |
-| yeni crate | **YOK** |
-| store'a eklenecek | `AuditHead` (`GET /v1/audit/head`), `X-Wapps-Intent: epoch-reset` başlığı |
-| `epochpin.rs`e eklenecek | pin İNDİREN yol (bugün yalnız `check_and_advance` var) |
-| sahte gate | **+1 rota** (`GET /v1/audit/head`) |
-| hazır olanlar | `confirm.rs` (onay istemi), `agentmode` (ajan reddi), `clierr` |
-| differential vakası | **12–16.** `proj` kolu ZORUNLU (`--project` burada YEREL bayrak); `cfg`/`rooted` `dr verify`/`dr restore` gerekçesiyle muaf edilebilir. Üstüne: baş hash uyuşmazlığı (HARD-ABORT), bozuk hash uzunluğu, kâğıt önekinin yanlış uzunluğu, ajan reddi |
-| kapı | `cargo test` yeşil + `_armcheck()` muafiyet gerekçesi yazılı |
+| yeni crate | **YOK** — tahmin tuttu; `regex` de gerekmedi (`^[0-9a-f]{12}$` bir karakter sınıfı, §4.1'in `deploy` için ölçtüğü kararla aynı sınıfta) |
+| store'a eklendi | `audit_head()` (`GET /v1/audit/head`), `keys_accepting_epoch_reset()` (`X-Wapps-Intent: epoch-reset`) |
+| `epochpin.rs` | **DEĞİŞMEDİ.** Bu satır fiyatlandırmada YANLIŞTI: pin İNDİREN yol zaten vardı (`check_and_advance`in `accept_reset` parametresi, önceki dilimde "atlamak bir istisnayı yeniden keşfettirirdi" gerekçesiyle taşınmıştı). Eksik olan tek şey onu çağıran fiildi |
+| sahte gate | **+1 rota** (`GET /v1/audit/head`) + `/keys`in intent başlığına duyarlı hâle gelmesi |
+| differential vakası | **22** (16 seremoni + 6 gölge). Tabandan türetimi: 4 kol × 2 mod = 8, `cfg`+`rooted` muaf → **4**; üstüne fiilin 12 kendi dalı |
+| kapı | `cargo test` yeşil (`EQUAL=457 DIFFERENT=0 UNSOUND=0`, exit 0) + `cargo clippy` temiz + `_armcheck()` muafiyet gerekçesi yazılı |
+
+**Fiyatlandırmanın GÖRMEDİĞİ bir ayrışma çıktı, ve `dr restore`da da vardı.**
+§1.2 "`--project` iki yerde YEREL bir bayrak … port için bir tuzak" diyordu;
+tuzak sanıldığından bir adım derinde. cobra'da yaprağın yerel bayrağı kökün
+persistent'ini **GÖLGELER** ve gölge komut satırındaki YERDEN BAĞIMSIZDIR —
+bütün bayraklar yaprağın flagset'ine karşı ayrıştırılır. clap'te ikisi ayrı
+argüman ve hangisinin dolacağını KONUM belirler. İki gözlemlenebilir sonuç:
+
+```
+wapps --project p dr accept-epoch-reset      GO çalışır · RS "--project is required"
+wapps -c c --project p dr accept-epoch-reset GO çalışır · RS "mutually exclusive"
+wapps --project a dr restore …               GO çalışır · RS "--project and --snapshot are required"
+wapps -c c --project a dr restore …          GO çalışır · RS "mutually exclusive"
+```
+
+Yani ayrışma bu dilimin GETİRDİĞİ bir şey değil: `dr restore`da ölçülmeden
+duruyordu ve §6.1'in "portlanmış 30 yolun DAVRANIŞSAL tamlığı ölçülmedi"
+maddesinin somut bir örneği. Doğru taraf ölçülerek seçildi: karşılıklı dışlama
+bir KİMLİK kuralı, bu iki yaprakta `--project` kimlik bayrağı DEĞİL
+(`Ctx::resolve` çağrılmıyor). Kural kaldırılmadı — yerel `--project`i olmayan
+`dr verify`de sürüyor ve kontrol vakası korpusta.
 
 ---
 

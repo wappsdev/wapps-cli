@@ -11,6 +11,7 @@ Tasinan rotalar:
   GET    /v1/projects                 -> proje ADLARI (projects list)
   DELETE /v1/admin/projects/{p}       -> projeyi tumuyle silme (projects rm)
   GET    /v1/whoami                   -> status'un canlilik probu
+  GET    /v1/audit/head                -> audit zincir head'i (dr accept-epoch-reset)
   GET    /v1/admin/policy             -> aktif policy (policy show/set)
   GET    /v1/admin/rotate-plan        -> audit-ledger rotate-set oracle (rotate-plan)
   PUT    /v1/admin/policy             -> CAS'li policy yazimi (policy set)
@@ -51,6 +52,38 @@ POLICY_DOC = {
     ],
 }
 
+# AUDIT HEAD SENARYOLARI — `dr accept-epoch-reset` seremonisinin CANLI referansi.
+#
+# SENARYO SECICI `cf-access-token` BASLIGI, ve bu bir kolaylik degil bir OLCU:
+# `GET /v1/audit/head`in ne bir yol parametresi ne de bir sorgu dizesi var,
+# yani istemcinin GONDERDIGI tek degisken alan kimlik basligidir. Senaryoyu
+# oradan surmek, basligin GERCEKTEN enjekte edildigini de olcer — basligi
+# gondermeyen (ya da yanlis adla gonderen) bir istemci DAIMA varsayilan
+# senaryoyu alir ve senaryo vakalarinin tamami ayrisir.
+#
+# GERCEK SIR YOK: asagidaki jetonlar da hash'ler de uydurma test dizeleridir.
+AUDIT_HEADS = {
+    # Kisa hash: seremoni `len(hash) < 12` dalinda duser, Keys'e HIC gitmez.
+    "audit-short": (200, {"seq": 11, "hash": "abc"}),
+    # Audit DO erisilemez: fail-closed, seremoni ilerleyemez.
+    "audit-down": (503, {"error": "AUDIT_UNAVAILABLE"}),
+    # BUYUK HARFLI hash: kagittan yazilan deger kucuk harf olsa bile
+    # eslesmeli (Go: strings.ToLower(hash[:12])). Kiyaslamayi ham baytlar
+    # uzerinde yapan bir port burada AYRISIR.
+    "audit-upper": (200, {"seq": 4217, "hash": "AB12CD34EF56aa77bb88cc99dd00ee11"}),
+    # /keys COKMUS ama audit head SAGLAM: seremoninin on kontrolunde
+    # EPOCH_DOWNGRADE OLMAYAN bir hatanin YUTULMADIGINI olcer.
+    "audit-keysdown": (200, {"seq": 4217, "hash": "ab12cd34ef56aa77bb88cc99dd00ee11"}),
+}
+AUDIT_HEAD_DEFAULT = (200, {"seq": 4217, "hash": "ab12cd34ef56aa77bb88cc99dd00ee11"})
+
+# EPOCH_RESET_EPOCH, `X-Wapps-Intent: epoch-reset` TASIYAN bir /keys okumasinin
+# gordugu epoch. Sabit epoch'tan (7) FARKLI olmasi bilincli ve bu dosyanin
+# rotate-plan rotasiyla ayni gerekce: basligi gondermeyen bir istemci FARKLI
+# bir govde alir ve differential'da GORUNUR. Baslik aksi halde hicbir yerde
+# olculmezdi — audit etiketi sunucu tarafinda kalir, ciktiya hic girmez.
+EPOCH_RESET_EPOCH = 5
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -64,6 +97,13 @@ class H(BaseHTTPRequestHandler):
         # tasima hatasi offline demek.
         if self.path == "/v1/whoami":
             return self._send(200, {"principal": "probe@example.invalid"})
+
+        # GET /v1/audit/head — global audit zincir head'i ({seq, hash}).
+        # `dr accept-epoch-reset`in kagit zarfla karsilastirdigi CANLI deger.
+        if self.path == "/v1/audit/head":
+            status, payload = AUDIT_HEADS.get(
+                self.headers.get("cf-access-token") or "", AUDIT_HEAD_DEFAULT)
+            return self._send(status, payload)
 
         # GET /v1/admin/policy — aktif policy dokumani.
         #
@@ -133,12 +173,21 @@ class H(BaseHTTPRequestHandler):
         m = re.match(r"^/v1/projects/([^/]+)/keys$", self.path)
         if not m:
             return self._send(404, {"error": "NO_ROUTE"})
+        # `audit-keysdown` senaryosu: audit head SAGLAM, metadata duzlemi COKMUS.
+        if (self.headers.get("cf-access-token") or "") == "audit-keysdown":
+            return self._send(503, {"error": "AUDIT_UNAVAILABLE"})
         status, payload = SCRIPT.get("__ALL__", (404, {"error": "KEY_NOT_FOUND"}))
         if status != 200:
             return self._send(status, payload)
         vals = payload.get("values") or {}
+        # `X-Wapps-Intent: epoch-reset` -> DAHA DUSUK bir epoch. Basligi
+        # gondermeyen bir istemci 7 gorur, gonderen 5; seremoninin basari
+        # satiri ve DISKE YAZILAN pin bu yuzden basligin varligini olcer.
+        epoch = payload.get("epoch", 0)
+        if self.headers.get("X-Wapps-Intent") == "epoch-reset":
+            epoch = EPOCH_RESET_EPOCH
         return self._send(200, {"project": unquote(m.group(1)),
-                                "epoch": payload.get("epoch", 0),
+                                "epoch": epoch,
                                 "keys": [{"keyName": k, "keyVersion": 1}
                                          for k in sorted(vals)]})
 

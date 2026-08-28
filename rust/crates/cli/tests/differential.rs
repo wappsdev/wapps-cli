@@ -240,6 +240,24 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     //          +2  KISA BICIM (-p/-c)        EQUAL=419 DIFFERENT=0
     //          +15 `dr bootstrap`             EQUAL=434 DIFFERENT=0
     //          +1  BESINCI DURUM (`dr bootstrap`) EQUAL=435 DIFFERENT=0
+    //          +16 `dr accept-epoch-reset`      EQUAL=451 DIFFERENT=0
+    //          +6  YEREL `--project` GOLGESI     EQUAL=457 DIFFERENT=0
+    //
+    // IKI GRUP DA KIRMIZI GORULEREK yazildi, ve bu iki ayri kosum:
+    //
+    //   * on alti seremoni vakasi fiil PORTLANMADAN once eklendi ve kosum
+    //     EQUAL=435 DIFFERENT=16 verdi — yani on altisi da GERCEKTEN yeni bir
+    //     kod yolu olcuyor, ve eski 435'in HICBIRI sahte gate'in yeni
+    //     rotasindan (`/v1/audit/head`) ya da yeni basligindan
+    //     (`X-Wapps-Intent`) etkilenmedi;
+    //   * alti golge vakasi, duzeltmesi DEVRE DISI birakilmis bir ikiliyle
+    //     ayri ayri kosuldu ve DORDU ayristi (ikisi `accept-epoch-reset`,
+    //     IKISI `dr restore` — yani ayrisma bu dilimin GETIRDIGI bir sey
+    //     degil, `dr restore`da olculmeden duruyordu). Kalan ikisi duzeltme
+    //     OLMADAN da esitti ve bilerek oyle: biri oncelik (`sonuncu kazanir`)
+    //     nobetcisi, digeri KONTROL — yerel `--project`i OLMAYAN `dr
+    //     verify`de karsilikli dislama SURMELI. Kontrol olmasa duzeltme
+    //     kurali topyekun kaldirabilir ve gate yine yesil kalirdi.
     //
     // ESIK ARTIK IKI SEYI BIRDEN TUTUYOR, cunku EQUAL'in ANLAMI degisti:
     // zaman asimina ugramis (ya da hicbir sey gozlemlemeyen) bir vaka EQUAL'e
@@ -253,7 +271,7 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // BUYUKLUGUNU tutan TEK mekanizma. Taban eskisi gibi 419'da biraksaydi,
     // `dr bootstrap`in on bes vakasinin TAMAMI korpustan sessizce dusebilir
     // ve gate YINE YESIL kalirdi. Canli vaka sayisi (CASES - EXCLUDED)
-    // OLCULDU: 439 - 4 = 435, yani bu esik "en az" degil TAM sayidir.
+    // OLCULDU: 461 - 4 = 457, yani bu esik "en az" degil TAM sayidir.
     //
     //        `set` ve `get`te iki kez cikan kor nokta UCUNCU KEZ CIKMADI:
     //        `--config` kalan ON BIR `Ctx::resolve` fiilinin (list/status/rm/
@@ -328,7 +346,7 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     assert!(
-        equal >= 435,
+        equal >= 457,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

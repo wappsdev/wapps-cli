@@ -339,12 +339,11 @@ pub fn build() -> Command {
         // `doctor` ile ayni gerekce). `projects list`in baglama kapisini hic
         // gormemesiyle AYNI yapisal sebep.
         //
-        // BIR ALT KOMUT BURADA YOK ve bu bir unutma DEGIL:
-        // `accept-epoch-reset` portlanmadi (store'da `AuditHead` rotasi +
-        // `X-Wapps-Intent` basligi, ve sahte gate'te o rota — ucu de YOK).
-        // Onu clap agacina "yakinda" diye eklemek, Go'nun CALISAN bir
-        // toreninin yerine bir hata mesaji koymak olurdu; Rust ikilisi onu
-        // TANIMIYOR ve fark differential korpusunda ADLANDIRILMIS durumda.
+        // `dr` AGACI ARTIK TAM: alti alt komutun altisi da burada. En son
+        // `accept-epoch-reset` indi ve onu disarida tutan gerekce ("store'da
+        // `AuditHead` rotasi + `X-Wapps-Intent` basligi, sahte gate'te o rota
+        // — ucu de YOK") bir EKSIKLIK listesiydi, bir imkansizlik degil:
+        // ucu de yazildi ve Cargo.toml'a TEK bir crate eklenmedi.
         //
         // `restore` ARTIK VAR. Onceki tur onu "XChaCha20-Poly1305 ring'de yok,
         // yani yeni bir CRATE gerekiyor" diye disarida birakmisti; olcum o
@@ -487,6 +486,26 @@ pub fn build() -> Command {
                                 .long("skip-preflight")
                                 .action(ArgAction::SetTrue)
                                 .help("skip the tofu backend env contract preflight (non-tofu commands)"),
+                        ),
+                )
+                // `--project` BURADA YEREL, ve bu bir duzenleme tercihi degil
+                // Go'nun gozlemlenebilir sekli: cobra'da `StringVar` kokun
+                // persistent `-p`sini GOLGELIYOR (olculdu — bu alt komutun
+                // yardiminda "Global Flags" altinda `-p` YOK, yalnizca `-c`
+                // ve `-v` var). Deger `Ctx::resolve`e HIC girmiyor; seremoni
+                // proje adini dogrudan bayraktan okuyor.
+                //
+                // Kisa bicim (`-p`) BILEREK YOK: Go'daki `StringVar` da
+                // kisasiz. Buraya `-p` eklemek kokun kisa bicimini bu alt
+                // komutta yeniden acardi.
+                .subcommand(
+                    Command::new("accept-epoch-reset")
+                        .about("TTY-only ceremony: verify the audit head against the paper envelope, then lower the epoch pin")
+                        .arg(
+                            Arg::new("project")
+                                .long("project")
+                                .value_name("string")
+                                .help("project whose epoch pin will be reset"),
                         ),
                 ),
         )

@@ -376,6 +376,34 @@ pub struct KeyInfo {
 /// HATA BAGLAMI "list <proje>" (read'deki "read <proje>" DEGIL) — Go'daki
 /// mapHTTPError(r, "list "+project) ile ayni.
 pub fn keys(project: &str) -> Result<KeysResult, Error> {
+    keys_inner(project, false)
+}
+
+/// HEADER_INTENT, Worker'a giden BILGILENDIRICI niyet basligidir (Go:
+/// internal/intent.HeaderIntent). Bir YETKILENDIRME girdisi DEGIL: audit
+/// satirini etiketler, strip edilirse satir sirdan bir listelemeye duser.
+pub const HEADER_INTENT: &str = "X-Wapps-Intent";
+
+/// INTENT_EPOCH_RESET, HeaderIntent'in epoch-reset degeridir. YALNIZCA
+/// `wapps dr accept-epoch-reset` seremonisinin pin-INDIREN tek okumasi tasir.
+pub const INTENT_EPOCH_RESET: &str = "epoch-reset";
+
+/// keys_accepting_epoch_reset, `keys` ile AYNI rotayi cagirir ama IKI seyi
+/// degistirir, ve ikisi de yalnizca seremoniye aittir:
+///   * istek `X-Wapps-Intent: epoch-reset` tasir (audit etiketi, §6.4);
+///   * epoch pini sunulan DAHA DUSUK epoch'a INDIRILEBILIR.
+///
+/// AYRI BIR GIRIS OLMASI BILINCLI. Go tarafinda bu bir Config alani
+/// (`AcceptEpochReset`) ve orada da kural sert: bayrak exec/apply/get
+/// yollarina ASLA threadlenmiyor, yalnizca seremoninin 4. adiminda kurulan
+/// TEK store'da yasiyor. Burada bir parametre yerine ayri bir fonksiyon
+/// olmasi ayni kurali TIP duzeyinde tutuyor: `keys` cagiran hicbir yol
+/// yanlislikla `true` geciremez, cunku gececek bir yer yok.
+pub fn keys_accepting_epoch_reset(project: &str) -> Result<KeysResult, Error> {
+    keys_inner(project, true)
+}
+
+fn keys_inner(project: &str, accept_reset: bool) -> Result<KeysResult, Error> {
     let headers = session::auth_headers()?;
     let url = format!(
         "{}/v1/projects/{}/keys",
@@ -386,6 +414,9 @@ pub fn keys(project: &str) -> Result<KeysResult, Error> {
     for (k, v) in &headers {
         req = req.set(k, v);
     }
+    if accept_reset {
+        req = req.set(HEADER_INTENT, INTENT_EPOCH_RESET);
+    }
     let ctx = format!("list {project}");
     match req.call() {
         Ok(resp) => {
@@ -394,7 +425,12 @@ pub fn keys(project: &str) -> Result<KeysResult, Error> {
             })?;
             let out = serde_json::from_str::<KeysResult>(&text)
                 .map_err(|e| Error::new(Code::Internal, format!("decode {ctx}: {e}")))?;
-            epochpin::check_and_advance(&epochpin::default_path()?, project, out.epoch, false)?;
+            epochpin::check_and_advance(
+                &epochpin::default_path()?,
+                project,
+                out.epoch,
+                accept_reset,
+            )?;
             Ok(out)
         }
         Err(ureq::Error::Status(status, resp)) => {
@@ -404,6 +440,54 @@ pub fn keys(project: &str) -> Result<KeysResult, Error> {
                 .unwrap_or(DEFAULT_RETRY_AFTER);
             let text = resp.into_string().unwrap_or_default();
             Err(map_http_error(status, &text, retry_after, &ctx))
+        }
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+/// audit_head, GET /v1/audit/head cagirir: global audit zincirinin head'i
+/// ({seq, hash}).
+///
+/// `dr accept-epoch-reset` seremonisinin CANLI referansidir — donen hash,
+/// operatorun kagit zarftaki degerle out-of-band karsilastirdigi degerdir.
+/// METADATA okumasi: duz metin donmez ve epoch pinine DOKUNMAZ (bu yuzden
+/// burada `check_and_advance` cagrisi YOK; `keys`in aksine).
+///
+/// HATA BAGLAMI "audit head" — Go'daki mapHTTPError(r, "audit head") ile ayni.
+pub fn audit_head() -> Result<(u64, String), Error> {
+    #[derive(Deserialize)]
+    struct Head {
+        #[serde(default)]
+        seq: u64,
+        #[serde(default)]
+        hash: String,
+    }
+    let headers = session::auth_headers()?;
+    let url = format!("{}/v1/audit/head", session::gate_url());
+    let mut req = agent().get(&url);
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = "audit head";
+    match req.call() {
+        Ok(resp) => {
+            let text = resp.into_string().map_err(|e| {
+                Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
+            })?;
+            let out = serde_json::from_str::<Head>(&text)
+                .map_err(|e| Error::new(Code::Internal, format!("decode {ctx}: {e}")))?;
+            Ok((out.seq, out.hash))
+        }
+        Err(ureq::Error::Status(status, resp)) => {
+            let retry_after = resp
+                .header("Retry-After")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_RETRY_AFTER);
+            let text = resp.into_string().unwrap_or_default();
+            Err(map_http_error(status, &text, retry_after, ctx))
         }
         Err(ureq::Error::Transport(t)) => Err(Error::new(
             Code::NetworkRequired,
