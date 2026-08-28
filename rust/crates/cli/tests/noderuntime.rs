@@ -53,7 +53,7 @@ fn repo_root() -> PathBuf {
 /// bir `.ts`i node'un SOKUCUSUNE vermezler — kendi donusumleri var, ve bu
 /// ayrimin kaybi kapiyi her npm betiginde kirmiziya cevirirdi.
 fn runs_node_directly(cmd: &str) -> bool {
-    cmd.split(|c| c == ';' || c == '|' || c == '&')
+    cmd.split([';', '|', '&'])
         .any(|halka| halka.split_whitespace().next() == Some("node"))
 }
 
@@ -144,6 +144,21 @@ fn tracked_files(root: &Path) -> Vec<String> {
     String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
 }
 
+/// TARAYICININ KENDI KAYNAGI — taramanin DISINDA, ve bu bir muafiyet degil bir
+/// zorunluluk: yasakli bicimlerin listesi (`BICIMLER`) ve tarayicinin birim
+/// testlerindeki fikstur satirlari BU DOSYADA duz metin olarak yaziyor. Yani
+/// kapi, kendi SOZLUGUNU bir ihlal sayiyordu ve `git ls-files` altinda HER
+/// KOSUMDA kirmizi doniyordu (bulgular: `:75 "process.execPath",`,
+/// `:76 "Bun.spawn",`, `:121 assert!(names_node_as_a_process(...))`). Kirmizi
+/// olan sey depo degil olcuyu tutan cetveldi.
+///
+/// BEDELI ADIYLA YAZILI: bu dosyanin ICINE gercek bir `Command::new("node")`
+/// konursa kapi onu GORMEZ. Kabul edilebilir, cunku burasi kapinin kendisi —
+/// buraya node cagirmak, kapiyi silmekle ayni bilincli eylemdir. Muafiyetin
+/// TEK bir yol olmasi asagida IDDIA olarak tutuluyor ki liste sessizce
+/// buyumesin.
+const TARAYICININ_KENDI_KAYNAGI: &str = "rust/crates/cli/tests/noderuntime.rs";
+
 /// Bir `package.json`in `scripts` blogundaki komutlar.
 ///
 /// Blok DISINA bakilmiyor: bir bagimliligin surumu ya da bir `description`
@@ -177,6 +192,27 @@ fn package_scripts_reads_the_command_not_the_name() {
     assert!(!komutlar.iter().any(|k| k.contains("node-thing") || k.contains("node-fetch")));
 }
 
+/// MUAFIYETIN KAPISI: taramadan DISLANAN tek bir yol var ve o yol GERCEKTEN
+/// var. Iki sey birden tutuluyor:
+///   * sabit bir YAZIM HATASI olamaz — dislanan yol izlenen dosyalar arasinda
+///     bulunmali, yoksa dislama hicbir sey yapmiyor demektir ve kapi yine
+///     kirmizi doner (sessiz bir "duzeltme" olurdu);
+///   * dislama BIR TANE kalmali — bu testi gecmenin tek yolu listeyi
+///     buyutmemek, cunku dislanacak ikinci bir dosya bu dosyada bir SABIT
+///     olarak degil, ayri bir karar olarak gorunmeli.
+#[test]
+fn the_scanner_excludes_exactly_one_path_and_that_path_exists() {
+    let dosyalar = tracked_files(&repo_root());
+    assert!(
+        dosyalar.iter().any(|d| d == TARAYICININ_KENDI_KAYNAGI),
+        "dislanan yol izlenen dosyalar arasinda YOK: {TARAYICININ_KENDI_KAYNAGI} \
+         — dislama hicbir sey yapmiyor",
+    );
+    // Dislama TEK bir `&str` sabiti; bir liste olsaydi bu iddia uzunluga
+    // bakardi. Bicimi burada pinliyoruz ki bir sonraki el once buraya baksin.
+    assert!(!TARAYICININ_KENDI_KAYNAGI.contains(','), "dislama TEK bir yol olmali");
+}
+
 /// SINIFIN KAPISI: node'a bu depodan is verilmiyor.
 #[test]
 fn nothing_in_this_repo_hands_a_typescript_file_to_node() {
@@ -192,6 +228,10 @@ fn nothing_in_this_repo_hands_a_typescript_file_to_node() {
     let mut bulgular: BTreeSet<String> = BTreeSet::new();
     let mut okunan = 0usize;
     for yol in &dosyalar {
+        // Cetvel kendini olcmez (bkz. TARAYICININ_KENDI_KAYNAGI).
+        if yol == TARAYICININ_KENDI_KAYNAGI {
+            continue;
+        }
         let tam = root.join(yol);
         let Ok(icerik) = std::fs::read_to_string(&tam) else { continue };
         okunan += 1;
