@@ -62,6 +62,10 @@ Gezilen düğüm sayısı: **Go 50**, **Rust 31**. Rust'ta olmayan yol: **19**.
 > **Dilim 1'den sonra:** `dr accept-epoch-reset` indi, yani Rust **32** düğüm
 > taşıyor ve eksik yol **18**. Aşağıdaki tablolar ÖLÇÜM ANININ fotoğrafı;
 > yalnızca bu satır güncellendi ki ölçümün kendisi tahrif edilmesin.
+>
+> **Dilim 2 ve 4'ten sonra:** `whoami`, `token` ve `token exchange` indi →
+> Rust **35** düğüm, eksik yol **15**. `login` KALDI (Dilim 3), yani
+> `cmd/login.go` hâlâ yarım.
 
 Aşağıdaki tabloda "yerel bayraklar" kök kalıtsal bayrakları (`-c/--config`,
 `-p/--project`, `-v/--verbose`, `-h/--help`) DIŞARIDA bırakır — cobra onları
@@ -448,7 +452,7 @@ bir KİMLİK kuralı, bu iki yaprakta `--project` kimlik bayrağı DEĞİL
 
 ---
 
-### Dilim 2 — `whoami`
+### Dilim 2 — `whoami` · **İNDİ**
 
 **Neden ikinci:** ağa çıkan en ucuz fiil, ve sahte gate rotası ZATEN VAR
 (`GET /v1/whoami`, bugün `status`un canlılık probu olarak kullanılıyor).
@@ -458,11 +462,24 @@ Yapılacak iş rotayı silmek değil, gövdesini gerçek şekle zenginleştirmek
 |---|---|
 | fiiller | `whoami` |
 | Go kaynağı | `cmd/login.go` `whoamiCmd` bloğu **46** satır + `store.Whoami` **14** satır |
-| yeni crate | **YOK** |
-| store'a eklenecek | `whoami()` |
-| sahte gate | rota VAR; gövde zenginleştirilecek (principal/email/common-name/gruplar/grantlar) |
-| differential vakası | **8–10** (4 kol × 2 mod; üstüne oturumsuz + gate 5xx) |
-| kapı | `cargo test` yeşil |
+| yeni crate | **YOK** — tahmin tuttu |
+| store'a eklendi | `whoami()`, `store::Grant`, `store::WhoamiResult` |
+| sahte gate | rota KORUNDU (status'un probu hâlâ onu çağırıyor ve BAŞLIKSIZ çağırdığı için daima varsayılan senaryoyu alıyor); gövde yedi senaryoya zenginleşti |
+| differential vakası | **14.** Tabandan türetimi: 4 kol × 2 mod = 8, `cfg`+`rooted` muaf → **4**; üstüne fiilin 10 kendi dalı |
+| kapı | `cargo test` yeşil (`EQUAL=511 DIFFERENT=0 UNSOUND=0`, exit 0) |
+
+**Fiyatlandırmanın görmediği iki şey çıktı, ikisi de `whoami`ye ÖZEL DEĞİL:**
+
+1. `store.rs`in `safe_code`u Go'nun `safeCode`u DEĞİLDİ (boş kod `"unknown"`
+   olmalı, sınıf dışı baytlar ATILMALI, kırpma 48 bayt — port satırsonunu
+   boşluğa çevirip 64'e kırpıyordu). Korpustaki her hata gövdesi temiz bir
+   `SCREAMING_SNAKE` kodu taşıdığı için hiçbir vaka bunu görmemişti;
+   `whoami`nin 403 dalı boş bir kod görebiliyor. Düzeltme BÜTÜN rotaların
+   hata yolunu etkiliyor ve mevcut 457 vaka düzeltmeden sonra da eşit kaldı.
+2. Go'nun `encoding/json`'ı `null`u her hedef tipe sessizce kabul ediyor
+   (dilim → nil, dize → ""), serde ise hata veriyor. `whoami`nin tipleri
+   toleranslı hâle getirildi; **aynı fark gate'in diğer rotalarında
+   DURUYOR** ve orası ölçülmemiş bir dal.
 
 ---
 
@@ -480,17 +497,37 @@ Yapılacak iş rotayı silmek değil, gövdesini gerçek şekle zenginleştirmek
 
 ---
 
-### Dilim 4 — `token exchange`
+### Dilim 4 — `token exchange` · **İNDİ**
 
 | | |
 |---|---|
 | fiiller | `token`, `token exchange` |
 | Go kaynağı | `cmd/login.go` `tokenExchangeCmd` bloğu **36** satır + `store.TokenMint` **34** satır |
-| yeni crate | **YOK** |
-| store'a eklenecek | `token_mint()` (`POST /v1/token`) |
-| sahte gate | **+1 rota** (`POST /v1/token`) |
-| differential vakası | **10–12.** `proj` kolu YEREL bayraktan (Dilim 1'le aynı tuzak); artı `--ttl` sınırı (≤600), `--verb` doğrulaması, tekrarlanabilir `--key`, servis-token yokluğu |
-| kapı | `cargo test` yeşil + basılan token'ın scrubber'a takılmaması ölçülü |
+| yeni crate | **YOK** — ama iki YENİ MODÜL: `gostrconv` (`strconv.ParseInt(s,0,64)`) ve `gotime` (`time.Unix(n,0).UTC().Format(RFC3339)`). İkisi de saf, ikisi de elde yazıldı; `rotateplan::rfc3339_valid` ile aynı gerekçe |
+| store'a eklendi | `token_mint()` (`POST /v1/token`) |
+| sahte gate | **+1 rota** (`POST /v1/token`), ve gövdeden SÜRÜLEN bir rota: dönen jeton istemcinin gönderdiği kapsamdan üretiliyor |
+| differential vakası | **40** = fiilin **37**'si + gölgenin kısa-biçim yüzünü `dr`ın iki yaprağında ölçen **3**. Fiilin türetimi: 4 kol × 2 mod = 8, `cfg`+`rooted` muaf → **4**; üstüne fiilin 33 kendi dalı |
+| kapı | `cargo test` yeşil + `tests/tokenleak.rs`: basılan jeton HAM, ve basılan baytların GERÇEKTEN redaksiyon yemi olduğu ayrıca ölçülü (mutasyonla doğrulandı) |
+
+**`--ttl` ve `--verb` sınırları İSTEMCİDE YOK — ölçüldü.** Fiyatlandırma
+"`--ttl` sınırı (≤600), `--verb` doğrulaması" diyordu; Go ikisini de
+doğrulamıyor, olduğu gibi tele koyuyor. Sınır gate'in. Sahte gate bu yüzden
+ikisini de zorluyor: doğrulayan bir port gate'in reddini HİÇ göremezdi.
+
+**Gölge tuzağının DÖRDÜNCÜ yüzü burada çıktı ve `dr`ın iki yaprağında da
+vardı:** yerel `--project` kökün `-p`sini de KALDIRIYOR (cobra yaprağın
+flagset'ini kurarken aynı adlı kalıtılan bayrağı atlıyor, ve yerel olanın
+shorthand'ı yok) → `wapps -p x token exchange` Go'da
+`unknown shorthand flag: 'p' in -p`. Düzeltme üç yaprağı da kapsıyor ve
+kontrol vakası `dr verify`: yerel `--project`i OLMAYAN bir yaprakta `-p`
+hâlâ ÇALIŞIYOR (o vaka kırmızı turda ZATEN yeşildi).
+
+**Üçüncü ve dördüncü ayrışma:** (a) pflag boşlukla ayrılmış bir uzun
+bayraktan sonraki jetonu KOŞULSUZ değer sayıyor, clap saymıyor —
+`token exchange`in dört bayrağı da işaretlendi; **deponun diğer değer alan
+bayraklarında aynı fark DURUYOR** (ölçüldü: `dr restore --snapshot -x`) ve
+bu dilim o ekseni açmadı. (b) `tokenExchangeCmd`in `Args`ı YOK, yani
+fazladan bir argüman cobra'da SESSİZCE yutuluyor; clap 1 ile düşüyordu.
 
 ---
 
@@ -580,10 +617,10 @@ Yapılacak iş rotayı silmek değil, gövdesini gerçek şekle zenginleştirmek
 
 | # | dilim | Go satırı | yeni crate | differential vakası |
 |---:|---|---:|---|---|
-| 1 | `dr accept-epoch-reset` | 172 | yok | 12–16 |
-| 2 | `whoami` | 60 | yok | 8–10 |
+| 1 | `dr accept-epoch-reset` · İNDİ | 172 | yok | 22 (gerçek) |
+| 2 | `whoami` · İNDİ | 60 | yok | 14 (gerçek) |
 | 3 | `login` | 634 | yok | 16–20 |
-| 4 | `token exchange` | 70 | yok | 10–12 |
+| 4 | `token exchange` · İNDİ | 70 | yok | 40 (gerçek) |
 | 5 | `secrets sync` (arşiv kolu) | 582 | yok | 14–18 |
 | 6 | `coolify` + sync/coolify | 1438 | yok | 35–45 |
 | 7 | `deploy` | 582 | yok | 20–26 |

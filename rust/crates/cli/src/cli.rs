@@ -509,6 +509,100 @@ pub fn build() -> Command {
                         ),
                 ),
         )
+        // `whoami` KOKTE mount'lu ve KAPISIZ: ne ajan guard'i, ne baglama
+        // kapisi, ne `Ctx::resolve`. Go'da `whoamiCmd`in RunE'si dogrudan
+        // `store.Whoami`ye gidiyor — `doctor`/`secrets status` ile ayni sinif
+        // ve ayni gerekce: DEGER BASMIYOR, yalnizca principal/grup/grant
+        // ADLARI. Kok bayraklari (`-c`/`-p`) kabul edilir ve ATILDIR.
+        .subcommand(
+            Command::new("whoami")
+                .about("Show the gate's view of you: groups + effective grants")
+                // cobra'da whoamiCmd'in Args'i YOK -> ArbitraryArgs.
+                .arg(Arg::new("ignored").num_args(0..).hide(true)),
+        )
+        // `token` bir AILE komutu (kendi Run'i YOK): alt komutsuz cagrilinca
+        // cobra yardimi basip 0 ile cikiyor, ve dispatch tarafi da oyle.
+        .subcommand(
+            Command::new("token")
+                .about("Machine-token operations (CI)")
+                // `--project` BURADA YEREL, ve `dr restore`/`dr
+                // accept-epoch-reset` ile AYNI sekil: cobra'da
+                // `tokenExchangeCmd.Flags().StringVar` kokun persistent
+                // `-p`sini GOLGELIYOR (olculdu — bu alt komutun yardiminda
+                // "Global Flags" altinda `-p` YOK, yalnizca `-c` ve `-v`).
+                // Deger `Ctx::resolve`e HIC girmiyor; mint kapsaminin proje
+                // alanina dogrudan gidiyor.
+                //
+                // Kisa bicim (`-p`) BILEREK YOK: Go'daki `StringVar` da
+                // kisasiz — ve golgenin bu yuzu GOZLEMLENEBILIR, cunku
+                // shorthand'i kaldirmak `-p`yi topyekun REDDEDILIR yapiyor
+                // (bkz. main.rs, `short_project_token`).
+                .subcommand(
+                    Command::new("exchange")
+                        .about("Exchange a CF Access service token for a scoped token (≤10 min)")
+                        // `allow_hyphen_values`: pflag'de BOSLUKLA ayrilmis bir
+                        // uzun bayrak SONRAKI jetonu KOSULSUZ deger sayiyor —
+                        // `-` ile baslasa bile. Olculdu: `--ttl -5`,
+                        // `--key -K`, `--project -p1` Go'da CALISIYOR, clap'in
+                        // varsayilaninda ise "unknown flag" oluyordu. Dordu de
+                        // ayni sebeple isaretli ve her biri korpusta.
+                        //
+                        // AYNI FARK bu deponun DIGER deger alan bayraklarinda
+                        // da duruyor (`dr restore --snapshot -x` bugun
+                        // ayrisiyor) ve orasi OLCULMEMIS bir eksen; bu dilim
+                        // KENDI yapraginin dort bayragini kapatiyor, otekileri
+                        // adlandirip birakiyor.
+                        .arg(
+                            Arg::new("project")
+                                .long("project")
+                                .value_name("string")
+                                .allow_hyphen_values(true)
+                                .help("project scope for the minted token"),
+                        )
+                        // StringArrayVar -> Append: `--key` TEKRARLANABILIR
+                        // ve SIRA korunur (mint kapsami sirali gidiyor).
+                        .arg(
+                            Arg::new("key")
+                                .long("key")
+                                .value_name("string")
+                                .action(ArgAction::Append)
+                                .allow_hyphen_values(true)
+                                .help("exact key name in scope (repeatable)"),
+                        )
+                        // `--verb`in VARSAYILANI ["read"] ve ILK `--verb`
+                        // varsayilani EZER (pflag stringArray: ilk Set
+                        // replace, sonrakiler append). clap'te `default_value`
+                        // AYNI davraniyor — olculdu, tel'e binen govde iki
+                        // ikilide de ayni.
+                        .arg(
+                            Arg::new("verb")
+                                .long("verb")
+                                .value_name("string")
+                                .action(ArgAction::Append)
+                                .default_value("read")
+                                .allow_hyphen_values(true)
+                                .help("verb in scope (read|write|rotate)"),
+                        )
+                        // `--ttl` cobra'da bir `IntVar`, yani deger
+                        // AYRISTIRICIDA cozuluyor ve bozuk bir deger RunE'ye
+                        // HIC girmiyor. Burada bir dize olarak aliniyor ve
+                        // `gostrconv` ile cozuluyor: clap'in kendi tamsayi
+                        // ayristiricisi hem KABUL KUMESINI (taban 0) hem RET
+                        // METNINI ayristirirdi.
+                        .arg(
+                            Arg::new("ttl")
+                                .long("ttl")
+                                .value_name("int")
+                                .allow_hyphen_values(true)
+                                .help("token TTL seconds (≤600; 0 = gate default)"),
+                        )
+                        // cobra'da tokenExchangeCmd'in Args'i YOK -> ArbitraryArgs:
+                        // fazladan arguman SESSIZCE yok sayiliyor. Olculdu
+                        // (`token exchange --project p --key K EXTRA` -> cikis 0);
+                        // clap'e birakilsa "unknown flag: EXTRA" ile 1 donerdi.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                ),
+        )
         // `projects` KOKTE mount'lu, `secrets` altinda DEGIL — ve bu bir
         // duzenleme tercihi degil, GOZLEMLENEBILIR bir kapi farki: kok mount
         // demek Go'da SecretsCmd.PersistentPreRunE'un (ajan-guard + depo pini)
@@ -538,6 +632,60 @@ pub fn build() -> Command {
                         ),
                 ),
         )
+}
+
+// --- GOLGENIN KISA-BICIM YUZU --------------------------------------------------
+//
+// Golge yalnizca UZUN adi degil, KISA bicimi de kaldiriyor, ve bu OLCULDU:
+//
+//   wapps -p x dr accept-epoch-reset   GO "unknown shorthand flag: 'p' in -p"
+//   wapps -p x dr restore …            GO ayni
+//   wapps -p x token exchange …        GO ayni
+//   wapps -p x dr verify …             GO CALISIR (yerel `--project`i YOK)
+//
+// Sebep: cobra yapragin `Flags()`ini kurarken YEREL bayragi once koyuyor ve
+// ayni ADLI kalitilan bayragi ATLIYOR. Yerel `--project`in shorthand'i
+// olmadigi icin `p` harfi flagset'e HIC girmiyor. clap'te ise kokun `-p`si
+// alt komuttan bagimsiz kayitli, yani duzeltilmeden once Rust `-p`yi sessizce
+// KABUL EDIYORDU (ve ust dilimin `dr` yapraklarinda da oyleydi — bu, o
+// tuzagin OLCULMEMIS dorduncu yuzuydu).
+
+/// short_project_token, KOK BAYRAK BOLGESINDE yazilmis bir `-p...` jetonunu
+/// doner (metin Go'nun hatasina AYNEN giriyor: "in -p", "in -ptestproj").
+///
+/// KAPSAM DAR VE BILINCLI: yalnizca `-p` ile BASLAYAN tek bir kisa jeton
+/// taniniyor. `-vp` gibi KUMELER kapsam DISI ve bu bir eksiklik degil bir
+/// sinir: kume semantigi (pflag bitisik degeri kumenin kalanindan aliyor) bu
+/// depoda HIC olculmemis bir eksen ve iki ikili orada `secrets list` gibi
+/// GOLGESIZ yapraklarda da ayrisiyor. Olculmemis bir ekseni taklit etmek,
+/// olculmus olani tasimaktan farkli bir istir.
+///
+/// PUR, ve `main.rs`te DEGIL burada: cagrisi tek ama karari testten
+/// gorulebilmeli. Bir ikilinin icinde duran karar test edilemez.
+pub fn short_project_token(args: &[String]) -> Option<String> {
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = &args[i];
+        // `--` ve ilk BAYRAK OLMAYAN jeton kok bolgesini bitirir (alt komut).
+        if a == "--" || !a.starts_with('-') || a == "-" {
+            return None;
+        }
+        if let Some(long) = a.strip_prefix("--") {
+            // `--config x` / `--project x` bir sonraki jetonu YUTAR;
+            // `--config=x` yutmaz.
+            i += if long == "config" || long == "project" { 2 } else { 1 };
+            continue;
+        }
+        if a.starts_with("-p") {
+            return Some(a.clone());
+        }
+        if a == "-c" {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    None
 }
 
 /// clap_error_to_cmd_error, clap'in KENDI hata yolunu ele gecirir.

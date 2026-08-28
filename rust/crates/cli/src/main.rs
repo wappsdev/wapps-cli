@@ -15,6 +15,8 @@ use wapps::envwrite;
 use wapps::epochpin;
 use wapps::execverb;
 use wapps::gojson::quote as go_quote;
+use wapps::gostrconv;
+use wapps::gotime;
 use wapps::importenv;
 use wapps::policy;
 use wapps::policyverb;
@@ -65,15 +67,22 @@ fn main() -> ExitCode {
 // KALDIRILMIYOR — yerel `--project`i OLMAYAN yapraklarda (`dr verify` dahil)
 // aynen suruyor, ve kontrol vakasi korpusta.
 
-// LOCAL_PROJECT_LEAVES, `dr` altinda KENDI `--project`ini tasiyan yapraklar.
+// LOCAL_PROJECT_LEAVES, KENDI `--project`ini tasiyan (aile, yaprak) ciftleri.
 // Tek bir yerde duruyor ki `shadows_root_project` ile dispatch'teki geri
 // dusum AYRISAMASIN: biri digerini unutursa golge yarim kalirdi.
-const LOCAL_PROJECT_LEAVES: &[&str] = &["restore", "accept-epoch-reset"];
+//
+// `token exchange` bu listeye `dr`in iki yapragiyla AYNI olcumle girdi:
+// `wapps token exchange --help` "Global Flags" altinda `-p` GOSTERMIYOR,
+// yalnizca `-c` ve `-v`.
+const LOCAL_PROJECT_LEAVES: &[(&str, &str)] =
+    &[("dr", "restore"), ("dr", "accept-epoch-reset"), ("token", "exchange")];
 
 // shadows_root_project, cagrilan yaprak kokun `--project`ini golgeliyor mu.
+// Kisa bicimin karsiligi cli::short_project_token (orada, cunku PUR).
 fn shadows_root_project(matches: &clap::ArgMatches) -> bool {
-    matches!(matches.subcommand(), Some(("dr", dm))
-        if dm.subcommand_name().is_some_and(|n| LOCAL_PROJECT_LEAVES.contains(&n)))
+    matches!(matches.subcommand(), Some((fam, fm))
+        if fm.subcommand_name()
+            .is_some_and(|leaf| LOCAL_PROJECT_LEAVES.contains(&(fam, leaf))))
 }
 
 // shadowed_project, yapragin degerini, yoksa kokte KALMIS olani doner.
@@ -104,6 +113,19 @@ fn run() -> Result<(), CmdError> {
 
     let project = matches.get_one::<String>("project").cloned();
     let config = matches.get_one::<String>("config").cloned();
+
+    // GOLGENIN KISA-BICIM YUZU: yerel `--project` tasiyan bir yaprakta kokun
+    // `-p`si HIC KAYITLI DEGIL (cobra yapragin flagset'ini kurarken ayni adli
+    // kalitilan bayragi atliyor ve yerel olanin shorthand'i yok). Ret
+    // AYRISTIRMA aninda, yani ajan kapisindan da fiil kontrollerinden de
+    // ONCE — vakalar bu sirayi ayrica pinliyor.
+    if shadows_root_project(&matches) {
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(tok) = cli::short_project_token(&argv) {
+            // `Plain`: Go'da bu bir pflag hatasi, yani kod oneki YOK.
+            return Err(CmdError::Plain(format!("unknown shorthand flag: 'p' in {tok}")));
+        }
+    }
 
     // `--config` + `--project` BIRLIKTE: ret DISPATCH'TEN ONCE, ve FIILDEN
     // BAGIMSIZ. Buraya konmasinin sebebi olculdu: Go'da bu kontrol root'un
@@ -362,6 +384,19 @@ fn run() -> Result<(), CmdError> {
             }
             _ => {
                 let _ = cli::build().find_subcommand_mut("dr").unwrap().print_help();
+                std::process::exit(0);
+            }
+        },
+        Some(("whoami", _)) => run_whoami(),
+        Some(("token", tm)) => match tm.subcommand() {
+            Some(("exchange", em)) => run_token_exchange(
+                shadowed_project(em, &project),
+                em.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default(),
+                em.get_many::<String>("verb").map(|v| v.cloned().collect()).unwrap_or_default(),
+                em.get_one::<String>("ttl").cloned(),
+            ),
+            _ => {
+                let _ = cli::build().find_subcommand_mut("token").unwrap().print_help();
                 std::process::exit(0);
             }
         },
@@ -1945,4 +1980,156 @@ fn values_to_archive_json(
         .map(|(k, v)| (k, serde_json::json!({ "value": v })))
         .collect();
     serde_json::to_string(&envelopes).map_err(|e| format!("store: envelope: {e}"))
+}
+
+// --- `wapps whoami` ------------------------------------------------------------
+//
+// KAPISI YOK, ve bu bir bosluk degil bir karar: ne ajan guard'i, ne baglama
+// kapisi, ne `Ctx::resolve`. `doctor` ve `secrets status` ile AYNI gerekce —
+// DEGER BASMIYOR. Donen sey principal, grup ve grant ADLARIDIR; bir ajanin
+// "neyi okuyabilirim" sorusunu deger gormeden cevaplamasi, o sorunun bir
+// `secrets get` denemesine donusmemesinin tek yolu.
+//
+// KOK BAYRAKLARI ATIL: `--project` de `--config` de kabul edilir ve ciktiya
+// HIC girmez (Go'da RunE ikisine de bakmiyor). `--config` + `--project`
+// BIRLIKTE ise yine de reddedilir — o ret kokun kendisine ait ve whoami'nin
+// YEREL `--project`i YOK, yani golgelenmiyor.
+fn run_whoami() -> Result<(), CmdError> {
+    let res = store::whoami().map_err(CmdError::Cli)?;
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "principal:      {}", res.principal);
+    // email ve common_name KOSULLU (Go: `if res.X != ""`), gerisi DAIMA
+    // basiliyor — bos bir principal bile bir satir uretir.
+    if !res.email.is_empty() {
+        let _ = writeln!(out, "email:          {}", res.email);
+    }
+    if !res.common_name.is_empty() {
+        let _ = writeln!(out, "common_name:    {}", res.common_name);
+    }
+    let _ = writeln!(out, "groups:         {}", join_or_dash(&res.groups));
+    let _ = writeln!(out, "policy_version: {}", res.policy_version);
+    let _ = writeln!(out, "root_admin:     {}", res.is_root_admin);
+    if res.grants.is_empty() {
+        let _ = writeln!(out, "grants:         (none)");
+        return Ok(());
+    }
+    let _ = writeln!(out, "grants:");
+    for g in &res.grants {
+        // SECICI ONCELIGI Go'daki ATAMA SIRASI: group, sonra service EZER,
+        // sonra aud EZER. Yani ucu birden dolu bir kuralda `aud:` kazanir ve
+        // hicbiri dolu degilse secici BOS kalir (atlanmaz).
+        let mut sel = g.group.clone();
+        if !g.service.is_empty() {
+            sel = format!("service:{}", g.service);
+        }
+        if !g.aud.is_empty() {
+            sel = format!("aud:{}", g.aud);
+        }
+        // `%-28s`: SOLA yaslanmis, 28 karakterden KISA ise doldurulur, UZUN
+        // ise KIRPILMAZ (sutun tasar). Rust'in `{:<28}` karsiligi ayni.
+        let _ = writeln!(
+            out,
+            "  {:<28} projects={} keys={} verbs={}",
+            sel,
+            g.projects.join(","),
+            g.keys.join(","),
+            g.verbs.join(",")
+        );
+    }
+    Ok(())
+}
+
+// join_or_dash, Go'daki joinOrDash: BOS liste "-" olur, dolu liste ", " ile
+// birlesir. Grant satirlarindaki `,` ile KARISTIRILMAMALI — o ayirici
+// bosluksuz (Go: strings.Join(g.Projects, ",")).
+fn join_or_dash(ss: &[String]) -> String {
+    if ss.is_empty() {
+        return "-".to_string();
+    }
+    ss.join(", ")
+}
+
+// --- `wapps token exchange` ----------------------------------------------------
+//
+// BU FIIL BIR SIR BASIYOR, ve estate'in kurali burada BIR ISTISNA ALMIYOR —
+// yer degistiriyor: basilan jeton pipeline adiminin YAKALAMASI icin var, yani
+// stdout ONUN kanali. Bu yuzden:
+//   * jeton STDOUT'a HAM gidiyor (redaksiyon yok, ve olculuyor);
+//   * metadata satiri STDERR'e gidiyor ki yakalanan degeri kirletmesin;
+//   * jeton hicbir HATA metnine, loga ya da dosyaya girmiyor.
+//
+// KAPI SIRASI GO'DAN, ve olculdu: service-token cifti ONCE. Cift yokken
+// eksik bir bayrak "needs --project" DEGIL "not set" verir.
+//
+// `--ttl` DOGRULANMIYOR ve `--verb` DE DOGRULANMIYOR: ikisi de oldugu gibi
+// tel'e biniyor ve siniri GATE koyuyor (§5.3). Bu OLCULDU — istemcide bir
+// tavan uydurmak, gate'in reddini olculemez kilardi.
+fn run_token_exchange(
+    project: Option<String>,
+    keys: Vec<String>,
+    verbs: Vec<String>,
+    ttl: Option<String>,
+) -> Result<(), CmdError> {
+    // `--ttl` cobra'da AYRISTIRICIDA cozuluyor, yani bozuk bir deger RunE'ye
+    // HIC girmiyor ve service-token kontrolunden de ONCE reddediliyor. Sira
+    // burada da oyle: cozum en basta.
+    let ttl_seconds = match ttl.as_deref() {
+        None => 0,
+        Some(raw) => gostrconv::parse_int_base0(raw).map_err(|e| {
+            // cobra'nin sarmalayicisi: `invalid argument %q for %q flag: %v`.
+            CmdError::Plain(format!(
+                "invalid argument {} for {} flag: {}",
+                go_quote(raw),
+                go_quote("--ttl"),
+                e.go_text(raw)
+            ))
+        })?,
+    };
+
+    if !service_creds_present() {
+        return Err(CmdError::Cli(Error::new(
+            Code::TokenExchangeFailed,
+            "CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET not set",
+        )));
+    }
+    let project = project.unwrap_or_default();
+    // BOS bir `--key` bir anahtardir: kontrol SAYIYA bakiyor (Go:
+    // `len(tokenKeys) == 0`), uzunluga DEGIL.
+    if project.is_empty() || keys.is_empty() {
+        return Err(CmdError::Cli(Error::new(
+            Code::TokenExchangeFailed,
+            "token exchange needs --project and at least one --key",
+        )));
+    }
+
+    let (token, exp) =
+        store::token_mint(&project, &keys, &verbs, ttl_seconds).map_err(CmdError::Cli)?;
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{token}");
+    // exp YOKSA satir HIC basilmaz — bos bir "expires at" satiri, sureyi
+    // bilmedigini bilmeyen bir pipeline uretirdi.
+    if exp > 0 {
+        let mut errw = std::io::stderr();
+        let _ = writeln!(
+            errw,
+            "token expires at {} (unix {exp})",
+            gotime::rfc3339_utc(exp)
+        );
+    }
+    Ok(())
+}
+
+// service_creds_present, CI service-token ciftinin IKISININ DE dolu olup
+// olmadigini soyler (Go: lookupServiceCreds).
+//
+// TrimSpace GO'DAN: bosluktan ibaret bir cift "set edilmemis" sayilir. Bu bir
+// nezaket degil bir kapi — CI'da bos bir degiskeni bosluga esitlemek yaygin
+// bir kaza, ve o kazayi "kimlik var" diye okumak istegi aga cikarirdi.
+//
+// DEGERLERIN KENDISI OKUNMUYOR: yalnizca VARLIKLARI sorulur; header'lari
+// kuran yer session::auth_headers.
+fn service_creds_present() -> bool {
+    let id = std::env::var("CF_ACCESS_CLIENT_ID").unwrap_or_default();
+    let secret = std::env::var("CF_ACCESS_CLIENT_SECRET").unwrap_or_default();
+    !id.trim().is_empty() && !secret.trim().is_empty()
 }

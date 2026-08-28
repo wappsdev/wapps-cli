@@ -10,7 +10,9 @@ Tasinan rotalar:
   DELETE /v1/projects/{p}/keys/{KEY}  -> tek anahtar silme (rm)
   GET    /v1/projects                 -> proje ADLARI (projects list)
   DELETE /v1/admin/projects/{p}       -> projeyi tumuyle silme (projects rm)
-  GET    /v1/whoami                   -> status'un canlilik probu
+  GET    /v1/whoami                   -> principal + gruplar + grant'ler (whoami)
+                                         VE status'un canlilik probu
+  POST   /v1/token                    -> kisa omurlu makine jetonu (token exchange)
   GET    /v1/audit/head                -> audit zincir head'i (dr accept-epoch-reset)
   GET    /v1/admin/policy             -> aktif policy (policy show/set)
   GET    /v1/admin/rotate-plan        -> audit-ledger rotate-set oracle (rotate-plan)
@@ -29,7 +31,7 @@ YAZILAN DEGER ASLA KAYDEDILMIYOR: PUT govdesi Content-Length kadar okunup
 ATILIYOR. Bir sahte gate'in bile bir degeri diske/loga yazmasi, bu portun
 kapatmaya calistigi yuzeyin ta kendisi olurdu (log_message zaten susturulmus).
 """
-import json, sys, re, hashlib
+import json, sys, re, hashlib, base64
 from urllib.parse import unquote, urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -84,6 +86,122 @@ AUDIT_HEAD_DEFAULT = (200, {"seq": 4217, "hash": "ab12cd34ef56aa77bb88cc99dd00ee
 # olculmezdi — audit etiketi sunucu tarafinda kalir, ciktiya hic girmez.
 EPOCH_RESET_EPOCH = 5
 
+# WHOAMI SENARYOLARI — `wapps whoami`in gordugu principal/grup/grant govdesi.
+#
+# SENARYO SECICI `cf-access-token` BASLIGI (AUDIT_HEADS ile AYNI gerekce):
+# `GET /v1/whoami`in ne yol parametresi ne sorgu dizesi var, yani istemcinin
+# gonderdigi TEK degisken alan kimlik basligidir. Senaryoyu oradan surmek,
+# basligin bu rotaya da GERCEKTEN enjekte edildigini olcer.
+#
+# VARSAYILAN 200 KALMALI ve bu bir zevk meselesi degil: `secrets status`in
+# canlilik probu bu rotayi BASLIKSIZ cagiriyor (iki ikilide de duz bir GET),
+# yani "" anahtarina duser. Varsayilani 4xx yapmak status vakalarini
+# sessizce cevirirdi.
+#
+# GERCEK SIR YOK: asagidaki adresler, gruplar ve grant'ler uydurma test
+# dizeleridir; whoami zaten tanimi geregi DEGER dondurmez.
+WHOAMI = {
+    # Zengin insan govdesi — uc SECICI turu birden (group / service / aud).
+    "__default__": (200, {
+        "principal": "human:dev@example.invalid",
+        "kind": "human",
+        "email": "dev@example.invalid",
+        "groups": ["developers@example.invalid", "admins@example.invalid"],
+        "policy_version": 3,
+        "is_root_admin": False,
+        "grants": [
+            {"group": "developers@example.invalid", "projects": ["*"],
+             "keys": ["*", "!*_PROD_*"], "verbs": ["read"]},
+            {"service": "ci-runner", "projects": ["vaulter"],
+             "keys": ["DB_*"], "verbs": ["read", "write"]},
+            {"aud": "write-aud-1", "projects": ["lumira"],
+             "keys": [], "verbs": ["read", "write", "rotate"]},
+        ],
+    }),
+    # Servis principal'i: `email` BOS (satir DUSMELI), `common_name` DOLU
+    # (satir CIKMALI), gruplar BOS ("-"), root_admin TRUE, grant YOK.
+    "who-service": (200, {
+        "principal": "service:ci-runner",
+        "kind": "service",
+        "common_name": "ci-runner.example.invalid",
+        "groups": [],
+        "policy_version": 9,
+        "is_root_admin": True,
+        "grants": [],
+    }),
+    # BOS govde: her alan sifir degerinde. `principal:` satiri BOS basilir —
+    # atlanmaz (yalnizca email/common_name kosullu).
+    "who-min": (200, {}),
+    # SECICI KENARLARI, ve ucu de ayri bir daldir:
+    #   1. group+service+aud BIRLIKTE -> `aud:` KAZANIR (Go'daki atama sirasi);
+    #   2. HICBIR secici yok -> 28 karakterlik BOS sutun (%-28s), atlama YOK;
+    #   3. 28'den UZUN secici -> KIRPILMAZ, sutun tasar.
+    "who-edge": (200, {
+        "principal": "human:edge@example.invalid",
+        "groups": [],
+        "policy_version": 0,
+        "grants": [
+            {"group": "G", "service": "S", "aud": "A",
+             "projects": ["x"], "keys": ["y"], "verbs": ["read"]},
+            {"projects": [], "keys": None, "verbs": ["read"]},
+            {"group": "a-very-long-group-name-that-exceeds-twentyeight",
+             "projects": ["p"], "keys": ["k"], "verbs": ["read"]},
+        ],
+    }),
+    # Kimlik cozulemedi -> fail-closed (mapHTTPError'in 503 dali).
+    "who-identdown": (503, {"error": "IDENTITY_UNAVAILABLE"}),
+    # 403 ve govde BOS. Bu vaka `safeCode`u olcuyor: Go BOS bir kodu
+    # "unknown" yaziyor, temizlenince bos kalan bir kodu da. Bir port
+    # bunu bos dize basarsa iki parantez de ayrisir.
+    "who-denied-bare": (403, {}),
+    # 403 ve kod KIRLI: `safeCode` 48 bayta kirpiyor ve [A-Za-z0-9_-.] disini
+    # ATIYOR (silmiyor, ayirmiyor — bitistiriyor).
+    "who-denied-dirty": (403, {"error": "DENIED <b>x</b>\nsecond", "dimension": "aud"}),
+}
+
+# TOKEN SENARYOLARI — `POST /v1/token`in GOVDEDEN SURULMEYEN dallari.
+#
+# SECICI `CF-Access-Client-Id` BASLIGI: `token exchange` zaten service-token
+# ciftini SART kosuyor, yani bu baslik her cagrida var ve vakadan surulebilir.
+# Basligi hic gondermeyen (ya da yanlis adla gonderen) bir istemci
+# `__default__`a duser ve govde-surulen yola girer.
+#
+# GERCEK SIR YOK: basilan "jeton" asagida govdeden URETILEN uydurma bir
+# JWT-bicimli dizedir.
+TOKEN_SCENARIOS = {
+    # exp YOK -> istemci stderr'e metadata satirini BASMAMALI.
+    "tok-noexp": (200, {"token": "minted-token-without-an-exp"}),
+    # Yalnizca bosluk: Go TrimSpace ile bos sayiyor -> TOKEN_EXCHANGE_FAILED.
+    "tok-blank": (200, {"token": "   ", "exp": 5}),
+    # `token` alani HIC YOK -> ayni ret.
+    "tok-absent": (200, {"exp": 5}),
+    # 400 ve govde BOS -> safeCode("") == "unknown".
+    "tok-reject-bare": (400, {}),
+    # 400 ve kod KIRLI -> safeCode temizligi mint yolunda da gecerli.
+    "tok-reject-dirty": (400, {"error": "BAD <b>code</b>\nsecond line"}),
+    # 403 + makine-jetonu kodu: mapHTTPError'in SESSION_EXPIRED dali.
+    "tok-scope": (403, {"error": "TOKEN_SCOPE_EXCEEDED"}),
+    # 5xx ve 4xx'in mint'e OZEL OLMAYAN dallari da bu rotadan gecmeli.
+    "tok-miscfg": (503, {"error": "WHATEVER_ELSE"}),
+    "tok-teapot": (418, {"error": "TEAPOT"}),
+    # exp KENARI: gun/ay/yil tasmasi olan bir zaman damgasi. Bir port
+    # RFC3339'u elde uretiyorsa (ve bu portta oyle) burada ayrisir.
+    "tok-exp-edge": (200, {"token": "minted-token-at-the-edge", "exp": 1767225599}),
+}
+
+# TOKEN_EXP, govde-surulen basari yolunun SABIT son kullanma damgasi.
+TOKEN_EXP = 1793318400  # 2026-10-30T00:00:00Z
+
+# TOKEN_TTL_MAX, mint'in ust siniri (§5.3 "<=600"). Bu sinir ISTEMCIDE DEGIL
+# GATE'te yasiyor ve bu OLCULDU: Go `--ttl`i hic dogrulamiyor, oldugu gibi
+# tel'e koyuyor. Sinir burada durunca `--ttl`in gercekten govdeye bindigi
+# gorunur hale geliyor.
+TOKEN_TTL_MAX = 600
+
+# TOKEN_VERBS, mint'in kabul ettigi verb kumesi. `--verb` dogrulamasi da
+# ISTEMCIDE YOK (olculdu) — burada durmasi bayragin tel'e bindigini olcer.
+TOKEN_VERBS = ("read", "write", "rotate")
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -92,11 +210,18 @@ class H(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def do_GET(self):
-        # GET /v1/whoami — status'un canlilik probu. Govde onemsiz: Go
-        # HERHANGI bir HTTP yanitini (401 dahil) "online" sayiyor, yalnizca
-        # tasima hatasi offline demek.
+        # GET /v1/whoami — principal + gruplar + efektif grant'ler.
+        #
+        # AYNI ROTA IKI MUSTERIYE HIZMET EDIYOR ve ikisi de bilincli:
+        #   * `wapps whoami` govdeyi OKUYOR ve satir satir basiyor;
+        #   * `secrets status` yalnizca BIR YANIT geldigine bakiyor (Go
+        #     HERHANGI bir HTTP yanitini — 401 dahil — "online" sayiyor,
+        #     yalnizca tasima hatasi offline demek) ve basliksiz cagiriyor,
+        #     yani DAIMA varsayilan senaryoyu alir.
         if self.path == "/v1/whoami":
-            return self._send(200, {"principal": "probe@example.invalid"})
+            status, payload = WHOAMI.get(
+                self.headers.get("cf-access-token") or "", WHOAMI["__default__"])
+            return self._send(status, payload)
 
         # GET /v1/audit/head — global audit zincir head'i ({seq, hash}).
         # `dr accept-epoch-reset`in kagit zarfla karsilastirdigi CANLI deger.
@@ -193,6 +318,53 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._drain()
+
+        # POST /v1/token — kisa omurlu makine jetonu (`token exchange`).
+        #
+        # BU ROTA BILEREK MUSKUL ve muskulluk GOVDEDE: donen jeton istemcinin
+        # GONDERDIGI kapsamdan URETILIYOR, sabit degil. Yani yanlis bir proje,
+        # eksik bir anahtar, gonderilmeyen bir `--ttl` ya da `--verb` FARKLI
+        # bir jeton baytina cikar ve differential'da GORUNUR. Sabit bir jeton
+        # donseydi `--key`in tekrarlanabilirligi de `--ttl`in tel'e binmesi de
+        # HIC olculmezdi.
+        #
+        # UC RET GATE'E AIT, ISTEMCIYE DEGIL, ve bu OLCULDU: Go ne `--ttl`i ne
+        # `--verb`i dogruluyor — ikisini de oldugu gibi tel'e koyuyor. Sinirlar
+        # burada durunca "istemci dogrulamiyor" iddiasi da olculebilir hale
+        # geliyor: dogrulayan bir port gate'in reddini HIC gormezdi.
+        #
+        # BASILAN JETON JWT-BICIMLI (uc base64url segment) ve bu bir susleme
+        # DEGIL bir OLCU: safelog'un JWT deseni tam olarak bu sekli
+        # `[REDACTED]` yapiyor. Jeton STDOUT'a HAM basildigi icin vaka,
+        # stdout yolunun redaksiyondan GECMEDIGINI de olcer — bir gun biri
+        # onu zarf yoluna baglarsa bu vakalarin hepsi ayrisir.
+        if self.path == "/v1/token":
+            scenario = TOKEN_SCENARIOS.get(
+                self.headers.get("CF-Access-Client-Id") or "")
+            if scenario:
+                return self._send(scenario[0], scenario[1])
+            try:
+                doc = json.loads(body or b"{}") or {}
+            except ValueError:
+                return self._send(400, {"error": "MALFORMED_TOKEN_REQUEST"})
+            scope = doc.get("scope")
+            if not isinstance(doc.get("project"), str) or not isinstance(scope, dict):
+                return self._send(400, {"error": "MALFORMED_TOKEN_REQUEST"})
+            keys, verbs = scope.get("keys"), scope.get("verbs")
+            if not isinstance(keys, list) or not keys:
+                return self._send(400, {"error": "EMPTY_SCOPE"})
+            if not isinstance(verbs, list) or any(v not in TOKEN_VERBS for v in verbs):
+                return self._send(400, {"error": "BAD_VERB"})
+            ttl = doc.get("ttl_seconds")
+            if ttl is not None and (not isinstance(ttl, int) or ttl > TOKEN_TTL_MAX):
+                return self._send(400, {"error": "TTL_TOO_LONG"})
+            claim = json.dumps({"project": doc["project"], "keys": keys,
+                                "verbs": verbs, "ttl": ttl},
+                               separators=(",", ":"), sort_keys=True).encode()
+            payload = base64.urlsafe_b64encode(claim).decode().rstrip("=")
+            token = ("eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3Qta2lkIn0."
+                     + payload + ".c2lnbmF0dXJlLXBsYWNlaG9sZGVyLW5vdC1hLXNlY3JldA")
+            return self._send(200, {"token": token, "exp": TOKEN_EXP})
 
         # POST /v1/projects/{p}/import — TOPLU atomik yazim (import-env).
         #

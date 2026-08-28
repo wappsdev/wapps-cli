@@ -32,16 +32,40 @@ pub struct ReadResult {
     pub values: BTreeMap<String, String>,
 }
 
-// safe_code, disaridan gelen bir kod/alan dizesini transcript'e girmeden once
-// budar: yalnizca kisa, tek satirlik bir isaret tasinir.
+// safe_code, gate'ten gelen bir kod/alan dizesini transcript'e girmeden once
+// budar: kisa, tek satirlik, alfanumerik bir isaret kalir.
+//
+// ORACLE internal/store/worker.go safeCode, ve bu fonksiyon bir sure BASKA
+// bir sey yapiyordu (satirsonu -> bosluk, trim, 64 karakter). Ayrisma
+// GORUNMUYORDU cunku korpustaki her hata govdesi zaten temiz bir
+// `SCREAMING_SNAKE` kodu tasiyordu; `whoami`nin 403 dali ile
+// `token exchange`in 400 dali BOS bir kod gorebildigi anda ayrildi.
+//
+// UC KURAL VE SIRALARI ONEMLI:
+//   1. BOS girdi -> "unknown" (bos dize DEGIL);
+//   2. once 48 BAYTA kirp, SONRA temizle — ters sira daha uzun bir dize
+//      birakirdi;
+//   3. `[A-Za-z0-9_-.]` disindaki her bayt ATILIR (bosluga cevrilmez,
+//      kacisla yazilmaz), ve geriye hicbir sey kalmazsa yine "unknown".
+//
+// Bayt duzeyinde calisiyor, Go'daki gibi: sinif tamamen ASCII oldugu icin
+// cok baytli bir karakterin parcalari zaten atilir.
 fn safe_code(s: &str) -> String {
-    let one: String = s.replace(['\n', '\r'], " ");
-    let t = one.trim();
-    if t.len() > 64 {
-        t.chars().take(64).collect()
-    } else {
-        t.to_string()
+    if s.is_empty() {
+        return "unknown".to_string();
     }
+    let b = s.as_bytes();
+    let head = &b[..b.len().min(48)];
+    let out: Vec<u8> = head
+        .iter()
+        .copied()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
+        .collect();
+    if out.is_empty() {
+        return "unknown".to_string();
+    }
+    // Kalan baytlarin hepsi yukaridaki ASCII siniftan; UTF-8 gecerliligi kesin.
+    String::from_utf8(out).expect("ASCII sinif")
 }
 
 fn parse_worker_error(body: &str) -> WorkerError {
@@ -597,6 +621,182 @@ pub fn delete(project: &str, key: &str) -> Result<(), Error> {
             format!("secrets gate unreachable: {t}"),
         )),
     }
+}
+
+// null_as_default, tel'deki bir `null`u tipin SIFIR DEGERINE cevirir.
+//
+// NEDEN GEREKLI — OLCULDU: Go'nun `encoding/json`'i `null`u HER hedef tipe
+// sessizce kabul ediyor (dilim -> nil, dize -> "", sayi -> 0), serde ise
+// `Vec<String>`/`String` icin HATA veriyor. Bir grant satirinin `"keys":
+// null` ile gelmesi Go'da bos bir sutun, portta ise "malformed gate
+// response" uretiyordu; differential'in `who-edge` vakasi tam olarak bunu
+// yakaladi.
+//
+// KAPSAM `whoami`nin TIPLERI. Ayni tolerans farki gate'in DIGER rotalarinda
+// da duruyor (KeysResult, PolicyResult, ...) ve orada OLCULMEMIS bir dal —
+// bu dilim onu acmiyor, adlandiriyor.
+fn null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
+/// Grant, `whoami`nin dondugu efektif kural satiridir.
+///
+/// NEDEN `policy::Rule` DEGIL: Go'da IKISI DE `store.Rule` — ayni tip. Ama
+/// Rust'ta `policy::Rule` `deny_unknown_fields` tasiyor (yerel policy
+/// dosyasinin KATI okumasi icin: Go orada `dec.DisallowUnknownFields()`
+/// cagiriyor). Go'da katilik DECODER'in bir ayari, tipin degil; burada tipe
+/// yazili. `whoami` govdesi GATE'ten geliyor ve Go orada duz
+/// `json.Unmarshal` kullaniyor — yani TOLERANT. Ayni tipi kullanmak
+/// gate'in ekledigi yeni bir alani sessizce bir INTERNAL'a cevirirdi.
+///
+/// Bu tip yalnizca OKUNUYOR (whoami hicbir sey geri gondermiyor), yani iki
+/// sekil arasinda bir serilestirme sozlesmesi de yok.
+#[derive(Debug, Default, Deserialize)]
+pub struct Grant {
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub group: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub service: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub aud: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub projects: Vec<String>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub keys: Vec<String>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub verbs: Vec<String>,
+}
+
+/// WhoamiResult, GET /v1/whoami yanitidir.
+///
+/// `kind` alani TASINIYOR ama BASILMIYOR — Go'nun `WhoamiResult`inda da oyle.
+/// Cikartmak, gate bir gun onu basmaya karar verdiginde iki tarafi ayirirdi.
+#[derive(Debug, Default, Deserialize)]
+pub struct WhoamiResult {
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub principal: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub kind: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub email: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub common_name: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub groups: Vec<String>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub policy_version: u64,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub grants: Vec<Grant>,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub is_root_admin: bool,
+}
+
+/// whoami, GET /v1/whoami cagirir: principal + gruplar + efektif grant'ler.
+///
+/// KIMLIK HEADER'LARI OKUMA OTURUMUNDAN (`auth_headers`, `auth_headers_admin`
+/// DEGIL) ve bu bir tercih degil rotanin adresi: `/v1/whoami` `/v1/admin`
+/// onegi ALTINDA DEGIL, yani kenarda READ uygulamasinin kapsaminda. Admin
+/// oturumu istemek, oturumu olan bir operatore "wapps login --write" dedirtirdi.
+///
+/// EPOCH PIN'E DOKUNMAZ: bir PROJE degil bir PRINCIPAL sorgulanıyor.
+///
+/// HATA BAGLAMI "whoami" — Go'daki mapHTTPError(r, "whoami") ile ayni.
+pub fn whoami() -> Result<WhoamiResult, Error> {
+    let headers = session::auth_headers()?;
+    let url = format!("{}/v1/whoami", session::gate_url());
+    let mut req = agent().get(&url);
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = "whoami";
+    match req.call() {
+        Ok(resp) => decode_body::<WhoamiResult>(resp, ctx),
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, ctx)),
+        Err(ureq::Error::Transport(t)) => Err(Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate unreachable: {t}"),
+        )),
+    }
+}
+
+/// token_mint, POST /v1/token cagirir — kisa omurlu makine jetonu (§5.3).
+///
+/// DONEN JETON BIR SIRDIR ve bu fonksiyon onu HICBIR YERE yazmaz: ne log, ne
+/// hata metni, ne dosya. Cagirana verilir, cagiran stdout'a basar.
+///
+/// GOVDE ALAN SIRASI GO'NUN `map[string]any`'sinden geliyor: `encoding/json`
+/// bir haritayi ALFABETIK yaziyor, yani `project`, `scope`, `ttl_seconds` ve
+/// scope icinde `keys`, `verbs`. Burada `serde_json::json!` de ayni sirayi
+/// veriyor (nesne alanlari yazildigi sirada); sira ONEMLI cunku sahte gate
+/// govdeyi cozup jetonu ONDAN uretiyor.
+///
+/// `ttl_seconds` YALNIZCA > 0 iken govdeye giriyor (Go: `if ttlSeconds > 0`).
+/// Sifir "gate varsayilani" demek, "sifir saniye" degil.
+///
+/// 400 AYRI BIR DAL ve mapHTTPError'a DUSMUYOR: mint'in reddi bir taşıma
+/// hatasi degil bir KAPSAM reddi, o yuzden kodu TOKEN_EXCHANGE_FAILED ve
+/// kurtarma satiri service-token ciftini isaret ediyor. Diger statuler
+/// (403/503/…) ortak esleyiciye gidiyor.
+///
+/// HATA BAGLAMI "token exchange".
+pub fn token_mint(
+    project: &str,
+    keys: &[String],
+    verbs: &[String],
+    ttl_seconds: i64,
+) -> Result<(String, i64), Error> {
+    #[derive(Deserialize)]
+    struct Minted {
+        #[serde(default, deserialize_with = "null_as_default")]
+        token: String,
+        #[serde(default, deserialize_with = "null_as_default")]
+        exp: i64,
+    }
+    let headers = session::auth_headers()?;
+    let mut body = serde_json::json!({
+        "project": project,
+        "scope": { "keys": keys, "verbs": verbs },
+    });
+    if ttl_seconds > 0 {
+        body["ttl_seconds"] = serde_json::json!(ttl_seconds);
+    }
+    let url = format!("{}/v1/token", session::gate_url());
+    let mut req = agent().post(&url).set("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.set(k, v);
+    }
+    let ctx = "token exchange";
+    let out: Minted = match req.send_json(body) {
+        Ok(resp) => decode_body::<Minted>(resp, ctx)?,
+        Err(ureq::Error::Status(400, resp)) => {
+            let text = resp.into_string().unwrap_or_default();
+            return Err(Error::new(
+                Code::TokenExchangeFailed,
+                format!(
+                    "token exchange rejected ({})",
+                    safe_code(&parse_worker_error(&text).error)
+                ),
+            ));
+        }
+        Err(ureq::Error::Status(status, resp)) => return Err(status_error(status, resp, ctx)),
+        Err(ureq::Error::Transport(t)) => {
+            return Err(Error::new(
+                Code::NetworkRequired,
+                format!("secrets gate unreachable: {t}"),
+            ))
+        }
+    };
+    // BOSLUKTAN IBARET bir jeton BOS sayilir (Go: strings.TrimSpace). Bir
+    // pipeline adimina bosluk vermek, ona gecerli bir jeton vermis gibi
+    // gorunurdu.
+    if out.token.trim().is_empty() {
+        return Err(Error::new(Code::TokenExchangeFailed, "gate returned an empty token"));
+    }
+    Ok((out.token, out.exp))
 }
 
 /// PolicyResult, GET /v1/admin/policy yanitidir.

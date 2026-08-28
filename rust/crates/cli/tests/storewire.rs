@@ -104,3 +104,55 @@ fn a_commit_response_without_an_epoch_is_a_protocol_error_not_a_rollback_accusat
     );
     assert_ne!(err.code, wapps::clierr::Code::EpochDowngrade);
 }
+
+// --- `safeCode`: gate'ten gelen KOD dizesinin transcript'e girmeden once
+//     gectigi budama -------------------------------------------------------
+//
+// NEDEN AYRI BIR TEST VE NEDEN SIMDI: bu port bir sure Go'nunkinden BASKA bir
+// budama tasidi (satirsonlarini bosluga cevir + trim + 64 karaktere kirp) ve
+// AYRISMA GORUNMUYORDU, cunku korpustaki her hata govdesi zaten temiz bir
+// `SCREAMING_SNAKE` kodu tasiyordu. `whoami`nin 403 dali ile `token
+// exchange`in 400 dali BOS bir kod gorebiliyor, ve orada iki taraf ayri
+// seyler basiyor: Go "unknown", eski port bos dize.
+//
+// ORACLE: internal/store/worker.go safeCode. Uc kural var ve ucu de
+// asagida ayri ayri geziliyor.
+use wapps::store::map_http_error;
+use wapps::clierr::Code;
+
+#[test]
+fn an_empty_gate_code_is_named_unknown_not_left_blank() {
+    // 403 + BOS govde: hem `error` hem `dimension` bos -> IKI parantez de
+    // "unknown". Bos dize basan bir port "whoami:  (dimension )" uretirdi.
+    let e = map_http_error(403, "{}", 60, "whoami");
+    assert_eq!(e.code, Code::GrantDenied);
+    assert_eq!(e.message, "whoami: unknown (dimension unknown)");
+}
+
+#[test]
+fn characters_outside_the_safe_class_are_dropped_not_escaped() {
+    // `<`, `>`, `/`, bosluk ve satirsonu ATILIR — yerlerine hicbir sey
+    // konmaz, yani parcalar BITISIR. Bir port onlari bosluga cevirseydi
+    // (ya da kacisla yazsaydi) metin ayrisirdi.
+    let e = map_http_error(400, r#"{"error":"BAD <b>code</b>\nsecond line"}"#, 60, "token exchange");
+    assert_eq!(e.message, "token exchange: bad request (BADbcodebsecondline)");
+}
+
+#[test]
+fn a_code_that_is_all_unsafe_characters_falls_back_to_unknown() {
+    // Budamadan geriye HICBIR SEY kalmiyorsa sonuc yine "unknown" — Go'da
+    // bu IKINCI bir kontrol (bos girdiden AYRI) ve atlanmasi kolay.
+    let e = map_http_error(409, r#"{"error":"<<< >>>"}"#, 60, "set K");
+    assert_eq!(e.message, "set K: unknown");
+}
+
+#[test]
+fn a_long_code_is_truncated_to_forty_eight_bytes_before_cleaning() {
+    // KIRPMA TEMIZLIKTEN ONCE: Go once 48 bayta kesiyor, sonra siniftan
+    // olmayanlari atiyor. Sirayi ters ceviren bir port daha UZUN bir dize
+    // basardi (kirpilan kisimda atilacak karakter varsa).
+    let raw = format!("{}!!!!{}", "A".repeat(44), "B".repeat(40));
+    let body = serde_json::json!({ "error": raw }).to_string();
+    let e = map_http_error(409, &body, 60, "ctx");
+    assert_eq!(e.message, format!("ctx: {}", "A".repeat(44)));
+}

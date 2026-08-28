@@ -267,11 +267,61 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // timeout olcmustu. Artik oyle bir kosumda EQUAL bu esigin ALTINA duser,
     // yani asagidaki iddia sessiz timeout'lari da yakalar.
     //
+    // → 511: `whoami` (14) + `token exchange` (37) + golgenin KISA-BICIM yuzu
+    //        (3) 54 vaka ekledi. KIRKSEKIZI FIIL YAZILMADAN ONCE KIRMIZI
+    //        GORULDU; kalan alti vaka SONRADAN bulunan iki ayrismayi
+    //        kapatiyor ve IKISI DE once DIFFERENT olarak GORULDU
+    //        (`-` ile baslayan degerler, ve ArbitraryArgs).
+    //        Kirmizi kosum tek basina uc sey kanitladi:
+    //
+    //          taban                          EQUAL=457 DIFFERENT=0
+    //          +49 vaka, fiil YOKKEN          EQUAL=458 DIFFERENT=48
+    //          fiiller + duzeltmeler sonrasi  EQUAL=506 DIFFERENT=0
+    //          +3 `-` ile baslayan deger      EQUAL=509 DIFFERENT=0
+    //
+    //        1. 48 vaka GERCEKTEN yeni bir kod yolu geziyor;
+    //        2. eski 457'nin HICBIRI zenginlestirilen `/v1/whoami` govdesinden
+    //           ya da yeni `POST /v1/token` rotasindan etkilenmedi (458 = 457
+    //           + kirmizi kosumda ZATEN yesil olan tek yeni vaka);
+    //        3. o TEK yesil vaka bir KONTROL:
+    //           `agent_dr_verify_still_accepts_the_short_project_form` —
+    //           yerel `--project`i OLMAYAN bir yaprakta `-p` iki ikilide de
+    //           calisiyor, yani asagidaki golge duzeltmesi kurali topyekun
+    //           kaldirmiyor.
+    //
+    //        UC AYRISMA BULUNDU ve ucu de bu dilimin GETIRDIGI seyler DEGIL;
+    //        olculmedikleri icin duruyorlardi:
+    //
+    //          * `safe_code` Go'nun `safeCode`u DEGILDI (bos kod "unknown"
+    //            olmali, sinif disi baytlar ATILMALI, kirpma 48 bayt). Korpustaki
+    //            her hata govdesi temiz bir SCREAMING_SNAKE kodu tasidigi icin
+    //            hicbir vaka bunu gormemisti; `whoami`nin 403 ve `token
+    //            exchange`in 400 dallari BOS bir kod gorebiliyor. Duzeltme
+    //            BUTUN rotalarin hata yolunu etkiliyor ve eski 457 vaka
+    //            duzeltmeden SONRA da esit kaldi.
+    //          * GOLGENIN KISA-BICIM YUZU: yerel `--project` tasiyan bir
+    //            yaprakta cobra kokun `-p`sini de KALDIRIYOR ("unknown
+    //            shorthand flag: 'p' in -p"). Bu, ust dilimin kapattigi
+    //            tuzagin DORDUNCU yuzuydu ve `dr restore` ile
+    //            `dr accept-epoch-reset`te de vardi — o yuzden vakalari
+    //            burada, bu dilimde.
+    //          * `-` ILE BASLAYAN DEGERLER: pflag bosluklu bir uzun bayraktan
+    //            sonraki jetonu KOSULSUZ deger sayiyor. `token exchange`in
+    //            dort bayragi da isaretlendi; deponun DIGER deger alan
+    //            bayraklarinda ayni fark DURUYOR (olculdu: `dr restore
+    //            --snapshot -x`) ve bu dilim o ekseni acmiyor, adlandiriyor.
+    //          * ARBITRARYARGS: `whoami` de `token exchange` de cobra'da
+    //            `Args` TASIMIYOR, yani fazladan bir arguman SESSIZCE
+    //            yutuluyor. `whoami` ilk turda dogru yazilmisti, `token
+    //            exchange` yazilmamisti ve DIFFERENT olarak goruldu — ikisi
+    //            de artik korpusta, cunku "ayni desen" varsaymak bu dosyanin
+    //            defalarca dustugu tuzak.
+    //
     // TABAN 434'E CIKARILDI ve bunun bir sebebi var: bu iddia korpusun
     // BUYUKLUGUNU tutan TEK mekanizma. Taban eskisi gibi 419'da biraksaydi,
     // `dr bootstrap`in on bes vakasinin TAMAMI korpustan sessizce dusebilir
     // ve gate YINE YESIL kalirdi. Canli vaka sayisi (CASES - EXCLUDED)
-    // OLCULDU: 461 - 4 = 457, yani bu esik "en az" degil TAM sayidir.
+    // OLCULDU: 515 - 4 = 511, yani bu esik "en az" degil TAM sayidir.
     //
     //        `set` ve `get`te iki kez cikan kor nokta UCUNCU KEZ CIKMADI:
     //        `--config` kalan ON BIR `Ctx::resolve` fiilinin (list/status/rm/
@@ -346,7 +396,7 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     assert!(
-        equal >= 457,
+        equal >= 511,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

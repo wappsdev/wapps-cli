@@ -2531,6 +2531,294 @@ ARMGAP_CASES = [
 CASES += ARMGAP_CASES
 
 
+# --- `whoami` ----------------------------------------------------------------
+#
+# AGA CIKAN EN UCUZ FIIL, ve kapisi YOK: ne ajan guard'i, ne baglama kapisi, ne
+# `Ctx::resolve`. Go'da `whoamiCmd` KOKTE mount'lu ve RunE'si dogrudan
+# `store.Whoami`ye gidiyor — yani ajan modunda da INSAN modunda da AYNI yolu
+# yuruyor, ve ikisi arasindaki TEK fark bir HATA ciktiginda basilan BICIM.
+# Iki mod da yaziliyor cunku o bicim ayrimi olculmeden bilinemez.
+#
+# KIMLIK KOLLARI: `bare` ve `proj` GEZILIYOR; `cfg` ile `rooted` MUAF ve
+# gerekce ARM_WAIVERS'ta. `proj` kolu bir kimlik cozumu DEGIL bir ATILLIK
+# olcusu (`dr verify`/`dr bootstrap` ile ayni sinif): bayrak kabul edilir ve
+# ciktiya HIC girmez.
+#
+# GOVDE SENARYOLARI `WAPPS_SESSION_TOKEN` uzerinden suruluyor (fakegate.py
+# WHOAMI) — `GET /v1/whoami`in ne yolu ne sorgusu var, yani istemcinin
+# gonderdigi tek degisken alan kimlik basligi.
+#
+# GERCEK SIR YOK: whoami tanimi geregi DEGER dondurmez; donen sey principal,
+# grup ve grant ADLARIDIR.
+def wh(name, argv=None, env=HUMAN, token=None):
+    e = dict(env)
+    if token is not None:
+        e["WAPPS_SESSION_TOKEN"] = token
+    return (name, (argv or []) + ["whoami"], e)
+
+WHOAMI_CASES = [
+    # === TABAN: 2 kol x 2 mod ============================================
+    # `bare` — hicbir kimlik bayragi yok. whoami'nin GERCEK kolu bu.
+    wh("human_whoami_prints_the_gates_view"),
+    wh("agent_whoami_prints_the_gates_view", env=AGENT),
+    # `proj` — bayrak ATIL. Ciktida `--project`in izi OLMAMALI: whoami bir
+    # projeye degil bir PRINCIPAL'a bakiyor.
+    wh("human_whoami_project_flag_is_inert", P),
+    wh("agent_whoami_project_flag_is_inert", P, env=AGENT),
+
+    # === GOVDE DALLARI ===================================================
+    # Servis principal'i: `email` satiri DUSER, `common_name` satiri CIKAR,
+    # gruplar "-" olur, root_admin true, ve grant listesi BOSKEN tablo
+    # YERINE "grants:         (none)" basilir. Dort kosullu dal tek vakada.
+    wh("human_whoami_a_service_principal_has_no_email_and_no_grants",
+       token="who-service"),
+    # BOS govde: her alan sifir degerinde ve `principal:` satiri BOS basilir.
+    # Bos bir principal'i ATLAYAN bir port burada ayrisir.
+    wh("human_whoami_an_empty_body_still_prints_every_unconditional_line",
+       token="who-min"),
+    # SECICI KENARLARI: aud > service > group onceligi, seciciSIZ bir kural
+    # (28 karakterlik bos sutun) ve 28'den UZUN bir secici (KIRPILMAZ).
+    wh("human_whoami_selector_precedence_padding_and_overflow", token="who-edge"),
+
+    # === HATA DALLARI ====================================================
+    # Oturum YOK: istek aga HIC cikmiyor, kurtarma satiri "wapps login"
+    # (whoami bir /v1/admin rotasi DEGIL).
+    wh("human_whoami_no_session", token=""),
+    wh("agent_whoami_no_session", env=AGENT, token=""),
+    # Kimlik cozulemedi -> fail-closed 503 dali, hata BAGLAMI "whoami".
+    wh("agent_whoami_identity_unavailable", env=AGENT, token="who-identdown"),
+    # 403 ve govde BOS: `safeCode` BOS bir kodu "unknown" yaziyor — ve bunu
+    # IKI kez, cunku `dimension` da bos. Bos dize basan bir port ayrisir.
+    wh("agent_whoami_a_bare_denial_names_the_code_unknown", env=AGENT,
+       token="who-denied-bare"),
+    # 403 ve kod KIRLI: `safeCode` [A-Za-z0-9_-.] disini ATIYOR (ayirmiyor,
+    # bitistiriyor) ve 48 bayta kirpiyor.
+    wh("agent_whoami_a_dirty_denial_code_is_stripped_not_escaped", env=AGENT,
+       token="who-denied-dirty"),
+
+    # === FAZLADAN ARGUMAN ================================================
+    # cobra'da whoamiCmd'in Args'i YOK -> ArbitraryArgs: fazladan arguman
+    # SESSIZCE yutulur ve cikis 0 kalir. clap'e birakilsa 1 donerdi.
+    # (`wh` yardimcisi argv'yi fiilden ONCE koyuyor — bayraklar icin dogru,
+    # bir KONUMSAL arguman icin degil. O yuzden satir ici.)
+    ("human_whoami_extra_args_are_silently_ignored", ["whoami", "EXTRA"], HUMAN),
+
+    # === BESINCI DURUM ===================================================
+    # whoami'nin YEREL `--project`i YOK, yani kokun bayragi golgelenmiyor ve
+    # karsilikli dislama SURUYOR. `token exchange`in TERSI, ve iki fiilin
+    # ayni turda inmesinin sebebi tam olarak bu karsitlik.
+    ("human_whoami_config_and_project_are_still_mutually_exclusive",
+     ["--config", "sub/.wapps.yaml"] + P + ["whoami"], HUMAN, None, None,
+     _sub(VALID_CFG)),
+]
+
+CASES += WHOAMI_CASES
+
+
+# --- `token exchange` --------------------------------------------------------
+#
+# BU FIIL BIR JETON BASIYOR, ve estate'in kurali burada bir ISTISNA ALMIYOR:
+# basilan sey bir SIR ve stdout'a HAM gidiyor (pipeline adimi onu yakaliyor).
+# Sahte gate JWT-BICIMLI bir jeton uretiyor — yani safelog'un `[REDACTED]`
+# yapacagi seklin ta kendisi. Vaka bu yuzden iki seyi birden olcuyor: jetonun
+# DOGRU baytlari, ve stdout yolunun redaksiyondan GECMEDIGI.
+#
+# KIMLIK KOLLARI: `bare` ve `proj` GEZILIYOR, `cfg`/`rooted` MUAF. Ama `proj`
+# burada BASKA bir sey: `--project` bu yapragin KENDI bayragi (Go:
+# `tokenExchangeCmd.Flags().StringVar`), kokun kalitilan bayragi DEGIL. Dort
+# gozlemlenebilir sonucu asagida ayri ayri pinlendi.
+#
+# KAPI SIRASI, ve olculdu: service-token cifti kontrolu `--project`/`--key`
+# kontrolunden ONCE. Yani cift YOKKEN eksik bayrak TOKEN_EXCHANGE_FAILED
+# "not set" verir, "needs --project" DEGIL.
+#
+# GERCEK SIR YOK: CF_ACCESS_CLIENT_ID/SECRET degerleri senaryo ADLARIDIR ve
+# basilan jeton sahte gate'in govdeden urettigi uydurma bir dizedir.
+CI = {"CF_ACCESS_CLIENT_ID": "tok-ok", "CF_ACCESS_CLIENT_SECRET": "not-a-real-secret"}
+TX = ["token", "exchange"]
+
+def tx(name, argv, env=HUMAN, client_id=None):
+    e = dict(env)
+    e.update(CI)
+    if client_id is not None:
+        e["CF_ACCESS_CLIENT_ID"] = client_id
+    return (name, TX + argv, e)
+
+def tx_raw(name, argv, env=HUMAN):
+    """argv'yi OLDUGU GIBI kullanir — kok bayraklari `token`den ONCE gelsin diye."""
+    e = dict(env)
+    e.update(CI)
+    return (name, argv, e)
+
+TOKEN_CASES = [
+    # === TABAN: 2 kol x 2 mod ============================================
+    # `proj` — yapragin KENDI `--project`i. Basari yolu: jeton stdout'a,
+    # metadata satiri stderr'e. Iki akim AYRI pty'de olculuyor, yani
+    # birini digerine yazan bir port GORUNUR.
+    tx("human_token_exchange_mints_and_prints_the_token",
+       ["--project", "testproj", "--key", "K"]),
+    tx("agent_token_exchange_mints_and_prints_the_token",
+       ["--project", "testproj", "--key", "K"], AGENT),
+    # `bare` — hicbir kimlik bayragi yok. Bu ayni zamanda "--project zorunlu"
+    # dali: cift VAR, bayrak YOK.
+    tx("human_token_exchange_needs_a_project", ["--key", "K"]),
+    tx("agent_token_exchange_needs_a_project", ["--key", "K"], AGENT),
+
+    # === KAPI SIRASI =====================================================
+    # Service-token cifti YOK: bayraklar da eksik olsa bile ret "not set".
+    ("human_token_exchange_missing_service_creds_precede_the_flag_check",
+     TX, dict(HUMAN, CF_ACCESS_CLIENT_ID="", CF_ACCESS_CLIENT_SECRET="")),
+    # Ciftin YARISI: Go ikisini de SART kosuyor (id != "" && secret != "").
+    ("agent_token_exchange_half_a_service_token_pair_is_not_enough",
+     TX + ["--project", "testproj", "--key", "K"],
+     dict(AGENT, CF_ACCESS_CLIENT_ID="tok-ok", CF_ACCESS_CLIENT_SECRET="")),
+    # Cift BOSLUKTAN ibaret: Go TrimSpace ediyor -> yine "not set".
+    ("agent_token_exchange_a_whitespace_service_token_pair_is_not_enough",
+     TX + ["--project", "testproj", "--key", "K"],
+     dict(AGENT, CF_ACCESS_CLIENT_ID="  ", CF_ACCESS_CLIENT_SECRET="  ")),
+    # `--project` VAR ama `--key` YOK -> AYNI cumle (tek kontrol, iki kosul).
+    tx("human_token_exchange_needs_at_least_one_key", ["--project", "testproj"]),
+    # BOS bir `--key` bir anahtardir: `len(keys) != 0`, yani kontrol GECER ve
+    # bos ad TEL'E biner. Uzunluga bakan bir port burada ayrisir.
+    tx("human_token_exchange_an_empty_key_still_counts_as_one",
+       ["--project", "testproj", "--key", ""]),
+
+    # === KAPSAM TEL'E BINIYOR ============================================
+    # `--key` TEKRARLANABILIR ve SIRA korunur (pflag StringArrayVar).
+    # Basilan jeton govdeden uretildigi icin sira ciktida GORUNUR.
+    tx("human_token_exchange_keys_are_repeatable_and_ordered",
+       ["--project", "testproj", "--key", "B_KEY", "--key", "A_KEY"]),
+    # `--verb` varsayilani ["read"], ve ILK `--verb` varsayilani EZER
+    # (pflag stringArray: ilk Set replace, sonrakiler append). Bu OLCULDU.
+    tx("human_token_exchange_the_first_verb_replaces_the_default",
+       ["--project", "testproj", "--key", "K", "--verb", "write"]),
+    tx("human_token_exchange_verbs_accumulate_after_the_first",
+       ["--project", "testproj", "--key", "K", "--verb", "read", "--verb", "rotate"]),
+    # `--ttl` govdeye YALNIZCA >0 iken giriyor (Go: `if ttlSeconds > 0`).
+    tx("human_token_exchange_a_positive_ttl_rides_the_wire",
+       ["--project", "testproj", "--key", "K", "--ttl", "300"]),
+    tx("human_token_exchange_a_zero_ttl_is_omitted_from_the_body",
+       ["--project", "testproj", "--key", "K", "--ttl", "0"]),
+    tx("human_token_exchange_a_negative_ttl_is_omitted_from_the_body",
+       ["--project", "testproj", "--key", "K", "--ttl", "-5"]),
+
+    # === `-` ILE BASLAYAN DEGERLER =======================================
+    # pflag'de bosluklu bir uzun bayrak SONRAKI jetonu KOSULSUZ deger sayar.
+    # `--ttl -5` bunu zaten yukarida gezdi; ucu de ayri bayrak, ucu de ayri
+    # vaka — cunku bir port bayraklardan yalnizca birini isaretleyebilir.
+    tx("human_token_exchange_a_hyphen_leading_key_is_a_value_not_a_flag",
+       ["--project", "testproj", "--key", "-K"]),
+    tx("human_token_exchange_a_hyphen_leading_project_is_a_value_not_a_flag",
+       ["--project", "-p1", "--key", "K"]),
+    tx("human_token_exchange_a_hyphen_leading_verb_reaches_the_gate",
+       ["--project", "testproj", "--key", "K", "--verb", "-x"]),
+
+    # === SINIRLAR GATE'IN, ISTEMCININ DEGIL ==============================
+    # Ikisi de OLCULDU: Go ne `--ttl`i ne `--verb`i dogruluyor. Reddi gate
+    # veriyor, ve istemci onu `token exchange rejected (...)` diye basiyor.
+    # Dogrulayan bir port bu reddi HIC gormezdi.
+    tx("human_token_exchange_the_ttl_ceiling_belongs_to_the_gate",
+       ["--project", "testproj", "--key", "K", "--ttl", "9999"]),
+    tx("human_token_exchange_an_unknown_verb_is_rejected_by_the_gate",
+       ["--project", "testproj", "--key", "K", "--verb", "delete"]),
+
+    # === `--ttl` BIR TAMSAYI BAYRAGI =====================================
+    # Ret cobra'nin AYRISTIRICISINDAN geliyor (RunE'ye HIC girilmiyor) ve
+    # metin Go'nun `strconv.ParseInt(s, 0, 64)` prozasi. TABAN 0: onaltilik
+    # ve sekizlik onekler GECERLI, ve bu da olculdu.
+    tx("human_token_exchange_a_non_numeric_ttl_is_a_parse_error",
+       ["--project", "testproj", "--key", "K", "--ttl", "abc"]),
+    tx("agent_token_exchange_an_out_of_range_ttl_is_a_parse_error",
+       ["--project", "testproj", "--key", "K", "--ttl", "99999999999999999999"], AGENT),
+    tx("human_token_exchange_a_hex_ttl_parses_because_the_base_is_zero",
+       ["--project", "testproj", "--key", "K", "--ttl", "0x10"]),
+
+    # === GATE YANITININ DALLARI ==========================================
+    # exp YOK -> stderr'e metadata satiri BASILMAZ (yalnizca `exp > 0`).
+    tx("human_token_exchange_without_an_exp_there_is_no_metadata_line",
+       ["--project", "testproj", "--key", "K"], client_id="tok-noexp"),
+    # exp KENARI: gun/ay/yil tasmasi. RFC3339'u elde ureten bir port burada
+    # ayrisir (2025-12-31T23:59:59Z).
+    tx("human_token_exchange_an_edge_exp_still_formats_as_rfc3339",
+       ["--project", "testproj", "--key", "K"], client_id="tok-exp-edge"),
+    # 200 ama jeton BOSLUK / HIC YOK -> TOKEN_EXCHANGE_FAILED, ve stdout'a
+    # BOS SATIR BILE basilmamali.
+    tx("agent_token_exchange_a_blank_token_is_refused",
+       ["--project", "testproj", "--key", "K"], AGENT, client_id="tok-blank"),
+    tx("agent_token_exchange_an_absent_token_is_refused",
+       ["--project", "testproj", "--key", "K"], AGENT, client_id="tok-absent"),
+    # 400 ve govde BOS -> `safeCode("")` == "unknown".
+    tx("human_token_exchange_a_bare_rejection_names_the_code_unknown",
+       ["--project", "testproj", "--key", "K"], client_id="tok-reject-bare"),
+    # 400 ve kod KIRLI -> `safeCode` temizligi mint yolunda da gecerli.
+    tx("human_token_exchange_a_dirty_rejection_code_is_stripped",
+       ["--project", "testproj", "--key", "K"], client_id="tok-reject-dirty"),
+    # 400 DISINDAKI statuler mint'e OZEL DEGIL: mapHTTPError'a duserler.
+    tx("agent_token_exchange_a_403_scope_error_is_a_session_error",
+       ["--project", "testproj", "--key", "K"], AGENT, client_id="tok-scope"),
+    tx("agent_token_exchange_a_503_is_a_service_misconfiguration",
+       ["--project", "testproj", "--key", "K"], AGENT, client_id="tok-miscfg"),
+    tx("agent_token_exchange_an_unexpected_status_is_named",
+       ["--project", "testproj", "--key", "K"], AGENT, client_id="tok-teapot"),
+
+    # === FAZLADAN ARGUMAN ================================================
+    # Ayni sey mint yolunda da gecerli, ve orada bir SIR basiliyor: fazladan
+    # bir arguman yuzunden reddeden bir port, calisan bir pipeline'i durdurur.
+    tx("human_token_exchange_extra_args_are_silently_ignored",
+       ["--project", "testproj", "--key", "K", "EXTRA"]),
+
+    # === YEREL `--project` KOKUNKINI GOLGELIYOR ==========================
+    #
+    # `dr accept-epoch-reset`/`dr restore` ile AYNI TUZAK, ve bu yaprakta
+    # DORDUNCU bir yuzu var. cobra'da bir yapragin YEREL bayragi kokun ayni
+    # adli persistent bayragini GOLGELER, ve golge KOMUT SATIRINDAKI YERDEN
+    # BAGIMSIZDIR — butun bayraklar yapragin flagset'ine karsi ayristirilir.
+    #
+    # DOGRU TARAF GO ve gerekce OLCULDU, hizalama degil: karsilikli dislama
+    # bir KIMLIK kurali ve bu yaprakta `--project` kimlik bayragi DEGIL
+    # (`Ctx::resolve` cagrilmiyor; deger dogrudan mint kapsamina giriyor).
+    # Kontrol vakasi hemen yukarida: `whoami`nin YEREL `--project`i YOK ve
+    # orada karsilikli dislama SURUYOR.
+    #
+    #   1. Alt komuttan ONCE yazilan `--project` yapraga ULASIR;
+    tx_raw("human_token_exchange_a_root_project_flag_reaches_the_local_one",
+           ["--project", "testproj"] + TX + ["--key", "K"]),
+    #   2. `--config` + `--project` bu yaprakta KARSILIKLI DISLAYAN DEGIL,
+    #      cunku kokun `--project`i HIC dolmuyor;
+    tx_raw("human_token_exchange_config_and_a_shadowed_project_are_not_exclusive",
+           ["--config", "x.yaml", "--project", "testproj"] + TX + ["--key", "K"]),
+    #   3. SONUNCU KAZANIR: ikisi birden verildiginde yaprak kendi degerini
+    #      alir (cobra tek degiskene yaziyor).
+    tx_raw("human_token_exchange_the_local_project_wins_over_the_root_one",
+           ["--project", "yokboyle"] + TX + ["--key", "K", "--project", "testproj"]),
+    #   4. KISA BICIM YOK. Yerel `--project`in shorthand'i olmadigi icin
+    #      golge `-p`yi de KALDIRIYOR: cobra "unknown shorthand flag" der.
+    #      Bu, tuzagin OLCULMEMIS dorduncu yuzuydu — `-p` bu uc yaprakta
+    #      (token exchange, dr restore, dr accept-epoch-reset) REDDEDILIYOR,
+    #      yerel `--project`i olmayan yapraklarda ise CALISIYOR.
+    tx_raw("human_token_exchange_the_shadow_also_removes_the_short_form",
+           ["-p", "testproj"] + TX + ["--key", "K"]),
+]
+
+CASES += TOKEN_CASES
+
+# GOLGENIN KISA-BICIM YUZU `dr`in IKI yapraginda da var, ve davranisi
+# DEGISTIRILEN her yaprak korpusta gorunmeli — `dr restore`un golge vakalari
+# nasil bu dosyaya girdiyse, bu da oyle. Kontrol vakasi UCUNCU satir:
+# `dr verify`in YEREL `--project`i YOK, yani orada `-p` CALISMALI.
+SHADOW_SHORT_FLAG_CASES = [
+    ("agent_dr_accept_epoch_reset_rejects_the_short_project_form",
+     ["-p", "testproj", "dr", "accept-epoch-reset"], AGENT),
+    ("agent_dr_restore_rejects_the_short_project_form",
+     ["-p", "testproj", "dr", "restore", "--snapshot", "snap", "--confirm"], AGENT),
+    ("agent_dr_verify_still_accepts_the_short_project_form",
+     ["-p", "testproj", "dr", "verify", "--snapshot", "snap"], AGENT),
+]
+
+CASES += SHADOW_SHORT_FLAG_CASES
+
+
+
 # ============================================================================
 # ARM KAPSAMI — HATIRLANAN BIR KURAL DEGIL, BIR MEKANIZMA
 # ============================================================================
@@ -2598,7 +2886,7 @@ def arm_verb(argv):
         i += 1
     if not out:
         return "<none>"
-    if out[0] in ("secrets", "rotate", "dr", "projects"):
+    if out[0] in ("secrets", "rotate", "dr", "projects", "token"):
         return out[0] + " " + (out[1] if len(out) > 1 else "?")
     return out[0]
 
@@ -2685,6 +2973,20 @@ ARM_WAIVERS = {
                "CAGRILMIYOR; buradaki tek `--project` vakasi bayragin ATIL "
                "oldugunu olcuyor, kimlik cozdugunu DEGIL",
         "rooted": "ayni sebep: yerel config bu fiile hic girmiyor",
+    },
+    "whoami": {
+        "cfg": "run_whoami() — Ctx::resolve YOK, imzasinda config/project "
+               "parametresi yok; buradaki `--project` vakalari bayragin ATIL "
+               "oldugunu olcuyor, kimlik cozdugunu DEGIL",
+        "rooted": "ayni sebep: whoami bir PROJEYE degil bir PRINCIPAL'a bakiyor, "
+                  "yerel `.wapps.yaml`e HIC dokunmuyor",
+    },
+    "token exchange": {
+        "cfg": "run_token_exchange — `--project` burada YAPRAGIN KENDI bayragi "
+               "(mint kapsaminin proje alani, kokun `-p`sini golgeliyor), kimlik "
+               "bayragi DEGIL; Ctx::resolve cagrilmiyor",
+        "rooted": "ayni sebep: yerel config bu fiile hic girmiyor — kapsam "
+                  "bayraklardan, servis kimligi env'den geliyor",
     },
     "secrets policy": {
         "proj": "policy GLOBAL bir dokuman; run_policy_* config almiyor",

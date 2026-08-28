@@ -257,3 +257,71 @@ fn the_human_rendering_carries_no_code_prefix_and_no_recovery_line() {
     }
     let _ = std::fs::remove_dir_all(&work);
 }
+
+// --- GOLGENIN KISA-BICIM YUZU ------------------------------------------------
+//
+// `short_project_token` KOK BAYRAK BOLGESINI tariyor: alt komuta kadar olan
+// jetonlar. Neyi TANIDIGI kadar neyi TANIMADIGI da sozlesme — kapsam dar ve
+// asagida ADLANDIRILMIS (kumeler HARIC), cunku olculmemis bir ekseni taklit
+// etmek olculmus olani tasimaktan farkli bir istir.
+use wapps::cli::short_project_token;
+
+fn tok(args: &[&str]) -> Option<String> {
+    short_project_token(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+}
+
+#[test]
+fn a_short_project_flag_in_the_root_region_is_reported_with_its_raw_token() {
+    // Metin Go'nun hatasina AYNEN giriyor ("in -p", "in -ptestproj"), yani
+    // jetonun KENDISI donuyor, bir bayrak adi degil.
+    assert_eq!(
+        tok(&["-p", "x", "token", "exchange"]).as_deref(),
+        Some("-p")
+    );
+    assert_eq!(tok(&["-px", "token", "exchange"]).as_deref(), Some("-px"));
+    assert_eq!(tok(&["-p=x", "dr", "restore"]).as_deref(), Some("-p=x"));
+    // Kok bolgesindeki BASKA bayraklarin arkasindan da gorulur.
+    assert_eq!(
+        tok(&["-v", "-p", "x", "dr", "restore"]).as_deref(),
+        Some("-p")
+    );
+    assert_eq!(
+        tok(&["--verbose", "-p", "x", "dr", "restore"]).as_deref(),
+        Some("-p")
+    );
+}
+
+#[test]
+fn a_value_that_merely_looks_like_the_flag_is_not_the_flag() {
+    // `-c` DEGERINI YUTAR: `-p` burada bir DEGER, bir bayrak degil.
+    assert_eq!(tok(&["-c", "-p", "secrets", "list"]), None);
+    assert_eq!(tok(&["--config", "-p", "secrets", "list"]), None);
+    assert_eq!(tok(&["--project", "-px", "secrets", "list"]), None);
+    // ...ama `--config=x` bir sonraki jetonu YUTMAZ.
+    assert_eq!(
+        tok(&["--config=x", "-p", "secrets", "list"]).as_deref(),
+        Some("-p")
+    );
+}
+
+#[test]
+fn the_scan_stops_where_the_root_flag_region_stops() {
+    // Alt komuttan SONRAKI `-p` bu taramanin isi DEGIL: kok bolgesi orada
+    // bitiyor. (Alt komut sonrasi kok bayraklari bu depoda OLCULMEMIS bir
+    // eksen ve iki ikili orada zaten ayrisiyor — bkz. `secrets list -p x`.)
+    assert_eq!(tok(&["token", "exchange", "-p", "x"]), None);
+    assert_eq!(tok(&["dr", "restore", "-p", "x"]), None);
+    // `--` de bolgeyi bitirir.
+    assert_eq!(tok(&["--", "-p", "x"]), None);
+    // Bos argv bir sey bulamaz.
+    assert_eq!(tok(&[]), None);
+}
+
+#[test]
+fn short_clusters_are_deliberately_out_of_scope() {
+    // `-vp` pflag'de `-v` + `-p<kalan>` demek, ama kume semantigi bu depoda
+    // HIC olculmedi ve iki ikili orada GOLGESIZ yapraklarda da ayrisiyor.
+    // Bu satir bir eksigi degil bir SINIRI pinliyor: kapsam degistiginde
+    // burasi da degismeli, sessizce degil.
+    assert_eq!(tok(&["-vp", "x", "dr", "restore"]), None);
+}
