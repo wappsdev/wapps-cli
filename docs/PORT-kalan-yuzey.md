@@ -613,7 +613,7 @@ fazladan bir argüman cobra'da SESSİZCE yutuluyor; clap 1 ile düşüyordu.
 
 | | |
 |---|---|
-| verbs | `secrets sync`, `secrets sync --dry-run`. `--target=<other>` is refused with Go's sentence; `--target=coolify` returns `ACTION_UNAVAILABLE` ("not available in this build") until slice 6 — a known, unmeasured divergence, deliberately NOT in the corpus |
+| verbs | `secrets sync`, `secrets sync --dry-run`. `--target=<other>` is refused with Go's sentence; `--target=coolify` returns `ACTION_UNAVAILABLE` ("not available in this build") until slice 6 — a known, unmeasured divergence, deliberately NOT in the corpus (closed by slice 6b) |
 | new modules | `syncverb.rs` (source names and reads, `tofu output -json` runner, merge, `mergedToSets`, `rawValueToString`, the `--dry-run` report), `goexec.rs` (`look_path` + `exit_text` moved out of `loginverb.rs` unchanged — `tofu` is now their second caller) |
 | extended | `wappsyaml.rs` (`resolved_sources`, and `resolve_rel` now CLEANS like Go's `filepath.Join`), `gojson.rs` (`decode_raw_object`, `compact` = `json.Compact`, Go's "after top-level value" syntax error), `store.rs` (`import_values(.., sync)` sends `X-Wapps-Intent: sync`), `cli.rs` (the node, its seven flags, and Go's `Long` text byte for byte) |
 | new crate | **NONE** — the estimate held. The `.env` parser is `importenv::parse_env_file`, shared exactly as Go shares `ParseEnvFileBytes` |
@@ -700,7 +700,7 @@ a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
 
 ---
 
-### Dilim 6 — `coolify` ailesi + `secrets sync --target=coolify`
+### Dilim 6 — `coolify` ailesi + `secrets sync --target=coolify` · **LANDED** (6a + 6b)
 
 | | |
 |---|---|
@@ -787,6 +787,74 @@ low: these two verbs alone needed 66.
 | rest of `internal/coolify` | ≈275 | the calls above plus `ListAppEnvs`, `DeleteAppEnv`, `asString`/`asBool` (the last three are used only by sync) |
 | `secrets sync --target=coolify` | 456 | `cmd/secrets/sync_coolify.go`: single-app and multi-app diff, `--force`/`--dry-run`, `delete_unmanaged`, `exclude_keys`, prefix stripping |
 | **total** | **≈1041** | of the 1438 priced for slice 6 |
+
+#### Slice 6b — `coolify deploy-app`, `deploy-app-git`, `import-app` + `secrets sync --target=coolify` · **LANDED**
+
+Two commits on the lane, as the task allowed: the three verbs first, the sync
+arm second. Together with 6a this lands the whole of slice 6.
+
+| | |
+|---|---|
+| verbs | `coolify deploy-app`, `coolify deploy-app-git`, `coolify import-app`, `secrets sync --target=coolify` (single-app `--app` and multi-app `--all-apps`, each dry-run by default and applied with `--force`). The `ACTION_UNAVAILABLE` divergence slice 5 recorded is closed |
+| Go source | `cmd/coolify` 310 (`deploy_app.go` 98, `deploy_app_git.go` 115, `import_app.go` 97), the rest of `internal/coolify` (`client.go` + `envs.go`), `cmd/secrets/sync_coolify.go` 456 |
+| new modules | `coolifysync.rs` 285 (diff, report, prefix mapping, apply, per-app isolation) |
+| extended | `coolify.rs` 219 → 517 (both creates, start, deploy, build args, the application list, `ListAppEnvs`, `DeleteAppEnv`, Go's `doRaw` and `do` answer handling, `go_fmt_v` = Go's `%v` of a decoded answer), `coolifyverb.rs` 175 → 563 (three leaves, cobra's sorted required-flag error, leftmost bad value across three value-parsed flags, `.outputs/` and the import files), `cli.rs` (three leaves; `sync` now lets every flag repeat, see finding 1), `main.rs` (`run_sync_coolify`) |
+| new crate | **NONE** |
+| differential cases | **143** (93 verbs + 50 sync). deploy-app 38 (4 arms × 2 modes; sorted required flags; empty value counts as set; compose read before the shell env; unset/empty/`=`-named shell vars; create echo; env upsert and echo; create failure; no uuid / not JSON; a bad uuid from the API; start failure; ignored `.outputs` write errors; overwrite; wrong token); deploy-app-git 32 (arms; required flags; bool and CSV errors, leftmost wins; six body echoes for defaults, deferred deploy, `--instant-deploy=false`, spaced bool, watch paths + empty base dir, every value flag; build args then deploy, without deploy, malformed pairs counted, `is_buildtime` echo, failure after the create, deploy failure, bad uuid); import-app 23 (arms; server filter; `{"data": …}`; object and non-JSON bodies as empty lists; list failure; cleaned and empty output dir; truncation; output dir a file; `apps.tf` uncreatable). Sync 50: the four arms × two modes (8); flag, token and config refusals before the store read (6); store errors (2); single-app 19 (dry-run, `{"data": …}` and empty-list answers, `--prefix`, `--dry-run` ignored, repeated `--app`, extra args, `--force` in both modes, two journals, the three failure points ADD / PATCH after 409 / REMOVE, a bad env uuid, a duplicate runtime key, a bad and a missing app, wrong token); multi-app 15 (dry-run and `--force` in both modes, `delete_unmanaged` true / false / absent, without `exclude_keys`, `--prefix` ignored, a journal over two apps, list and apply failures isolated, a bad uuid in the config, no block, an empty `apps`) |
+| harness | `fakegate.py`: the fake Coolify API gains both creates (exact field sets, strict padded base64 compose, `environment_name` must be "production"), start and deploy (must arrive WITHOUT a body), the application list chosen by a `:<tag>` on the token, env tables per app (`COOLIFY_APP_ENVS`: managed, preview, duplicate, non-string and invalid-uuid entries), env DELETE (unknown env uuid → 404), and `is_buildtime` checked per app (true only on a "gh-*" app). **The journal**: per app, every env write received since that app was last listed; deleting `env-journal` (key `ZZ_JOURNAL`, which sorts last) is refused with a digest of it, so a case sees every value, flag, env uuid and the add → change → remove order. The store side gains per-project bulk sets (`__ALL__@coolproj`). `probe.py` substitutes `{GATE}` in argv too (sync reads `--coolify-url` only) |
+| new tests | `tests/coolifysync.rs` (9: the Go diff vectors of `sync_coolify_test.go`, a duplicate runtime key, exclusion counting with a managed key and a duplicate entry, the report text, prefix prepend/strip), `tests/coolifyverb.rs` (+5: `go_fmt_v` on 10 vectors, Go's rune-wise lowercase, `filepath.Join`, `collectEnvFromShell`, the import files) |
+| gate | see the commits: `cargo test --release` (differential `EQUAL=821 DIFFERENT=0 UNSOUND=0` = 678 + 143, floor raised to 821), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `cargo deny check`, `go build ./...`, `go test ./...` (no Go file changed) |
+| red before green | the 93 verb cases: 93 DIFFERENT against the pre-slice binary (`unrecognized subcommand`), 93 EQUAL after the port on the first run. The 49 sync cases written before the arm: 46 DIFFERENT, 3 EQUAL before and after (two unpinned-config refusals and the `--project` binding refusal: the binding gate fires before `--target` is read); after the port 47 EQUAL and 2 DIFFERENT, which were real (findings 1 and 3). The duplicate-runtime-key case was added after the port, EQUAL at once, and is proven by mutation (j) |
+| mutation proofs | each against the coolify or sync subset, reverted, the file compared byte for byte with its backup. Verbs: (a) no deferred deploy → 1 red; (b) build args sent as runtime envs → 7 red; (c) start sent with a body → 15 red; (d) full instead of rune-wise lowercase → 13 red; (e) `filepath.Join` without Clean → 15 red; (f) required flags unsorted → 5 red; (g) shell env read through `std::env::var` → 1 red (finding 2); (h) the `{"data": …}` envelope not read → 1 red. Sync: (a) single-app not destructive → 16 red; (b) preview entries not ignored → 14; (c) managed keys kept in desired → 20; (d) an exclusion counted although managed → 9; (e) removes applied before adds → 3 (journal cases only); (f) a change sent with the OLD value → 2 (journal cases only); (g) multi-app stops at the first failed list → 2; (h) a key equal to the prefix kept → 11; (i) the app uuid checked before the store read → 1 (the pin no longer advances); (j) the first runtime entry kept instead of the last → 1; (k) one app's apply failure aborts the run → 2. One mutation SURVIVED in the first round: an explicit `'İ' → 'i'` branch in the lowercase was redundant (taking the first char of Rust's full lowercase already gives Go's simple mapping), so it was removed and (d) was re-aimed at the first-char rule. Unit tests: an exclusion counted although managed, and `%v`'s exponent threshold moved to 22, each fail their test |
+
+**Findings.**
+
+1. *Every value flag of `secrets sync` refused to repeat* — clap rejects a
+   second `--app`, `--target`, `--prefix` or `--coolify-url`, where pflag takes
+   the last. A live divergence on the node slice 5 landed, invisible until a
+   case repeated a flag. Fixed with `args_override_self` on the `sync` node.
+   Other nodes with single-value flags may have the same gap; not measured.
+2. *macOS `getenv` stops a name at `=`.* `--env-from-shell 'DA_ONE=x'` would
+   read `DA_ONE`'s value through `std::env::var` (libc). Go reads nothing and
+   refuses. The port matches names exactly over the environment.
+3. *YAML syntax errors are worded differently by the shared loader.*
+   `version: [` → Go `config: parse yaml: yaml: line 1: did not find expected
+   node content`, Rust `config: parse yaml: version: invalid type: sequence,
+   expected i64`. Not a slice-6 divergence: every config-loading verb has it,
+   and no case in the corpus uses a YAML SYNTAX error (all of `CONFIG_CASES`
+   are semantic). The case written for it was re-pointed at a semantic error;
+   the divergence is recorded, not fixed.
+4. *Single-app sync checks `--app` only AFTER the store read*, so a bad uuid
+   still advances the epoch pin. Measured and ported.
+5. *`sync --target=coolify` reads its URL from `--coolify-url` only*, while the
+   `coolify` verbs read `COOLIFY_URL`. `--dry-run` is ignored on this arm
+   (dry-run is its default). Both ported as they are.
+6. *`deploy-app-git` counts skipped build args*: `--build-arg NOEQ --build-arg
+   =v --build-arg A=1` sends one env and prints "Set 3 build arg(s)". It also
+   writes and prints a uuid the API returned before checking it (only the
+   build-arg call refuses `../x`). Ported.
+7. *`import-app`'s `app_<uuid[:8]>` fallback is unreachable*: a non-empty name
+   never yields an empty identifier. Not ported (it would also panic in Go on
+   a uuid shorter than 8 bytes).
+8. *Go lowercases rune by rune*: `İstanbul` becomes `istanbul`, where Rust's
+   full lowercase gives `i̇stanbul` and the sanitizer would add a `_`.
+
+**Known divergences, not in the corpus.**
+
+1. *Bool flags with a value on `sync`*: pflag accepts `--force=false` and
+   `--all-apps=false`; clap's `SetTrue` refuses them. The refusal is the safe
+   direction (no apply), but it is a divergence. Pre-existing on the node.
+2. *Invalid UTF-8 in a Coolify answer*: Go's decoder replaces it, serde_json
+   rejects it, so the port would read an empty list (or `map[]`) where Go reads
+   the data.
+3. As 6a: transport error texts, proxies, 307/308 on a write.
+
+**What the pricing got wrong.** 35–45 cases for all six verbs; slice 6 needed
+209 (66 + 143). The ≈1041 Go lines 6a counted as remaining were right in
+size; the part not priced was the HARNESS: a fake that only answers can not
+measure an apply, because an apply prints counts. The write journal is what
+made the destructive matrix measurable (mutations (e) and (f) are caught by
+nothing else).
 
 ---
 
@@ -910,7 +978,7 @@ other verbs (slice 10).
 | 3 | `login` · LANDED | 634 | none | 30 (actual) |
 | 4 | `token exchange` · İNDİ | 70 | yok | 40 (gerçek) |
 | 5 | `secrets sync` (no `--target` arm) · LANDED | 582 (≈480 live, see slice 5) | none | 28 (actual) |
-| 6 | `coolify` + sync/coolify (6a `update-env` + `set-labels` · LANDED; ≈1041 left) | 1438 | yok | 35–45 (6a alone: 66 actual) |
+| 6 | `coolify` + sync/coolify · LANDED (6a `update-env` + `set-labels`, 6b the rest) | 1438 | none | 209 (actual: 6a 66 + 6b 143) |
 | 7 | `deploy` | 582 | yok | 20–26 |
 | 8 | `skill` · LANDED | 539 (AutoRefresh is slice 10) | none | 43 (actual) |
 | 9 | yardım düzeni | (cobra) | **KARAR** §4.2 | ~6 + 50 snapshot |
