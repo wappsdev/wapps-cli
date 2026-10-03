@@ -1,12 +1,14 @@
-// gobase64, Go's `encoding/base64` decoders, written by hand.
+// gobase64, Go's `encoding/base64`, written by hand.
 //
-// Two variants, two callers:
+// Three functions, one per caller:
 //   * `std_decode` — `base64.StdEncoding` as `dr restore` reads it (moved here
 //     unchanged from drverb.rs, where it was private);
 //   * `raw_url_decode` — `base64.RawURLEncoding`, the JWT segment decoder
-//     behind `wapps login` (looksLikeJWT + session.ParseClaims).
+//     behind `wapps login` (looksLikeJWT + session.ParseClaims);
+//   * `std_encode` — `base64.StdEncoding.EncodeToString`, the `custom_labels`
+//     body of `coolify set-labels`.
 //
-// No base64 crate: the tree has none, and two small decoders do not justify
+// No base64 crate: the tree has none, and three small functions do not justify
 // opening the dependency policy (same reasoning as `ring` in Cargo.toml).
 
 /// std_decode, standard padded base64 (RFC 4648) — Go's
@@ -112,4 +114,28 @@ pub fn raw_url_decode(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// std_encode, Go's `base64.StdEncoding.EncodeToString`: the standard
+/// alphabet, padded with '='. `coolify set-labels` sends `custom_labels` in
+/// this form.
+pub fn std_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let acc = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[((acc >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }

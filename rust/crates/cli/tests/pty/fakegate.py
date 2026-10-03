@@ -18,6 +18,12 @@ Tasinan rotalar:
   GET    /v1/admin/rotate-plan        -> audit-ledger rotate-set oracle (rotate-plan)
   PUT    /v1/admin/policy             -> CAS'li policy yazimi (policy set)
 
+And a fake COOLIFY v4 API under /api/v1 (cases set COOLIFY_URL to
+"{GATE}/api/v1"; see COOLIFY_* and _coolify below):
+  PATCH  /api/v1/applications/{uuid}       -> custom_labels (coolify set-labels)
+  POST   /api/v1/applications/{uuid}/envs  -> create one env (coolify update-env)
+  PATCH  /api/v1/applications/{uuid}/envs  -> update one env after a 409
+
 TEL ADI `keyName` (camelCase) — bu bir AYRINTI DEGIL. Bu dosya bir sure
 `key_name` yaydi (Rust'in alan adi) ve o yanlis ad GERCEK bir ayrismayi
 gizledi: Go `keyName` okudugu icin BOS adlar aliyordu, Rust ise dolu.
@@ -202,8 +208,133 @@ TOKEN_TTL_MAX = 600
 # ISTEMCIDE YOK (olculdu) — burada durmasi bayragin tel'e bindigini olcer.
 TOKEN_VERBS = ("read", "write", "rotate")
 
+# --- FAKE COOLIFY v4 API --------------------------------------------------------
+#
+# What the client must send, checked on EVERY request, each refusal with its
+# own body so a client that gets one wrong prints a different error:
+#   * `Authorization: Bearer <COOLIFY_TOKEN>` (the COOLIFY_API_TOKEN cases
+#     set) -> 401 otherwise;
+#   * `User-Agent: curl/8` and `Content-Type: application/json` (Go sets both
+#     on every request) -> 400 otherwise.
+#
+# Bodies are validated field by field: `custom_labels` must be STRICT standard
+# base64, an env body must carry exactly Go's five fields with Go's constant
+# flags. A body that is wrong in shape gets a 422 naming the problem.
+#
+# The scenario is chosen by the app uuid (set-labels) or by the env key
+# (update-env), because those are the only variables the client sends:
+#   app "app-missing"   -> 404 on every route;
+#   app "app-longbody"  -> 500 with a body over 200 bytes (Go cuts it at 200
+#                          and appends "…");
+#   app "app-echo"      -> 422 that ECHOES the decoded labels and the sha256
+#                          of the raw request bytes. A successful PATCH prints
+#                          only a count; this is how a case sees WHAT went out
+#                          (the "\n" join, the strip filter, Go's JSON bytes);
+#   key "EXISTS_*"      -> 409 on POST, so the client must PATCH;
+#   key "GONE_*"        -> 409 on POST and 404 on the PATCH that follows;
+#   key "BROKEN_*"      -> 500 on POST;
+#   key "ECHO_*"        -> 422 echoing the decoded env body and the sha256 of
+#                          the raw bytes (on POST, or on the PATCH after a 409
+#                          for "EXISTS_ECHO_*").
+#
+# NO REAL SECRET: the token and every value are made-up test strings, and only
+# the labels/env bodies the cases themselves wrote are echoed.
+COOLIFY_TOKEN = "coolify-test-token-not-a-secret"
+COOLIFY_ENV_FIELDS = {"key", "value", "is_preview", "is_buildtime", "is_literal"}
+COOLIFY_LONG_BODY = {"message": "Server Error", "detail": "x" * 240}
+
+
+def _coolify(h, method, path, body):
+    """Serves one Coolify request; returns False if the path is not Coolify's."""
+    m = re.match(r"^/api/v1/applications/([^/]+)(/envs)?$", path)
+    if not m:
+        return False
+    app, envs = m.group(1), m.group(2) is not None
+    if h.headers.get("Authorization") != "Bearer " + COOLIFY_TOKEN:
+        h._send(401, {"message": "Unauthenticated."})
+        return True
+    if h.headers.get("User-Agent") != "curl/8":
+        h._send(400, {"message": "unexpected User-Agent"})
+        return True
+    if h.headers.get("Content-Type") != "application/json":
+        h._send(400, {"message": "unexpected Content-Type"})
+        return True
+    if app == "app-missing":
+        h._send(404, {"message": "Application not found."})
+        return True
+    if app == "app-longbody":
+        h._send(500, COOLIFY_LONG_BODY)
+        return True
+    sha = hashlib.sha256(body).hexdigest()[:16]
+    try:
+        doc = json.loads(body or b"null")
+    except ValueError:
+        h._send(422, {"message": "body is not JSON"})
+        return True
+    if not isinstance(doc, dict):
+        h._send(422, {"message": "body is not an object"})
+        return True
+
+    if not envs:
+        if method != "PATCH":
+            h._send(405, {"message": "method not allowed"})
+            return True
+        if set(doc) != {"custom_labels"} or not isinstance(doc["custom_labels"], str):
+            h._send(422, {"message": "custom_labels missing"})
+            return True
+        raw = doc["custom_labels"]
+        try:
+            labels = base64.b64decode(raw, validate=True).decode()
+        except ValueError:
+            h._send(422, {"message": "custom_labels is not base64"})
+            return True
+        # Strictness: b64decode accepts a missing pad; Go's encoder never omits it.
+        if len(raw) % 4:
+            h._send(422, {"message": "custom_labels is not padded"})
+            return True
+        if app == "app-echo":
+            h._send(422, {"labels": labels, "sha": sha})
+            return True
+        h._send(200, {"uuid": app})
+        return True
+
+    if method not in ("POST", "PATCH"):
+        h._send(405, {"message": "method not allowed"})
+        return True
+    if (set(doc) != COOLIFY_ENV_FIELDS or not isinstance(doc["key"], str)
+            or not isinstance(doc["value"], str) or doc["is_preview"] is not False
+            or doc["is_buildtime"] is not False or doc["is_literal"] is not True):
+        h._send(422, {"message": "bad env body"})
+        return True
+    key = doc["key"]
+    echo = {"echo": {"method": method, "key": key, "value": doc["value"]}, "sha": sha}
+    if method == "POST":
+        if key.startswith(("EXISTS_", "GONE_")):
+            h._send(409, {"message": "env already exists"})
+        elif key.startswith("BROKEN_"):
+            h._send(500, {"message": "Server Error"})
+        elif key.startswith("ECHO_"):
+            h._send(422, echo)
+        else:
+            h._send(201, {"uuid": "env-" + key.lower()})
+        return True
+    if key.startswith("GONE_"):
+        h._send(404, {"message": "env not found"})
+    elif key.startswith("EXISTS_ECHO_"):
+        h._send(422, echo)
+    else:
+        h._send(201, {"uuid": "env-" + key.lower()})
+    return True
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+
+    def do_PATCH(self):
+        body = self._drain()
+        if _coolify(self, "PATCH", self.path, body):
+            return
+        return self._send(404, {"error": "NO_ROUTE"})
 
     def _drain(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -318,6 +449,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._drain()
+        if _coolify(self, "POST", self.path, body):
+            return
 
         # POST /v1/token — kisa omurlu makine jetonu (`token exchange`).
         #

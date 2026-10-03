@@ -67,3 +67,29 @@ fn the_std_decoder_kept_its_strictness() {
     assert_eq!(std_decode("e30"), None);
     assert_eq!(std_decode("e30=\n"), None);
 }
+
+// std_encode, Go's `base64.StdEncoding.EncodeToString` — what `coolify
+// set-labels` puts in `custom_labels`. Vectors produced by Go 1.26.
+#[test]
+fn std_encode_matches_go() {
+    use wapps::gobase64::std_encode;
+    let vectors: &[(&[u8], &str)] = &[
+        (b"", ""),
+        (b"f", "Zg=="),
+        (b"fo", "Zm8="),
+        (b"foo", "Zm9v"),
+        (b"foob", "Zm9vYg=="),
+        (b"fooba", "Zm9vYmE="),
+        (b"foobar", "Zm9vYmFy"),
+        (
+            "traefik.enable=true\nx=é".as_bytes(),
+            "dHJhZWZpay5lbmFibGU9dHJ1ZQp4PcOp",
+        ),
+        (b"\x00\xff", "AP8="),
+    ];
+    for (input, want) in vectors {
+        assert_eq!(std_encode(input), *want, "input {input:?}");
+        // And the strict decoder already in the tree reads it back.
+        assert_eq!(wapps::gobase64::std_decode(want).as_deref(), Some(*input));
+    }
+}

@@ -8,6 +8,7 @@ use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
 use wapps::configctx::{self, Ctx};
 use wapps::confirm;
+use wapps::coolifyverb;
 use wapps::doctorverb;
 use wapps::drverb;
 use wapps::envverb;
@@ -136,6 +137,20 @@ fn run() -> Result<(), CmdError> {
             )));
         }
     }
+
+    // `coolify` leaves: pflag parses flag VALUES (CSV slices, the bool) at
+    // parse time, so a bad value is reported BEFORE the root's mutual
+    // exclusion below. Measured: agent_coolify_update_env_flag_value_error_
+    // before_identity_flags.
+    let coolify_leaf = match matches.subcommand() {
+        Some(("coolify", cm)) => match cm.subcommand() {
+            Some((leaf, lm)) => coolifyverb::parse_flags(leaf, lm)
+                .map(|r| r.map_err(CmdError::Plain))
+                .transpose()?,
+            None => None,
+        },
+        _ => None,
+    };
 
     // `--config` + `--project` BIRLIKTE: ret DISPATCH'TEN ONCE, ve FIILDEN
     // BAGIMSIZ. Buraya konmasinin sebebi olculdu: Go'da bu kontrol root'un
@@ -455,6 +470,16 @@ fn run() -> Result<(), CmdError> {
             _ => {
                 let _ = cli::build()
                     .find_subcommand_mut("token")
+                    .unwrap()
+                    .print_help();
+                std::process::exit(0);
+            }
+        },
+        Some(("coolify", _)) => match coolify_leaf {
+            Some(leaf) => coolifyverb::run(leaf, &mut std::io::stdout()).map_err(CmdError::Plain),
+            None => {
+                let _ = cli::build()
+                    .find_subcommand_mut("coolify")
                     .unwrap()
                     .print_help();
                 std::process::exit(0);

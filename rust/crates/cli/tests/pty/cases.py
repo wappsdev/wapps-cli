@@ -3063,7 +3063,7 @@ def arm_verb(argv):
         i += 1
     if not out:
         return "<none>"
-    if out[0] in ("secrets", "rotate", "dr", "projects", "token"):
+    if out[0] in ("secrets", "rotate", "dr", "projects", "token", "coolify"):
         return out[0] + " " + (out[1] if len(out) > 1 else "?")
     return out[0]
 
@@ -3498,8 +3498,7 @@ def sk(name, argv, env, files=None, links=None, yaml=None):
             None, None, {"yaml": yaml, "files": files or {}, "links": links or {}})
 
 SKILL_CASES = [
-    # === install, user scope (the default): symlink mode =====================
-    sk("human_skill_install_user_fresh", SKILL + ["install"], HUMAN),
+    # === install, user scope (the default): symlink mode ==============    sk("human_skill_install_user_fresh", SKILL + ["install"], HUMAN),
     sk("agent_skill_install_user_fresh", SKILL + ["install"], AGENT),
     # A correct link is kept; the source and marker are rewritten anyway.
     sk("human_skill_install_user_already_current", SKILL + ["install"], HUMAN,
@@ -3613,5 +3612,187 @@ SKILL_CASES = [
        ["--config", ".wapps.yaml"] + P + SKILL + ["status"], AGENT, yaml=VALID_CFG),
 ]
 CASES += SKILL_CASES
+=======
+# --- `coolify update-env` and `coolify set-labels` ------------------------------
+#
+# Order, measured from the Go oracle:
+#
+#   flag parsing (pflag: every --env/--label value is read as CSV, the bool
+#   --strip-cert-resolver by strconv.ParseBool; the first bad value from the
+#   left wins) -> root PersistentPreRunE (--config + --project) -> required
+#   --app-uuid -> COOLIFY_API_TOKEN -> the verb's own checks -> the app uuid
+#   check (internal/coolify validateUUID) -> the HTTP calls
+#
+# No agent gate, no binding, no Ctx: `-c`/`-p` are inert, a local
+# `.wapps.yaml` is never read. The four identity arms are walked anyway, so a
+# port that started reading config here would show.
+#
+# The Coolify API is the fake in fakegate.py: COOLIFY_URL points at it and the
+# app uuid / env key picks the scenario. A success prints only a count, so the
+# "echo" scenarios refuse with a body that repeats what was received and the
+# sha256 of the raw request bytes. Those run in HUMAN mode, like the sync
+# digest cases (the agent envelope's scrubber may redact high-entropy text).
+#
+# Go upserts env keys in RANDOM order (a map range), so no case has more than
+# one failing key; `BROKEN_Z` sorts last and fails on POST, which proves every
+# key was sent whatever the order.
+#
+# NO REAL SECRET: the token and every value are made-up test strings.
+COOLIFY_ENV = {"COOLIFY_URL": "{GATE}/api/v1",
+               "COOLIFY_API_TOKEN": "coolify-test-token-not-a-secret"}
+CH = dict(HUMAN, **COOLIFY_ENV)
+CA = dict(AGENT, **COOLIFY_ENV)
+UE = ["coolify", "update-env"]
+SL = ["coolify", "set-labels"]
+UE_OK = UE + ["--app-uuid", "app-ok", "--env", "A=1", "--env", "EXISTS_B=2"]
+SL_OK = SL + ["--app-uuid", "app-ok", "--label", "traefik.enable=true"]
+CERT = "traefik.http.routers.x.tls.certresolver=letsencrypt"
+
+COOLIFY_CASES = [
+    # === the four identity arms x two modes, per verb ======================
+    ("human_coolify_update_env_upserts_every_key", UE_OK, CH),
+    ("agent_coolify_update_env_upserts_every_key", UE_OK, CA),
+    ("human_coolify_update_env_project_flag_is_inert", P + UE_OK, CH),
+    ("agent_coolify_update_env_project_flag_is_inert", P + UE_OK, CA),
+    cf("human_coolify_update_env_config_flag_is_inert", UE_OK, CH),
+    cf("agent_coolify_update_env_config_flag_is_inert", UE_OK, CA),
+    ("human_coolify_update_env_local_config_is_not_read", UE_OK, CH, None, None,
+     cfg(VALID_CFG)),
+    ("agent_coolify_update_env_local_config_is_not_read", UE_OK, CA, None, None,
+     cfg(VALID_CFG)),
+    ("human_coolify_set_labels_sets_the_labels", SL_OK, CH),
+    ("agent_coolify_set_labels_sets_the_labels", SL_OK, CA),
+    ("human_coolify_set_labels_project_flag_is_inert", P + SL_OK, CH),
+    ("agent_coolify_set_labels_project_flag_is_inert", P + SL_OK, CA),
+    cf("human_coolify_set_labels_config_flag_is_inert", SL_OK, CH),
+    cf("agent_coolify_set_labels_config_flag_is_inert", SL_OK, CA),
+    ("human_coolify_set_labels_local_config_is_not_read", SL_OK, CH, None, None,
+     cfg(VALID_CFG)),
+    ("agent_coolify_set_labels_local_config_is_not_read", SL_OK, CA, None, None,
+     cfg(VALID_CFG)),
+
+    # === update-env: refusals before any request ===========================
+    ("agent_coolify_update_env_requires_app_uuid", UE + ["--env", "A=1"], CA),
+    # Both missing: the required flag is reported, not the token.
+    ("agent_coolify_update_env_required_flag_before_token", UE,
+     dict(CA, COOLIFY_API_TOKEN="")),
+    ("human_coolify_update_env_without_token", UE_OK, dict(CH, COOLIFY_API_TOKEN="")),
+    ("human_coolify_update_env_value_without_equals", UE + ["--app-uuid", "app-ok",
+     "--env", "A=1", "--env", "FOO"], CH),
+    ("agent_coolify_update_env_empty_key", UE + ["--app-uuid", "app-ok", "--env", "=v"], CA),
+    # pflag splits each value as CSV: "A=1,B" is two entries, the second bad.
+    ("agent_coolify_update_env_value_is_split_on_commas",
+     UE + ["--app-uuid", "app-ok", "--env", "A=1,B"], CA),
+    ("human_coolify_update_env_bare_quote_is_a_flag_error",
+     UE + ["--app-uuid", "app-ok", "--env", 'a"b'], CH),
+    ("agent_coolify_update_env_only_a_newline_is_eof",
+     UE + ["--app-uuid", "app-ok", "--env", "\n"], CA),
+    # The env is parsed BEFORE the uuid is checked.
+    ("human_coolify_update_env_bad_env_before_bad_uuid",
+     UE + ["--app-uuid", "../x", "--env", "FOO"], CH),
+    ("human_coolify_update_env_uuid_traversal",
+     UE + ["--app-uuid", "../x", "--env", "A=1"], CH),
+    ("agent_coolify_update_env_uuid_bad_character",
+     UE + ["--app-uuid", "a.b", "--env", "A=1"], CA),
+    ("agent_coolify_update_env_uuid_empty", UE + ["--app-uuid=", "--env", "A=1"], CA),
+    # Zero envs still validates the uuid...
+    ("agent_coolify_update_env_no_env_still_checks_the_uuid",
+     UE + ["--app-uuid", "../x"], CA),
+    # ...and with a good one prints a zero count without a request.
+    ("agent_coolify_update_env_no_env_is_a_zero_count",
+     UE + ["--app-uuid", "app-ok"], dict(CA, COOLIFY_URL="http://127.0.0.1:1/api/v1")),
+
+    # === update-env: the wire ==============================================
+    ("human_coolify_update_env_patch_after_409_fails",
+     UE + ["--app-uuid", "app-ok", "--env", "GONE_A=1"], CH),
+    ("human_coolify_update_env_every_key_is_sent",
+     UE + ["--app-uuid", "app-ok", "--env", "A=1", "--env", "BROKEN_Z=1"], CH),
+    ("human_coolify_update_env_post_body_echo",
+     UE + ["--app-uuid", "app-ok", "--env", "ECHO_A=v<&>é x"], CH),
+    ("human_coolify_update_env_patch_body_echo",
+     UE + ["--app-uuid", "app-ok", "--env", "EXISTS_ECHO_A=patched"], CH),
+    # A quoted CSV field keeps its comma; the echo shows the value sent.
+    ("human_coolify_update_env_quoted_csv_keeps_the_comma",
+     UE + ["--app-uuid", "app-ok", "--env", '"ECHO_K=a,b"'], CH),
+    # The last value of a repeated key wins.
+    ("human_coolify_update_env_repeated_key_last_wins",
+     UE + ["--app-uuid", "app-ok", "--env", "ECHO_A=1", "--env", "ECHO_A=2"], CH),
+    # ONE key: with two, every request fails and Go names a random one.
+    ("agent_coolify_update_env_wrong_token",
+     UE + ["--app-uuid", "app-ok", "--env", "A=1"],
+     dict(CA, COOLIFY_API_TOKEN="not-the-test-token")),
+    ("human_coolify_update_env_app_missing",
+     UE + ["--app-uuid", "app-missing", "--env", "A=1"], CH),
+
+    # === update-env: pflag/cobra shape =====================================
+    ("agent_coolify_update_env_extra_args_are_ignored", UE_OK + ["EXTRA"], CA),
+    ("agent_coolify_update_env_repeated_app_uuid_last_wins",
+     UE + ["--app-uuid", "../x", "--app-uuid", "app-ok", "--env", "A=1"], CA),
+    # A spaced long flag takes the next token even when it starts with `-`.
+    ("agent_coolify_update_env_values_may_start_with_a_dash",
+     UE + ["--app-uuid", "-x", "--env", "-A=1"], CA),
+    ("agent_coolify_update_env_unknown_flag", UE_OK + ["--bogus"], CA),
+    ("agent_coolify_update_env_both_identity_flags_are_rejected",
+     ["--config", "sub/.wapps.yaml"] + P + UE_OK, CA, None, None, _sub(VALID_CFG)),
+    # A bad flag VALUE is a parse error: it beats the root's mutual exclusion.
+    ("agent_coolify_update_env_flag_value_error_before_identity_flags",
+     ["--config", "sub/.wapps.yaml"] + P + UE + ["--env", 'a"b'], CA, None, None,
+     _sub(VALID_CFG)),
+
+    # === set-labels: refusals before any request ===========================
+    ("agent_coolify_set_labels_requires_app_uuid", SL + ["--label", "a"], CA),
+    ("human_coolify_set_labels_without_token", SL_OK, dict(CH, COOLIFY_API_TOKEN="")),
+    ("human_coolify_set_labels_no_labels_refused", SL + ["--app-uuid", "app-ok"], CH),
+    # Every label stripped -> the same refusal (nothing left to set).
+    ("agent_coolify_set_labels_all_stripped_refused",
+     SL + ["--app-uuid", "app-ok", "--label", CERT], CA),
+    ("human_coolify_set_labels_empty_label_value_refused",
+     SL + ["--app-uuid", "app-ok", "--label="], CH),
+    # The empty-set refusal comes before the uuid check.
+    ("human_coolify_set_labels_no_labels_before_bad_uuid", SL + ["--app-uuid", "../x"], CH),
+    ("agent_coolify_set_labels_uuid_traversal",
+     SL + ["--app-uuid", "../x", "--label", "a"], CA),
+    ("agent_coolify_set_labels_bad_bool",
+     SL + ["--app-uuid", "app-ok", "--label", "a", "--strip-cert-resolver=nope"], CA),
+    ("agent_coolify_set_labels_label_csv_error",
+     SL + ["--app-uuid", "app-ok", "--label", '"x'], CA),
+    # Two bad values: pflag reports the one further LEFT.
+    ("agent_coolify_set_labels_first_bad_value_wins_bool_first",
+     SL + ["--app-uuid", "app-ok", "--strip-cert-resolver=nope", "--label", 'a"b'], CA),
+    ("agent_coolify_set_labels_first_bad_value_wins_label_first",
+     SL + ["--app-uuid", "app-ok", "--label", 'a"b', "--strip-cert-resolver=nope"], CA),
+
+    # === set-labels: the wire ==============================================
+    # Joined with "\n", certresolver labels stripped, CSV split; the echo
+    # carries the decoded labels and the sha of the raw JSON bytes.
+    ("human_coolify_set_labels_body_echo",
+     SL + ["--app-uuid", "app-echo", "--label", "traefik.enable=true",
+           "--label", CERT, "--label", "a,b"], CH),
+    ("human_coolify_set_labels_keep_cert_resolver_when_off",
+     SL + ["--app-uuid", "app-echo", "--label", "traefik.enable=true",
+           "--label", CERT, "--strip-cert-resolver=false"], CH),
+    ("human_coolify_set_labels_non_ascii_and_html_bytes",
+     SL + ["--app-uuid", "app-echo", "--label", "rule=Host(`a.example`)&&<é>"], CH),
+    ("agent_coolify_set_labels_strip_off_sets_everything",
+     SL + ["--app-uuid", "app-ok", "--label", "a", "--label", CERT,
+           "--strip-cert-resolver=0"], CA),
+    # `--strip-cert-resolver false` (spaced): a bool flag takes no next token,
+    # so `false` is an ignored argument and the strip stays ON.
+    ("agent_coolify_set_labels_spaced_bool_value_is_an_argument",
+     SL + ["--app-uuid", "app-ok", "--label", CERT, "--strip-cert-resolver", "false"], CA),
+    ("agent_coolify_set_labels_bare_bool_is_true",
+     SL + ["--app-uuid", "app-ok", "--label", CERT, "--strip-cert-resolver"], CA),
+    ("human_coolify_set_labels_app_missing",
+     SL + ["--app-uuid", "app-missing", "--label", "a"], CH),
+    # The error body is cut at 200 bytes and "…" appended.
+    ("human_coolify_set_labels_long_error_body_is_cut",
+     SL + ["--app-uuid", "app-longbody", "--label", "a"], CH),
+    ("agent_coolify_set_labels_long_error_body_is_cut",
+     SL + ["--app-uuid", "app-longbody", "--label", "a"], CA),
+    ("agent_coolify_set_labels_wrong_token", SL_OK,
+     dict(CA, COOLIFY_API_TOKEN="not-the-test-token")),
+    ("agent_coolify_set_labels_extra_args_are_ignored", SL_OK + ["EXTRA"], CA),
+]
+CASES += COOLIFY_CASES
 
 _armcheck()

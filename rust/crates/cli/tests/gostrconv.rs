@@ -97,3 +97,69 @@ fn the_error_text_is_gos_numerror_prose() {
         "strconv.ParseInt: parsing \"99999999999999999999\": value out of range"
     );
 }
+
+// --- ParseBool, Quote, QuoteRune ----------------------------------------------
+//
+// `coolify set-labels --strip-cert-resolver` is a pflag `BoolVar`: the value is
+// parsed by `strconv.ParseBool` and a bad one is refused with its prose. The
+// `coolify` errors quote user input with `%q` (`strconv.Quote`/`QuoteRune`).
+// Every vector was produced by Go 1.26.
+use wapps::gostrconv::{parse_bool, quote, quote_rune};
+
+#[test]
+fn parse_bool_accepts_exactly_go_s_twelve_spellings() {
+    for s in ["1", "t", "T", "TRUE", "true", "True"] {
+        assert_eq!(parse_bool(s), Ok(true), "{s:?}");
+    }
+    for s in ["0", "f", "F", "FALSE", "false", "False"] {
+        assert_eq!(parse_bool(s), Ok(false), "{s:?}");
+    }
+    for s in ["", "yes", "tRUE", " true"] {
+        assert_eq!(
+            parse_bool(s),
+            Err(format!(
+                "strconv.ParseBool: parsing {}: invalid syntax",
+                quote(s)
+            )),
+            "{s:?}"
+        );
+    }
+}
+
+#[test]
+fn quote_matches_go_percent_q() {
+    let vectors = [
+        ("\x00", r#""\x00""#),
+        ("\x01", r#""\x01""#),
+        ("\x07\x08\x0c\x0b", r#""\a\b\f\v""#),
+        ("\x7f", r#""\x7f""#),
+        ("a\"b\\c", r#""a\"b\\c""#),
+        ("é", "\"é\""),
+        ("\u{200b}", r#""\u200b""#),
+        ("\u{a0}", r#""\u00a0""#),
+        ("'", r#""'""#),
+        ("\t\n\r", r#""\t\n\r""#),
+    ];
+    for (input, want) in vectors {
+        assert_eq!(quote(input), want, "input {input:?}");
+    }
+}
+
+#[test]
+fn quote_rune_matches_go_percent_q() {
+    let vectors = [
+        ('.', "'.'"),
+        ('é', "'é'"),
+        ('\'', r"'\''"),
+        ('"', "'\"'"),
+        ('\x00', r"'\x00'"),
+        ('\t', r"'\t'"),
+        ('\x7f', r"'\x7f'"),
+        ('\u{200b}', r"'\u200b'"),
+        ('\\', r"'\\'"),
+        ('\u{a0}', r"'\u00a0'"),
+    ];
+    for (input, want) in vectors {
+        assert_eq!(quote_rune(input), want, "input {input:?}");
+    }
+}
