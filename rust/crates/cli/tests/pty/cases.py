@@ -4248,4 +4248,224 @@ SYNC_COOLIFY_CASES = [
 ]
 CASES += SYNC_COOLIFY_CASES
 
+
+# --- `wapps deploy` -------------------------------------------------------------
+#
+# Order, measured from the Go oracle (cmd/deploy/deploy.go):
+#
+#   flag VALUES (pflag) -> ExactArgs(1) -> the root's --config/--project check
+#   -> --repo known -> service shape -> ONE store read for every credential
+#   candidate (whenever a .wapps.yaml exists, even if the env has everything)
+#   -> env-first resolution, first missing credential named (exit 2) ->
+#   "Deploying ..." -> trigger -> [--wait: poll until terminal / deadline].
+#
+# THE VERB OWNS ITS EXIT CODE: 0 ok, 1 usage, 2 creds, 3 auth/scope, 4 CF
+# Access edge, 5 network, 6 proxy, 7 timeout, 8 deploy failed. Each has its
+# own cases below. No agent guard and no binding gate: agent mode changes only
+# the ROOT's errors (flag, arity, exclusion), never the verb's own lines.
+#
+# The proxy is the fake under {GATE}/dp (fakegate.py, DP_*). Every case that
+# would reach the network names an endpoint (--ep, DEPLOY_PROXY_EP or the
+# store): the default is the real proxy and must never be contacted. The
+# network case uses 127.0.0.1:1 (refused). NO REAL SECRET anywhere.
+DP_TOKEN = "dp-token-not-a-secret"
+DP_CF_ID = "dp-cf-id-not-a-secret"
+DP_CF_SECRET = "dp-cf-secret-not-a-secret"
+DP_ENV = {"DEPLOY_PROXY_TOKEN_VAULTER": DP_TOKEN,
+          "DEPLOY_PROXY_CF_ACCESS_CLIENT_ID": DP_CF_ID,
+          "DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET": DP_CF_SECRET}
+DH = dict(HUMAN, **DP_ENV)
+DA = dict(AGENT, **DP_ENV)
+EP = ["--ep", "{GATE}/dp"]
+D = ["deploy"]
+# --wait with a 1 s poll: every sequence in DP_POLLS ends in a few seconds.
+W = ["--wait", "--poll-interval", "1"]
+
+GATE_SCRIPT["__ALL__@deployproj"] = [200, {"epoch": 7, "values": {
+    "DEPLOY_PROXY_TOKEN_VAULTER": DP_TOKEN,
+    "DEPLOY_PROXY_CF_ACCESS_CLIENT_ID": DP_CF_ID,
+    "DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET": DP_CF_SECRET,
+    "DEPLOY_PROXY_EP": "{GATE}/dp",
+    "UNRELATED_KEY": "never-asked-for",
+}}]
+# Only the CF pair, under the LEGACY names (the store tier's fallbacks).
+GATE_SCRIPT["__ALL__@deploycf"] = [200, {"epoch": 7, "values": {
+    "CF_ACCESS_CLIENT_ID": DP_CF_ID,
+    "CF_ACCESS_CLIENT_SECRET": DP_CF_SECRET,
+}}]
+GATE_SCRIPT["__ALL__@deploydenied"] = [403, {"error": "GRANT_DENIED"}]
+DEPLOY_CFG = "version: 2\nproject: deployproj\n"
+
+def dcfg(name, argv, env, yaml=DEPLOY_CFG, pins=None):
+    """A deploy case in its own dir with `yaml` as ./.wapps.yaml (the
+    `rooted` arm). No binding prompt: deploy has no binding gate."""
+    return (name, argv, env, pins, None, cfg(yaml))
+
+DEPLOY_CASES = [
+    # === the four identity arms x two modes =================================
+    # `bare`: env credentials, no config, nothing read from the store.
+    ("human_deploy_triggers", D + ["migrator"] + EP, DH),
+    ("agent_deploy_triggers", D + ["migrator"] + EP, DA),
+    # `proj`: an unregistered --project is inert (Go: SetProjectName only;
+    # StoreValues reads the cwd config, of which there is none).
+    ("human_deploy_project_flag_is_inert", P + D + ["migrator"] + EP, DH),
+    ("agent_deploy_project_flag_is_inert", P + D + ["migrator"] + EP, DA),
+    # `rooted`: every credential AND the endpoint come from the store; the
+    # epoch pin advances.
+    dcfg("human_deploy_store_supplies_everything", D + ["migrator"], HUMAN),
+    dcfg("agent_deploy_store_supplies_everything", D + ["migrator"], AGENT),
+    # `cfg`: the store read follows --config.
+    cf("human_deploy_config_flag_store_supplies_everything", D + ["migrator"], HUMAN,
+       yaml=DEPLOY_CFG),
+    cf("agent_deploy_config_flag_store_supplies_everything", D + ["migrator"], AGENT,
+       yaml=DEPLOY_CFG),
+    # An unregistered --project does not stand in for the cwd config either:
+    # the store is still read for the config's project.
+    dcfg("agent_deploy_project_flag_does_not_replace_the_cwd_config",
+         P + D + ["migrator"], AGENT),
+
+    # === exit 1: refusals before anything is read ===========================
+    ("human_deploy_unknown_repo", D + ["migrator", "--repo", "nope"] + EP, DH),
+    ("agent_deploy_unknown_repo_json", D + ["migrator", "--repo", "nope", "--json"] + EP, DA),
+    # The repo is checked first; %q quotes what the user typed.
+    ("human_deploy_repo_checked_before_service", D + ["Bad_Name", "--repo", "a\tb"] + EP, DH),
+    ("human_deploy_invalid_service_name", D + ["Bad_Name"] + EP, DH),
+    # The JSON line carries the refused name with Go's HTML-safe escaping.
+    ("agent_deploy_invalid_service_name_json", D + ["x<y>&z", "--json"] + EP, DA),
+    ("human_deploy_service_name_too_long", D + ["a" * 42] + EP, DH),
+    # The root's errors: cobra's ExactArgs(1), pflag's value errors.
+    ("human_deploy_without_service", D + EP, DH),
+    ("agent_deploy_two_services", D + ["migrator", "gateway"] + EP, DA),
+    # A bool flag never takes a spaced value: `false` is a second argument.
+    ("human_deploy_spaced_bool_is_an_argument", D + ["migrator", "--json", "false"] + EP, DH),
+    ("human_deploy_bad_timeout", D + ["migrator", "--timeout", "abc"] + EP, DH),
+    ("agent_deploy_bad_bool_value", D + ["migrator", "--wait=maybe"] + EP, DA),
+    # The leftmost bad value wins, across int and bool flags.
+    ("human_deploy_leftmost_bad_flag_wins",
+     D + ["migrator", "--json=x", "--poll-interval", "1.5", "--timeout", "y"] + EP, DH),
+    # Flag values and arity are checked before the root's exclusion.
+    ("agent_deploy_flag_value_before_identity_flags",
+     CFG_SUB + P + D + ["migrator", "--timeout", "x"] + EP, DA),
+    ("human_deploy_arity_before_identity_flags", CFG_SUB + P + D + EP, DH),
+    ("human_deploy_config_and_project_are_exclusive", CFG_SUB + P + D + ["migrator"] + EP, DH),
+
+    # === exit 2: credentials ================================================
+    ("human_deploy_no_credentials", D + ["migrator"] + EP, HUMAN),
+    ("agent_deploy_no_credentials_json", D + ["migrator", "--json"] + EP, AGENT),
+    ("human_deploy_missing_cf_id", D + ["migrator"] + EP,
+     dict(HUMAN, PROXY_TOKEN=DP_TOKEN)),
+    ("human_deploy_missing_cf_secret", D + ["migrator"] + EP,
+     dict(HUMAN, PROXY_TOKEN=DP_TOKEN, CF_ACCESS_CLIENT_ID=DP_CF_ID)),
+    # The token key is named after the repo: upper-cased, dash to underscore.
+    ("agent_deploy_missing_token_names_the_repo_key",
+     D + ["migrator", "--repo", "supply-pro"] + EP, AGENT),
+    # A store that is configured but unreadable is reported under the error.
+    dcfg("human_deploy_store_unreadable_is_noted", D + ["migrator"],
+         dict(HUMAN, WAPPS_SESSION_TOKEN="")),
+    dcfg("agent_deploy_store_denied_is_noted", D + ["migrator"], AGENT,
+         yaml="version: 2\nproject: deploydenied\n"),
+    dcfg("human_deploy_config_that_fails_to_load_is_noted", D + ["migrator"], HUMAN,
+         yaml="version: 3\nproject: deployproj\n"),
+    # A store with none of the candidates: no read, no note (the pin still
+    # advances through the key listing).
+    dcfg("human_deploy_store_without_candidates", D + ["migrator"], HUMAN,
+         yaml=VALID_CFG),
+    # A downgraded store is a read failure like any other.
+    dcfg("agent_deploy_store_epoch_downgrade_is_noted", D + ["migrator"], AGENT,
+         pins=pinfile(9, "deployproj")),
+
+    # === exit 0: resolution order ===========================================
+    # Env beats store per value: the CF id from env, the rest from the store
+    # (the echo digest names exactly which three values went out).
+    dcfg("human_deploy_env_beats_store", D + ["dp-echo"], dict(
+        HUMAN, DEPLOY_PROXY_CF_ACCESS_CLIENT_ID="env-cf-id-not-a-secret")),
+    # The store is read even when the env has everything (the pin advances).
+    dcfg("agent_deploy_store_read_even_when_env_suffices", D + ["migrator"] + EP, DA),
+    # An unreadable store does not matter when the env has everything.
+    dcfg("agent_deploy_unreadable_store_env_suffices", D + ["migrator"] + EP,
+         dict(DA, WAPPS_SESSION_TOKEN="")),
+    # The store's legacy names fill what the env lacks.
+    dcfg("human_deploy_store_legacy_names", D + ["migrator"] + EP,
+         dict(HUMAN, DEPLOY_PROXY_TOKEN=DP_TOKEN), yaml="version: 2\nproject: deploycf\n"),
+    # The env's legacy names, through the echo digest.
+    ("human_deploy_env_legacy_names", D + ["dp-echo"] + EP,
+     dict(HUMAN, PROXY_TOKEN="legacy-token", CF_ACCESS_CLIENT_ID="legacy-id",
+          CF_ACCESS_CLIENT_SECRET="legacy-secret")),
+    ("human_deploy_endpoint_from_env", D + ["migrator"],
+     dict(DH, DEPLOY_PROXY_EP="{GATE}/dp")),
+    # --ep beats DEPLOY_PROXY_EP; a trailing slash is printed as given and
+    # trimmed from the request path.
+    ("human_deploy_ep_flag_beats_env_and_keeps_its_slash", D + ["migrator", "--ep", "{GATE}/dp/"],
+     dict(DH, DEPLOY_PROXY_EP="http://127.0.0.1:1")),
+    ("agent_deploy_json_triggered", D + ["migrator", "--json"] + EP, DA),
+    ("human_deploy_other_repo", D + ["migrator", "--repo", "supply-pro"] + EP,
+     dict(HUMAN, DEPLOY_PROXY_TOKEN_SUPPLY_PRO=DP_TOKEN,
+          DEPLOY_PROXY_CF_ACCESS_CLIENT_ID=DP_CF_ID,
+          DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET=DP_CF_SECRET)),
+
+    # === exit 3: the proxy refused the token or the scope ===================
+    ("human_deploy_proxy_401", D + ["t-401"] + EP, DH),
+    ("agent_deploy_wrong_token", D + ["migrator", "--json"] + EP,
+     dict(DA, DEPLOY_PROXY_TOKEN_VAULTER="wrong-token")),
+    ("human_deploy_proxy_403_scope", D + ["t-403"] + EP, DH),
+
+    # === exit 4: the Cloudflare edge =========================================
+    ("human_deploy_edge_403", D + ["t-edge-403"] + EP, DH),
+    # Not followed: the target would accept the deploy.
+    ("agent_deploy_edge_302_not_followed", D + ["t-edge-302", "--json"] + EP, DA),
+    ("human_deploy_edge_503", D + ["t-edge-503"] + EP, DH),
+
+    # === exit 5: the call never completed ====================================
+    ("human_deploy_network", D + ["migrator", "--ep", "http://127.0.0.1:1"], DH),
+    ("agent_deploy_network_json", D + ["migrator", "--json", "--ep", "http://127.0.0.1:1"], DA),
+
+    # === exit 6: any other proxy answer ======================================
+    ("human_deploy_proxy_400", D + ["t-400"] + EP, DH),
+    # A trigger 404 names the SERVICE as the unknown "deployment".
+    ("human_deploy_proxy_404", D + ["t-404"] + EP, DH),
+    ("agent_deploy_proxy_404_not_json", D + ["t-404-html"] + EP, DA),
+    ("human_deploy_proxy_502", D + ["t-502"] + EP, DH),
+    ("human_deploy_proxy_500_json", D + ["t-500-json"] + EP, DH),
+    ("agent_deploy_proxy_201", D + ["t-201", "--json"] + EP, DA),
+    ("human_deploy_error_key_matches_any_case", D + ["t-error-key-case"] + EP, DH),
+    ("human_deploy_empty_uuid", D + ["t-empty-uuid"] + EP, DH),
+    ("agent_deploy_invalid_uuid_json", D + ["t-bad-uuid", "--json"] + EP, DA),
+    ("human_deploy_uuid_too_long", D + ["t-long-uuid"] + EP, DH),
+    ("human_deploy_answer_not_json", D + ["t-no-uuid"] + EP, DH),
+    ("human_deploy_uuid_not_a_string", D + ["t-uuid-number"] + EP, DH),
+
+    # === --wait: exit 0 =======================================================
+    ("human_deploy_wait_finished", D + ["w-finished"] + W + EP, DH),
+    # Under --json the progress lines are dropped: one object on stdout.
+    ("agent_deploy_wait_finished_json", D + ["w-finished", "--json"] + W + EP, DA),
+    ("human_deploy_wait_unknown_keeps_polling", D + ["w-unknown"] + W + EP, DH),
+
+    # === --wait: exit 7 =======================================================
+    # The deadline falls inside the 5 s sleep after the first poll.
+    ("human_deploy_wait_timeout", D + ["w-forever", "--wait", "--timeout", "1",
+                                       "--poll-interval", "5"] + EP, DH),
+    ("agent_deploy_wait_timeout_json", D + ["w-forever", "--json", "--wait",
+                                            "--timeout", "1", "--poll-interval", "5"] + EP, DA),
+    # The deadline cuts a status request in flight: a timeout, not exit 5,
+    # and no status in the JSON.
+    ("agent_deploy_wait_deadline_cuts_the_request", D + ["w-slow", "--json", "--wait",
+                                                         "--timeout", "1"] + EP, DA),
+
+    # === --wait: exit 8 =======================================================
+    ("human_deploy_wait_failed", D + ["w-failed"] + W + EP, DH),
+    ("agent_deploy_wait_cancelled_json", D + ["w-cancelled", "--json"] + W + EP, DA),
+    # A non-positive --timeout / --poll-interval takes the default; base-0
+    # integers are accepted (0x0 is zero).
+    ("human_deploy_wait_error_with_default_timings",
+     D + ["w-error", "--wait", "--timeout", "0x0", "--poll-interval", "-3"] + EP, DH),
+
+    # === --wait: a failing status query is fail-closed =======================
+    ("human_deploy_wait_status_404", D + ["w-404"] + W + EP, DH),
+    # The out-of-scope subject is the DEPLOYMENT ID here.
+    ("human_deploy_wait_status_403_names_the_id", D + ["w-403"] + W + EP, DH),
+    ("agent_deploy_wait_edge_block_mid_poll_json", D + ["w-edge", "--json"] + W + EP, DA),
+    ("human_deploy_wait_edge_block_mid_poll", D + ["w-edge"] + W + EP, DH),
+]
+CASES += DEPLOY_CASES
+
 _armcheck()

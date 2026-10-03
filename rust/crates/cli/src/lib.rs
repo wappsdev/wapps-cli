@@ -10,6 +10,7 @@ pub mod coolify;
 pub mod coolifysync;
 pub mod coolifyverb;
 pub mod cryptoid;
+pub mod deployverb;
 pub mod doctorverb;
 pub mod drverb;
 pub mod envverb;

@@ -31,6 +31,11 @@ And a fake COOLIFY v4 API under /api/v1 (cases set COOLIFY_URL to
   GET    /api/v1/deploy?uuid=               -> trigger a deploy (deploy-app-git)
   GET    /api/v1/applications               -> list (coolify import-app)
 
+And a fake company-deploy-proxy under /dp (cases pass `--ep {GATE}/dp`; see
+DP_* and _deploy_proxy below):
+  POST   /dp/v1/deploy/{service}            -> trigger (wapps deploy)
+  GET    /dp/v1/deployments/{id}            -> status poll (wapps deploy --wait)
+
 TEL ADI `keyName` (camelCase) — bu bir AYRINTI DEGIL. Bu dosya bir sure
 `key_name` yaydi (Rust'in alan adi) ve o yanlis ad GERCEK bir ayrismayi
 gizledi: Go `keyName` okudugu icin BOS adlar aliyordu, Rust ise dolu.
@@ -44,12 +49,14 @@ YAZILAN DEGER ASLA KAYDEDILMIYOR: PUT govdesi Content-Length kadar okunup
 ATILIYOR. Bir sahte gate'in bile bir degeri diske/loga yazmasi, bu portun
 kapatmaya calistigi yuzeyin ta kendisi olurdu (log_message zaten susturulmus).
 """
-import json, sys, re, hashlib, base64
+import json, sys, re, hashlib, base64, time
 from urllib.parse import unquote, urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Anahtar -> (status, govde). Degerler TEST dizeleri; gercek sir DEGIL.
 SCRIPT = {}
+# This fake's own root URL, set at start-up (see the bulk read).
+GATE_URL = ""
 
 # AKTIF POLICY. Bir sir DEGIL — yetki kurallari. Version 3 SABIT: `policy set`
 # CAS'i current+1 istiyor, yani istemcinin 4 gondermesi bekleniyor ve bunu
@@ -597,6 +604,143 @@ def _coolify(h, method, rawpath, body):
     return True
 
 
+# --- the fake company-deploy-proxy (`wapps deploy`) ------------------------
+#
+# Mounted under /dp so the endpoint a binary prints names the source it came
+# from (`--ep`, DEPLOY_PROXY_EP, the store). Every request must carry
+# `User-Agent: wapps-cli` and the three test credentials below; anything else
+# is the proxy's 401, so a credential resolved from the wrong source or sent
+# under the wrong header is visible. The one exception is service `dp-echo`:
+# it accepts any credentials and answers a deployment id that is a digest of
+# the three header values, so a case sees WHICH values were sent (env or
+# store, which fallback name) without any value being printed.
+#
+# The service name picks the trigger answer (DP_TRIGGERS); any other service
+# is accepted with the id `_dp_id(service)`. That id picks the poll sequence
+# (DP_POLLS, by service): one answer per poll, the last one repeating. A
+# trigger resets its id's poll count, so the human and agent twin of a case
+# see the same sequence. NO REAL SECRET: every value is a test string.
+DP_TOKEN = "dp-token-not-a-secret"
+DP_CF_ID = "dp-cf-id-not-a-secret"
+DP_CF_SECRET = "dp-cf-secret-not-a-secret"
+DP_EDGE_HTML = b"<html><body>Cloudflare Access</body></html>"
+
+DP_TRIGGERS = {
+    "t-401": (401, {"error": "unauthorized"}),
+    "t-403": (403, {"error": "service not allowlisted for this token"}),
+    "t-edge-403": (403, DP_EDGE_HTML),
+    # The redirect target would ACCEPT the deploy: a client that followed it
+    # would print "triggered".
+    "t-edge-302": (302, b""),
+    "t-edge-503": (503, b"upstream connect error"),
+    "t-400": (400, {"error": "invalid service"}),
+    "t-404": (404, {"error": "no such service"}),
+    "t-404-html": (404, b"<html>not found</html>"),
+    "t-502": (502, {"error": "coolify unreachable"}),
+    "t-500-json": (500, {"error": "panic recovered"}),
+    "t-201": (201, {"deployment_uuid": "a" * 24}),
+    # Go matches the "error" field case-insensitively.
+    "t-error-key-case": (400, {"Error": "mixed case key"}),
+    "t-empty-uuid": (200, {"deployment_uuid": ""}),
+    "t-bad-uuid": (200, {"deployment_uuid": "UPPER-and-short"}),
+    "t-long-uuid": (200, {"deployment_uuid": "a" * 33}),
+    "t-no-uuid": (200, b"ok"),
+    "t-uuid-number": (200, b'{"deployment_uuid": 12345678901234567890}'),
+}
+
+DP_POLLS = {
+    "w-finished": [(200, {"status": "queued"}), (200, {"status": "in_progress"}),
+                   (200, {"status": "finished"})],
+    "w-failed": [(200, {"status": "in_progress"}), (200, {"status": "failed"})],
+    "w-cancelled": [(200, {"status": "cancelled-by-user"})],
+    "w-error": [(200, {"status": "error"})],
+    # No status, then an empty one: both read as "unknown" and keep polling.
+    "w-unknown": [(200, {}), (200, {"status": ""}), (200, {"status": "finished"})],
+    "w-forever": [(200, {"status": "in_progress"})],
+    # The answer comes after 3 s: a --timeout 1 deadline cuts the request.
+    "w-slow": [("sleep", 3)],
+    "w-404": [(404, {"error": "deployment not found"})],
+    # A 403 mid-poll names the DEPLOYMENT ID as the out-of-scope subject.
+    "w-403": [(403, {"error": "deployment belongs to another token"})],
+    "w-edge": [(200, {"status": "in_progress"}), (403, DP_EDGE_HTML)],
+}
+DP_POLLED = {}
+
+
+def _dp_id(service):
+    """The deployment id the fake answers for a service: lower-case alnum,
+    24 bytes, so it passes ^[a-z0-9]{20,32}$."""
+    return service.replace("-", "").ljust(24, "0")[:32]
+
+
+DP_SERVICE_OF = {_dp_id(s): s for s in DP_POLLS}
+
+
+def _dp_send(h, status, payload):
+    if isinstance(payload, bytes):
+        return h._send_raw(status, payload)
+    return h._send(status, payload)
+
+
+def _deploy_proxy(h, method, rawpath):
+    """Serves one deploy-proxy request; returns False if the path is not /dp."""
+    path = urlparse(rawpath).path
+    if not path.startswith("/dp/"):
+        return False
+    path = path[len("/dp"):]
+    if h.headers.get("User-Agent") != "wapps-cli":
+        h._send(400, {"error": "unexpected User-Agent"})
+        return True
+    sent = [h.headers.get("Authorization") or "",
+            h.headers.get("CF-Access-Client-Id") or "",
+            h.headers.get("CF-Access-Client-Secret") or ""]
+    m = re.match(r"^/v1/deploy/([^/]+)$", path)
+    if m and method == "POST":
+        service = unquote(m.group(1))
+        if service == "dp-echo":
+            digest = hashlib.sha256("\n".join(sent).encode()).hexdigest()[:24]
+            h._send(200, {"deployment_uuid": digest})
+            return True
+        if sent != ["Bearer " + DP_TOKEN, DP_CF_ID, DP_CF_SECRET]:
+            h._send(401, {"error": "unauthorized"})
+            return True
+        if service == "t-edge-302":
+            h.send_response(302)
+            h.send_header("Location", "/dp/v1/deploy/migrator")
+            h.send_header("Content-Length", "0")
+            h.end_headers()
+            return True
+        if service in DP_TRIGGERS:
+            _dp_send(h, *DP_TRIGGERS[service])
+            return True
+        DP_POLLED[_dp_id(service)] = 0
+        h._send(200, {"deployment_uuid": _dp_id(service)})
+        return True
+    m = re.match(r"^/v1/deployments/([^/]+)$", path)
+    if m and method == "GET":
+        if sent != ["Bearer " + DP_TOKEN, DP_CF_ID, DP_CF_SECRET]:
+            h._send(401, {"error": "unauthorized"})
+            return True
+        dep = unquote(m.group(1))
+        seq = DP_POLLS.get(DP_SERVICE_OF.get(dep, ""))
+        if seq is None:
+            h._send(404, {"error": "unknown deployment"})
+            return True
+        n = DP_POLLED.get(dep, 0)
+        DP_POLLED[dep] = n + 1
+        status, payload = seq[min(n, len(seq) - 1)]
+        if status == "sleep":
+            time.sleep(payload)
+            status, payload = 200, {"status": "in_progress"}
+        try:
+            _dp_send(h, status, payload)
+        except OSError:
+            pass  # the client gave up (its deadline); nothing to answer
+        return True
+    h._send(404, {"error": "no route"})
+    return True
+
+
 def _bulk(project):
     """The bulk set a project reads: "__ALL__@<project>" when the corpus gives
     that project one of its own (`coolproj`, the Coolify sync cases), else the
@@ -619,6 +763,8 @@ class H(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def do_GET(self):
+        if _deploy_proxy(self, "GET", self.path):
+            return
         if _coolify(self, "GET", self.path, self._drain()):
             return
         # GET /v1/whoami — principal + gruplar + efektif grant'ler.
@@ -729,6 +875,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._drain()
+        if _deploy_proxy(self, "POST", self.path):
+            return
         if _coolify(self, "POST", self.path, body):
             return
 
@@ -844,8 +992,13 @@ class H(BaseHTTPRequestHandler):
         if status != 200:
             return self._send(status, payload)
         vals = payload.get("values") or {}
+        # `{GATE}` in a stored value is this fake's own root: the store can
+        # hold a DEPLOY_PROXY_EP that points back here (the port is only
+        # known at run time).
         return self._send(200, {"epoch": payload.get("epoch", 0),
-                                "values": {k: vals[k] for k in keys if k in vals}})
+                                "values": {k: (vals[k].replace("{GATE}", GATE_URL)
+                                               if isinstance(vals[k], str) else vals[k])
+                                           for k in keys if k in vals}})
 
     def do_PUT(self):
         # Govde OKUNUYOR ama SAKLANMIYOR — istemci yazimi tamamlayabilsin diye.
@@ -943,5 +1096,6 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
 if __name__ == "__main__":
+    GATE_URL = f"http://127.0.0.1:{sys.argv[1]}"
     SCRIPT.update({k: tuple(v) for k, v in json.loads(sys.argv[2]).items()})
     HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()

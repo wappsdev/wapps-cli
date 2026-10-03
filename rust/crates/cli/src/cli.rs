@@ -719,47 +719,47 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("deploy-app")
                         .about("Create a dockercompose application via Coolify API (and start it)")
-                        .arg(coolify_value("compose-file", "string", "Path to docker-compose.yml"))
-                        .arg(coolify_value("env-from-shell", "strings", "Env var names to pass through (repeatable)"))
-                        .arg(coolify_value("name", "string", "Application name"))
-                        .arg(coolify_value("project-uuid", "string", "Coolify project UUID"))
-                        .arg(coolify_value("server-uuid", "string", "Target server UUID"))
+                        .arg(pflag_value("compose-file", "string", "Path to docker-compose.yml"))
+                        .arg(pflag_value("env-from-shell", "strings", "Env var names to pass through (repeatable)"))
+                        .arg(pflag_value("name", "string", "Application name"))
+                        .arg(pflag_value("project-uuid", "string", "Coolify project UUID"))
+                        .arg(pflag_value("server-uuid", "string", "Target server UUID"))
                         // deployAppCmd has no Args -> ArbitraryArgs.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 )
                 .subcommand(
                     Command::new("deploy-app-git")
                         .about("Create Coolify Application from a private GitHub repo (Coolify builds on the target server)")
-                        .arg(coolify_value("base-dir", "string", "Build context base directory"))
-                        .arg(coolify_value("build-arg", "strings", "Docker build arg KEY=VALUE (repeatable). Stored as is_build_time env var."))
-                        .arg(coolify_value("build-pack", "string", "Build pack: dockerfile, nixpacks, static"))
-                        .arg(coolify_value("dockerfile", "string", "Dockerfile path relative to base-dir"))
-                        .arg(coolify_value("git-branch", "string", "Git branch"))
-                        .arg(coolify_value("git-repo", "string", "GitHub org/repo (e.g. wappsdev/vaulter-api)"))
-                        .arg(coolify_value("github-app-uuid", "string", "Coolify GitHub App source UUID"))
-                        .arg(coolify_bool("instant-deploy", "Trigger initial build immediately on create"))
-                        .arg(coolify_value("name", "string", "Application name"))
-                        .arg(coolify_value("ports", "string", "Exposed ports (comma-separated)"))
-                        .arg(coolify_value("project-uuid", "string", "Coolify project UUID"))
-                        .arg(coolify_value("server-uuid", "string", "Target server UUID"))
-                        .arg(coolify_value("watch-path", "strings", "Path patterns to trigger rebuild (repeatable, e.g. cmd/gateway/**)"))
+                        .arg(pflag_value("base-dir", "string", "Build context base directory"))
+                        .arg(pflag_value("build-arg", "strings", "Docker build arg KEY=VALUE (repeatable). Stored as is_build_time env var."))
+                        .arg(pflag_value("build-pack", "string", "Build pack: dockerfile, nixpacks, static"))
+                        .arg(pflag_value("dockerfile", "string", "Dockerfile path relative to base-dir"))
+                        .arg(pflag_value("git-branch", "string", "Git branch"))
+                        .arg(pflag_value("git-repo", "string", "GitHub org/repo (e.g. wappsdev/vaulter-api)"))
+                        .arg(pflag_value("github-app-uuid", "string", "Coolify GitHub App source UUID"))
+                        .arg(pflag_bool("instant-deploy", "Trigger initial build immediately on create"))
+                        .arg(pflag_value("name", "string", "Application name"))
+                        .arg(pflag_value("ports", "string", "Exposed ports (comma-separated)"))
+                        .arg(pflag_value("project-uuid", "string", "Coolify project UUID"))
+                        .arg(pflag_value("server-uuid", "string", "Target server UUID"))
+                        .arg(pflag_value("watch-path", "strings", "Path patterns to trigger rebuild (repeatable, e.g. cmd/gateway/**)"))
                         // deployAppGitCmd has no Args -> ArbitraryArgs.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 )
                 .subcommand(
                     Command::new("import-app")
                         .about("List Coolify apps on a server → emit Tofu import commands + HCL stubs")
-                        .arg(coolify_value("output-dir", "string", "Where to write imports.sh + apps.tf"))
-                        .arg(coolify_value("server-uuid", "string", "Filter by server UUID (empty = all)"))
+                        .arg(pflag_value("output-dir", "string", "Where to write imports.sh + apps.tf"))
+                        .arg(pflag_value("server-uuid", "string", "Filter by server UUID (empty = all)"))
                         // importAppCmd has no Args -> ArbitraryArgs.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 )
                 .subcommand(
                     Command::new("set-labels")
                         .about("PATCH custom_labels (base64) with optional certresolver=letsencrypt strip")
-                        .arg(coolify_value("app-uuid", "string", "Coolify app UUID"))
-                        .arg(coolify_value("label", "strings", "Label (repeatable, e.g. --label 'traefik.enable=true')"))
-                        .arg(coolify_bool(
+                        .arg(pflag_value("app-uuid", "string", "Coolify app UUID"))
+                        .arg(pflag_value("label", "strings", "Label (repeatable, e.g. --label 'traefik.enable=true')"))
+                        .arg(pflag_bool(
                             "strip-cert-resolver",
                             "Strip certresolver=letsencrypt labels (file-based Origin Cert pattern)",
                         ))
@@ -769,8 +769,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("update-env")
                         .about("Update application env vars (--env KEY=VAL, repeatable)")
-                        .arg(coolify_value("app-uuid", "string", "Coolify app UUID"))
-                        .arg(coolify_value("env", "strings", "KEY=VAL (repeatable)"))
+                        .arg(pflag_value("app-uuid", "string", "Coolify app UUID"))
+                        .arg(pflag_value("env", "strings", "KEY=VAL (repeatable)"))
                         // updateEnvCmd has no Args -> ArbitraryArgs.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 ),
@@ -805,6 +805,7 @@ pub fn build() -> Command {
                 ),
         )
         .subcommand(skill_command())
+        .subcommand(deploy_command())
 }
 
 // skill_command, `wapps skill`: Go's Short/Long texts byte for byte (pinned
@@ -857,6 +858,68 @@ fn skill_command() -> Command {
         )
 }
 
+// deploy_command, `wapps deploy <service>`: Go's Short/Long texts byte for
+// byte (pinned by tests/deployverb.rs against cmd/deploy/deploy.go). The
+// service is a 0..n positional so main can give cobra's ExactArgs(1) sentence;
+// the int and bool flags are parsed by deployverb::parse_flags with pflag's
+// rules and error texts.
+fn deploy_command() -> Command {
+    Command::new("deploy")
+        .about("Deploy a service through the company-deploy-proxy")
+        .long_about(DEPLOY_LONG)
+        .arg(Arg::new("service").num_args(0..).hide(true))
+        .arg(pflag_value(
+            "ep",
+            "string",
+            "Deploy-proxy base URL (default DEPLOY_PROXY_EP or https://deploy-proxy.meapps.dev)",
+        ))
+        .arg(pflag_bool(
+            "json",
+            "Emit one machine-readable JSON line instead of human status (still AI-safe)",
+        ))
+        .arg(pflag_value(
+            "poll-interval",
+            "int",
+            "Seconds between status polls under --wait",
+        ))
+        .arg(pflag_value(
+            "repo",
+            "string",
+            "Logical repo whose scoped token + app subset to use",
+        ))
+        .arg(pflag_value(
+            "timeout",
+            "int",
+            "Seconds to wait with --wait before timing out (must stay < 90m)",
+        ))
+        .arg(pflag_bool(
+            "wait",
+            "Poll until the deployment finishes (or fails/times out)",
+        ))
+}
+
+const DEPLOY_LONG: &str = "Trigger a redeploy of a service via the company-deploy-proxy — the only
+supported path for the root-level vaulter trio (proxy/db-admin/migrator) and
+gateway, whose scoped Coolify tokens intentionally cannot deploy via the direct
+Coolify API.
+
+Credentials (proxy token + Cloudflare Access service-token) resolve env-first,
+then the config-resolved server-decrypt store (backend: store .wapps.yaml;
+values never printed):
+
+  DEPLOY_PROXY_TOKEN_<REPO>             (or DEPLOY_PROXY_TOKEN / PROXY_TOKEN)
+  DEPLOY_PROXY_CF_ACCESS_CLIENT_ID      (or CF_ACCESS_CLIENT_ID)
+  DEPLOY_PROXY_CF_ACCESS_CLIENT_SECRET  (or CF_ACCESS_CLIENT_SECRET)
+  DEPLOY_PROXY_EP                       (default https://deploy-proxy.meapps.dev)
+
+Examples:
+  wapps deploy migrator --repo vaulter --wait
+  wapps deploy gateway  --repo vaulter --wait
+  wapps deploy auth     --json
+
+Exit codes: 0 ok · 1 usage · 2 creds · 3 auth/scope · 4 CF Access · 5 network ·
+6 proxy/upstream · 7 timeout · 8 deploy failed.";
+
 const SKILL_LONG: &str = "Install the \"wapps-secrets\" skill that teaches AI coding agents
 (Claude Code, Cursor, Aider) to handle this repo's secrets with apply-only
 commands — never reading or printing raw values.
@@ -874,10 +937,10 @@ const SKILL_INSTALL_LONG: &str = "Install the wapps-secrets skill.
 User-wide is the default: the skill is available in every repo, but its own
 description only activates it where a .wapps.yaml exists.";
 
-// coolify_bool, a pflag BoolVar: `--x`, `--x=<bool>`, never a spaced value
+// pflag_bool, a pflag BoolVar: `--x`, `--x=<bool>`, never a spaced value
 // (`--x false` leaves `false` as an argument). The value is parsed by
-// ParseBool in coolifyverb::parse_flags.
-fn coolify_bool(name: &'static str, help: &'static str) -> Arg {
+// ParseBool in coolifyverb::parse_flags / deployverb::parse_flags.
+fn pflag_bool(name: &'static str, help: &'static str) -> Arg {
     Arg::new(name)
         .long(name)
         .num_args(0..=1)
@@ -887,9 +950,9 @@ fn coolify_bool(name: &'static str, help: &'static str) -> Arg {
         .help(help)
 }
 
-// coolify_value, a `coolify` value flag as pflag reads it (see `coolify`);
+// pflag_value, a value flag as pflag reads it (see `coolify`; `deploy` too);
 // `value_name` is pflag's type word ("string" / "strings").
-fn coolify_value(name: &'static str, value_name: &'static str, help: &'static str) -> Arg {
+fn pflag_value(name: &'static str, value_name: &'static str, help: &'static str) -> Arg {
     Arg::new(name)
         .long(name)
         .value_name(value_name)

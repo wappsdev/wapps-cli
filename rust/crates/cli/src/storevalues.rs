@@ -1,43 +1,40 @@
-// storevalues, `cmd/secrets/archive_values.go`in portudur — ve BIR VERB DEGIL,
-// bir KUTUPHANE FONKSIYONU.
+// storevalues, the port of `cmd/secrets/archive_values.go` — a LIBRARY
+// FUNCTION, not a verb.
 //
-// Adi tarihi: dosya bir zamanlar age-sifreli bir ARSIVI okuyordu (`ArchiveValues`).
-// P1.7 yeniden-yonlendirmesinde arsiv okuyucusu SILINDI ve kaynak
-// server-decrypt store oldu; ad kaldi. Bugun tek tuketicisi `wapps deploy`in
-// credential fallback'idir: cagiran once env'e bakar, YALNIZCA env'de olmayan
-// anahtarlar icin buraya duser.
+// The name is historical: the file once read an age-encrypted ARCHIVE
+// (`ArchiveValues`). The P1.7 re-point deleted the archive reader and the
+// source became the server-decrypt store; the name stayed. Its one consumer is
+// `wapps deploy`'s credential fallback (main.rs `run_deploy`): the caller looks
+// at the env first and falls back here only for keys the env lacks.
 //
-// BU DILIMDE HICBIR VERB BURAYA ULASMIYOR (`wapps deploy` portlanmadi), yani
-// differential'da OLCULEMEZ. Sozlesmesi bu yuzden Go'nun kendi testleriyle
-// (cmd/secrets/archive_values_test.go) BIREBIR ayni sekilde, tests/storevalues.rs'te
-// pinleniyor. Olculemeyen bir sey, hakkinda hicbir sey yazilmayan bir seyden
-// iyidir — ama ikisi de differential'da yesil gorunur, o yuzden fark BURADA
-// yaziliyor.
+// Measured both ways: the contract is pinned against Go's own tests
+// (cmd/secrets/archive_values_test.go) in tests/storevalues.rs, and the deploy
+// cases of the pty differential walk it end to end (the pin advances through
+// the key listing; an empty intersection reads nothing).
 //
-// UC SOZLESME, ve ucu de bir GUVENLIK ozelligi:
+// THREE CONTRACTS, all three a security property:
 //
-//  1. BEST-EFFORT ERISILEBILIRLIK: `.wapps.yaml` yoksa `Ok(None)` doner —
-//     HATA DEGIL. Cagiran (deploy) o zaman env'e duser. Burada hata dondurmek,
-//     store kullanmayan her projede deploy'u kirardi.
-//  2. AD DUZLEMI KESISIMI ONCE: bulk read `all-or-nothing`tur, yani var
-//     OLMAYAN tek bir aday adi TUM okumayi NOT_FOUND ile dusururdu. Once
-//     degersiz `Keys` cagrilir (audit'e `value.read` DUSMEZ) ve yalnizca
-//     MEVCUT adlar okunur — blast-radius minimum.
-//  3. BOS KESISIM → OKUMA YOK: hicbir aday yoksa gate'e HIC gidilmez, yani
-//     audit ledger'ina bir okuma satiri DUSMEZ. "Hicbir sey istemek" bir okuma
-//     SAYILMAZ, ve rotate-plan bu ledger'i oracle olarak kullandigi icin bu
-//     gercek bir fark.
+//  1. BEST-EFFORT REACHABILITY: no `.wapps.yaml` returns `Ok(None)` — NOT an
+//     error. The caller (deploy) then falls back to the env. An error here
+//     would break deploy in every project that does not use the store.
+//  2. NAME-PLANE INTERSECTION FIRST: a bulk read is all-or-nothing, so a single
+//     candidate name that does NOT exist would fail the whole read with
+//     NOT_FOUND. The value-free `Keys` is called first (no `value.read` audit
+//     row) and only the names that EXIST are read — minimum blast radius.
+//  3. EMPTY INTERSECTION, NO READ: when no candidate exists the gate is never
+//     asked for values, so no read row lands in the audit ledger. "Asking for
+//     nothing" is not a read, and rotate-plan uses that ledger as its oracle.
 //
-// AI-safe: degerler yalnizca CAGIRANA doner; bu modul hicbir yere yazmaz.
+// AI-safe: values go back to the CALLER only; this module writes nowhere.
 use crate::clierr::Error;
 use std::collections::BTreeMap;
 
-/// wanted_subset, istenen aday adlardan store'da MEVCUT olanlari, ISTENEN
-/// SIRAYLA ve TEKRARSIZ doner.
+/// wanted_subset, the requested candidate names that EXIST in the store, in
+/// the REQUESTED order and without duplicates.
 ///
-/// Tekrarsizlik Go'daki `present[k] = false` hilesinin karsiligi: ayni aday iki
-/// kez gecerse bulk istege iki kez girmez. Sira KORUNUYOR (sıralanmıyor),
-/// cunku Go da korumuyor.
+/// No duplicates is Go's `present[k] = false` trick: a candidate listed twice
+/// does not enter the bulk request twice. The order is KEPT (not sorted),
+/// because Go keeps it too.
 pub fn wanted_subset(present: &[String], keys: &[String]) -> Vec<String> {
     let mut avail: std::collections::BTreeSet<&str> = present.iter().map(String::as_str).collect();
     let mut want = Vec::with_capacity(keys.len());
@@ -49,34 +46,35 @@ pub fn wanted_subset(present: &[String], keys: &[String]) -> Vec<String> {
     want
 }
 
-/// KeysFn, AD DUZLEMI okuyucusudur (degersiz; audit'e `value.read` DUSMEZ).
+/// KeysFn, the NAME-plane reader (value-free; no `value.read` audit row).
 ///
-/// `+ 'a`: cagiran odunc alan bir kapanis verebilsin diye. Varsayilan
-/// `'static` olsaydi test sahtesi (yigindaki bir struct'i oduncleyen kapanis)
-/// derlenmezdi ve seam KULLANILAMAZ olurdu.
+/// `+ 'a` so the caller can pass a borrowing closure. With the default
+/// `'static` the test fake (a closure borrowing a struct on the stack) would
+/// not compile and the seam would be unusable.
 pub type KeysFn<'a> = dyn Fn(&str) -> Result<Vec<String>, Error> + 'a;
 
-/// ReadFn, DEGER duzlemi okuyucusudur (bulk, all-or-nothing).
+/// ReadFn, the VALUE-plane reader (bulk, all-or-nothing).
 pub type ReadFn<'a> = dyn Fn(&str, &[String]) -> Result<BTreeMap<String, String>, Error> + 'a;
 
-/// store_values, `backend: store` bir `.wapps.yaml` varsa istenen anahtarlarin
-/// DEGERLERINI store'dan ceker.
+/// store_values, the VALUES of the requested keys from the store when a
+/// `.wapps.yaml` names a project (`project`). Go does not check `backend:`
+/// here: any loadable config is read.
 ///
-/// `keys_of` ve `read_of` ENJEKTE EDILIYOR — Go'daki `openStore` test seam'inin
-/// karsiligi. Uretim cagiricisi gercek `store::keys`/`store::read`i verir;
-/// test, aga cikmadan ayni akisi gezer.
+/// `keys_of` and `read_of` are INJECTED — the counterpart of Go's `openStore`
+/// test seam. The production caller passes the real `store::keys`/`store::read`;
+/// a test walks the same flow without a network.
 ///
-/// Donusler:
-///   - `Ok(None)`      → config YOK; cagiran env'e duser (HATA DEGIL)
-///   - `Ok(Some(map))` → cozulen degerler (bos harita da olabilir)
-///   - `Err(e)`        → GERCEK bir okuma hatasi (oturum, ag, grant reddi)
+/// Returns:
+///   - `Ok(None)`      → NO config; the caller falls back to the env (NOT an error)
+///   - `Ok(Some(map))` → the resolved values (possibly an empty map)
+///   - `Err(e)`        → a REAL read failure (session, network, grant denied)
 pub fn store_values(
     project: Option<&str>,
     keys: &[String],
     keys_of: &KeysFn<'_>,
     read_of: &ReadFn<'_>,
 ) -> Result<Option<BTreeMap<String, String>>, Error> {
-    // Config yok → (None). Cagiran env-only cozumlemeye HATASIZ duser.
+    // No config → (None). The caller falls back to env-only resolution.
     let Some(project) = project else {
         return Ok(None);
     };
@@ -84,8 +82,8 @@ pub fn store_values(
     let present = keys_of(project)?;
     let want = wanted_subset(&present, keys);
     if want.is_empty() {
-        // GATE'E HIC GIDILMIYOR: bos bir kesisim icin bir okuma satiri
-        // yazdirmak, audit ledger'ina olmamis bir okumayi kaydetmek olurdu.
+        // The gate is NEVER asked: a read row for an empty intersection would
+        // record a read that never happened in the audit ledger.
         return Ok(Some(BTreeMap::new()));
     }
     Ok(Some(read_of(project, &want)?))

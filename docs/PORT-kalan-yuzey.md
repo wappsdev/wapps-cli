@@ -858,7 +858,7 @@ nothing else).
 
 ---
 
-### Dilim 7 — `deploy`
+### Dilim 7 — `deploy` · **LANDED**
 
 | | |
 |---|---|
@@ -868,6 +868,75 @@ nothing else).
 | **mimari tuzak** | `deploy`ın KENDİ çıkış kodu sözleşmesi var: **0..8** (`ExitOK`…`ExitFailed`). Rust `main.rs` bugün hata yolunda **daima 1** ile çıkıyor; `execverb`in `ExitAction::Exit(code)` yolu yalnızca çocuk sürecin kodunu yansıtmak için var. Bu dilim main.rs'in hata yolunu fiil-başına-kod taşıyacak şekilde açmayı gerektiriyor — ve o değişiklik ZATEN portlanmış 30 yolun hepsini etkiler |
 | differential vakası | **20–26** (dokuz çıkış kodunun her biri ayrı bir dal; `--wait` yoklaması sahte sunucuda) |
 | kapı | `cargo test` yeşil **+ mevcut 435 vaka bozulmamış** (çıkış kodu yolu değiştiği için bu bir regresyon riski) |
+
+**What landed (measured).** Two commits on the lane, in the order the trap
+asks for: the exit-code path alone first, deploy on top.
+
+| | |
+|---|---|
+| commit 1: the exit-code path | `CmdError::Exit(u8)` in `cli.rs`: an error the verb has ALREADY written, carrying its own code; `report_error` prints nothing for it and `main` exits with `exit_code()` (1 for every other error, as before). The exec family's mirrored child code (`secrets exec`, `tofu`, `dr bootstrap`) now leaves through it instead of `std::process::exit`. No deploy code in the commit. Regression gate on the untouched corpus: `EQUAL=821 DIFFERENT=0 UNSOUND=0` (349 s); the corpus already has three nonzero child codes (`exec … exit 42`, the `tofu` shim's 3, `dr bootstrap … exit 7`), so the new path was walked by existing cases, not only declared. New test `tests/exitcode.rs` (3), red before the variant existed |
+| verb | `deploy <service>` with `--repo --wait --timeout --poll-interval --ep --json`. No agent guard and no binding gate, as in Go; agent mode changes only the ROOT's errors (flag value, arity, exclusion), never the verb's own lines |
+| new module | `deployverb.rs` (the proxy client, the HTTP classification, credential resolution, the --wait loop, the JSON line, pflag-style flag parsing). The two regexes are byte-class checks by hand |
+| extended | `main.rs` (flag values and `ExactArgs(1)` before the root's exclusion, `run_deploy` wiring `Ctx` + `storevalues::store_values` + `store::keys`/`read`), `cli.rs` (the node, Go's Short/Long byte for byte; `coolify_bool`/`coolify_value` renamed `pflag_bool`/`pflag_value` now that they have a second caller), `coolifyverb.rs` (five flag helpers made `pub(crate)` for reuse), `storevalues.rs` (its first production caller; comments translated, the stale "no verb reaches here" header replaced) |
+| new crate | **NONE** — the estimate held (`ureq` with `redirects(0)`, `gojson::decode_struct`/`decode_raw_object` for Go's decoding rules) |
+| differential cases | **76** (priced 20–26). Four identity arms × two modes (8, plus one: an unregistered `--project` does not replace the cwd config); exit 1: 15 (unknown repo, bad/too long/HTML-escaped service, repo checked first, arity 0 and 2, a spaced bool is an argument, bad int and bool values, leftmost bad value, value and arity before the exclusion, the exclusion); exit 2: 10 (none, missing id, missing secret, repo-named key, store unreadable / denied / epoch downgrade / config unloadable as a `note:` line, a store without candidates); exit 0 resolution: 9 (env beats store per value, the store read even when env suffices, an unreadable store when env suffices, store legacy names, env legacy names, `DEPLOY_PROXY_EP`, `--ep` beats env and keeps its slash, JSON, another repo); exit 3: 3; exit 4: 3 (403 HTML, 302 not followed, 503); exit 5: 2; exit 6: 12 (400, 404 naming the SERVICE, 404 not JSON, 502, 500 with JSON, 201, an `Error` key in another case, empty / invalid / too long / non-JSON / non-string id); --wait: finished ×2, `unknown` keeps polling, timeout ×2, a deadline cutting a request in flight, failed / cancelled / error with default timings, 404 / 403 naming the DEPLOYMENT ID / edge block mid-poll ×2 |
+| harness | `fakegate.py` serves a fake deploy proxy under `/dp` (`--ep {GATE}/dp`): every request must carry `User-Agent: wapps-cli` and the three test credentials, else the proxy's 401; service `dp-echo` answers a deployment id that is a digest of the three header values (which source and which fallback name won, with no value printed); the service picks the trigger answer, the id picks a poll sequence (reset on every trigger, so twins see the same one; `w-slow` answers after 3 s). The bulk read substitutes `{GATE}` in stored values (a `DEPLOY_PROXY_EP` in the store points back at the fake). `probe.py` normalizes the fake's root URL in stdout/stderr back to `{GATE}`: deploy prints the endpoint it resolved, and the port differs per binary. Before this no EQUAL case could contain that string, so no existing comparison loosened (the 821 stayed EQUAL with it) |
+| new tests | `tests/deployverb.rs` (13): both patterns with their boundaries, the status table, the HTTP classification table (21 rows), `parseField`, the known-repo list, the store candidates in Go's order, the env-before-store tiers, the endpoint order, the first missing credential, Go's JSON line, the help texts read out of `cmd/deploy/deploy.go` |
+| gate | `cargo test --release` (differential `EQUAL=897 DIFFERENT=0 UNSOUND=0` = 821 + 76; the floor in `differential.rs` raised from 821 to 897), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `cargo deny check`, `go build ./...`, `go test ./...` (no Go file changed) |
+| red before green | 75 of the cases written first: 75 DIFFERENT against the exit-code commit's binary (no `deploy` subcommand), 75 EQUAL after the port on the first run. The 76th (`agent_deploy_store_read_even_when_env_suffices`) was added after mutation (c) below had no case to catch it; all 76 are DIFFERENT against the pre-deploy binary |
+| mutation proofs | each against the deploy subset, the file restored and compared byte for byte with its backup: (a) redirects followed → 1 red (`…edge_302_not_followed`); (b) 302 not an edge block → 1; (c) no store read when the env has everything → 1 (the case added for it); (d) progress lines under `--json` → 3; (e) a request cut by the deadline reported as network → 1; (f) no `unknown` default → 1; (g) the status subject is not the deployment id → 2; (h) the endpoint's trailing slash not trimmed → 1; (i) failure messages on stdout → 34; (j) the store's legacy names ignored → 1; (k) a verb-owned code collapsed to 1 → 40; (l) the exclusion checked before the arity → 1. Unit: env and store tiers interleaved per key → `every_env_tier_beats_every_store_tier` red. The first run of (l) was contaminated and rerun: the runner restored files with `shutil.copy2`, which also restores the OLD mtime, so cargo kept the previous mutation (k) compiled in; it now restores with a fresh mtime |
+
+**Findings.**
+
+1. *deploy exits from inside RunE.* Go calls `os.Exit(runDeploy(...))`, so
+   the root's post-command hooks — the update notice and the skill
+   auto-refresh — never run after deploy, whatever its outcome. Slice 10 must
+   keep them off for this verb.
+2. *The store is read whenever a `.wapps.yaml` loads,* even when the env
+   supplies every credential: the epoch pin advances, and a store failure is
+   silent unless a credential is missing (then it is the `note:` line). Go's
+   `StoreValues` does not check `backend:` and there is no binding gate.
+3. *An unregistered `--project` is inert:* `StoreValues` reads the cwd (or
+   `--config`) file, never the project name the flag carries.
+4. *The 404 and 403 subjects swap meaning between routes.* A trigger 404 says
+   `deployment "<service>" not known`; a status 403 says `"<deployment id>" not
+   in scope for repo …`. Both ported as they are.
+5. *Any non-200 is classified, 2xx included:* a 201 with a valid id is
+   `unexpected proxy response (HTTP 201)`, exit 6.
+6. *The `error` key is matched case-insensitively* (Go struct decoding), so a
+   proxy body `{"Error": "…"}` is proxy JSON; `{"error": ""}` and
+   `{"error": 5}` are not.
+7. *`--timeout`/`--poll-interval` are base-0 ints:* `0x0` is zero, and a
+   non-positive value takes the default (1200 s / 15 s).
+8. *The endpoint is printed as given* (`…/dp/` keeps its slash) and trimmed
+   only in the request path.
+
+**Known divergences, not in the corpus.**
+
+1. *The deadline racing the next poll.* Go `select`s between the context and
+   the interval timer; when both expire together either can win. The port
+   decides deterministically (a deadline inside the next interval is a
+   timeout). No case puts the two within a millisecond of each other.
+2. *A `--timeout` past `math.MaxInt64` nanoseconds* (≈292 years): Go's
+   `Duration` multiplication wraps; the port waits ~136 years. Not measured.
+3. *Proxies:* Go honours `HTTP(S)_PROXY`/`NO_PROXY`; the ureq agent uses none
+   (same as the gate and Coolify clients).
+4. *Invalid UTF-8 or a lone surrogate in a proxy answer:* Go's decoder
+   replaces it, serde_json refuses it (the field reads as empty).
+
+**What the pricing got wrong.** 20–26 cases was low by a factor of three: 76
+landed. The nine exit codes are nine CODES, not nine branches — exit 6 alone
+is twelve distinct answers, exit 2 is a credential matrix (three values × two
+tiers × fallback names) multiplied by the four identity arms, and the --wait
+loop has its own success, timeout and fail-closed branches. The exit-code
+path itself cost one variant and no regression, as the corpus proved; the
+real cost was again the harness (a fake proxy with poll state, and the
+printed endpoint's port).
+
+**Not measured.** The default endpoint (no case may reach the real proxy). A
+transport timeout of the 45 s request budget. HTTP 1xx answers. A body over
+1 MiB. `--json=false` / `--wait=false` (pflag and `pflag_bool` both accept them by construction; no case). The help
+layout (`wapps deploy --help`, slice 9).
 
 ---
 
@@ -979,7 +1048,7 @@ other verbs (slice 10).
 | 4 | `token exchange` · İNDİ | 70 | yok | 40 (gerçek) |
 | 5 | `secrets sync` (no `--target` arm) · LANDED | 582 (≈480 live, see slice 5) | none | 28 (actual) |
 | 6 | `coolify` + sync/coolify · LANDED (6a `update-env` + `set-labels`, 6b the rest) | 1438 | none | 209 (actual: 6a 66 + 6b 143) |
-| 7 | `deploy` | 582 | yok | 20–26 |
+| 7 | `deploy` · LANDED | 582 | none | 76 (actual) |
 | 8 | `skill` · LANDED | 539 (AutoRefresh is slice 10) | none | 43 (actual) |
 | 9 | yardım düzeni | (cobra) | **KARAR** §4.2 | ~6 + 50 snapshot |
 | 10 | updatecheck + auto-refresh | 256+ | ölçülmedi | yeni korpus alt kümesi |

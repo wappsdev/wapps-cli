@@ -239,6 +239,15 @@ def main():
 
             out, err, code = run([binary] + argv, env, cwd=casedir,
                                  stdin_data=stdin_data)
+            # The fake gate's root printed in full is normalized back to
+            # `{GATE}`: its port differs per binary. `wapps deploy` prints the
+            # endpoint it resolved ("Deploying ... via <ep>"), and the PATH
+            # after the root is what tells the sources apart (--ep, env,
+            # store). Only this exact string is rewritten; before this no case
+            # could print it and stay EQUAL, so no existing comparison loosens.
+            gate_root = f"http://127.0.0.1:{port}".encode()
+            out = out.replace(gate_root, b"{GATE}")
+            err = err.replace(gate_root, b"{GATE}")
             # Pin dosyasinin SON hali de sozlesmenin parcasi: reddedilen bir
             # okumanin pin'i geri sarmadigi ancak boyle gorunur.
             pin = open(pinpath, "rb").read().hex() if os.path.exists(pinpath) else None

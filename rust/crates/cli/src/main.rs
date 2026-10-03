@@ -1,4 +1,5 @@
 // wapps ikilisinin giris noktasi. Adim 6 dilimi: `secrets get`.
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::ExitCode;
 use wapps::agentmode;
@@ -10,6 +11,7 @@ use wapps::configctx::{self, Ctx};
 use wapps::confirm;
 use wapps::coolifysync;
 use wapps::coolifyverb;
+use wapps::deployverb;
 use wapps::doctorverb;
 use wapps::drverb;
 use wapps::envverb;
@@ -32,6 +34,7 @@ use wapps::setverb;
 use wapps::skill;
 use wapps::statusverb;
 use wapps::store;
+use wapps::storevalues;
 use wapps::syncverb;
 use wapps::trustrepo;
 
@@ -151,6 +154,28 @@ fn run() -> Result<(), CmdError> {
                 .transpose()?,
             None => None,
         },
+        _ => None,
+    };
+
+    // `deploy`: pflag's value errors, then cobra's ExactArgs(1). Both run
+    // before the root's PersistentPreRunE, so before the mutual exclusion
+    // below; the corpus pins both orders.
+    let deploy_opts = match matches.subcommand() {
+        Some(("deploy", dm)) => {
+            let mut opts = deployverb::parse_flags(dm).map_err(CmdError::Plain)?;
+            let args: Vec<String> = dm
+                .get_many::<String>("service")
+                .map(|v| v.cloned().collect())
+                .unwrap_or_default();
+            let [service] = args.as_slice() else {
+                return Err(CmdError::Plain(format!(
+                    "accepts 1 arg(s), received {}",
+                    args.len()
+                )));
+            };
+            opts.service = service.clone();
+            Some(opts)
+        }
         _ => None,
     };
 
@@ -486,6 +511,10 @@ fn run() -> Result<(), CmdError> {
                     .print_help();
                 std::process::exit(0);
             }
+        },
+        Some(("deploy", _)) => match deploy_opts {
+            Some(opts) => run_deploy(config, project, &opts),
+            None => Ok(()),
         },
         Some(("coolify", _)) => match coolify_leaf {
             Some(leaf) => coolifyverb::run(leaf, &mut std::io::stdout()).map_err(CmdError::Plain),
@@ -2530,6 +2559,56 @@ fn service_creds_present() -> bool {
     let id = std::env::var("CF_ACCESS_CLIENT_ID").unwrap_or_default();
     let secret = std::env::var("CF_ACCESS_CLIENT_SECRET").unwrap_or_default();
     !id.trim().is_empty() && !secret.trim().is_empty()
+}
+
+// run_deploy, `wapps deploy <service>`. No agent guard and no binding gate,
+// as in Go: the verb is for operators, CI and agents alike. The identity flags
+// only decide which `.wapps.yaml` the credential fallback reads — exactly
+// Go's StoreValues: `--config`, a registered `--project`, else ./.wapps.yaml
+// (an unregistered `--project` is inert). The verb writes every line itself
+// and owns its exit code (0..8), which leaves through CmdError::Exit.
+fn run_deploy(
+    config: Option<String>,
+    project: Option<String>,
+    opts: &deployverb::Options,
+) -> Result<(), CmdError> {
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    let store = |keys: &[String]| -> (BTreeMap<String, String>, Option<String>) {
+        // A config that fails to load is reported with config.Load's own text.
+        let cfg = match ctx.load_or_none() {
+            Ok(Some(cfg)) => cfg,
+            Ok(None) => return (BTreeMap::new(), None),
+            Err(e) => return (BTreeMap::new(), Some(e.message)),
+        };
+        let read = storevalues::store_values(
+            Some(&cfg.project),
+            keys,
+            &|p| {
+                Ok(store::keys(p)?
+                    .keys
+                    .into_iter()
+                    .map(|k| k.key_name)
+                    .collect())
+            },
+            &|p, want| Ok(store::read(p, want)?.values),
+        );
+        match read {
+            Ok(values) => (values.unwrap_or_default(), None),
+            Err(e) => (BTreeMap::new(), Some(e.to_string())),
+        }
+    };
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let code = deployverb::run(
+        opts,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+        &env,
+        &store,
+    );
+    match code {
+        deployverb::EXIT_OK => Ok(()),
+        code => Err(CmdError::Exit(code)),
+    }
 }
 
 // --- `wapps skill` ---------------------------------------------------------------

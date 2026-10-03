@@ -118,7 +118,7 @@ pub fn strip_cert_resolver(labels: &[String], strip: bool) -> Vec<String> {
 }
 
 // valued, every value of a repeatable arg with its command-line index.
-fn valued(m: &clap::ArgMatches, id: &str) -> Vec<(usize, String)> {
+pub(crate) fn valued(m: &clap::ArgMatches, id: &str) -> Vec<(usize, String)> {
     match (m.get_many::<String>(id), m.indices_of(id)) {
         (Some(vals), Some(idx)) => idx.zip(vals.cloned()).collect(),
         _ => Vec::new(),
@@ -126,7 +126,7 @@ fn valued(m: &clap::ArgMatches, id: &str) -> Vec<(usize, String)> {
 }
 
 // first_error, the error of the value pflag would hit first (leftmost).
-fn first_error(errs: impl IntoIterator<Item = (usize, String)>) -> Result<(), String> {
+pub(crate) fn first_error(errs: impl IntoIterator<Item = (usize, String)>) -> Result<(), String> {
     match errs.into_iter().min_by_key(|(i, _)| *i) {
         Some((_, e)) => Err(e),
         None => Ok(()),
@@ -143,7 +143,7 @@ fn slice_errors(m: &clap::ArgMatches, id: &str) -> Vec<(usize, String)> {
 }
 
 // bool_errors, the ParseBool error of each occurrence of a bool flag.
-fn bool_errors(m: &clap::ArgMatches, id: &str) -> Vec<(usize, String)> {
+pub(crate) fn bool_errors(m: &clap::ArgMatches, id: &str) -> Vec<(usize, String)> {
     valued(m, id)
         .into_iter()
         .filter_map(|(i, v)| {
@@ -155,7 +155,7 @@ fn bool_errors(m: &clap::ArgMatches, id: &str) -> Vec<(usize, String)> {
 }
 
 // bool_value, a pflag BoolVar: its default, or the last occurrence.
-fn bool_value(m: &clap::ArgMatches, id: &str, default: bool) -> Result<bool, String> {
+pub(crate) fn bool_value(m: &clap::ArgMatches, id: &str, default: bool) -> Result<bool, String> {
     match valued(m, id).pop() {
         Some((_, v)) => parse_bool(&v),
         None => Ok(default),
@@ -163,7 +163,7 @@ fn bool_value(m: &clap::ArgMatches, id: &str, default: bool) -> Result<bool, Str
 }
 
 // last, a pflag StringVar: the last occurrence, None when not given.
-fn last(m: &clap::ArgMatches, id: &str) -> Option<String> {
+pub(crate) fn last(m: &clap::ArgMatches, id: &str) -> Option<String> {
     valued(m, id).pop().map(|(_, v)| v)
 }
 
