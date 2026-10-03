@@ -1,11 +1,11 @@
 pub mod agentmode;
-pub mod atomicfile;
 pub mod applyverb;
+pub mod atomicfile;
 pub mod binding;
-pub mod clierr;
-pub mod confirm;
 pub mod cli;
+pub mod clierr;
 pub mod configctx;
+pub mod confirm;
 pub mod cryptoid;
 pub mod doctorverb;
 pub mod drverb;

@@ -49,8 +49,10 @@ pub fn render_json(r: &StatusReport) -> String {
     match gojson::to_string(r) {
         Ok(s) => format!("{s}\n"),
         // status ASLA hard-fail etmez; kodlama coksa bile bir sema basilir.
-        Err(_) => "{\"online\":false,\"session_valid\":false,\"session_expires_in\":0,\"epoch_pin\":0}\n"
-            .to_string(),
+        Err(_) => {
+            "{\"online\":false,\"session_valid\":false,\"session_expires_in\":0,\"epoch_pin\":0}\n"
+                .to_string()
+        }
     }
 }
 
@@ -73,8 +75,12 @@ pub fn read_epoch_pin(path: &Path, project: &str) -> u64 {
     if project.is_empty() {
         return 0;
     }
-    let Ok(raw) = std::fs::read(path) else { return 0 };
-    let Ok(w) = serde_json::from_slice::<PinsWire>(&raw) else { return 0 };
+    let Ok(raw) = std::fs::read(path) else {
+        return 0;
+    };
+    let Ok(w) = serde_json::from_slice::<PinsWire>(&raw) else {
+        return 0;
+    };
     w.pins.get(project).copied().unwrap_or(0)
 }
 
@@ -106,10 +112,15 @@ pub fn read_session_from(
             let exp = env("WAPPS_SESSION_EXPIRES")
                 .and_then(|e| e.parse::<i64>().ok())
                 .unwrap_or(0);
-            SessionWire { token: "present".to_string(), expires_at: exp }
+            SessionWire {
+                token: "present".to_string(),
+                expires_at: exp,
+            }
         }
         None => {
-            let Ok(raw) = std::fs::read(session_path) else { return (false, 0) };
+            let Ok(raw) = std::fs::read(session_path) else {
+                return (false, 0);
+            };
             match serde_json::from_slice::<SessionWire>(&raw) {
                 Ok(s) if !s.token.is_empty() => s,
                 _ => return (false, 0),

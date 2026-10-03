@@ -63,7 +63,9 @@ pub struct GoEscapePretty<'a> {
 
 impl Default for GoEscapePretty<'_> {
     fn default() -> Self {
-        GoEscapePretty { inner: serde_json::ser::PrettyFormatter::with_indent(b"  ") }
+        GoEscapePretty {
+            inner: serde_json::ser::PrettyFormatter::with_indent(b"  "),
+        }
     }
 }
 
@@ -204,13 +206,20 @@ pub fn decode_struct(raw: &[u8], st: &GoStruct<'_>) -> Result<Vec<Option<GoValue
         "null" => return Ok(slots),
         "object" => {}
         other => {
-            return Err(format!("json: cannot unmarshal {other} into Go value of type {}", st.go_type))
+            return Err(format!(
+                "json: cannot unmarshal {other} into Go value of type {}",
+                st.go_type
+            ))
         }
     }
     let entries: Entries = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let mut first_err: Option<String> = None;
     for (key, value) in entries.0 {
-        let Some(i) = st.fields.iter().position(|(n, _)| n.eq_ignore_ascii_case(&key)) else {
+        let Some(i) = st
+            .fields
+            .iter()
+            .position(|(n, _)| n.eq_ignore_ascii_case(&key))
+        else {
             continue;
         };
         let (name, ty) = st.fields[i];
@@ -263,11 +272,22 @@ fn kind_of(raw: &str) -> &'static str {
 // go_syntax_error, Go's sentence for the two syntax errors it is translated
 // for; serde's own sentence otherwise (see the section comment).
 fn go_syntax_error(raw: &[u8], e: &serde_json::Error) -> String {
-    let first = raw.iter().copied().find(|c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r'));
+    let first = raw
+        .iter()
+        .copied()
+        .find(|c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r'));
     match first {
         None => "unexpected end of JSON input".to_string(),
-        Some(c) if !matches!(c, b'{' | b'[' | b'"' | b'-' | b'0'..=b'9' | b't' | b'f' | b'n') => {
-            format!("invalid character {} looking for beginning of value", go_quote_char(c))
+        Some(c)
+            if !matches!(
+                c,
+                b'{' | b'[' | b'"' | b'-' | b'0'..=b'9' | b't' | b'f' | b'n'
+            ) =>
+        {
+            format!(
+                "invalid character {} looking for beginning of value",
+                go_quote_char(c)
+            )
         }
         _ => e.to_string(),
     }
@@ -303,7 +323,10 @@ impl<'de> serde::Deserialize<'de> for Entries {
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a JSON object")
             }
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Entries, A::Error> {
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut m: A,
+            ) -> Result<Entries, A::Error> {
                 let mut out = Vec::new();
                 while let Some(e) = m.next_entry::<String, Box<serde_json::value::RawValue>>()? {
                     out.push(e);

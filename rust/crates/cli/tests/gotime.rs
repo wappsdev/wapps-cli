@@ -68,12 +68,24 @@ fn duration_strings_match_go_below_and_above_one_second() {
 // Round saturates instead of wrapping: both extremes keep their fraction.
 #[test]
 fn rounding_to_a_second_saturates_at_both_ends() {
-    assert_eq!(duration_string(round_second(i64::MAX)), "2562047h47m16.854775807s");
-    assert_eq!(duration_string(round_second(i64::MIN)), "-2562047h47m16.854775808s");
-    assert_eq!(duration_string(round_second(-9_223_372_036_000_000_000)), "-2562047h47m16s");
+    assert_eq!(
+        duration_string(round_second(i64::MAX)),
+        "2562047h47m16.854775807s"
+    );
+    assert_eq!(
+        duration_string(round_second(i64::MIN)),
+        "-2562047h47m16.854775808s"
+    );
+    assert_eq!(
+        duration_string(round_second(-9_223_372_036_000_000_000)),
+        "-2562047h47m16s"
+    );
     // 9223372037 * Second wraps negative in Go; Round then saturates low.
     let wrapped = 9_223_372_037i64.wrapping_mul(1_000_000_000);
-    assert_eq!(duration_string(round_second(wrapped)), "-2562047h47m16.854775808s");
+    assert_eq!(
+        duration_string(round_second(wrapped)),
+        "-2562047h47m16.854775808s"
+    );
     assert_eq!(round_second(1_499_999_999), 1_000_000_000);
     assert_eq!(round_second(1_500_000_000), 2_000_000_000);
     assert_eq!(round_second(-1_500_000_000), -2_000_000_000);

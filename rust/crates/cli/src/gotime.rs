@@ -113,7 +113,11 @@ fn frac_part(v: u64, prec: u32) -> (String, u64) {
     while digits.ends_with('0') {
         digits.pop();
     }
-    let frac = if digits.is_empty() { String::new() } else { format!(".{digits}") };
+    let frac = if digits.is_empty() {
+        String::new()
+    } else {
+        format!(".{digits}")
+    };
     (frac, v / pow)
 }
 
@@ -149,6 +153,7 @@ pub fn round_second(d: i64) -> i64 {
 /// fit an int64 (Time.Sub). A far-future expiry therefore prints as
 /// 2562047h47m16.854775807s, not as a wrapped negative number.
 pub fn until_unix(exp: i64, now_sec: i64, now_nsec: i64) -> i64 {
-    let d = (exp as i128) * (NANOS_PER_SEC as i128) - (now_sec as i128 * NANOS_PER_SEC as i128 + now_nsec as i128);
+    let d = (exp as i128) * (NANOS_PER_SEC as i128)
+        - (now_sec as i128 * NANOS_PER_SEC as i128 + now_nsec as i128);
     d.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }

@@ -694,7 +694,11 @@ pub fn short_project_token(args: &[String]) -> Option<String> {
         if let Some(long) = a.strip_prefix("--") {
             // `--config x` / `--project x` bir sonraki jetonu YUTAR;
             // `--config=x` yutmaz.
-            i += if long == "config" || long == "project" { 2 } else { 1 };
+            i += if long == "config" || long == "project" {
+                2
+            } else {
+                1
+            };
             continue;
         }
         if a.starts_with("-p") {
@@ -732,7 +736,12 @@ pub fn clap_error_to_cmd_error(e: &clap::Error) -> CmdError {
             CmdError::Plain(e.kind().as_str().unwrap_or("invalid command").to_string())
         }
         _ => CmdError::Plain(
-            e.to_string().lines().next().unwrap_or("invalid command").trim_start_matches("error: ").to_string(),
+            e.to_string()
+                .lines()
+                .next()
+                .unwrap_or("invalid command")
+                .trim_start_matches("error: ")
+                .to_string(),
         ),
     }
 }

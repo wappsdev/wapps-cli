@@ -18,10 +18,10 @@ use wapps::gojson::quote as go_quote;
 use wapps::gostrconv;
 use wapps::gotime;
 use wapps::importenv;
+use wapps::initverb;
 use wapps::loginverb;
 use wapps::policy;
 use wapps::policyverb;
-use wapps::initverb;
 use wapps::projectsverb;
 use wapps::rmverb;
 use wapps::rotateplan;
@@ -75,8 +75,11 @@ fn main() -> ExitCode {
 // `token exchange` bu listeye `dr`in iki yapragiyla AYNI olcumle girdi:
 // `wapps token exchange --help` "Global Flags" altinda `-p` GOSTERMIYOR,
 // yalnizca `-c` ve `-v`.
-const LOCAL_PROJECT_LEAVES: &[(&str, &str)] =
-    &[("dr", "restore"), ("dr", "accept-epoch-reset"), ("token", "exchange")];
+const LOCAL_PROJECT_LEAVES: &[(&str, &str)] = &[
+    ("dr", "restore"),
+    ("dr", "accept-epoch-reset"),
+    ("token", "exchange"),
+];
 
 // shadows_root_project, cagrilan yaprak kokun `--project`ini golgeliyor mu.
 // Kisa bicimin karsiligi cli::short_project_token (orada, cunku PUR).
@@ -93,7 +96,9 @@ fn shadows_root_project(matches: &clap::ArgMatches) -> bool {
 // komut satirinda SONRAKIDIR. cobra tek bir degiskene yazdigi icin orada da
 // sonuncu kazanir — yani bu `or` Go'nun "son yazan kazanir"inin AYNISI.
 fn shadowed_project(leaf: &clap::ArgMatches, root: &Option<String>) -> Option<String> {
-    leaf.get_one::<String>("project").cloned().or_else(|| root.clone())
+    leaf.get_one::<String>("project")
+        .cloned()
+        .or_else(|| root.clone())
 }
 
 fn run() -> Result<(), CmdError> {
@@ -124,7 +129,9 @@ fn run() -> Result<(), CmdError> {
         let argv: Vec<String> = std::env::args().skip(1).collect();
         if let Some(tok) = cli::short_project_token(&argv) {
             // `Plain`: Go'da bu bir pflag hatasi, yani kod oneki YOK.
-            return Err(CmdError::Plain(format!("unknown shorthand flag: 'p' in {tok}")));
+            return Err(CmdError::Plain(format!(
+                "unknown shorthand flag: 'p' in {tok}"
+            )));
         }
     }
 
@@ -156,8 +163,10 @@ fn run() -> Result<(), CmdError> {
     match matches.subcommand() {
         Some(("secrets", sm)) => match sm.subcommand() {
             Some(("set", sm2)) => {
-                let keys: Vec<String> =
-                    sm2.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default();
+                let keys: Vec<String> = sm2
+                    .get_many::<String>("key")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
                 // ARITE ONCE. Olculdu (differential
                 // agent_set_binding_refused_missing_arg): cobra ValidateArgs'i
                 // PersistentPreRunE'dan ONCE kosuyor, yani ajan modunda bile
@@ -168,11 +177,18 @@ fn run() -> Result<(), CmdError> {
                         keys.len()
                     )));
                 }
-                run_set(&keys[0], config, project, sm2.get_one::<String>("from-file").cloned())
+                run_set(
+                    &keys[0],
+                    config,
+                    project,
+                    sm2.get_one::<String>("from-file").cloned(),
+                )
             }
             Some(("exec", em)) => {
-                let argv: Vec<String> =
-                    em.get_many::<String>("argv").map(|v| v.cloned().collect()).unwrap_or_default();
+                let argv: Vec<String> = em
+                    .get_many::<String>("argv")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
                 // ARITE ONCE (cobra MinimumNArgs(1) PersistentPreRunE'dan ONCE
                 // kosuyor) — set'te olculen sirayla ayni.
                 if argv.is_empty() {
@@ -185,7 +201,9 @@ fn run() -> Result<(), CmdError> {
                     config,
                     project,
                     em.get_one::<String>("prefix").cloned().unwrap_or_default(),
-                    em.get_one::<String>("intent").cloned().unwrap_or_else(|| "dev".to_string()),
+                    em.get_one::<String>("intent")
+                        .cloned()
+                        .unwrap_or_else(|| "dev".to_string()),
                     em.get_flag("break-glass"),
                 )
             }
@@ -193,8 +211,10 @@ fn run() -> Result<(), CmdError> {
             Some(("list", _)) => run_list(config, project),
             Some(("status", stm)) => run_status(config, project, stm.get_flag("json")),
             Some(("rm", rm)) => {
-                let keys: Vec<String> =
-                    rm.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default();
+                let keys: Vec<String> = rm
+                    .get_many::<String>("key")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
                 // ARITE ONCE — ve bu sirayi OLCTUK: ajan modunda eksik
                 // arguman AGENT_MODE_REFUSED DEGIL bir arite hatasi veriyor.
                 // cobra ValidateArgs'i PersistentPreRunE'dan (ve dolayisiyla
@@ -249,14 +269,18 @@ fn run() -> Result<(), CmdError> {
                 }
             },
             Some(("rotate-plan", rpm)) => run_rotate_plan(
-                rpm.get_one::<String>("identity").cloned().unwrap_or_default(),
+                rpm.get_one::<String>("identity")
+                    .cloned()
+                    .unwrap_or_default(),
                 rpm.get_one::<String>("since").cloned().unwrap_or_default(),
                 rpm.get_flag("assume-policy"),
                 rpm.get_flag("json"),
             ),
             Some(("import-env", im)) => {
-                let files: Vec<String> =
-                    im.get_many::<String>("file").map(|v| v.cloned().collect()).unwrap_or_default();
+                let files: Vec<String> = im
+                    .get_many::<String>("file")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
                 // ARITE ONCE — cobra ValidateArgs PersistentPreRunE'dan once
                 // kosuyor. Olculdu: ajan modunda eksik arguman bir arite
                 // hatasi, bir baglama/ajan reddi DEGIL.
@@ -278,12 +302,16 @@ fn run() -> Result<(), CmdError> {
             Some(("init", im)) => run_init(
                 config,
                 project,
-                im.get_one::<String>("project-name").cloned().unwrap_or_default(),
+                im.get_one::<String>("project-name")
+                    .cloned()
+                    .unwrap_or_default(),
                 im.get_flag("force"),
             ),
             Some(("get", gm)) => {
-                let keys: Vec<String> =
-                    gm.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default();
+                let keys: Vec<String> = gm
+                    .get_many::<String>("key")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
                 // cobra ExactArgs(1) ile AYNI metin.
                 if keys.len() != 1 {
                     return Err(CmdError::Plain(format!(
@@ -294,17 +322,24 @@ fn run() -> Result<(), CmdError> {
                 run_get(&keys[0], config, project)
             }
             _ => {
-                let _ = cli::build().find_subcommand_mut("secrets").unwrap().print_help();
+                let _ = cli::build()
+                    .find_subcommand_mut("secrets")
+                    .unwrap()
+                    .print_help();
                 std::process::exit(0);
             }
         },
-        Some(("doctor", dm)) => {
-            run_doctor(dm.get_one::<String>("for").map(String::as_str).unwrap_or_default())
-        }
+        Some(("doctor", dm)) => run_doctor(
+            dm.get_one::<String>("for")
+                .map(String::as_str)
+                .unwrap_or_default(),
+        ),
         Some(("rotate", rm)) => match rm.subcommand() {
             Some(("skip", sm)) => {
-                let args: Vec<String> =
-                    sm.get_many::<String>("args").map(|v| v.cloned().collect()).unwrap_or_default();
+                let args: Vec<String> = sm
+                    .get_many::<String>("args")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
                 // ARITE ONCE (cobra ExactArgs(2), ValidateArgs RunE'den once).
                 if args.len() != 2 {
                     return Err(CmdError::Plain(format!(
@@ -315,17 +350,24 @@ fn run() -> Result<(), CmdError> {
                 run_rotate_skip(
                     &args[0],
                     &args[1],
-                    sm.get_one::<String>("reason").map(String::as_str).unwrap_or_default(),
+                    sm.get_one::<String>("reason")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
                 )
             }
             _ => {
-                let _ = cli::build().find_subcommand_mut("rotate").unwrap().print_help();
+                let _ = cli::build()
+                    .find_subcommand_mut("rotate")
+                    .unwrap()
+                    .print_help();
                 std::process::exit(0);
             }
         },
         Some(("tofu", tm)) => {
-            let args: Vec<String> =
-                tm.get_many::<String>("argv").map(|v| v.cloned().collect()).unwrap_or_default();
+            let args: Vec<String> = tm
+                .get_many::<String>("argv")
+                .map(|v| v.cloned().collect())
+                .unwrap_or_default();
             // `project` ve `config` BILEREK gecirilmiyor: cobra'da
             // DisableFlagParsing onlari hic ayristirmiyor (bkz. run_tofu).
             run_tofu(&args)
@@ -393,12 +435,19 @@ fn run() -> Result<(), CmdError> {
         Some(("token", tm)) => match tm.subcommand() {
             Some(("exchange", em)) => run_token_exchange(
                 shadowed_project(em, &project),
-                em.get_many::<String>("key").map(|v| v.cloned().collect()).unwrap_or_default(),
-                em.get_many::<String>("verb").map(|v| v.cloned().collect()).unwrap_or_default(),
+                em.get_many::<String>("key")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default(),
+                em.get_many::<String>("verb")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default(),
                 em.get_one::<String>("ttl").cloned(),
             ),
             _ => {
-                let _ = cli::build().find_subcommand_mut("token").unwrap().print_help();
+                let _ = cli::build()
+                    .find_subcommand_mut("token")
+                    .unwrap()
+                    .print_help();
                 std::process::exit(0);
             }
         },
@@ -407,7 +456,9 @@ fn run() -> Result<(), CmdError> {
                 // cobra.NoArgs — ve reddin METNI cobra'nindir: fazladan
                 // arguman "unknown command" olarak adlandiriliyor, bir arite
                 // hatasi olarak DEGIL.
-                if let Some(extra) = lm.get_many::<String>("extra").and_then(|mut v| v.next().cloned())
+                if let Some(extra) = lm
+                    .get_many::<String>("extra")
+                    .and_then(|mut v| v.next().cloned())
                 {
                     return Err(CmdError::Plain(format!(
                         "unknown command {} for \"wapps projects list\"",
@@ -430,7 +481,10 @@ fn run() -> Result<(), CmdError> {
                 run_projects_rm(&names[0], rm.get_flag("yes"))
             }
             _ => {
-                let _ = cli::build().find_subcommand_mut("projects").unwrap().print_help();
+                let _ = cli::build()
+                    .find_subcommand_mut("projects")
+                    .unwrap()
+                    .print_help();
                 std::process::exit(0);
             }
         },
@@ -484,11 +538,7 @@ fn run_list(config: Option<String>, project: Option<String>) -> Result<(), CmdEr
 // (defterde olmayan) status icin bir proje ADLANDIRMAZ, cunku Go'da
 // statusProject `loadOrNil(wappsConfigPath())` cagiriyor ve projectOverride'a
 // HIC bakmiyor.
-fn run_status(
-    config: Option<String>,
-    project: Option<String>,
-    json: bool,
-) -> Result<(), CmdError> {
+fn run_status(config: Option<String>, project: Option<String>, json: bool) -> Result<(), CmdError> {
     // --config ile --project birlikte verilirse bu hata YINE yuzeye cikar:
     // Go'da da kok PersistentPreRunE (resolveProjectFlag) status'tan ONCE
     // kosuyor ve orada duser.
@@ -515,7 +565,11 @@ fn run_status(
         epoch_pin,
     };
     let mut out = std::io::stdout();
-    let text = if json { statusverb::render_json(&rep) } else { statusverb::render_text(&rep) };
+    let text = if json {
+        statusverb::render_json(&rep)
+    } else {
+        statusverb::render_text(&rep)
+    };
     let _ = write!(out, "{text}");
     Ok(())
 }
@@ -802,7 +856,8 @@ const HEAD_PREFIX_LEN: usize = 12;
 // sonucu verirdi ama Go'nun REDDETTIGI bir girdiyi kabul eden bir yol acardi.
 fn is_hex12(s: &str) -> bool {
     s.len() == HEAD_PREFIX_LEN
-        && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 // run_dr_accept_epoch_reset, `wapps dr accept-epoch-reset` — epoch pinini
@@ -1084,7 +1139,11 @@ fn run_policy_show(json: bool) -> Result<(), CmdError> {
         let _ = writeln!(out, "{text}");
         return Ok(());
     }
-    let _ = write!(out, "{}", policyverb::render_show(res.version, &res.sha256, &res.policy));
+    let _ = write!(
+        out,
+        "{}",
+        policyverb::render_show(res.version, &res.sha256, &res.policy)
+    );
     Ok(())
 }
 
@@ -1117,7 +1176,8 @@ fn run_policy_lint(path: &str) -> Result<(), CmdError> {
 // (412 POLICY_CONFLICT) → `policy show` ile yeniden cek, rebase et, tekrarla.
 fn run_policy_set(path: &str, yes: bool) -> Result<(), CmdError> {
     policy_gate()?;
-    let mut doc = policyverb::read_policy_file(std::path::Path::new(path)).map_err(CmdError::Cli)?;
+    let mut doc =
+        policyverb::read_policy_file(std::path::Path::new(path)).map_err(CmdError::Cli)?;
 
     let mut out = std::io::stdout();
     // Cevrimdisi lint: UYARILAR BLOKLAMAZ (sema hatasi zaten yukarida bloklardi).
@@ -1131,12 +1191,17 @@ fn run_policy_set(path: &str, yes: bool) -> Result<(), CmdError> {
     // ama mesaj FARKLI ("policy file rejected offline") — dosya okumadaki
     // "policy file <yol> invalid" ile karistirilmamali.
     policy::validate(&doc, policyverb::POLICY_TOPOLOGY).map_err(|e| {
-        CmdError::Cli(
-            Error::new(Code::PolicyInvalid, format!("policy file rejected offline: {e}")),
-        )
+        CmdError::Cli(Error::new(
+            Code::PolicyInvalid,
+            format!("policy file rejected offline: {e}"),
+        ))
     })?;
 
-    let _ = write!(out, "{}", policyverb::rule_diff(&cur.policy.rules, &doc.rules));
+    let _ = write!(
+        out,
+        "{}",
+        policyverb::rule_diff(&cur.policy.rules, &doc.rules)
+    );
     let _ = write!(
         out,
         "\nPUT policy v{} → v{} ({} rules). ",
@@ -1194,7 +1259,9 @@ fn run_doctor(mode: &str) -> Result<(), CmdError> {
             }
             // DUZ hata (clierr DEGIL): Go `fmt.Errorf` kullaniyor, yani insan
             // yolunda KURTARMA SATIRI BASILMAZ. Ayrimi CmdError::Plain tasiyor.
-            Err(CmdError::Plain("doctor --for tofu: env not ready".to_string()))
+            Err(CmdError::Plain(
+                "doctor --for tofu: env not ready".to_string(),
+            ))
         }
         "" | "all" => {
             let (text, ok) = doctor_full_report();
@@ -1239,7 +1306,10 @@ fn doctor_full_report() -> (String, bool) {
     // istemcide R2 kimlik bilgisi ISTEMIYOR (gate onlari tutuyor). Yalnizca
     // state'i R2'de duran `tofu` bunlari istiyor, yani burada bos bir deger
     // sirlarin calisip calismadigi hakkinda HICBIR SEY soylemiyor.
-    if std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default().is_empty() {
+    if std::env::var("AWS_ACCESS_KEY_ID")
+        .unwrap_or_default()
+        .is_empty()
+    {
         out.push_str("✗ tofu state backend: AWS_ACCESS_KEY_ID not set (only needed for tofu, not for secrets)\n");
         all_ok = false;
     } else {
@@ -1285,9 +1355,8 @@ fn doctor_full_report() -> (String, bool) {
 // "bu rota var mi" DEGIL. User-Agent "curl/8" Go tarafiyla ayni — bazi
 // kenarlar bilinmeyen ajanlari farkli karsiliyor.
 fn probe_coolify() -> (String, bool) {
-    let url = doctorverb::coolify_health_endpoint(
-        &std::env::var("COOLIFY_URL").unwrap_or_default(),
-    );
+    let url =
+        doctorverb::coolify_health_endpoint(&std::env::var("COOLIFY_URL").unwrap_or_default());
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(5))
         .build();
@@ -1301,9 +1370,7 @@ fn probe_coolify() -> (String, bool) {
         // ...: connect: connection refused") ve o metin PORT EDILMIYOR —
         // `human_gate_down` ile AYNI sinif. Differential'daki her doctor vakasi
         // COOLIFY_URL'i sahte gate'e cevirdigi icin bu kola HIC girilmiyor.
-        Err(ureq::Error::Transport(t)) => {
-            (format!("✗ Coolify API unreachable: {t}\n"), false)
-        }
+        Err(ureq::Error::Transport(t)) => (format!("✗ Coolify API unreachable: {t}\n"), false),
     }
 }
 
@@ -1458,7 +1525,9 @@ fn run_import_env(
     let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
     gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
 
-    let cfg = ctx.require_store_config("import-env").map_err(CmdError::Cli)?;
+    let cfg = ctx
+        .require_store_config("import-env")
+        .map_err(CmdError::Cli)?;
 
     let data = std::fs::read(env_file).map_err(|e| {
         CmdError::Plain(format!(
@@ -1485,8 +1554,11 @@ fn run_import_env(
         store::keys(&cfg.project).map(|kr| kr.keys.into_iter().map(|k| k.key_name).collect()),
     )
     .map_err(CmdError::Cli)?;
-    let overridden: Vec<String> =
-        sets.keys().filter(|k| existing.contains(*k)).cloned().collect();
+    let overridden: Vec<String> = sets
+        .keys()
+        .filter(|k| existing.contains(*k))
+        .cloned()
+        .collect();
 
     store::import_values(&cfg.project, &sets).map_err(CmdError::Cli)?;
 
@@ -1498,7 +1570,11 @@ fn run_import_env(
         .map_err(CmdError::Plain)?;
 
     let mut out = std::io::stdout();
-    let _ = write!(out, "{}", importenv::success_line(sets.len(), env_file, &cfg.project));
+    let _ = write!(
+        out,
+        "{}",
+        importenv::success_line(sets.len(), env_file, &cfg.project)
+    );
     if !overridden.is_empty() {
         let _ = write!(errw, "{}", importenv::override_line(&overridden));
     }
@@ -1540,7 +1616,8 @@ fn run_env(
 
     let cfg = ctx.require_store_config("env").map_err(CmdError::Cli)?;
     let values = store::read_all(&cfg.project).map_err(CmdError::Cli)?;
-    let archive = values_to_archive_json(&values).map_err(|e| CmdError::Plain(format!("env: {e}")))?;
+    let archive =
+        values_to_archive_json(&values).map_err(|e| CmdError::Plain(format!("env: {e}")))?;
 
     if write_path.is_empty() {
         let mut out = std::io::stdout();
@@ -1551,8 +1628,12 @@ fn run_env(
     // `apply`in config_root'a cozdugu hedeflerin AKSINE. Bu fark bilincli
     // tasindi: `env --write` bir kerelik, operatorun bulundugu dizine yazan
     // bir kacis kapisi.
-    envverb::write_env_file_atomic(std::path::Path::new(&write_path), archive.as_bytes(), &prefix)
-        .map_err(CmdError::Plain)
+    envverb::write_env_file_atomic(
+        std::path::Path::new(&write_path),
+        archive.as_bytes(),
+        &prefix,
+    )
+    .map_err(CmdError::Plain)
 }
 
 // run_trust_repo, `wapps secrets trust-repo` — baglamayi KURAN fiil.
@@ -1597,12 +1678,20 @@ fn run_trust_repo(config: Option<String>, project: Option<String>) -> Result<(),
     };
 
     let repo_id = configctx::repo_identity(&cfg);
-    let path = binding::default_path()
-        .map_err(|e| CmdError::Cli(Error::new(Code::Internal, format!("resolve repo-pins path: {e}"))))?;
+    let path = binding::default_path().map_err(|e| {
+        CmdError::Cli(Error::new(
+            Code::Internal,
+            format!("resolve repo-pins path: {e}"),
+        ))
+    })?;
 
     let mut out = std::io::stdout();
     let mut stdin = std::io::stdin();
-    if !trustrepo::confirm_y(&mut stdin, &mut out, &trustrepo::prompt_block(&repo_id, &cfg)) {
+    if !trustrepo::confirm_y(
+        &mut stdin,
+        &mut out,
+        &trustrepo::prompt_block(&repo_id, &cfg),
+    ) {
         return Err(CmdError::Cli(Error::new(
             Code::BindingUnpinned,
             "trust-repo aborted; binding not pinned",
@@ -1706,8 +1795,8 @@ fn run_set(
     let project = ctx.store_project("set").map_err(CmdError::Cli)?;
 
     let mut err_out = std::io::stderr();
-    let value = setverb::capture_value(&mut err_out, key, from_file.as_deref())
-        .map_err(CmdError::Plain)?;
+    let value =
+        setverb::capture_value(&mut err_out, key, from_file.as_deref()).map_err(CmdError::Plain)?;
 
     store::set(&project, key, &value).map_err(CmdError::Cli)?;
 
@@ -1763,8 +1852,8 @@ fn run_get(key: &str, config: Option<String>, project: Option<String>) -> Result
 
     let project = ctx.store_project("get").map_err(CmdError::Cli)?;
 
-    let res = store::read(&project, std::slice::from_ref(&key.to_string()))
-        .map_err(CmdError::Cli)?;
+    let res =
+        store::read(&project, std::slice::from_ref(&key.to_string())).map_err(CmdError::Cli)?;
     match res.values.get(key) {
         Some(v) => {
             let mut out = std::io::stdout();
@@ -1927,7 +2016,10 @@ fn exec_core(
 // oncesinde tam olarak bu oluyordu. Olcusu human_tofu_injects_values_verbatim.
 fn run_tofu(args: &[String]) -> Result<(), CmdError> {
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
-        let _ = cli::build().find_subcommand_mut("tofu").unwrap().print_help();
+        let _ = cli::build()
+            .find_subcommand_mut("tofu")
+            .unwrap()
+            .print_help();
         std::process::exit(0);
     }
     let agent = agentmode::is_agent();
@@ -2095,8 +2187,19 @@ fn run_login(check: bool, write: bool) -> Result<(), CmdError> {
             format!("cloudflared token did not parse as a JWT; re-run wapps login: {e}"),
         ))
     })?;
-    session::save(&key, &session::State { token, expires_at: claims.exp })
-        .map_err(|e| CmdError::Cli(Error::new(Code::Internal, format!("cache session token: {e}"))))?;
+    session::save(
+        &key,
+        &session::State {
+            token,
+            expires_at: claims.exp,
+        },
+    )
+    .map_err(|e| {
+        CmdError::Cli(Error::new(
+            Code::Internal,
+            format!("cache session token: {e}"),
+        ))
+    })?;
     let _ = write!(out, "{}", loginverb::success_line(&claims, session::now()));
     Ok(())
 }
@@ -2119,12 +2222,20 @@ fn run_login_check() -> Result<(), CmdError> {
         )));
     }
     let mut out = std::io::stdout();
-    let _ = write!(out, "{}", loginverb::render_session("gate", &read_host, &s, now));
+    let _ = write!(
+        out,
+        "{}",
+        loginverb::render_session("gate", &read_host, &s, now)
+    );
     let _ = writeln!(out);
     match session::load(&session::admin_session_key()) {
         Some(a) if !a.expired(now) => {
             let target = session::admin_gate_url();
-            let _ = write!(out, "{}", loginverb::render_session("admin", &target, &a, now));
+            let _ = write!(
+                out,
+                "{}",
+                loginverb::render_session("admin", &target, &a, now)
+            );
         }
         _ => {
             let _ = write!(out, "{}", loginverb::ADMIN_MISSING);
