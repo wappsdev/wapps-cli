@@ -258,6 +258,13 @@ fn root_store() -> rustls::RootCertStore {
 // kullanmak zorunlu: serbest fonksiyon ureq'in kendi varsayilan yapilandirmasina
 // gidiyor ve oraya ekleme yapmanin yolu yok.
 fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().tls_config(tls_config()).build()
+}
+
+/// tls_config, the client TLS configuration behind every HTTPS call: the
+/// embedded roots plus SSL_CERT_FILE/SSL_CERT_DIR. Shared with the Coolify
+/// client (coolify.rs), which must trust exactly what the gate client trusts.
+pub(crate) fn tls_config() -> Arc<rustls::ClientConfig> {
     // builder_with_provider, builder()'in aksine surec genelinde bir kripto
     // saglayicisi kurulmus olmasini SART kosmuyor — ureq'in kendi yolunun aynisi.
     let cfg = rustls::ClientConfig::builder_with_provider(
@@ -267,7 +274,7 @@ fn agent() -> ureq::Agent {
     .expect("ring saglayicisi TLS1.2+1.3 ile uyumlu")
     .with_root_certificates(root_store())
     .with_no_client_auth();
-    ureq::AgentBuilder::new().tls_config(Arc::new(cfg)).build()
+    Arc::new(cfg)
 }
 
 /// read, POST /v1/projects/{p}/read cagirir ve degerleri doner.

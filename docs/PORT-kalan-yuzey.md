@@ -713,6 +713,81 @@ a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
 | kapı | `cargo test` yeşil |
 | not | Bu dilim tek başına Rust ağacının ~%15'i kadar yeni kod. **Bölünebilir:** önce `coolify update-env` + `set-labels` (en küçük ikisi, 126 satır), sonra kalanı |
 
+#### Slice 6a — `coolify update-env` + `coolify set-labels` · **LANDED**
+
+| | |
+|---|---|
+| verbs | `coolify` (the family: bare, it prints help and exits 0), `coolify update-env`, `coolify set-labels` |
+| Go source | `cmd/coolify` 145 (`coolify.go` 19, `update_env.go` 66, `set_labels.go` 60) + the parts of `internal/coolify` these two call, ≈250 of 527 (`validateUUID`, `Client`/`New`, `HTTPError`, `UpdateAppEnvs`, `SetCustomLabels`, `doBytes`/`do`, `UpsertAppEnv`) |
+| new modules | `coolify.rs` 219 (the client), `coolifyverb.rs` 179 (flags, checks, output), `gocsv.rs` 199 (pflag's `readAsCSV`, see finding 1) |
+| extended | `gobase64.rs` (`std_encode`, next to the hand-written decoders — §4.1 held), `gostrconv.rs` (`parse_bool`, Go's `strconv.Quote`/`QuoteRune`), `store.rs` (`tls_config()` extracted so the Coolify client trusts exactly the gate client's roots), `cli.rs` (the family and its two leaves), `main.rs` (dispatch, and the flag-value check before the root's `--config`/`--project` check) |
+| new crate | **NONE**. `ureq` for HTTP, base64 by hand, CSV by hand (the `csv` crate's error texts are not Go's) |
+| differential cases | **66**: 4 identity arms × 2 modes × 2 verbs = 16; update-env 28 (refusal order, CSV splitting and errors, uuid checks, POST, PATCH after 409, every key sent, body echoes, wrong token, 404, pflag shape); set-labels 22 (empty and fully-stripped refusals, bool parsing, the leftmost bad value wins, body echoes, 200-byte cut in both modes, 404, wrong token) |
+| harness | `fakegate.py` now serves a fake Coolify v4 API under `/api/v1` (`COOLIFY_URL: "{GATE}/api/v1"`, the doctor cases' pattern). Every request must carry `Authorization: Bearer <test token>`, `User-Agent: curl/8` and `Content-Type: application/json`; bodies are validated field by field (`custom_labels` must be strict padded base64; an env body must be exactly Go's five fields with Go's constant flags). The app uuid or env key picks a scenario; the `echo` scenarios refuse with a body that repeats what was received plus the sha256 of the raw request bytes, so a case sees what went out (the `\n` join, the strip filter, Go's JSON key order and `<>&` escaping) |
+| new tests | `tests/gocsv.rs` (41 Go-produced vectors), `tests/coolifyverb.rs` (5: uuid texts, the 200-byte cut, pflag's slice error, `parseEnvKVs`, the strip filter), `tests/gobase64.rs` (+1: `std_encode`, 9 vectors), `tests/gostrconv.rs` (+3: `ParseBool`, `Quote`, `QuoteRune`) |
+| gate | `cargo test --release` (differential `EQUAL=635 DIFFERENT=0 UNSOUND=0` = 569 + 66), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `cargo deny check`, `go build ./...`, `go test ./...` (no Go file changed) |
+| red before green | all 66 cases DIFFERENT against the pre-slice binary (`unrecognized subcommand`); after the port, 66 EQUAL on the first run |
+| mutation proofs | each against the coolify subset of the corpus, reverted, and the file compared byte for byte with its backup: (a) no `User-Agent: curl/8` → 34 red; (b) labels joined with "," → 2 red (both echoes); (c) no PATCH after a 409 → 11 red; (d) `--strip-cert-resolver` defaulting to false → 2 red; (e) error body cut at 199 bytes → 2 red (human and agent); (f) values not read as CSV → 8 red; (g) the root's identity check moved before the flag-value check → 1 red; (h) only the first env key sent → 1 red (`every_key_is_sent`); (i) the first-listed instead of the leftmost bad value → 1 red. One mutation SURVIVED in the first round: a leftmost-error pass over `--env` alone was redundant (`string_slice` already stops at the first bad value), so removing it changed nothing; the pass was deleted and (g) was re-aimed at `main.rs` |
+
+**Findings.**
+
+1. *Every `--env` and `--label` value is CSV.* Both are pflag `StringSliceVar`s,
+   so each value goes through `encoding/csv`: `--env A=1,B=2` is two entries,
+   `--env '"K=a,b"'` keeps its comma, `--env 'a"b'` is refused with
+   `invalid argument "a\"b" for "--env" flag: parse error on line 1, column 2:
+   bare " in non-quoted-field`, `--env $'\n'` is refused with `EOF`, and
+   everything after the first line break of a value is silently dropped. The
+   pricing did not see this; it is why `gocsv.rs` exists. A Traefik label with a
+   comma in it (`Host(`a`,`b`)`) is split into two labels by the Go CLI — the
+   port does the same, on purpose.
+2. *A bad flag VALUE beats the root's `--config`/`--project` check.* pflag
+   parses values at parse time, before `PersistentPreRunE`. `main.rs` therefore
+   parses the coolify leaves' values before that check (one case pins it).
+3. *`--strip-cert-resolver` is a pflag bool:* `--strip-cert-resolver false`
+   (spaced) does NOT turn it off — `false` becomes an ignored argument and the
+   strip stays on. Measured, and ported.
+4. *Go upserts env keys in random order* (a map range); Rust sorts. Only which
+   failing key is named can differ, and only when two or more keys fail. No
+   case has more than one failing key; one case puts the failing key last in
+   sorted order, which proves every key is sent.
+
+**Known divergences, not in the corpus.**
+
+1. *Transport errors.* Go prints `<METHOD> <path>: <Method> "<url>": dial tcp
+   <resolved address>: connect: connection refused`; the port prints the same
+   prefix and ureq's own cause. Same reason as the gate's `human_gate_down`.
+2. *An error body cut through a multi-byte character.* Go prints the raw
+   partial bytes (human) or one `�` per invalid byte (agent envelope); the
+   port holds the message in a `String` and prints one U+FFFD per invalid
+   sequence. Realistic for a non-ASCII Coolify body longer than 200 bytes.
+3. *Proxies.* Go's client honours `HTTP(S)_PROXY`/`NO_PROXY`; the port's ureq
+   agent uses no proxy (ureq 2 has no `NO_PROXY`). Same as the gate client.
+4. *307/308 on PATCH/POST.* Go re-sends the body to the new location; ureq 2
+   does not follow and the 3xx counts as success. Coolify's API is not known to
+   redirect; not measured.
+5. *Non-ASCII `%q`.* `gostrconv::quote` escapes control, space and format
+   characters like Go; unassigned and private-use code points print raw where
+   Go escapes them.
+6. *Flag errors across different flags.* pflag reports the leftmost failing
+   token; clap reports an unknown flag before any value error, and a missing
+   value (`--app-uuid` at the end) with its own sentence. Not measured.
+
+**What the pricing got wrong.** "126 lines" was the two `cmd` files only; the
+slice also needed ≈250 lines of `internal/coolify`, and pflag's CSV reading of
+slice flags (finding 1) was not priced at all. 35–45 cases for all six verbs was
+low: these two verbs alone needed 66.
+
+**What remains of slice 6** (measured with `wc -l`, Go):
+
+| part | Go lines | what it needs on top of 6a |
+|---|---:|---|
+| `coolify deploy-app` | 98 | `CreateDockerComposeApp`, `StartApp`, `--env-from-shell` (a CSV slice too), writes `.outputs/<name>-uuid` |
+| `coolify deploy-app-git` | 115 | `CreatePrivateGitHubAppApp` (13-field body), `SetBuildArgs`, `TriggerDeploy` (`GET /deploy?uuid=`), deferred-deploy rule, `.outputs/` |
+| `coolify import-app` | 97 | `ListApplications` + `doRaw` (array or `{"data": [...]}`), the `[^a-zA-Z0-9_]+` identifier rewrite by hand, writes `imports.sh` + `apps.tf` |
+| rest of `internal/coolify` | ≈275 | the calls above plus `ListAppEnvs`, `DeleteAppEnv`, `asString`/`asBool` (the last three are used only by sync) |
+| `secrets sync --target=coolify` | 456 | `cmd/secrets/sync_coolify.go`: single-app and multi-app diff, `--force`/`--dry-run`, `delete_unmanaged`, `exclude_keys`, prefix stripping |
+| **total** | **≈1041** | of the 1438 priced for slice 6 |
+
 ---
 
 ### Dilim 7 — `deploy`
@@ -777,7 +852,7 @@ a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
 | 3 | `login` · LANDED | 634 | none | 30 (actual) |
 | 4 | `token exchange` · İNDİ | 70 | yok | 40 (gerçek) |
 | 5 | `secrets sync` (no `--target` arm) · LANDED | 582 (≈480 live, see slice 5) | none | 28 (actual) |
-| 6 | `coolify` + sync/coolify | 1438 | yok | 35–45 |
+| 6 | `coolify` + sync/coolify (6a `update-env` + `set-labels` · LANDED; ≈1041 left) | 1438 | yok | 35–45 (6a alone: 66 actual) |
 | 7 | `deploy` | 582 | yok | 20–26 |
 | 8 | `skill` | 539 | yok | 18–24 |
 | 9 | yardım düzeni | (cobra) | **KARAR** §4.2 | ~6 + 50 snapshot |

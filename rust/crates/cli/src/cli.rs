@@ -685,6 +685,45 @@ pub fn build() -> Command {
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 ),
         )
+        // `coolify` is a FAMILY (no Run of its own): bare, it prints help and
+        // exits 0, like `token`. Only `update-env` and `set-labels` are ported
+        // (slice 6a); the parsing of their flag VALUES is pflag's and lives in
+        // coolifyverb::parse_flags, so every value flag is taken as a raw
+        // string here: Append (pflag lets a flag repeat; for a StringVar the
+        // last wins) and allow_hyphen_values (pflag takes the next token of a
+        // spaced long flag unconditionally).
+        .subcommand(
+            Command::new("coolify")
+                .about("Coolify v4 API shim commands (fill gaps in SierraJC Tofu provider)")
+                .subcommand(
+                    Command::new("set-labels")
+                        .about("PATCH custom_labels (base64) with optional certresolver=letsencrypt strip")
+                        .arg(coolify_value("app-uuid", "string", "Coolify app UUID"))
+                        .arg(coolify_value("label", "strings", "Label (repeatable, e.g. --label 'traefik.enable=true')"))
+                        // A pflag BoolVar: `--x`, `--x=<bool>`, never a
+                        // spaced value (`--x false` leaves `false` as an
+                        // argument). The value is parsed by ParseBool later.
+                        .arg(
+                            Arg::new("strip-cert-resolver")
+                                .long("strip-cert-resolver")
+                                .num_args(0..=1)
+                                .require_equals(true)
+                                .default_missing_value("true")
+                                .action(ArgAction::Append)
+                                .help("Strip certresolver=letsencrypt labels (file-based Origin Cert pattern)"),
+                        )
+                        // setLabelsCmd has no Args -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("update-env")
+                        .about("Update application env vars (--env KEY=VAL, repeatable)")
+                        .arg(coolify_value("app-uuid", "string", "Coolify app UUID"))
+                        .arg(coolify_value("env", "strings", "KEY=VAL (repeatable)"))
+                        // updateEnvCmd has no Args -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                ),
+        )
         // `projects` KOKTE mount'lu, `secrets` altinda DEGIL — ve bu bir
         // duzenleme tercihi degil, GOZLEMLENEBILIR bir kapi farki: kok mount
         // demek Go'da SecretsCmd.PersistentPreRunE'un (ajan-guard + depo pini)
@@ -714,6 +753,17 @@ pub fn build() -> Command {
                         ),
                 ),
         )
+}
+
+// coolify_value, a `coolify` value flag as pflag reads it (see `coolify`);
+// `value_name` is pflag's type word ("string" / "strings").
+fn coolify_value(name: &'static str, value_name: &'static str, help: &'static str) -> Arg {
+    Arg::new(name)
+        .long(name)
+        .value_name(value_name)
+        .action(ArgAction::Append)
+        .allow_hyphen_values(true)
+        .help(help)
 }
 
 // --- GOLGENIN KISA-BICIM YUZU --------------------------------------------------

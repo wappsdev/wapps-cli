@@ -176,3 +176,90 @@ fn underscore_ok(s: &[u8]) -> bool {
     }
     saw != b'_'
 }
+
+// --- ParseBool, Quote, QuoteRune -------------------------------------------------
+//
+// Added for `coolify set-labels`/`update-env`: `--strip-cert-resolver` is a
+// pflag `BoolVar` (parsed by `strconv.ParseBool`, refused with its prose), and
+// the coolify errors quote user input with `%q`. Vectors measured from Go 1.26
+// (tests/gostrconv.rs).
+
+/// parse_bool, Go's `strconv.ParseBool`; the error is Go's full sentence.
+pub fn parse_bool(s: &str) -> Result<bool, String> {
+    match s {
+        "1" | "t" | "T" | "TRUE" | "true" | "True" => Ok(true),
+        "0" | "f" | "F" | "FALSE" | "false" | "False" => Ok(false),
+        _ => Err(format!(
+            "strconv.ParseBool: parsing {}: invalid syntax",
+            quote(s)
+        )),
+    }
+}
+
+/// quote, Go's `strconv.Quote` (what `%q` prints for a string).
+pub fn quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        push_escaped(&mut out, c, '"');
+    }
+    out.push('"');
+    out
+}
+
+/// quote_rune, Go's `strconv.QuoteRune` (what `%q` prints for a rune).
+pub fn quote_rune(c: char) -> String {
+    let mut out = String::with_capacity(4);
+    out.push('\'');
+    push_escaped(&mut out, c, '\'');
+    out.push('\'');
+    out
+}
+
+// push_escaped, one rune the way Go's appendEscapedRune writes it.
+//
+// ASCII is exact. Beyond ASCII Go escapes what `unicode.IsPrint` rejects; std
+// has no Unicode category table, so this escapes control characters, Unicode
+// spaces other than ' ' (Go's IsPrint admits only the ASCII space) and the
+// format characters (Cf) a user can plausibly paste. Unassigned and
+// private-use code points print raw here, where Go escapes them — a known,
+// unmeasured gap.
+fn push_escaped(out: &mut String, c: char, delim: char) {
+    use std::fmt::Write;
+    match c {
+        '\\' => out.push_str("\\\\"),
+        _ if c == delim => {
+            out.push('\\');
+            out.push(c);
+        }
+        '\x07' => out.push_str("\\a"),
+        '\x08' => out.push_str("\\b"),
+        '\x0c' => out.push_str("\\f"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\x0b' => out.push_str("\\v"),
+        _ if c < ' ' || c == '\x7f' => {
+            let _ = write!(out, "\\x{:02x}", c as u32);
+        }
+        _ if c.is_ascii() => out.push(c),
+        _ if c.is_control() || c.is_whitespace() || is_format(c) => {
+            if (c as u32) < 0x10000 {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            } else {
+                let _ = write!(out, "\\U{:08x}", c as u32);
+            }
+        }
+        _ => out.push(c),
+    }
+}
+
+// is_format, the Unicode Cf (format) characters.
+fn is_format(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891
+        | 0x08E2 | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064
+        | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD
+        | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0001
+        | 0xE0020..=0xE007F)
+}
