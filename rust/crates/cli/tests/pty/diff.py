@@ -39,6 +39,8 @@ def _is_vacuum(v):
     for _, entry in (v.get("written") or {}).items():
         if entry[0]:
             return False
+    if v.get("session"):
+        return False
     return True
 
 for name in sorted(go):
@@ -66,7 +68,9 @@ for name in sorted(go):
             # tersi) yalnizca ciktiya bakan bir karsilastirma bunu KACIRIRDI.
             and g.get("bindfile_hex") == r.get("bindfile_hex")
             # apply'in yazdigi dosyalarin ICERIGI ve MODU.
-            and g.get("written") == r.get("written"))
+            and g.get("written") == r.get("written")
+            # The session cache `wapps login` writes (bytes + modes).
+            and g.get("session") == r.get("session"))
     if same:
         # UNSOUND bir EQUAL DEGILDIR. Zaman asimina ugramis bir vaka iki
         # tarafta da AYNI gorunur ve eskiden EQUAL'e sayiliyordu: ozet satiri
@@ -96,6 +100,14 @@ for name in sorted(go):
             return {k: (bytes.fromhex(v[0]).decode("utf-8", "replace"), v[1]) for k, v in w.items()}
         print(f"   written GO: {decw(g.get('written'))!r}")
         print(f"   written RS: {decw(r.get('written'))!r}")
+    if g.get("session") != r.get("session"):
+        def decs(w):
+            if w is None: return None
+            def body(x):
+                return x if x == "seed-unchanged" else bytes.fromhex(x).decode("utf-8", "replace")
+            return {k: (v if k == "dir_modes" else (body(v[0]), v[1])) for k, v in w.items()}
+        print(f"   session GO: {decs(g.get('session'))!r}")
+        print(f"   session RS: {decs(r.get('session'))!r}")
     if g.get("pinfile_hex") != r.get("pinfile_hex"):
         def dec(v): return None if v is None else bytes.fromhex(v).decode("utf-8", "replace")
         print(f"   epochs.json GO: {dec(g.get('pinfile_hex'))!r}")

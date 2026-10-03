@@ -56,6 +56,39 @@ FIXTURE_FILES = {
              "echo \"ALPHA=${ALPHA-<unset>}\"\n"
              "echo \"TF_VAR_ALPHA=${TF_VAR_ALPHA-<unset>}\"\n"
              "exit 3\n"),
+    # `cloudflared` SHIM — a program, written 0755 like the `tofu` one. `wapps
+    # login` resolves "cloudflared" on PATH and runs it twice; this shim makes
+    # both runs observable without a browser or a network:
+    #   * `access login` prints its argv (`--quiet` must be there, the gate
+    #     must be the read or the admin URL) and reports the ISOLATION it was
+    #     given: HOME under the temp dir with the `wapps-cf-` prefix, every
+    #     XDG/Windows home pinned to it, TUNNEL_*/CLOUDFLARED_* dropped. It
+    #     records the gate in the isolated home;
+    #   * `access token` fails unless it sees the SAME home and `-app=<that
+    #     gate>`, writes the token to STDERR first (a leak canary — that stream
+    #     must be discarded), then prints CF_SHIM_TOKEN on stdout.
+    # CF_SHIM_LOGIN_EXIT / CF_SHIM_TOKEN_EXIT drive the failure branches.
+    "cloudflared": ("#!/bin/sh\n"
+                    "case \"$1 $2\" in\n"
+                    "\"access login\")\n"
+                    "  echo \"cloudflared $*\"\n"
+                    "  case \"$HOME\" in\n"
+                    "    \"${TMPDIR:-/tmp}\"/wapps-cf-*) echo 'home: isolated under the temp dir' ;;\n"
+                    "    *) echo 'home: NOT isolated' ;;\n"
+                    "  esac\n"
+                    "  for v in XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME USERPROFILE APPDATA LOCALAPPDATA; do\n"
+                    "    eval \"x=\\${$v-}\"; [ \"$x\" = \"$HOME\" ] || echo \"$v: NOT pinned\"\n"
+                    "  done\n"
+                    "  echo \"overrides: TUNNEL_TRANSPORT=${TUNNEL_TRANSPORT-<unset>} CLOUDFLARED_HOME=${CLOUDFLARED_HOME-<unset>}\"\n"
+                    "  printf '%s' \"$4\" > \"$HOME/.cf-gate\"\n"
+                    "  exit \"${CF_SHIM_LOGIN_EXIT:-0}\" ;;\n"
+                    "\"access token\")\n"
+                    "  printf '%s\\n' \"$CF_SHIM_TOKEN\" >&2\n"
+                    "  [ \"$3\" = \"-app=$(cat \"$HOME/.cf-gate\" 2>/dev/null)\" ] || exit 8\n"
+                    "  printf '%s\\n' \"$CF_SHIM_TOKEN\"\n"
+                    "  exit \"${CF_SHIM_TOKEN_EXIT:-0}\" ;;\n"
+                    "esac\n"
+                    "exit 99\n"),
 }
 
 AGENT = {"CLAUDECODE": "1"}          # pty'de stdin TTY ama ajan isareti VAR
@@ -2819,6 +2852,141 @@ CASES += SHADOW_SHORT_FLAG_CASES
 
 
 
+# --- `wapps login` ------------------------------------------------------------
+#
+# ROOT-MOUNTED and without `Ctx::resolve`: `-p` is accepted and inert (the
+# `proj` arm), `cfg`/`rooted` are waived in ARM_WAIVERS. The plain verb is
+# TTY-only (agent mode refuses it BEFORE cloudflared runs); `--check` is
+# allowed everywhere and wins over `--write`.
+#
+# Every case pins the gate to a FIXED, unreachable URL: login never talks to
+# the gate, and the host it prints (and names the session file after) must
+# not carry the per-binary fake-gate port.
+#
+# DETERMINISM: login prints `time.Until(exp)` with nanosecond precision, so a
+# realistic expiry would print a different TTL on every run. The success
+# cases use exp = 99999999999999, which Go SATURATES to maxDuration — a fixed
+# string that also pins the saturation itself. `--check` prints whole seconds
+# and uses `{NOW+N}` instead (see probe.py).
+#
+# NO REAL SECRET: every token below is an unsigned, made-up JWT.
+def _b64u(raw):
+    import base64
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+def fake_jwt(payload):
+    return ".".join([_b64u('{"alg":"none"}'), _b64u(payload), _b64u("not-a-signature")])
+
+LOGIN_GATE = {"WAPPS_SECRETS_GATE": "https://gate.example.invalid"}
+CF_PATH = {"PATH": "{FIX}:/usr/bin:/bin"}
+FAR_EXP = 99999999999999
+DEV_JWT = fake_jwt('{"email":"dev@example.test","sub":"u1","exp":%d}' % FAR_EXP)
+ADMIN_JWT = fake_jwt('{"email":"admin@example.test","exp":%d}' % FAR_EXP)
+
+def sess(token, expires_at):
+    """A session file exactly as Go's session.Save writes it."""
+    return '{"token":"%s","expires_at":%s}' % (token, expires_at)
+
+READ_FILE = "gate.example.invalid.json"
+ADMIN_FILE = "gate.example.invalid-admin.json"
+
+def lg(name, argv, env, token=None, sessions=None, **extra):
+    e = dict(env, **LOGIN_GATE, **extra)
+    if token is not None:
+        e.update(CF_PATH, CF_SHIM_TOKEN=token)
+    return (name, argv, e, None, None, None, None, sessions)
+
+# The check cases read FILES, so the out-of-band env token is cleared.
+NO_ENV_TOKEN = {"WAPPS_SESSION_TOKEN": ""}
+
+LOGIN_CASES = [
+    # === the SSO itself ====================================================
+    lg("human_login_writes_the_read_session", ["login"], HUMAN, DEV_JWT,
+       TUNNEL_TRANSPORT="quic", CLOUDFLARED_HOME="/elsewhere"),
+    # --write: admin URL, admin label, its OWN file — the seeded read session
+    # must survive byte-for-byte.
+    lg("human_login_write_targets_the_admin_app_and_keeps_the_read_session",
+       ["login", "--write"], HUMAN, ADMIN_JWT,
+       sessions={READ_FILE: sess(DEV_JWT, 0)}),
+    lg("human_login_without_exp_or_email_has_a_bare_success_line",
+       ["login"], HUMAN, fake_jwt("{}")),
+    # Go's json.Unmarshal accepts `null` into a struct as a no-op: a null
+    # payload logs in with an unknown expiry instead of failing.
+    lg("human_login_a_null_payload_logs_in_with_an_unknown_expiry",
+       ["login"], HUMAN, fake_jwt("null")),
+    # `proj` arm: the root flag is accepted and changes nothing.
+    lg("human_login_project_flag_is_inert", P + ["login"], HUMAN, DEV_JWT),
+
+    # === refusals before anything runs =====================================
+    lg("agent_login_is_refused_before_cloudflared_runs", ["login"], AGENT, DEV_JWT),
+    # No shim on PATH: ACTION_UNAVAILABLE, measured WITHOUT a shim.
+    lg("human_login_without_cloudflared_is_action_unavailable", ["login"], HUMAN),
+
+    # === the token cloudflared printed =====================================
+    lg("human_login_an_empty_token_is_not_usable", ["login"], HUMAN, ""),
+    lg("human_login_a_decorated_token_is_not_usable", ["login"], HUMAN, "token: " + DEV_JWT),
+    lg("human_login_a_two_segment_token_is_not_usable", ["login"], HUMAN, "e30.e30"),
+    lg("human_login_a_padded_segment_is_not_usable", ["login"], HUMAN, "e30.e30=.e30"),
+    lg("human_login_a_payload_that_is_not_json", ["login"], HUMAN, fake_jwt("x")),
+    lg("human_login_a_claim_of_the_wrong_type", ["login"], HUMAN, fake_jwt('{"exp":"soon"}')),
+
+    # === cloudflared failing ===============================================
+    lg("human_login_a_failing_sso_names_the_exit_status", ["login"], HUMAN, DEV_JWT,
+       CF_SHIM_LOGIN_EXIT="3"),
+    # The shim writes the token to stderr before failing: none of it may
+    # reach the terminal.
+    lg("human_login_a_failing_token_fetch_discards_its_stderr", ["login"], HUMAN, DEV_JWT,
+       CF_SHIM_TOKEN_EXIT="4"),
+
+    # === --check ===========================================================
+    lg("human_login_check_with_no_session", ["login", "--check"], HUMAN, **NO_ENV_TOKEN),
+    lg("agent_login_check_with_no_session", ["login", "--check"], AGENT, **NO_ENV_TOKEN),
+    lg("human_login_check_reads_both_sessions_from_disk", ["login", "--check"], HUMAN,
+       sessions={READ_FILE: sess(DEV_JWT, "{NOW+7200}"),
+                 ADMIN_FILE: sess(ADMIN_JWT, "{NOW+900}")}, **NO_ENV_TOKEN),
+    lg("human_login_check_an_expired_read_session", ["login", "--check"], HUMAN,
+       sessions={READ_FILE: sess(DEV_JWT, 1)}, **NO_ENV_TOKEN),
+    lg("human_login_check_without_an_admin_session", ["login", "--check"], HUMAN,
+       sessions={READ_FILE: sess(DEV_JWT, 0)}, **NO_ENV_TOKEN),
+    lg("human_login_check_an_expired_admin_session_is_reported_missing",
+       ["login", "--check"], HUMAN,
+       sessions={READ_FILE: sess(DEV_JWT, 0), ADMIN_FILE: sess(ADMIN_JWT, 1)}, **NO_ENV_TOKEN),
+    # The out-of-band env token is key-independent: it stands in for the
+    # read AND the admin session, and an opaque token has no subject.
+    lg("human_login_check_the_env_token_stands_in_for_both_sessions",
+       ["login", "--check"], HUMAN, WAPPS_SESSION_EXPIRES="{NOW+3600}"),
+    lg("human_login_check_wins_over_write", ["login", "--check", "--write"], HUMAN),
+    lg("agent_login_check_is_allowed_in_agent_mode", P + ["login", "--check"], AGENT),
+    lg("human_login_extra_args_are_silently_ignored", ["login", "EXTRA", "--check"], HUMAN),
+]
+CASES += LOGIN_CASES
+
+# --- the session FILE behind every store call -----------------------------------
+#
+# A login is only real if the next verb presents what it cached. These run
+# against the LIVE fake gate, so the read file is named `{GATEFILE}` (probe.py
+# builds 127.0.0.1_<port>) and the env token is cleared. `whoami`'s body is
+# keyed by the token it receives, so "who-service" proves the FILE's token
+# went out. The admin cases pin the split: /v1/admin is a separate CF Access
+# app and its session lives under its own key.
+SESSION_FILE_CASES = [
+    ("human_whoami_presents_the_cached_read_session", ["whoami"], dict(HUMAN, **NO_ENV_TOKEN),
+     None, None, None, None, {"{GATEFILE}.json": sess("who-service", 0)}),
+    ("human_whoami_an_expired_cached_session_is_not_sent", ["whoami"], dict(HUMAN, **NO_ENV_TOKEN),
+     None, None, None, None, {"{GATEFILE}.json": sess("who-service", 1)}),
+    ("human_whoami_an_admin_session_alone_is_not_a_read_session", ["whoami"],
+     dict(HUMAN, **NO_ENV_TOKEN),
+     None, None, None, None, {"{GATEFILE}-admin.json": sess("who-service", 0)}),
+    ("human_policy_show_presents_the_cached_admin_session", ["secrets", "policy", "show"],
+     dict(HUMAN, **NO_ENV_TOKEN),
+     None, None, None, None, {"{GATEFILE}-admin.json": sess("admin-token", 0)}),
+    ("human_policy_show_a_read_session_alone_is_refused", ["secrets", "policy", "show"],
+     dict(HUMAN, **NO_ENV_TOKEN),
+     None, None, None, None, {"{GATEFILE}.json": sess("read-token", 0)}),
+]
+CASES += SESSION_FILE_CASES
+
+
 # ============================================================================
 # ARM KAPSAMI — HATIRLANAN BIR KURAL DEGIL, BIR MEKANIZMA
 # ============================================================================
@@ -2980,6 +3148,12 @@ ARM_WAIVERS = {
                "oldugunu olcuyor, kimlik cozdugunu DEGIL",
         "rooted": "ayni sebep: whoami bir PROJEYE degil bir PRINCIPAL'a bakiyor, "
                   "yerel `.wapps.yaml`e HIC dokunmuyor",
+    },
+    "login": {
+        "cfg": "run_login(check, write) — no Ctx::resolve, no config/project "
+               "parameter; the `-p` cases measure that the flag is INERT",
+        "rooted": "same reason: login targets the gate (a principal's session), "
+                  "never a project, and does not read a local `.wapps.yaml`",
     },
     "token exchange": {
         "cfg": "run_token_exchange — `--project` burada YAPRAGIN KENDI bayragi "

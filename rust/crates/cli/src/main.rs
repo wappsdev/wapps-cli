@@ -18,6 +18,7 @@ use wapps::gojson::quote as go_quote;
 use wapps::gostrconv;
 use wapps::gotime;
 use wapps::importenv;
+use wapps::loginverb;
 use wapps::policy;
 use wapps::policyverb;
 use wapps::initverb;
@@ -388,6 +389,7 @@ fn run() -> Result<(), CmdError> {
             }
         },
         Some(("whoami", _)) => run_whoami(),
+        Some(("login", lm)) => run_login(lm.get_flag("check"), lm.get_flag("write")),
         Some(("token", tm)) => match tm.subcommand() {
             Some(("exchange", em)) => run_token_exchange(
                 shadowed_project(em, &project),
@@ -2035,6 +2037,98 @@ fn run_whoami() -> Result<(), CmdError> {
             g.keys.join(","),
             g.verbs.join(",")
         );
+    }
+    Ok(())
+}
+
+// --- `wapps login` ---------------------------------------------------------------
+//
+// ORACLE: cmd/login.go. `--check` wins over `--write` and runs in every mode
+// (it prints no token bytes); the plain verb is TTY-only and is refused in
+// agent mode BEFORE cloudflared is looked up.
+fn run_login(check: bool, write: bool) -> Result<(), CmdError> {
+    if check {
+        return run_login_check();
+    }
+    agentmode::guard(agentmode::POLICY_TTY, agentmode::is_agent()).map_err(CmdError::Cli)?;
+
+    // --write: the SSO runs against the WRITE (admin) app at <gate>/v1/admin
+    // and the token goes under its own key, so the read session survives.
+    let (gate, key, label) = if write {
+        let gate = session::admin_gate_url();
+        let label = format!("{gate} (admin: 15 min + WebAuthn)");
+        (gate, session::admin_session_key(), label)
+    } else {
+        let host = session::gate_host();
+        (session::gate_url(), host.clone(), host)
+    };
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "Opening CF Access SSO for {label} via cloudflared…");
+    // cloudflared writes to the same terminal: this line must land first.
+    let _ = out.flush();
+
+    // vars_os, not vars: Go passes os.Environ() through byte-for-byte, and
+    // std::env::vars panics on a non-UTF-8 value.
+    let base_env: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    let temp_base = loginverb::temp_base();
+    let token = loginverb::cloudflared_login(&loginverb::CloudflaredRun {
+        gate: &gate,
+        path_env: &path_env,
+        temp_base: &temp_base,
+        base_env: &base_env,
+        timeout: loginverb::LOGIN_TIMEOUT,
+    })
+    .map_err(CmdError::Cli)?;
+
+    // Validate the SHAPE and that the claims really decode: a decorated or
+    // broken stdout must not pass as a token and later become a bad header.
+    if !loginverb::looks_like_jwt(&token) {
+        return Err(CmdError::Cli(Error::new(
+            Code::Internal,
+            "cloudflared returned no usable token; re-run wapps login",
+        )));
+    }
+    let claims = session::parse_claims(&token).map_err(|e| {
+        CmdError::Cli(Error::new(
+            Code::Internal,
+            format!("cloudflared token did not parse as a JWT; re-run wapps login: {e}"),
+        ))
+    })?;
+    session::save(&key, &session::State { token, expires_at: claims.exp })
+        .map_err(|e| CmdError::Cli(Error::new(Code::Internal, format!("cache session token: {e}"))))?;
+    let _ = write!(out, "{}", loginverb::success_line(&claims, session::now()));
+    Ok(())
+}
+
+// run_login_check, both sessions' subject + remaining TTL. A missing admin
+// session is NOT an error; a missing or expired read session is.
+fn run_login_check() -> Result<(), CmdError> {
+    let read_host = session::gate_host();
+    let Some(s) = session::load(&read_host) else {
+        return Err(CmdError::Cli(Error::new(
+            Code::SessionExpired,
+            format!("no session cached for {read_host}"),
+        )));
+    };
+    let now = session::now_unix();
+    if s.expired(now) {
+        return Err(CmdError::Cli(Error::new(
+            Code::SessionExpired,
+            format!("session for {read_host} has expired"),
+        )));
+    }
+    let mut out = std::io::stdout();
+    let _ = write!(out, "{}", loginverb::render_session("gate", &read_host, &s, now));
+    let _ = writeln!(out);
+    match session::load(&session::admin_session_key()) {
+        Some(a) if !a.expired(now) => {
+            let target = session::admin_gate_url();
+            let _ = write!(out, "{}", loginverb::render_session("admin", &target, &a, now));
+        }
+        _ => {
+            let _ = write!(out, "{}", loginverb::ADMIN_MISSING);
+        }
     }
     Ok(())
 }

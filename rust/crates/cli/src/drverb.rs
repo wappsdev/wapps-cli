@@ -39,6 +39,7 @@ use crate::cli::CmdError;
 use crate::clierr::{Code, Error};
 use crate::cryptoid::{self};
 use crate::execverb;
+use crate::gobase64::std_decode as b64_decode;
 use crate::goerr;
 use crate::tofu;
 use serde::Deserialize;
@@ -591,74 +592,6 @@ pub fn run_combine_core<W: Write>(
     Ok(())
 }
 
-/// b64_decode, standart base64'u (RFC 4648, DOLGULU) cozer — Go'nun
-/// `base64.StdEncoding.DecodeString`inin karsiligi.
-///
-/// ELDE YAZILDI cunku agacta base64 crate'i YOK ve `dr` icin bir tane eklemek
-/// Cargo.toml'daki gerekceyi (bkz. `ring`) bir satirlik bir cozumleyici icin
-/// delmek olurdu.
-///
-/// KATI, ve katilik burada bir PARITE sartidir — Go'nun StdEncoding'i de
-/// katidir:
-///   * uzunluk 4'un kati OLMALI (aksi halde CorruptInputError),
-///   * dolgu ('=') YALNIZCA sonda ve en fazla iki tane,
-///   * alfabe disi HER karakter (yenisatir DAHIL) reddedilir.
-///
-/// Gevsek bir cozumleyici, Go'nun REDDETTIGI bir manifest'i KABUL ederdi ve
-/// bu bir ayrisma olurdu.
-fn b64_decode(s: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some((c - b'A') as u32),
-            b'a'..=b'z' => Some((c - b'a') as u32 + 26),
-            b'0'..=b'9' => Some((c - b'0') as u32 + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let b = s.as_bytes();
-    if !b.len().is_multiple_of(4) {
-        return None;
-    }
-    if b.is_empty() {
-        return Some(Vec::new());
-    }
-    let mut pad = 0usize;
-    while pad < 2 && b[b.len() - 1 - pad] == b'=' {
-        pad += 1;
-    }
-    let body = &b[..b.len() - pad];
-    // Govdede dolgu KALMAMALI (ornegin "A=B=" reddedilir).
-    if body.contains(&b'=') {
-        return None;
-    }
-    let mut out = Vec::with_capacity(b.len() / 4 * 3);
-    for chunk in body.chunks(4) {
-        let mut acc: u32 = 0;
-        for &c in chunk {
-            acc = (acc << 6) | val(c)?;
-        }
-        match chunk.len() {
-            4 => {
-                out.push((acc >> 16) as u8);
-                out.push((acc >> 8) as u8);
-                out.push(acc as u8);
-            }
-            3 => {
-                let acc = acc << 6;
-                out.push((acc >> 16) as u8);
-                out.push((acc >> 8) as u8);
-            }
-            2 => {
-                let acc = acc << 12;
-                out.push((acc >> 16) as u8);
-            }
-            _ => return None,
-        }
-    }
-    Some(out)
-}
 
 // --- dr restore ----------------------------------------------------------------------
 //

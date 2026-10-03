@@ -1,22 +1,21 @@
-// gotime, Go'nun `time.Unix(n, 0).UTC().Format(time.RFC3339)` ciktisidir.
+// gotime, the Go `time` outputs the CLI prints: RFC3339 timestamps and
+// `time.Duration` strings.
 //
-// NEDEN ELDE YAZILDI — `rotateplan::rfc3339_valid` ile AYNI karar: bir tarih
-// kutuphanesi (chrono/time) bu grafige yeni crate'ler sokardi ve bu estate
-// TEK bir bicimleme cagrisi icin bunu odemiyor. Aradaki fark su: orada elde
-// yazilan sey bir KABUL KUMESIYDI (deger tel'e AYNEN biniyordu), burada
-// gercek bir TAKVIM hesabi var — cunku `token exchange` gate'ten gelen bir
-// unix damgasini INSANA basiyor.
+// WHY HAND-WRITTEN — the same decision as `rotateplan::rfc3339_valid`: a date
+// library (chrono/time) would bring new crates into the graph, and this
+// estate does not pay that for a handful of formatting calls. Unlike there,
+// the RFC3339 part is a real CALENDAR computation, because `token exchange`
+// prints a unix stamp from the gate to a HUMAN.
 //
-// TEK MUSTERISI `token exchange`in stderr metadata satiri, ve o satirin
-// baytlari Go ikilisinden OLCULDU (tests/gotime.rs).
+// Every expected byte in tests/gotime.rs was measured from Go.
 
-/// rfc3339_utc, unix saniyesini `YYYY-MM-DDTHH:MM:SSZ` olarak yazar.
+/// rfc3339_utc, writes unix seconds as `YYYY-MM-DDTHH:MM:SSZ`
+/// (Go's `time.Unix(n, 0).UTC().Format(time.RFC3339)`).
 ///
-/// NEGATIF GIRDI TASINMIYOR ve bu bir eksiklik degil bir kapsam: tek cagiran
-/// `exp > 0` dalinda. Go negatif damgalari da bicimliyor; onu tasimak
-/// cagirani olmayan bir dal tasimak olurdu, ve olculmemis bir dal tasimak
-/// daha da kotusu. Negatif bir girdi burada 1970 oncesine DUSMEZ, saturate
-/// eder — sessizce yanlis bir tarih uretmektense sabit bir taban.
+/// NEGATIVE INPUT IS NOT CARRIED, as a scope decision: the only caller is on
+/// an `exp > 0` branch. Go formats negative stamps too; carrying that would
+/// be a branch without a caller, and an unmeasured one. A negative input
+/// saturates to the epoch instead of silently producing a wrong date.
 pub fn rfc3339_utc(unix: i64) -> String {
     let secs = unix.max(0);
     let days = secs / 86_400;
@@ -30,13 +29,13 @@ pub fn rfc3339_utc(unix: i64) -> String {
     )
 }
 
-// civil_from_days, 1970-01-01'den bu yana gecen gunu (yil, ay, gun)'e cevirir.
+// civil_from_days, days since 1970-01-01 to (year, month, day).
 //
-// Howard Hinnant'in `civil_from_days` algoritmasi: takvimi MART'ta baslatarak
-// artik gunu yilin SONUNA atiyor, boylece ay uzunluklari tek bir formule
-// sigiyor ve artik yil kurallarinin ucu de (4 / 100 / 400) tek bir yerde
-// kaliyor. Ay tablosuyla dongu yazmak da mumkundu; bu bicim, testteki uc
-// artik-yil vakasinin AYNI iki satirdan gectigini gorunur kiliyor.
+// Howard Hinnant's `civil_from_days`: starting the year in MARCH puts the leap
+// day at the END of the year, so month lengths fit one formula and all three
+// leap-year rules (4 / 100 / 400) live in one place. A month-table loop would
+// work too; this form makes it visible that the three leap-year test cases go
+// through the SAME two lines.
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -44,8 +43,112 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11], MART = 0
+    let mp = (5 * doy + 2) / 153; // [0, 11], MARCH = 0
     let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+// --- time.Duration ------------------------------------------------------------
+//
+// `wapps login` prints session lifetimes as Go `time.Duration` strings, so the
+// three Go operations behind those lines are ported literally, with Go's
+// wrapping and saturating integer semantics. doctorverb::go_duration is the
+// whole-seconds subset of `duration_string`; it stays where it is because its
+// callers never see a fraction.
+
+const NANOS_PER_SEC: i64 = 1_000_000_000;
+
+/// duration_string, Go's `time.Duration.String()`.
+///
+/// Below one second the unit shrinks (ns, µs, ms) and keeps a fraction; from
+/// one second up the form is `[h][m]s` with a seconds fraction, the hour field
+/// never rolls into days, and a zero hour or minute field is omitted only
+/// while every larger field is zero too ("1h0m0s", but "59m59s").
+pub fn duration_string(d: i64) -> String {
+    let neg = d < 0;
+    let mut u = d.unsigned_abs();
+    let mut out = String::new();
+    if u < NANOS_PER_SEC as u64 {
+        if u == 0 {
+            return "0s".to_string();
+        }
+        let (prec, unit) = if u < 1_000 {
+            (0, "ns")
+        } else if u < 1_000_000 {
+            (3, "µs")
+        } else {
+            (6, "ms")
+        };
+        let (frac, int) = frac_part(u, prec);
+        out.push_str(&int.to_string());
+        out.push_str(&frac);
+        out.push_str(unit);
+    } else {
+        let (frac, secs) = frac_part(u, 9);
+        u = secs;
+        let s = u % 60;
+        u /= 60;
+        if u > 0 {
+            let m = u % 60;
+            u /= 60;
+            if u > 0 {
+                out.push_str(&format!("{u}h"));
+            }
+            out.push_str(&format!("{m}m"));
+        }
+        out.push_str(&format!("{s}{frac}s"));
+    }
+    if neg {
+        out.insert(0, '-');
+    }
+    out
+}
+
+// frac_part, Go's fmtFrac: the `prec` low decimal digits of v as ".ddd" with
+// trailing zeros dropped ("" when they are all zero), plus v / 10^prec.
+fn frac_part(v: u64, prec: u32) -> (String, u64) {
+    let pow = 10u64.pow(prec);
+    let mut digits = format!("{:0width$}", v % pow, width = prec as usize);
+    while digits.ends_with('0') {
+        digits.pop();
+    }
+    let frac = if digits.is_empty() { String::new() } else { format!(".{digits}") };
+    (frac, v / pow)
+}
+
+/// round_second, Go's `d.Round(time.Second)`: halves round away from zero,
+/// and a result that would overflow saturates to the extreme instead.
+pub fn round_second(d: i64) -> i64 {
+    let m = NANOS_PER_SEC;
+    let less_than_half = |x: i64| (x as u64).wrapping_add(x as u64) < m as u64;
+    let r = d % m;
+    if d < 0 {
+        let r = -r;
+        if less_than_half(r) {
+            return d + r;
+        }
+        let d1 = d.wrapping_sub(m).wrapping_add(r);
+        return if d1 < d { d1 } else { i64::MIN };
+    }
+    if less_than_half(r) {
+        return d - r;
+    }
+    let d1 = d.wrapping_add(m).wrapping_sub(r);
+    if d1 > d {
+        d1
+    } else {
+        i64::MAX
+    }
+}
+
+/// until_unix, Go's `time.Until(time.Unix(exp, 0))` with `now` given as unix
+/// seconds + nanoseconds.
+///
+/// Go computes the difference in nanoseconds and SATURATES when it does not
+/// fit an int64 (Time.Sub). A far-future expiry therefore prints as
+/// 2562047h47m16.854775807s, not as a wrapped negative number.
+pub fn until_unix(exp: i64, now_sec: i64, now_nsec: i64) -> i64 {
+    let d = (exp as i128) * (NANOS_PER_SEC as i128) - (now_sec as i128 * NANOS_PER_SEC as i128 + now_nsec as i128);
+    d.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }

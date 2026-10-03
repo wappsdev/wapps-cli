@@ -66,6 +66,9 @@ Gezilen düğüm sayısı: **Go 50**, **Rust 31**. Rust'ta olmayan yol: **19**.
 > **Dilim 2 ve 4'ten sonra:** `whoami`, `token` ve `token exchange` indi →
 > Rust **35** düğüm, eksik yol **15**. `login` KALDI (Dilim 3), yani
 > `cmd/login.go` hâlâ yarım.
+>
+> **After slice 3:** `login` landed → Rust carries **36** nodes, **14** paths
+> missing, and `cmd/login.go` is fully ported.
 
 Aşağıdaki tabloda "yerel bayraklar" kök kalıtsal bayrakları (`-c/--config`,
 `-p/--project`, `-v/--verbose`, `-h/--help`) DIŞARIDA bırakır — cobra onları
@@ -483,7 +486,7 @@ Yapılacak iş rotayı silmek değil, gövdesini gerçek şekle zenginleştirmek
 
 ---
 
-### Dilim 3 — `login` (`--check`, `--write`)
+### Dilim 3 — `login` (`--check`, `--write`) · **LANDED**
 
 | | |
 |---|---|
@@ -494,6 +497,63 @@ Yapılacak iş rotayı silmek değil, gövdesini gerçek şekle zenginleştirmek
 | differential vakası | **16–20** (üç bayrak kombinasyonu × kollar; artı: cloudflared yok, token boş, bozuk JWT segmenti, oturum dosyası izinleri) |
 | kapı | `cargo test` yeşil + `noecho.rs` (token baytı hiçbir yere sızmamalı) |
 | dikkat | Yazma oturumu AYRI bir CF Access uygulaması (`/v1/admin`); `session.rs` bu ayrımı zaten taşıyor (`auth_headers` / `auth_headers_admin`) — yeniden yazılmamalı |
+
+**What landed (measured).**
+
+| | |
+|---|---|
+| verbs | `login`, `login --check`, `login --write` |
+| new modules | `loginverb.rs` (cloudflared runner, JWT shape, rendering), `gobase64.rs` (`raw_url_decode` + `std_decode` moved out of `drverb.rs` unchanged) |
+| extended | `session.rs` (State, Load, Save, ParseClaims, admin key/URL), `gotime.rs` (full `Duration.String`, `Round(Second)`, `time.Until`), `gojson.rs` (`decode_struct`: Go's struct-decoding rules) |
+| new crate | **NONE** — the estimate held |
+| differential cases | **30** (priced 16–20): **25** `login` cases + **5** session-file cases on `whoami` / `secrets policy show`. Arms: `bare` + `proj` walked, `cfg` + `rooted` waived with reasons in `ARM_WAIVERS` |
+| harness | `probe.py`: 8th case element seeds session files; every case now captures `XDG_CONFIG_HOME/wapps/session` (bytes + file and dir modes) and `diff.py` compares it; `{NOW+N}` placeholder for TTL lines; `{GATEFILE}` names the live fake gate's session key. `cloudflared` shim in `FIXTURE_FILES` |
+| new tests | `tests/session.rs`, `tests/gobase64.rs`, `tests/loginverb.rs` (timeout kill, temp-home cleanup, exit/signal texts), `tests/loginleak.rs` (both binaries, under a pty: no token byte or segment in stdout/stderr, temp HOME gone, only the two 0600 files hold the token), duration vectors in `tests/gotime.rs` |
+| gate | `cargo test` green — differential `EQUAL=541 DIFFERENT=0 UNSOUND=0` (511 before + 30), `noecho`, `tokenleak`, `loginleak` all pass; `cargo clippy --all-targets` clean; `go build ./...` and `go test ./...` exit 0 (no Go file changed). `cargo fmt --check` and `cargo deny check` were ALREADY failing on `main` (fmt drift in ~60 untouched files; RUSTSEC advisory on `rustls 0.23.43`); this slice formats only its new files and does not touch `Cargo.lock` |
+| mutation proofs | (a) admin header pointed at the read key + expiry ignored → 3 session-file cases red; (b) token step's stderr inherited → `loginleak` red ("the whole token leaked"); (c) temp HOME not removed → `loginleak` red. Each mutation was reverted and the file compared byte-for-byte with its backup |
+
+**What the pricing got wrong.**
+
+1. *"`session.rs` already carries the split — do not rewrite it" was only
+   half true.* The split existed only as a RECOVERY LINE: `auth_headers_admin`
+   was `auth_headers` with a different hint, and neither one read the session
+   FILE or `WAPPS_SESSION_EXPIRES`. A Rust `login` would have written a file
+   no Rust verb ever presented. Both functions keep their names and recovery
+   lines, but now load through `session::load` under their own keys (gate
+   host / `<host>-admin`) and refuse an expired session, as
+   `internal/session/auth.go` does. Two of the five session-file cases were
+   red against the pre-slice binary (`whoami` and `policy show` presenting a
+   cached session); the other three were already equal (the old code never
+   sent anything) and were proven by mutation instead: pointing the admin
+   header at the read key turned two of them red, ignoring expiry turned the
+   third red.
+2. *The temp HOME is not `std::env::temp_dir()`.* Measured on this machine
+   with `TMPDIR` unset: Rust returns `/var/folders/.../T/` (confstr), Go's
+   `os.TempDir()` returns `/tmp`. `loginverb::temp_base` carries Go's rule;
+   the shim reports whether HOME sits under `${TMPDIR:-/tmp}/wapps-cf-*`.
+3. *Go's `json.Unmarshal` is observable here.* A `null` payload logs in with
+   an unknown expiry (Go accepts `null` into a struct); keys match
+   case-insensitively with the last one winning; a type error is a fixed
+   sentence naming the first bad field in document order. All of that was
+   measured from Go 1.26 and is carried by `gojson::decode_struct`. Syntax
+   errors are translated only for an empty payload and a first byte that
+   cannot start a value; any other syntax error keeps serde's sentence
+   (known, unmeasured).
+4. *Determinism needed Go's own saturation.* `login` prints
+   `time.Until(exp)` with nanosecond precision. The success cases use
+   exp = 99999999999999, which Go saturates to `2562047h47m16.854775807s` —
+   a fixed string that also pins the saturation. `--check` prints whole
+   seconds and is aligned to a second boundary by `probe.py`.
+
+**Not measured.** The 5-minute SSO timeout in the corpus (unit-tested with an
+injected deadline); `Save`'s mkdir/write error texts (Go names a fixed
+`<file>.tmp`, `atomicfile` uses a random name); signal names beyond
+HUP/INT/KILL/TERM; an `exp` large enough to overflow Go's internal seconds
+(> ~9.2e18); Unicode key folding (Go also folds the Kelvin sign and long s);
+invalid UTF-8 inside a payload (Go accepts it, serde rejects it).
+`secrets status` and `doctor` still read session files with their own serde
+readers, so the JSON-decoding differences in point 3 remain there,
+unmeasured.
 
 ---
 
@@ -619,7 +679,7 @@ fazladan bir argüman cobra'da SESSİZCE yutuluyor; clap 1 ile düşüyordu.
 |---:|---|---:|---|---|
 | 1 | `dr accept-epoch-reset` · İNDİ | 172 | yok | 22 (gerçek) |
 | 2 | `whoami` · İNDİ | 60 | yok | 14 (gerçek) |
-| 3 | `login` | 634 | yok | 16–20 |
+| 3 | `login` · LANDED | 634 | none | 30 (actual) |
 | 4 | `token exchange` · İNDİ | 70 | yok | 40 (gerçek) |
 | 5 | `secrets sync` (arşiv kolu) | 582 | yok | 14–18 |
 | 6 | `coolify` + sync/coolify | 1438 | yok | 35–45 |

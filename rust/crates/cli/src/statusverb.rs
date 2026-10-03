@@ -126,42 +126,6 @@ pub fn read_session_from(
     (true, state.expires_at - now_unix)
 }
 
-/// host_of, gate URL'inin host bolumunu doner (oturum dosyasinin anahtari).
-///
-/// Ayristirilamayan bir deger VARSAYILANA duser — status'un hicbir girdide
-/// dusmemesi kuralinin bir parcasi.
-pub fn host_of(gate_url: &str) -> String {
-    const DEFAULT_HOST: &str = "gw.meapps.dev";
-    // Go url.Parse + u.Host: sema soyulur, ilk '/' oncesi alinir. Kullanici
-    // bilgisi (`user@host`) bu estate'te hic kullanilmiyor ve Go'nun Host'u
-    // onu zaten disarida birakiyor.
-    let rest = match gate_url.split_once("://") {
-        Some((scheme, rest)) if !scheme.is_empty() => rest,
-        // Semasiz bir deger Go'da Host'u BOS birakir → varsayilan.
-        _ => return DEFAULT_HOST.to_string(),
-    };
-    let host = rest.split('/').next().unwrap_or("");
-    let host = host.rsplit_once('@').map(|(_, h)| h).unwrap_or(host);
-    if host.is_empty() {
-        return DEFAULT_HOST.to_string();
-    }
-    host.to_string()
-}
-
-/// host_file, gate host'unu guvenli bir dosya adina indirger.
-///
-/// Yol ayirici karakterler '_' olur: bir gate adi oturum dosyasini dizin
-/// agacinda BASKA bir yere yazdiramasin.
-pub fn host_file(host: &str) -> String {
-    let safe: String = host
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{safe}.json")
-}
+// The session-file key helpers moved to session.rs, where `wapps login`
+// writes the file they name; re-exported so status keeps its call sites.
+pub use crate::session::{host_file, host_of};

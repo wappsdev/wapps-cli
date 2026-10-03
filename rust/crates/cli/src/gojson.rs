@@ -1,22 +1,24 @@
-// gojson, serde_json'i Go'nun `encoding/json`'i gibi kacis yapmaya zorlar.
+// gojson, Go `encoding/json` behavior on top of serde_json: Go's escaping on
+// output, and Go's struct-decoding rules on input (see the second section).
 //
-// NEDEN: sahada kurulu `wapps` ikilileri zarfi Go ile uretiyor ve Go varsayilan
-// olarak `<`, `>`, `&` (HTML guvenligi) ile U+2028/U+2029'u (JSONP guvenligi)
-// \uXXXX yaziyor. serde_json bunlarin HICBIRINI yazmiyor. Ayrisma OLCULDU ve tam
-// olarak bu bes karakter; alan sirasi, bosluk ve `retryable` zaten birebir ayni.
+// WHY ESCAPING: the installed `wapps` binaries produce the envelope with Go,
+// and Go escapes `<`, `>`, `&` (HTML safety) and U+2028/U+2029 (JSONP safety)
+// as \uXXXX by default. serde_json writes NONE of them. The divergence was
+// MEASURED and is exactly these five characters; field order, spacing and
+// `retryable` were already identical.
 //
-// Karar: GOLDENLAR degil SERIALIZER degisti. Gerekce, bu dilimde tek yonlu:
-// goldenlari degistirmek sahadaki bir tuketici icin davranis degisikligi olurdu,
-// serializer'i hizalamak ise hicbir seyi degistirmiyor — ayni baytlari uretiyor.
+// Decision: the SERIALIZER changed, not the goldens. Changing the goldens
+// would change behavior for a consumer in the field; aligning the serializer
+// changes nothing — it produces the same bytes.
 use serde_json::ser::Formatter;
 use std::io;
 
 pub struct GoEscape;
 
 impl Formatter for GoEscape {
-    // serde_json, kacis GEREKTIRMEYEN parcalari buradan geciriyor (tirnak, ters
-    // bolu ve kontrol karakterleri zaten ayri ele aliniyor). Go'nun fazladan
-    // kacirdigi bes karakteri burada yakaliyoruz.
+    // serde_json passes the fragments that need NO escaping through here
+    // (quote, backslash and control characters are handled separately). The
+    // five characters Go additionally escapes are caught here.
     fn write_string_fragment<W>(&mut self, w: &mut W, frag: &str) -> io::Result<()>
     where
         W: ?Sized + io::Write,
@@ -39,21 +41,22 @@ impl Formatter for GoEscape {
     }
 }
 
-/// to_string, Go-uyumlu kacisla tek satir JSON uretir.
+/// to_string, single-line JSON with Go-compatible escaping.
 pub fn to_string<T: serde::Serialize>(v: &T) -> serde_json::Result<String> {
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, GoEscape);
     v.serialize(&mut ser)?;
-    Ok(String::from_utf8(buf).expect("serde_json her zaman gecerli UTF-8 uretir"))
+    Ok(String::from_utf8(buf).expect("serde_json always produces valid UTF-8"))
 }
 
-/// GoEscapePretty, `json.MarshalIndent(v, "", "  ")` ile AYNI baytlari uretir:
-/// serde_json'in girintili duzeni + Go'nun fazladan kacirdigi bes karakter.
+/// GoEscapePretty, the SAME bytes as `json.MarshalIndent(v, "", "  ")`:
+/// serde_json's indented layout + the five characters Go additionally escapes.
 ///
-/// Neden gerekli: epoch pin dosyasi Go ikilisiyle PAYLASILAN bir dosya. Iki
-/// ikili ayni pin'i farkli baytlarla yazarsa, dosyayi karsilastiran her olcum
-/// (differential dahil) sahte bir fark gorur — ve daha kotusu, iki ikili
-/// arasinda gidip gelen bir kullanicida dosya her seferinde yeniden yazilir.
+/// Why: the epoch pin file is SHARED with the Go binary. If the two binaries
+/// wrote the same pin with different bytes, every measurement comparing the
+/// file (the differential included) would see a false difference — and worse,
+/// a user switching between the binaries would get the file rewritten every
+/// time.
 pub struct GoEscapePretty<'a> {
     inner: serde_json::ser::PrettyFormatter<'a>,
 }
@@ -128,21 +131,186 @@ impl Formatter for GoEscapePretty<'_> {
     }
 }
 
-/// to_string_indent, Go-uyumlu kacisla 2-bosluk girintili JSON uretir
-/// (`json.MarshalIndent(v, "", "  ")`). Sonda newline YOKTUR — Go da koymuyor.
+/// to_string_indent, 2-space indented JSON with Go-compatible escaping
+/// (`json.MarshalIndent(v, "", "  ")`). NO trailing newline — Go adds none.
 pub fn to_string_indent<T: serde::Serialize>(v: &T) -> serde_json::Result<String> {
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, GoEscapePretty::default());
     v.serialize(&mut ser)?;
-    Ok(String::from_utf8(buf).expect("serde_json her zaman gecerli UTF-8 uretir"))
+    Ok(String::from_utf8(buf).expect("serde_json always produces valid UTF-8"))
 }
 
-/// quote, Go'nun `%q`'sunu taklit eder.
+/// quote, imitates Go's `%q`.
 ///
-/// SINIR: Rust'in `{:?}`'si ile Go'nun strconv.Quote'u yazdirilamayan
-/// karakterlerde ayrisir (`\u{7}` vs `\a`). Bu yolun tasidigi degerler proje ve
-/// anahtar ADLARI — o kumede iki bicim ayni. Ayrisan bir ad gorulurse burasi
-/// elle yazilmalidir; sessizce dogru saymak icin degil, bilerek kabul edildi.
+/// LIMIT: Rust's `{:?}` and Go's strconv.Quote diverge on non-printable
+/// characters (`\u{7}` vs `\a`). The values on this path are project and key
+/// NAMES, where the two forms agree. If a diverging name ever shows up, this
+/// must be written by hand; the limit is accepted knowingly, not assumed away.
 pub fn quote(s: &str) -> String {
     format!("{s:?}")
+}
+
+// --- decoding into a flat Go struct ------------------------------------------------
+//
+// `wapps login` decodes two Go structs (session.State and session.Claims) and
+// the oracle's `json.Unmarshal` differs from a serde derive in ways a user
+// can see: `null` is accepted anywhere and changes nothing, keys match
+// case-insensitively with the LAST matching key winning, and a type error is
+// a fixed English sentence that names the first offending field in DOCUMENT
+// order. All of it was measured from a Go 1.26 program (tests/session.rs).
+//
+// Scope is exactly what those two structs need: string and int64 fields.
+// Syntax errors are translated for the two shapes a non-JSON payload
+// actually takes (empty input, a first byte that cannot start a value);
+// every other syntax error keeps serde's sentence, which is a known and
+// unmeasured divergence. Key folding is ASCII-only — Go also folds the
+// Kelvin sign and the long s, which no claim name here contains.
+
+/// GoField, the Go type of one struct field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GoField {
+    Str,
+    Int64,
+}
+
+/// GoValue, a decoded field value.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum GoValue {
+    Str(String),
+    Int64(i64),
+}
+
+/// GoStruct, the names a Go type error prints: `go_type` for a top-level
+/// mismatch ("session.Claims"), `name` for a field one ("Claims.exp").
+pub struct GoStruct<'a> {
+    pub go_type: &'a str,
+    pub name: &'a str,
+    pub fields: &'a [(&'a str, GoField)],
+}
+
+/// decode_struct, `json.Unmarshal(raw, &v)` for a struct of string/int64
+/// fields. Returns one slot per field, `None` where no key set it.
+pub fn decode_struct(raw: &[u8], st: &GoStruct<'_>) -> Result<Vec<Option<GoValue>>, String> {
+    // Go validates the WHOLE input before decoding anything, so a syntax error
+    // wins over a type error that appears earlier in the document.
+    if let Err(e) = serde_json::from_slice::<serde::de::IgnoredAny>(raw) {
+        return Err(go_syntax_error(raw, &e));
+    }
+    let top: Box<serde_json::value::RawValue> =
+        serde_json::from_slice(raw).map_err(|e| e.to_string())?;
+    let mut slots = vec![None; st.fields.len()];
+    let text = top.get();
+    match kind_of(text) {
+        "null" => return Ok(slots),
+        "object" => {}
+        other => {
+            return Err(format!("json: cannot unmarshal {other} into Go value of type {}", st.go_type))
+        }
+    }
+    let entries: Entries = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let mut first_err: Option<String> = None;
+    for (key, value) in entries.0 {
+        let Some(i) = st.fields.iter().position(|(n, _)| n.eq_ignore_ascii_case(&key)) else {
+            continue;
+        };
+        let (name, ty) = st.fields[i];
+        let v = value.get();
+        let kind = kind_of(v);
+        if kind == "null" {
+            continue;
+        }
+        let decoded = match (ty, kind) {
+            (GoField::Str, "string") => serde_json::from_str::<String>(v).ok().map(GoValue::Str),
+            (GoField::Int64, "number") => v.parse::<i64>().ok().map(GoValue::Int64),
+            _ => None,
+        };
+        match decoded {
+            Some(d) => slots[i] = Some(d),
+            None => {
+                if first_err.is_none() {
+                    let (what, go_ty) = match ty {
+                        // Go names the literal only for numbers into ints.
+                        GoField::Int64 if kind == "number" => (format!("number {v}"), "int64"),
+                        GoField::Int64 => (kind.to_string(), "int64"),
+                        GoField::Str => (kind.to_string(), "string"),
+                    };
+                    first_err = Some(format!(
+                        "json: cannot unmarshal {what} into Go struct field {}.{name} of type {go_ty}",
+                        st.name
+                    ));
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(slots),
+    }
+}
+
+// kind_of, the JSON kind of a raw value, named the way Go's type errors do.
+fn kind_of(raw: &str) -> &'static str {
+    match raw.trim_start().as_bytes().first() {
+        Some(b'"') => "string",
+        Some(b'{') => "object",
+        Some(b'[') => "array",
+        Some(b't') | Some(b'f') => "bool",
+        Some(b'n') => "null",
+        _ => "number",
+    }
+}
+
+// go_syntax_error, Go's sentence for the two syntax errors it is translated
+// for; serde's own sentence otherwise (see the section comment).
+fn go_syntax_error(raw: &[u8], e: &serde_json::Error) -> String {
+    let first = raw.iter().copied().find(|c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r'));
+    match first {
+        None => "unexpected end of JSON input".to_string(),
+        Some(c) if !matches!(c, b'{' | b'[' | b'"' | b'-' | b'0'..=b'9' | b't' | b'f' | b'n') => {
+            format!("invalid character {} looking for beginning of value", go_quote_char(c))
+        }
+        _ => e.to_string(),
+    }
+}
+
+// go_quote_char, encoding/json's quoteChar: `'\''`, `'"'`, else strconv.Quote
+// of the byte with the double quotes swapped for single ones.
+fn go_quote_char(c: u8) -> String {
+    match c {
+        b'\'' => "'\\''".to_string(),
+        b'"' => "'\"'".to_string(),
+        0x20..=0x7e => format!("'{}'", c as char),
+        b'\x07' => "'\\a'".to_string(),
+        b'\x08' => "'\\b'".to_string(),
+        b'\x0c' => "'\\f'".to_string(),
+        b'\x0b' => "'\\v'".to_string(),
+        _ if c < 0x80 => format!("'\\x{c:02x}'"),
+        // A non-ASCII first byte starts a multi-byte rune in Go's message;
+        // the exact rune text is not measured.
+        _ => format!("'\\x{c:02x}'"),
+    }
+}
+
+// Entries, a JSON object as its (key, raw value) pairs in DOCUMENT order,
+// duplicates kept — the order Go's decoder walks.
+struct Entries(Vec<(String, Box<serde_json::value::RawValue>)>);
+
+impl<'de> serde::Deserialize<'de> for Entries {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Entries;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Entries, A::Error> {
+                let mut out = Vec::new();
+                while let Some(e) = m.next_entry::<String, Box<serde_json::value::RawValue>>()? {
+                    out.push(e);
+                }
+                Ok(Entries(out))
+            }
+        }
+        d.deserialize_map(V)
+    }
 }

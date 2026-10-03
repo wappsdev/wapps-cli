@@ -520,6 +520,27 @@ pub fn build() -> Command {
                 // cobra'da whoamiCmd'in Args'i YOK -> ArbitraryArgs.
                 .arg(Arg::new("ignored").num_args(0..).hide(true)),
         )
+        // `login` is root-mounted like `whoami`, with no `Ctx::resolve`: the
+        // root `-c`/`-p` are accepted and inert. The verb's own gate (TTY
+        // only for the plain form) lives in run_login.
+        .subcommand(
+            Command::new("login")
+                .about("Log in to the secrets gate via CF Access SSO (TTY only)")
+                .arg(
+                    Arg::new("check")
+                        .long("check")
+                        .action(ArgAction::SetTrue)
+                        .help("print session subject + remaining TTL (no token bytes)"),
+                )
+                .arg(
+                    Arg::new("write")
+                        .long("write")
+                        .action(ArgAction::SetTrue)
+                        .help("log in to the WRITE (admin) Access app — required by control-plane verbs"),
+                )
+                // cobra: loginCmd has no Args -> ArbitraryArgs.
+                .arg(Arg::new("ignored").num_args(0..).hide(true)),
+        )
         // `token` bir AILE komutu (kendi Run'i YOK): alt komutsuz cagrilinca
         // cobra yardimi basip 0 ile cikiyor, ve dispatch tarafi da oyle.
         .subcommand(

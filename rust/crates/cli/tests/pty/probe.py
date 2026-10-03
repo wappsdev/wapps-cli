@@ -86,6 +86,13 @@ def main():
             # ESITLIGI olculdu (Go ikilisinin urettigi dosyayla karsilastirildi).
             # Yol iki ikili icin de AYNI workdir'den turedigi icin tohum da ayni.
             bindseed = case[6] if len(case) > 6 else None
+            # 8th element: PRE-EXISTING session files `wapps login` would have
+            # written, {file name: content}, seeded under
+            # XDG_CONFIG_HOME/wapps/session (dir 0700, file 0600 — the modes
+            # the binaries write). `{GATEFILE}` in a name is the live fake
+            # gate's session key (127.0.0.1_<port>): the port differs per
+            # binary, so the name is built here and normalized back below.
+            sessseed = case[7] if len(case) > 7 else None
             # {FIX} -> fikstur dizini (mutlak). Iki ikili de ayni dizeyi gorur.
             argv = [a.replace("{FIX}", fixdir) for a in argv]
             env = {
@@ -125,6 +132,23 @@ def main():
                         .replace("{FIX}", fixdir)
                    for k, v in env.items()}
             env = {k: v for k, v in env.items() if v != ""}
+            # `{NOW+N}` -> unix seconds N from now, in env values AND session
+            # seeds. The TTL lines `wapps login --check` prints are whole
+            # seconds of (expiry - now), so the case starts right after a
+            # second boundary: the binary then has ~0.95 s to read the clock
+            # inside the SAME second, and the printed TTL is exactly N.
+            if any("{NOW+" in v for v in env.values()) or \
+               any("{NOW+" in c for c in (sessseed or {}).values()):
+                while time.time() % 1 >= 0.05:
+                    time.sleep(0.005)
+                now = int(time.time())
+                def _now(v):
+                    while "{NOW+" in v:
+                        i = v.index("{NOW+"); j = v.index("}", i)
+                        v = v[:i] + str(now + int(v[i + 5:j])) + v[j + 1:]
+                    return v
+                env = {k: _now(v) for k, v in env.items()}
+                sessseed = {k: _now(v) for k, v in (sessseed or {}).items()}
             os.makedirs(env["HOME"], exist_ok=True)
             # her vaka temiz bir epoch-pin ile kossun; tohum verilmisse
             # dosya IKI ikili icin de AYNI baytlarla kuruluyor
@@ -176,6 +200,20 @@ def main():
                 with open(bindpath_for(cfg), "w") as f:
                     f.write(json.dumps(doc, indent=2))
 
+            gatefile = f"127.0.0.1_{port}"
+            sessdir = os.path.join(cfg, "wapps", "session")
+            if sessseed:
+                # Both levels 0700, like Go's MkdirAll(dir, 0o700); python's
+                # makedirs would give the INTERMEDIATE dir the default mode.
+                for d in (os.path.dirname(sessdir), sessdir):
+                    os.makedirs(d, exist_ok=True)
+                    os.chmod(d, 0o700)
+                for fn, content in sessseed.items():
+                    fp = os.path.join(sessdir, fn.replace("{GATEFILE}", gatefile))
+                    fd = os.open(fp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w") as f:
+                        f.write(content)
+
             out, err, code = run([binary] + argv, env, cwd=casedir,
                                  stdin_data=stdin_data)
             # Pin dosyasinin SON hali de sozlesmenin parcasi: reddedilen bir
@@ -216,9 +254,32 @@ def main():
                         rel = os.path.relpath(fp, casedir)
                         written[rel] = [open(fp, "rb").read().hex(),
                                         oct(os.stat(fp).st_mode & 0o777)]
+            # The SESSION CACHE is part of the contract too: what `wapps
+            # login` wrote (bytes AND modes — the file carries a bearer token
+            # and must be 0600 under 0700 dirs), and that a read-only verb
+            # left a seeded file untouched. `.tmp` names are the atomic
+            # writer's (random) temp files and are skipped like above.
+            session = None
+            if os.path.isdir(sessdir):
+                session = {"dir_modes": [oct(os.stat(d).st_mode & 0o777)
+                                         for d in (os.path.dirname(sessdir), sessdir)]}
+                seeded = {k.replace("{GATEFILE}", gatefile): v.encode()
+                          for k, v in (sessseed or {}).items()}
+                for fn in sorted(os.listdir(sessdir)):
+                    if fn.endswith(".tmp"):
+                        continue
+                    fp = os.path.join(sessdir, fn)
+                    body = open(fp, "rb").read()
+                    # A seed the binary did not touch is recorded as such: a
+                    # `{NOW+N}` seed carries a per-run timestamp, and its raw
+                    # bytes would differ between the two binaries' runs.
+                    shown = "seed-unchanged" if seeded.get(fn) == body else body.hex()
+                    session[fn.replace(gatefile, "{GATEFILE}")] = [
+                        shown, oct(os.stat(fp).st_mode & 0o777)]
             results[name] = {"stdout_hex": out.hex(), "stderr_hex": err.hex(),
                              "exit": code, "pinfile_hex": pin,
-                             "bindfile_hex": bind, "written": written}
+                             "bindfile_hex": bind, "written": written,
+                             "session": session}
     finally:
         gate.terminate(); gate.wait()
     with open(outpath, "w") as f:
