@@ -398,9 +398,10 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // `wapps skill` raised the floor to the live count it measured: 612
     // (569 + 43); `coolify update-env`/`set-labels` added 66 more, landed in
     // parallel, so the floor is their sum: 678. The floor had stayed at 511
-    // through login and sync.
+    // through login and sync. `coolify deploy-app`/`deploy-app-git`/
+    // `import-app` added 93: 771.
     assert!(
-        equal >= 678,
+        equal >= 771,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

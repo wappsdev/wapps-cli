@@ -94,7 +94,13 @@ def main():
             # binary, so the name is built here and normalized back below.
             sessseed = case[7] if len(case) > 7 else None
             # {FIX} -> fikstur dizini (mutlak). Iki ikili de ayni dizeyi gorur.
-            argv = [a.replace("{FIX}", fixdir) for a in argv]
+            # {GATE} -> the fake gate's root, in argv too: `secrets sync
+            # --target=coolify` reads its Coolify URL from `--coolify-url` only
+            # (never COOLIFY_URL). The port differs per binary, so no branch that
+            # PRINTS the URL may be measured this way (HTTP errors print only
+            # the path).
+            argv = [a.replace("{FIX}", fixdir).replace("{GATE}", f"http://127.0.0.1:{port}")
+                    for a in argv]
             env = {
                 "PATH": "/usr/bin:/bin",
                 "HOME": os.path.join(workdir, "fakehome"),

@@ -23,6 +23,13 @@ And a fake COOLIFY v4 API under /api/v1 (cases set COOLIFY_URL to
   PATCH  /api/v1/applications/{uuid}       -> custom_labels (coolify set-labels)
   POST   /api/v1/applications/{uuid}/envs  -> create one env (coolify update-env)
   PATCH  /api/v1/applications/{uuid}/envs  -> update one env after a 409
+  GET    /api/v1/applications/{uuid}/envs  -> the app's env table (secrets sync --target=coolify)
+  DELETE /api/v1/applications/{uuid}/envs/{env} -> remove one env (sync --force)
+  POST   /api/v1/applications/dockercompose -> create (coolify deploy-app)
+  POST   /api/v1/applications/{uuid}/start -> start (coolify deploy-app)
+  POST   /api/v1/applications/private-github-app -> create (coolify deploy-app-git)
+  GET    /api/v1/deploy?uuid=               -> trigger a deploy (deploy-app-git)
+  GET    /api/v1/applications               -> list (coolify import-app)
 
 TEL ADI `keyName` (camelCase) — bu bir AYRINTI DEGIL. Bu dosya bir sure
 `key_name` yaydi (Rust'in alan adi) ve o yanlis ad GERCEK bir ayrismayi
@@ -213,16 +220,21 @@ TOKEN_VERBS = ("read", "write", "rotate")
 # What the client must send, checked on EVERY request, each refusal with its
 # own body so a client that gets one wrong prints a different error:
 #   * `Authorization: Bearer <COOLIFY_TOKEN>` (the COOLIFY_API_TOKEN cases
-#     set) -> 401 otherwise;
+#     set) -> 401 otherwise. The token may carry a `:<tag>` suffix: the tag
+#     picks the scenario of a route the client sends nothing else to
+#     (`GET /applications`, see COOLIFY_LIST_SCENARIOS);
 #   * `User-Agent: curl/8` and `Content-Type: application/json` (Go sets both
-#     on every request) -> 400 otherwise.
+#     on every request, GET and DELETE included) -> 400 otherwise.
 #
-# Bodies are validated field by field: `custom_labels` must be STRICT standard
-# base64, an env body must carry exactly Go's five fields with Go's constant
-# flags. A body that is wrong in shape gets a 422 naming the problem.
+# Bodies are validated field by field: `custom_labels` and
+# `docker_compose_raw` must be STRICT standard base64, an env body must carry
+# exactly Go's five fields with Go's constant flags (`is_buildtime` true only
+# on an app this fake created from GitHub, uuid "gh-*": that is
+# `--build-arg`), the create bodies exactly Go's field sets, and a request Go
+# sends WITHOUT a body (start, deploy, the GETs, DELETE) must arrive empty. A
+# body that is wrong in shape gets a 422 naming the problem.
 #
-# The scenario is chosen by the app uuid (set-labels) or by the env key
-# (update-env), because those are the only variables the client sends:
+# The scenario is chosen by what the client sends:
 #   app "app-missing"   -> 404 on every route;
 #   app "app-longbody"  -> 500 with a body over 200 bytes (Go cuts it at 200
 #                          and appends "…");
@@ -230,27 +242,166 @@ TOKEN_VERBS = ("read", "write", "rotate")
 #                          of the raw request bytes. A successful PATCH prints
 #                          only a count; this is how a case sees WHAT went out
 #                          (the "\n" join, the strip filter, Go's JSON bytes);
-#   key "EXISTS_*"      -> 409 on POST, so the client must PATCH;
+#   key "EXISTS_*"      -> 409 on POST, so the client must PATCH (so does any
+#                          key the app's env table already holds);
 #   key "GONE_*"        -> 409 on POST and 404 on the PATCH that follows;
 #   key "BROKEN_*"      -> 500 on POST;
 #   key "ECHO_*"        -> 422 echoing the decoded env body and the sha256 of
 #                          the raw bytes (on POST, or on the PATCH after a 409
-#                          for "EXISTS_ECHO_*").
+#                          for "EXISTS_ECHO_*");
+#   create name         -> see COOLIFY_CREATE_SCENARIOS; otherwise the new app
+#                          is "dc-<name>" (compose) or "gh-<name>" (GitHub);
+#   app "dc-fail-start" -> 500 on start; uuid "gh-fail-deploy" -> 500 on deploy;
+#   app env tables      -> COOLIFY_APP_ENVS (the state `secrets sync
+#                          --target=coolify` diffs against). An app uuid
+#                          ending in "-j" serves its base table plus one more
+#                          entry, ZZ_JOURNAL (env uuid "env-journal").
+#
+# THE JOURNAL. An apply prints only counts, so what it SENT is invisible. The
+# fake keeps, per app, the list of env writes it received since that app's
+# envs were last listed: [method, key, value, is_buildtime] or ["DELETE",
+# env uuid]. Deleting "env-journal" is refused with a 422 carrying the length
+# and a sha256 of that list. ZZ_JOURNAL sorts after every other key, so its
+# DELETE is the last request of an apply and the digest covers every value,
+# flag, env uuid and the ORDER the client used. The list is reset when the app
+# is listed, so one case never sees another's writes.
 #
 # NO REAL SECRET: the token and every value are made-up test strings, and only
-# the labels/env bodies the cases themselves wrote are echoed.
+# the bodies the cases themselves wrote are echoed.
 COOLIFY_TOKEN = "coolify-test-token-not-a-secret"
 COOLIFY_ENV_FIELDS = {"key", "value", "is_preview", "is_buildtime", "is_literal"}
 COOLIFY_LONG_BODY = {"message": "Server Error", "detail": "x" * 240}
+COOLIFY_COMPOSE_FIELDS = {"project_uuid", "server_uuid", "name", "docker_compose_raw"}
+COOLIFY_GITHUB_FIELDS = {"project_uuid", "environment_name", "server_uuid",
+                         "github_app_uuid", "git_repository", "git_branch",
+                         "build_pack", "name", "base_directory",
+                         "dockerfile_location", "ports_exposes", "watch_paths",
+                         "instant_deploy"}
+
+# A create's response, by the `name` the client sent. "noid" answers without
+# a uuid (Go prints the decoded body with %v); "notjson" answers with a body
+# that is not JSON at all; "badid" hands back a uuid the client must refuse
+# before putting it in a path.
+COOLIFY_CREATE_SCENARIOS = {
+    "noid": (201, {"message": "created", "id": 7, "ok": True,
+                   "tags": ["a b", 1.5, 1e21, 0.00001], "none": None,
+                   "nested": {"z": 1, "a": "x"}}),
+    "notjson": (201, b"created, but not as JSON"),
+    "badid": (201, {"uuid": "../x"}),
+    "broken": (500, {"message": "Server Error"}),
+}
+
+# `GET /applications`, by the token's tag. The client sends nothing else, and
+# Go accepts both a bare array and a {"data": [...]} envelope and turns any
+# other 2xx body into an empty list.
+COOLIFY_APPS = [
+    {"uuid": "aaaaaaaa-1111", "name": "Web App",
+     "destination": {"server": {"uuid": "srv-1"}}},
+    {"uuid": "bbbbbbbb-2222", "name": "api_v2.internal",
+     "destination": {"server": {"uuid": "srv-2"}}},
+    {"uuid": "cccccccc-3333", "name": "  Trailing--Dash!! ",
+     "destination": {"server": {"uuid": "srv-1"}}},
+    # Go lowercases rune by rune (unicode.ToLower): "İ" becomes a plain "i".
+    {"uuid": "dddddddd-4444", "name": "İstanbul Üni",
+     "destination": {"server": {"uuid": "srv-1"}}},
+    {"uuid": "eeeeeeee-5555", "name": "no-destination"},
+    {"uuid": "ffffffff-6666", "name": "", "destination": {"server": {"uuid": "srv-1"}}},
+    {"name": "no-uuid", "destination": {"server": {"uuid": "srv-1"}}},
+    {"uuid": 12, "name": "uuid-is-a-number"},
+    "not-an-object",
+    # The Kelvin sign lowercases to an ASCII "k".
+    {"uuid": "gggggggg-7777", "name": "KelvinK", "destination": {"server": "srv-1"}},
+    {"uuid": "hhhhhhhh-8888", "name": "web app",
+     "destination": {"server": {"uuid": "srv-1"}}},
+]
+COOLIFY_LIST_SCENARIOS = {
+    "": (200, COOLIFY_APPS),
+    "data": (200, {"data": COOLIFY_APPS[:2]}),
+    "object": (200, {"message": "no list here"}),
+    "notjson": (200, b"<html>not json</html>"),
+    "missing": (404, {"message": "Not found."}),
+}
 
 
-def _coolify(h, method, path, body):
+def _env(uuid, key, value, **flags):
+    return dict({"uuid": uuid, "key": key, "value": value,
+                 "is_buildtime": False, "is_preview": False}, **flags)
+
+
+# The env state of the apps `secrets sync --target=coolify` is pointed at.
+# Against the store's `coolproj` set (cases.py, GATE_SCRIPT "__ALL__@coolproj").
+COOLIFY_APP_ENVS = {
+    # Single-app: one of each kind.
+    "app-sync": [
+        _env("env-alpha", "ALPHA", "alpha-test-value-long"),          # unchanged
+        _env("env-beta", "BETA", "beta-old-test-value"),              # changed
+        _env("env-old", "OLD_KEY", "old-test-value"),                 # removed
+        _env("env-managed", "MANAGED_URL", "https://m.example.test",  # managed,
+             is_coolify=True),                                         # also desired
+        _env("env-svc", "SERVICE_FQDN_WEB", "web.example.test", is_coolify=True),
+        _env("env-prev-rt", "PREVIEWED", "runtime-test-value"),       # runtime copy
+        _env("env-prev-pv", "PREVIEWED", "preview-test-value", is_preview=True),
+        _env("env-prevonly", "PREVONLY", "p", is_preview=True),       # preview only
+        _env("env-num", "NUMERIC", 5),                                # value not a string
+        "not-an-object",
+    ],
+    # Multi-app, prefix WEB_.
+    "app-web": [
+        _env("env-w-port", "PORT", "8080"),
+        _env("env-w-host", "HOST", "old.example.test"),
+        _env("env-w-legacy", "LEGACY", "legacy-test-value"),
+        _env("env-w-sentry", "SENTRY_RELEASE", "r0"),
+        _env("env-w-svc", "SERVICE_FQDN_WEB", "web.example.test", is_coolify=True),
+    ],
+    # Multi-app, prefix API_.
+    "app-api": [
+        _env("env-a-port", "PORT", "9090"),
+        _env("env-a-extra", "EXTRA", "extra-test-value"),
+    ],
+    # An env uuid the client must refuse before it builds the DELETE path.
+    "app-badenv": [
+        _env("../x", "OLD_KEY", "old-test-value"),
+    ],
+    # A DELETE the API refuses.
+    "app-delfail": [
+        _env("env-broken", "OLD_KEY", "old-test-value"),
+    ],
+}
+COOLIFY_JOURNAL_ENTRY = _env("env-journal", "ZZ_JOURNAL", "journal-test-value")
+JOURNAL = {}
+
+
+def _app_envs(app):
+    base = app[:-2] if app.endswith("-j") else app
+    table = list(COOLIFY_APP_ENVS.get(base, []))
+    if app.endswith("-j"):
+        table.append(COOLIFY_JOURNAL_ENTRY)
+    return table
+
+
+def _b64_strict(raw):
+    """Decodes STRICT padded standard base64 or returns None."""
+    if not isinstance(raw, str) or len(raw) % 4:
+        return None
+    try:
+        return base64.b64decode(raw, validate=True).decode()
+    except ValueError:
+        return None
+
+
+def _coolify(h, method, rawpath, body):
     """Serves one Coolify request; returns False if the path is not Coolify's."""
-    m = re.match(r"^/api/v1/applications/([^/]+)(/envs)?$", path)
-    if not m:
+    u = urlparse(rawpath)
+    path = u.path
+    if not path.startswith("/api/v1/"):
         return False
-    app, envs = m.group(1), m.group(2) is not None
-    if h.headers.get("Authorization") != "Bearer " + COOLIFY_TOKEN:
+    auth = h.headers.get("Authorization") or ""
+    base = "Bearer " + COOLIFY_TOKEN
+    if auth == base:
+        tag = ""
+    elif auth.startswith(base + ":"):
+        tag = auth[len(base) + 1:]
+    else:
         h._send(401, {"message": "Unauthenticated."})
         return True
     if h.headers.get("User-Agent") != "curl/8":
@@ -259,13 +410,79 @@ def _coolify(h, method, path, body):
     if h.headers.get("Content-Type") != "application/json":
         h._send(400, {"message": "unexpected Content-Type"})
         return True
+    sha = hashlib.sha256(body).hexdigest()[:16]
+
+    # --- routes Go calls WITHOUT a body -----------------------------------
+    if method in ("GET", "DELETE") or path.endswith("/start"):
+        if body:
+            h._send(422, {"message": "unexpected body"})
+            return True
+    if method == "GET" and path == "/api/v1/applications":
+        status, payload = COOLIFY_LIST_SCENARIOS.get(tag, (418, {"message": "no such tag"}))
+        if isinstance(payload, bytes):
+            h._send_raw(status, payload)
+        else:
+            h._send(status, payload)
+        return True
+    if method == "GET" and path == "/api/v1/deploy":
+        uuid = (parse_qs(u.query).get("uuid") or [""])[0]
+        if not uuid:
+            h._send(400, {"message": "uuid is required"})
+        elif uuid == "gh-fail-deploy":
+            h._send(500, {"message": "deploy failed"})
+        else:
+            h._send(200, {"deployments": [{"message": "queued", "resource_uuid": uuid}]})
+        return True
+    m = re.match(r"^/api/v1/applications/([^/]+)(/envs(?:/([^/]+))?|/start)?$", path)
+    if not m:
+        return False
+    app, sub, env_uuid = m.group(1), m.group(2) or "", m.group(3)
+
     if app == "app-missing":
         h._send(404, {"message": "Application not found."})
         return True
     if app == "app-longbody":
         h._send(500, COOLIFY_LONG_BODY)
         return True
-    sha = hashlib.sha256(body).hexdigest()[:16]
+
+    if sub == "/start":
+        if method != "POST":
+            h._send(405, {"message": "method not allowed"})
+        elif app == "dc-fail-start":
+            h._send(500, {"message": "start failed"})
+        else:
+            h._send(200, {"message": "Deployment request queued.", "deployment_uuid": "dep-1"})
+        return True
+
+    if sub == "/envs" and method == "GET":
+        table = _app_envs(app)
+        JOURNAL[app] = []
+        if app == "app-data":
+            h._send(200, {"data": _app_envs("app-sync")})
+        elif app == "app-object":
+            h._send(200, {"message": "no data here"})
+        else:
+            h._send(200, table)
+        return True
+
+    if env_uuid is not None:
+        if method != "DELETE":
+            h._send(405, {"message": "method not allowed"})
+            return True
+        JOURNAL.setdefault(app, []).append(["DELETE", env_uuid])
+        if env_uuid == "env-journal":
+            j = JOURNAL[app]
+            digest = hashlib.sha256(json.dumps(j, separators=(",", ":"),
+                                               ensure_ascii=False).encode()).hexdigest()[:16]
+            h._send(422, {"journal": len(j), "sha": digest})
+        elif env_uuid == "env-broken":
+            h._send(500, {"message": "Server Error"})
+        elif env_uuid not in [e["uuid"] for e in _app_envs(app) if isinstance(e, dict)]:
+            h._send(404, {"message": "env not found"})
+        else:
+            h._send(200, {"message": "Environment variable deleted."})
+        return True
+
     try:
         doc = json.loads(body or b"null")
     except ValueError:
@@ -275,7 +492,50 @@ def _coolify(h, method, path, body):
         h._send(422, {"message": "body is not an object"})
         return True
 
-    if not envs:
+    # --- the two creates ---------------------------------------------------
+    if app in ("dockercompose", "private-github-app") and sub == "":
+        if method != "POST":
+            h._send(405, {"message": "method not allowed"})
+            return True
+        if app == "dockercompose":
+            if set(doc) != COOLIFY_COMPOSE_FIELDS or not all(isinstance(v, str) for v in doc.values()):
+                h._send(422, {"message": "bad compose body"})
+                return True
+            compose = _b64_strict(doc["docker_compose_raw"])
+            if compose is None:
+                h._send(422, {"message": "docker_compose_raw is not padded base64"})
+                return True
+            name = doc["name"]
+            if name == "echo":
+                h._send(422, {"compose": compose, "project": doc["project_uuid"],
+                              "server": doc["server_uuid"], "sha": sha})
+                return True
+            prefix = "dc-"
+        else:
+            if (set(doc) != COOLIFY_GITHUB_FIELDS or not isinstance(doc["instant_deploy"], bool)
+                    or not all(isinstance(v, str) for k, v in doc.items() if k != "instant_deploy")
+                    or doc["environment_name"] != "production"):
+                h._send(422, {"message": "bad github body"})
+                return True
+            name = doc["name"]
+            if name == "echo":
+                h._send(422, {"sha": sha, "instant_deploy": doc["instant_deploy"],
+                              "base_directory": doc["base_directory"],
+                              "watch_paths": doc["watch_paths"],
+                              "git_branch": doc["git_branch"]})
+                return True
+            prefix = "gh-"
+        if name in COOLIFY_CREATE_SCENARIOS:
+            status, payload = COOLIFY_CREATE_SCENARIOS[name]
+            if isinstance(payload, bytes):
+                h._send_raw(status, payload)
+            else:
+                h._send(status, payload)
+            return True
+        h._send(201, {"uuid": prefix + name})
+        return True
+
+    if sub == "":
         if method != "PATCH":
             h._send(405, {"message": "method not allowed"})
             return True
@@ -303,13 +563,15 @@ def _coolify(h, method, path, body):
         return True
     if (set(doc) != COOLIFY_ENV_FIELDS or not isinstance(doc["key"], str)
             or not isinstance(doc["value"], str) or doc["is_preview"] is not False
-            or doc["is_buildtime"] is not False or doc["is_literal"] is not True):
+            or doc["is_buildtime"] is not app.startswith("gh-") or doc["is_literal"] is not True):
         h._send(422, {"message": "bad env body"})
         return True
     key = doc["key"]
+    JOURNAL.setdefault(app, []).append([method, key, doc["value"], doc["is_buildtime"]])
     echo = {"echo": {"method": method, "key": key, "value": doc["value"]}, "sha": sha}
+    held = {e["key"] for e in _app_envs(app) if isinstance(e, dict) and not e["is_preview"]}
     if method == "POST":
-        if key.startswith(("EXISTS_", "GONE_")):
+        if key.startswith(("EXISTS_", "GONE_")) or key in held:
             h._send(409, {"message": "env already exists"})
         elif key.startswith("BROKEN_"):
             h._send(500, {"message": "Server Error"})
@@ -327,6 +589,14 @@ def _coolify(h, method, path, body):
     return True
 
 
+def _bulk(project):
+    """The bulk set a project reads: "__ALL__@<project>" when the corpus gives
+    that project one of its own (`coolproj`, the Coolify sync cases), else the
+    shared "__ALL__"."""
+    return SCRIPT.get("__ALL__@" + project) or SCRIPT.get(
+        "__ALL__", (404, {"error": "KEY_NOT_FOUND"}))
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
@@ -341,6 +611,8 @@ class H(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def do_GET(self):
+        if _coolify(self, "GET", self.path, self._drain()):
+            return
         # GET /v1/whoami — principal + gruplar + efektif grant'ler.
         #
         # AYNI ROTA IKI MUSTERIYE HIZMET EDIYOR ve ikisi de bilincli:
@@ -432,7 +704,7 @@ class H(BaseHTTPRequestHandler):
         # `audit-keysdown` senaryosu: audit head SAGLAM, metadata duzlemi COKMUS.
         if (self.headers.get("cf-access-token") or "") == "audit-keysdown":
             return self._send(503, {"error": "AUDIT_UNAVAILABLE"})
-        status, payload = SCRIPT.get("__ALL__", (404, {"error": "KEY_NOT_FOUND"}))
+        status, payload = _bulk(unquote(m.group(1)))
         if status != 200:
             return self._send(status, payload)
         vals = payload.get("values") or {}
@@ -560,7 +832,7 @@ class H(BaseHTTPRequestHandler):
         # gecerliligi: eskiden her coklu istek kosulsuz "__ALL__" senaryosunu
         # donuyordu, yani BOS ya da YANLIS bir ad kumesi gonderen bir istemci
         # de tam sonucu aliyordu ve `keyName`/`key_name` ayrismasi gorunmuyordu.
-        status, payload = SCRIPT.get("__ALL__", (404, {"error": "KEY_NOT_FOUND"}))
+        status, payload = _bulk(unquote(m.group(1)))
         if status != 200:
             return self._send(status, payload)
         vals = payload.get("values") or {}
@@ -628,7 +900,9 @@ class H(BaseHTTPRequestHandler):
         return self._send(status, payload)
 
     def do_DELETE(self):
-        self._drain()
+        body = self._drain()
+        if _coolify(self, "DELETE", self.path, body):
+            return
         # DELETE /v1/admin/projects/{p} — KONTROL DUZLEMI (projects rm).
         # Ayri bir onek: kenarda /v1/admin AYRI bir CF Access uygulamasidir
         # (write-AUD). Sahte gate AUD dogrulamiyor — o kenarin isi — ama rotanin
@@ -651,7 +925,9 @@ class H(BaseHTTPRequestHandler):
         return self._send(status, payload)
 
     def _send(self, status, obj):
-        raw = json.dumps(obj).encode()
+        self._send_raw(status, json.dumps(obj).encode())
+
+    def _send_raw(self, status, raw):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))

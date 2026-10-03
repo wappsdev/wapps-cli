@@ -686,32 +686,63 @@ pub fn build() -> Command {
                 ),
         )
         // `coolify` is a FAMILY (no Run of its own): bare, it prints help and
-        // exits 0, like `token`. Only `update-env` and `set-labels` are ported
-        // (slice 6a); the parsing of their flag VALUES is pflag's and lives in
-        // coolifyverb::parse_flags, so every value flag is taken as a raw
-        // string here: Append (pflag lets a flag repeat; for a StringVar the
-        // last wins) and allow_hyphen_values (pflag takes the next token of a
-        // spaced long flag unconditionally).
+        // exits 0, like `token`. The parsing of the leaves' flag VALUES is
+        // pflag's and lives in coolifyverb::parse_flags, so every value flag is
+        // taken as a raw string here: Append (pflag lets a flag repeat; for a
+        // StringVar the last wins) and allow_hyphen_values (pflag takes the
+        // next token of a spaced long flag unconditionally). Defaults are
+        // applied there too, so a flag that was never given stays absent
+        // (cobra's required-flag check needs to know).
         .subcommand(
             Command::new("coolify")
                 .about("Coolify v4 API shim commands (fill gaps in SierraJC Tofu provider)")
+                .subcommand(
+                    Command::new("deploy-app")
+                        .about("Create a dockercompose application via Coolify API (and start it)")
+                        .arg(coolify_value("compose-file", "string", "Path to docker-compose.yml"))
+                        .arg(coolify_value("env-from-shell", "strings", "Env var names to pass through (repeatable)"))
+                        .arg(coolify_value("name", "string", "Application name"))
+                        .arg(coolify_value("project-uuid", "string", "Coolify project UUID"))
+                        .arg(coolify_value("server-uuid", "string", "Target server UUID"))
+                        // deployAppCmd has no Args -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("deploy-app-git")
+                        .about("Create Coolify Application from a private GitHub repo (Coolify builds on the target server)")
+                        .arg(coolify_value("base-dir", "string", "Build context base directory"))
+                        .arg(coolify_value("build-arg", "strings", "Docker build arg KEY=VALUE (repeatable). Stored as is_build_time env var."))
+                        .arg(coolify_value("build-pack", "string", "Build pack: dockerfile, nixpacks, static"))
+                        .arg(coolify_value("dockerfile", "string", "Dockerfile path relative to base-dir"))
+                        .arg(coolify_value("git-branch", "string", "Git branch"))
+                        .arg(coolify_value("git-repo", "string", "GitHub org/repo (e.g. wappsdev/vaulter-api)"))
+                        .arg(coolify_value("github-app-uuid", "string", "Coolify GitHub App source UUID"))
+                        .arg(coolify_bool("instant-deploy", "Trigger initial build immediately on create"))
+                        .arg(coolify_value("name", "string", "Application name"))
+                        .arg(coolify_value("ports", "string", "Exposed ports (comma-separated)"))
+                        .arg(coolify_value("project-uuid", "string", "Coolify project UUID"))
+                        .arg(coolify_value("server-uuid", "string", "Target server UUID"))
+                        .arg(coolify_value("watch-path", "strings", "Path patterns to trigger rebuild (repeatable, e.g. cmd/gateway/**)"))
+                        // deployAppGitCmd has no Args -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
+                    Command::new("import-app")
+                        .about("List Coolify apps on a server → emit Tofu import commands + HCL stubs")
+                        .arg(coolify_value("output-dir", "string", "Where to write imports.sh + apps.tf"))
+                        .arg(coolify_value("server-uuid", "string", "Filter by server UUID (empty = all)"))
+                        // importAppCmd has no Args -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
                 .subcommand(
                     Command::new("set-labels")
                         .about("PATCH custom_labels (base64) with optional certresolver=letsencrypt strip")
                         .arg(coolify_value("app-uuid", "string", "Coolify app UUID"))
                         .arg(coolify_value("label", "strings", "Label (repeatable, e.g. --label 'traefik.enable=true')"))
-                        // A pflag BoolVar: `--x`, `--x=<bool>`, never a
-                        // spaced value (`--x false` leaves `false` as an
-                        // argument). The value is parsed by ParseBool later.
-                        .arg(
-                            Arg::new("strip-cert-resolver")
-                                .long("strip-cert-resolver")
-                                .num_args(0..=1)
-                                .require_equals(true)
-                                .default_missing_value("true")
-                                .action(ArgAction::Append)
-                                .help("Strip certresolver=letsencrypt labels (file-based Origin Cert pattern)"),
-                        )
+                        .arg(coolify_bool(
+                            "strip-cert-resolver",
+                            "Strip certresolver=letsencrypt labels (file-based Origin Cert pattern)",
+                        ))
                         // setLabelsCmd has no Args -> ArbitraryArgs.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 )
@@ -822,6 +853,19 @@ const SKILL_INSTALL_LONG: &str = "Install the wapps-secrets skill.
 
 User-wide is the default: the skill is available in every repo, but its own
 description only activates it where a .wapps.yaml exists.";
+
+// coolify_bool, a pflag BoolVar: `--x`, `--x=<bool>`, never a spaced value
+// (`--x false` leaves `false` as an argument). The value is parsed by
+// ParseBool in coolifyverb::parse_flags.
+fn coolify_bool(name: &'static str, help: &'static str) -> Arg {
+    Arg::new(name)
+        .long(name)
+        .num_args(0..=1)
+        .require_equals(true)
+        .default_missing_value("true")
+        .action(ArgAction::Append)
+        .help(help)
+}
 
 // coolify_value, a `coolify` value flag as pflag reads it (see `coolify`);
 // `value_name` is pflag's type word ("string" / "strings").

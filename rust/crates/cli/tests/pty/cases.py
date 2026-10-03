@@ -3795,4 +3795,249 @@ COOLIFY_CASES = [
 ]
 CASES += COOLIFY_CASES
 
+
+# --- `coolify deploy-app`, `deploy-app-git`, `import-app` -----------------------
+#
+# Same order as update-env/set-labels: pflag flag VALUES (the CSV slices
+# --env-from-shell, --watch-path, --build-arg and the bool --instant-deploy;
+# the leftmost bad value wins) -> the root's --config/--project check ->
+# cobra's REQUIRED flags (all missing ones named, in sorted order) ->
+# COOLIFY_API_TOKEN -> the verb. No agent gate, no binding, no Ctx; the four
+# identity arms are walked so a port that started reading config would show.
+#
+# These verbs WRITE files relative to the cwd (deploy-app[-git]:
+# `.outputs/<name>-uuid`; import-app: `imports.sh` + `apps.tf`), so every
+# case runs in its own directory and the probe compares what was written,
+# bytes and modes. The fake API answers by what the client sends: the create
+# `name` picks the scenario (COOLIFY_CREATE_SCENARIOS), the new app is
+# "dc-<name>"/"gh-<name>", and `GET /applications` answers by the token's
+# `:<tag>` (COOLIFY_LIST_SCENARIOS).
+#
+# NO REAL SECRET: the token and every value are made-up test strings.
+DA = ["coolify", "deploy-app"]
+DA_REQ = ["--project-uuid", "proj-1", "--server-uuid", "srv-1",
+          "--compose-file", "compose.yml"]
+DA_OK = DA + DA_REQ + ["--name", "web"]
+# Short on purpose: the echo scenario repeats it inside a body cut at 200 bytes.
+DA_COMPOSE = {"compose.yml": "services: {w: {image: 'a<&>é'}}\n"}
+
+def da_seed(files=None, yaml=None):
+    return {"yaml": yaml, "files": dict(DA_COMPOSE, **(files or {}))}
+
+def dc(name, argv, env, files=None, yaml=None):
+    return (name, argv, env, None, None, da_seed(files, yaml))
+
+DG = ["coolify", "deploy-app-git"]
+DG_REQ = ["--project-uuid", "proj-1", "--server-uuid", "srv-1",
+          "--github-app-uuid", "ghapp-1", "--git-repo", "wappsdev/api"]
+DG_OK = DG + DG_REQ + ["--name", "api"]
+DG_ECHO = DG + DG_REQ + ["--name", "echo"]
+
+IA = ["coolify", "import-app"]
+
+def ia(name, argv, env, files=None, yaml=None):
+    return (name, argv, env, None, None, {"yaml": yaml, "files": files or {}})
+
+def tagged(env, tag):
+    return dict(env, COOLIFY_API_TOKEN="coolify-test-token-not-a-secret:" + tag)
+
+COOLIFY_DEPLOY_CASES = [
+    # === deploy-app: the four identity arms x two modes ====================
+    dc("human_coolify_deploy_app_creates_starts_and_writes_the_uuid", DA_OK, CH),
+    dc("agent_coolify_deploy_app_creates_starts_and_writes_the_uuid", DA_OK, CA),
+    dc("human_coolify_deploy_app_project_flag_is_inert", P + DA_OK, CH),
+    dc("agent_coolify_deploy_app_project_flag_is_inert", P + DA_OK, CA),
+    cf("human_coolify_deploy_app_config_flag_is_inert", DA_OK, CH, files=DA_COMPOSE),
+    cf("agent_coolify_deploy_app_config_flag_is_inert", DA_OK, CA, files=DA_COMPOSE),
+    dc("human_coolify_deploy_app_local_config_is_not_read", DA_OK, CH, yaml=VALID_CFG),
+    dc("agent_coolify_deploy_app_local_config_is_not_read", DA_OK, CA, yaml=VALID_CFG),
+
+    # === deploy-app: refusals before any request ===========================
+    # Every missing required flag is named, sorted (pflag's VisitAll order).
+    dc("agent_coolify_deploy_app_required_flags_all_named", DA, CA),
+    dc("agent_coolify_deploy_app_required_flags_some_named",
+       DA + ["--name", "web", "--server-uuid", "srv-1"], CA),
+    # An EMPTY value still counts as set (cobra checks Changed, not the value).
+    dc("agent_coolify_deploy_app_empty_value_counts_as_set",
+       DA + DA_REQ + ["--name="], dict(CA, COOLIFY_API_TOKEN="")),
+    dc("agent_coolify_deploy_app_required_flags_before_token", DA,
+       dict(CA, COOLIFY_API_TOKEN="")),
+    dc("human_coolify_deploy_app_without_token", DA_OK, dict(CH, COOLIFY_API_TOKEN="")),
+    dc("human_coolify_deploy_app_compose_file_missing",
+       DA + ["--project-uuid", "p", "--server-uuid", "s", "--name", "web",
+             "--compose-file", "nope.yml"], CH),
+    dc("agent_coolify_deploy_app_compose_file_is_a_directory",
+       DA + ["--project-uuid", "p", "--server-uuid", "s", "--name", "web",
+             "--compose-file", "compose.d"], CA, files={"compose.d/x": "x"}),
+    # The compose file is read BEFORE the shell env is checked.
+    dc("agent_coolify_deploy_app_compose_read_before_env",
+       DA + ["--project-uuid", "p", "--server-uuid", "s", "--name", "web",
+             "--compose-file", "nope.yml", "--env-from-shell", "NOT_SET_HERE"], CA),
+    dc("human_coolify_deploy_app_env_from_shell_not_set",
+       DA_OK + ["--env-from-shell", "DA_ONE", "--env-from-shell", "NOT_SET_HERE"],
+       dict(CH, DA_ONE="one-test-value")),
+    # Set but EMPTY is refused the same way.
+    dc("agent_coolify_deploy_app_env_from_shell_empty_value",
+       DA_OK + ["--env-from-shell", "DA_EMPTY"], dict(CA, DA_EMPTY="")),
+    # A name with '=' is looked up as-is: no variable is called that.
+    dc("agent_coolify_deploy_app_env_from_shell_name_with_equals",
+       DA_OK + ["--env-from-shell", "DA_ONE=x"], dict(CA, DA_ONE="one-test-value")),
+    dc("agent_coolify_deploy_app_env_from_shell_csv_error",
+       DA_OK + ["--env-from-shell", 'a"b'], CA),
+    dc("agent_coolify_deploy_app_flag_value_error_before_identity_flags",
+       ["--config", "sub/.wapps.yaml"] + P + DA + ["--env-from-shell", 'a"b'], CA,
+       files={"sub/.wapps.yaml": VALID_CFG}),
+    dc("agent_coolify_deploy_app_both_identity_flags_are_rejected",
+       ["--config", "sub/.wapps.yaml"] + P + DA_OK, CA,
+       files={"sub/.wapps.yaml": VALID_CFG}),
+
+    # === deploy-app: the wire ==============================================
+    # The body: compose as padded base64, Go's sorted JSON keys and escaping.
+    dc("human_coolify_deploy_app_create_body_echo", DA + DA_REQ + ["--name", "echo"], CH),
+    # The env is upserted on the NEW app, from the shell, before the start.
+    dc("human_coolify_deploy_app_env_from_shell_is_upserted",
+       DA_OK + ["--env-from-shell", "DA_ONE,EXISTS_DA"],
+       dict(CH, DA_ONE="one-test-value", EXISTS_DA="exists-test-value")),
+    dc("human_coolify_deploy_app_env_from_shell_body_echo",
+       DA_OK + ["--env-from-shell", "ECHO_DA"], dict(CH, ECHO_DA="v<&>é x")),
+    dc("human_coolify_deploy_app_create_fails", DA + DA_REQ + ["--name", "broken"], CH),
+    dc("agent_coolify_deploy_app_create_fails", DA + DA_REQ + ["--name", "broken"], CA),
+    # No uuid in the answer: Go prints the decoded body with %v.
+    dc("human_coolify_deploy_app_no_uuid_in_response", DA + DA_REQ + ["--name", "noid"], CH),
+    dc("human_coolify_deploy_app_response_is_not_json",
+       DA + DA_REQ + ["--name", "notjson"], CH),
+    # The API's uuid is checked before it goes into a path.
+    dc("human_coolify_deploy_app_bad_uuid_from_the_api_stops_the_start",
+       DA + DA_REQ + ["--name", "badid"], CH),
+    dc("human_coolify_deploy_app_bad_uuid_from_the_api_stops_the_env",
+       DA + DA_REQ + ["--name", "badid", "--env-from-shell", "DA_ONE"],
+       dict(CH, DA_ONE="one-test-value")),
+    # A failed start writes nothing.
+    dc("human_coolify_deploy_app_start_fails", DA + DA_REQ + ["--name", "fail-start"], CH),
+    dc("agent_coolify_deploy_app_wrong_token", DA_OK,
+       dict(CA, COOLIFY_API_TOKEN="not-the-test-token")),
+    # `.outputs` is a FILE: both writes fail and Go ignores both.
+    dc("human_coolify_deploy_app_output_write_errors_are_ignored", DA_OK, CH,
+       files={".outputs": "in the way\n"}),
+    # An existing uuid file is overwritten, not appended to.
+    dc("agent_coolify_deploy_app_overwrites_the_uuid_file", DA_OK, CA,
+       files={".outputs/web-uuid": "an-older-and-longer-uuid-value\n"}),
+    dc("agent_coolify_deploy_app_empty_compose_file", DA_OK, CA,
+       files={"compose.yml": ""}),
+    dc("agent_coolify_deploy_app_extra_args_are_ignored", DA_OK + ["EXTRA"], CA),
+    dc("agent_coolify_deploy_app_repeated_name_last_wins",
+       DA + DA_REQ + ["--name", "other", "--name", "web"], CA),
+
+    # === deploy-app-git: the four identity arms x two modes ================
+    dc("human_coolify_deploy_app_git_creates_and_writes_the_uuid", DG_OK, CH),
+    dc("agent_coolify_deploy_app_git_creates_and_writes_the_uuid", DG_OK, CA),
+    dc("human_coolify_deploy_app_git_project_flag_is_inert", P + DG_OK, CH),
+    dc("agent_coolify_deploy_app_git_project_flag_is_inert", P + DG_OK, CA),
+    cf("human_coolify_deploy_app_git_config_flag_is_inert", DG_OK, CH),
+    cf("agent_coolify_deploy_app_git_config_flag_is_inert", DG_OK, CA),
+    dc("human_coolify_deploy_app_git_local_config_is_not_read", DG_OK, CH, yaml=VALID_CFG),
+    dc("agent_coolify_deploy_app_git_local_config_is_not_read", DG_OK, CA, yaml=VALID_CFG),
+
+    # === deploy-app-git: refusals before any request =======================
+    dc("agent_coolify_deploy_app_git_required_flags_all_named", DG, CA),
+    dc("agent_coolify_deploy_app_git_required_flags_some_named",
+       DG + ["--name", "api", "--project-uuid", "p"], CA),
+    dc("human_coolify_deploy_app_git_without_token", DG_OK, dict(CH, COOLIFY_API_TOKEN="")),
+    dc("agent_coolify_deploy_app_git_bad_bool", DG_OK + ["--instant-deploy=nope"], CA),
+    dc("agent_coolify_deploy_app_git_watch_path_csv_error",
+       DG_OK + ["--watch-path", '"x'], CA),
+    # Two bad values: the one further LEFT is reported.
+    dc("agent_coolify_deploy_app_git_first_bad_value_wins_bool_first",
+       DG_OK + ["--instant-deploy=nope", "--build-arg", 'a"b'], CA),
+    dc("agent_coolify_deploy_app_git_first_bad_value_wins_slice_first",
+       DG_OK + ["--build-arg", 'a"b', "--instant-deploy=nope"], CA),
+
+    # === deploy-app-git: the create body ===================================
+    # Defaults: branch main, dockerfile "Dockerfile", base "/", build pack
+    # dockerfile, no watch paths, instant deploy ON (no build args to defer).
+    dc("human_coolify_deploy_app_git_body_echo_defaults", DG_ECHO, CH),
+    # With build args the create must NOT deploy: they are set first.
+    dc("human_coolify_deploy_app_git_body_echo_build_args_defer_the_deploy",
+       DG_ECHO + ["--build-arg", "A=1"], CH),
+    dc("human_coolify_deploy_app_git_body_echo_instant_off",
+       DG_ECHO + ["--instant-deploy=false"], CH),
+    # A spaced bool value is an ignored argument: the deploy stays ON.
+    dc("human_coolify_deploy_app_git_body_echo_spaced_bool_is_an_argument",
+       DG_ECHO + ["--instant-deploy", "false"], CH),
+    # Watch paths joined with "\n" (CSV split first); an empty --base-dir
+    # falls back to "/".
+    dc("human_coolify_deploy_app_git_body_echo_watch_paths_and_empty_base",
+       DG_ECHO + ["--watch-path", "cmd/**", "--watch-path", "a,b", "--base-dir="], CH),
+    dc("human_coolify_deploy_app_git_body_echo_every_value_flag",
+       DG_ECHO + ["--git-branch", "dev", "--dockerfile", "/x/Dockerfile",
+                  "--base-dir", "/svc", "--ports", "8080,3000",
+                  "--build-pack", "nixpacks"], CH),
+
+    # === deploy-app-git: build args and the deferred deploy ================
+    dc("human_coolify_deploy_app_git_build_args_then_deploy",
+       DG_OK + ["--build-arg", "A=1", "--build-arg", "EXISTS_B=x=y"], CH),
+    dc("agent_coolify_deploy_app_git_build_args_then_deploy",
+       DG_OK + ["--build-arg", "A=1,EXISTS_B=x=y"], CA),
+    dc("human_coolify_deploy_app_git_build_args_without_deploy",
+       DG_OK + ["--build-arg", "A=1", "--instant-deploy=false"], CH),
+    # Malformed pairs are skipped but still COUNTED in the success line.
+    dc("human_coolify_deploy_app_git_malformed_build_args_are_counted",
+       DG_OK + ["--build-arg", "NOEQ", "--build-arg", "=v", "--build-arg", "A=1"], CH),
+    # The build arg body: is_buildtime TRUE (the fake refuses anything else
+    # on a "gh-*" app), PATCHed after a 409.
+    dc("human_coolify_deploy_app_git_build_arg_body_echo",
+       DG_OK + ["--build-arg", "EXISTS_ECHO_A=v<&>é"], CH),
+    dc("human_coolify_deploy_app_git_build_arg_fails_after_the_create",
+       DG_OK + ["--build-arg", "A=1", "--build-arg", "BROKEN_B=2"], CH),
+    dc("human_coolify_deploy_app_git_deploy_fails",
+       DG + DG_REQ + ["--name", "fail-deploy", "--build-arg", "A=1"], CH),
+    dc("agent_coolify_deploy_app_git_create_fails", DG + DG_REQ + ["--name", "broken"], CA),
+    dc("human_coolify_deploy_app_git_no_uuid_in_response",
+       DG + DG_REQ + ["--name", "noid"], CH),
+    # A bad uuid from the API is written to .outputs and printed; only the
+    # build-arg call checks it.
+    dc("human_coolify_deploy_app_git_bad_uuid_from_the_api",
+       DG + DG_REQ + ["--name", "badid", "--build-arg", "A=1"], CH),
+    dc("agent_coolify_deploy_app_git_extra_args_are_ignored", DG_OK + ["EXTRA"], CA),
+
+    # === import-app: the four identity arms x two modes ====================
+    ia("human_coolify_import_app_writes_imports_and_stubs", IA, CH),
+    ia("agent_coolify_import_app_writes_imports_and_stubs", IA, CA),
+    ia("human_coolify_import_app_project_flag_is_inert", P + IA, CH),
+    ia("agent_coolify_import_app_project_flag_is_inert", P + IA, CA),
+    cf("human_coolify_import_app_config_flag_is_inert", IA, CH),
+    cf("agent_coolify_import_app_config_flag_is_inert", IA, CA),
+    ia("human_coolify_import_app_local_config_is_not_read", IA, CH, yaml=VALID_CFG),
+    ia("agent_coolify_import_app_local_config_is_not_read", IA, CA, yaml=VALID_CFG),
+
+    # === import-app: filters, shapes, paths ================================
+    ia("human_coolify_import_app_server_filter", IA + ["--server-uuid", "srv-1"], CH),
+    ia("agent_coolify_import_app_server_filter_matches_nothing",
+       IA + ["--server-uuid", "srv-none"], CA),
+    ia("human_coolify_import_app_data_envelope", IA, tagged(CH, "data")),
+    ia("agent_coolify_import_app_object_without_data_is_empty", IA, tagged(CA, "object")),
+    ia("agent_coolify_import_app_body_not_json_is_empty", IA, tagged(CA, "notjson")),
+    ia("human_coolify_import_app_list_fails", IA, tagged(CH, "missing")),
+    ia("agent_coolify_import_app_list_fails", IA, tagged(CA, "missing")),
+    ia("agent_coolify_import_app_wrong_token", IA,
+       dict(CA, COOLIFY_API_TOKEN="not-the-test-token")),
+    ia("human_coolify_import_app_without_token", IA, dict(CH, COOLIFY_API_TOKEN="")),
+    # The printed paths are filepath.Join's: cleaned.
+    ia("human_coolify_import_app_output_dir_is_cleaned",
+       IA + ["--output-dir", "./a/../out//x/"], CH),
+    ia("agent_coolify_import_app_empty_output_dir_is_the_cwd",
+       IA + ["--output-dir="], CA),
+    # Existing files are truncated.
+    ia("agent_coolify_import_app_truncates_existing_files",
+       IA + ["--output-dir", "out"], CA,
+       files={"out/imports.sh": "x" * 4000, "out/apps.tf": "y" * 4000}),
+    ia("human_coolify_import_app_output_dir_is_a_file",
+       IA + ["--output-dir", "out"], CH, files={"out": "in the way\n"}),
+    # apps.tf cannot be created: imports.sh is left behind, EMPTY.
+    ia("human_coolify_import_app_stub_file_cannot_be_created",
+       IA + ["--output-dir", "out"], CH, files={"out/apps.tf/keep": "x"}),
+    ia("agent_coolify_import_app_extra_args_are_ignored", IA + ["EXTRA"], CA),
+]
+CASES += COOLIFY_DEPLOY_CASES
+
 _armcheck()
