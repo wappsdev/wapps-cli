@@ -149,7 +149,6 @@ def main():
                     return v
                 env = {k: _now(v) for k, v in env.items()}
                 sessseed = {k: _now(v) for k, v in (sessseed or {}).items()}
-            os.makedirs(env["HOME"], exist_ok=True)
             # her vaka temiz bir epoch-pin ile kossun; tohum verilmisse
             # dosya IKI ikili icin de AYNI baytlarla kuruluyor
             shutil.rmtree(os.path.join(cfg, "wapps"), ignore_errors=True)
@@ -185,6 +184,24 @@ def main():
                     mode = "wb" if isinstance(content, (bytes, bytearray)) else "w"
                     with open(fp, mode) as f:
                         f.write(content)
+            # `{CASE}` -> the case's own directory, in env values and in
+            # seeded symlink targets. Its one customer is `wapps skill`, which
+            # writes under $HOME: `HOME={CASE}/home` gives every case a fresh
+            # home that both binaries start from, and puts what the skill
+            # wrote there inside the `written` snapshot below. Without it the
+            # shared fakehome would carry one binary's install into the other
+            # binary's run (and into the real ~/.claude if HOME leaked).
+            env = {k: v.replace("{CASE}", casedir) for k, v in env.items()}
+            argv = [a.replace("{CASE}", casedir) for a in argv]
+            # HOME may be absent on purpose (`"HOME": ""` unsets it).
+            if "HOME" in env:
+                os.makedirs(env["HOME"], exist_ok=True)
+            for rel in (cfgseed or {}).get("dirs") or []:
+                os.makedirs(os.path.join(casedir, rel), exist_ok=True)
+            for rel, target in ((cfgseed or {}).get("links") or {}).items():
+                lp = os.path.join(casedir, rel)
+                os.makedirs(os.path.dirname(lp), exist_ok=True)
+                os.symlink(target.replace("{CASE}", casedir), lp)
             if bindseed is not None:
                 # Pin, CONFIG KOKUNE gore anahtarlanir; `sub` verilirse
                 # `--config sub/.wapps.yaml` kolunun kimligi olculur.
@@ -229,8 +246,17 @@ def main():
             written = None
             if cfgseed is not None:
                 written = {}
-                for root_, _, fs in os.walk(casedir):
-                    for fn in sorted(fs):
+                for root_, ds, fs in os.walk(casedir):
+                    # An EMPTY directory is an observable leftover too (an
+                    # install that failed after creating its destination, the
+                    # `.claude/skills` an uninstall leaves behind).
+                    if root_ != casedir and not ds and not fs:
+                        written[os.path.relpath(root_, casedir) + "/"] = [
+                            "emptydir", oct(os.stat(root_).st_mode & 0o777)]
+                    # A symlink to a directory is listed among the dirs and
+                    # not descended; it is still an entry the binary made.
+                    for fn in sorted(fs + [d for d in ds
+                                           if os.path.islink(os.path.join(root_, d))]):
                         # `.tmp` sonekliler atomik yazicinin gecici
                         # dosyalaridir (normalde rename sonrasi kalmazlar;
                         # kalmislarsa da isim rastgele, yani karsilastirilamaz).
@@ -252,6 +278,13 @@ def main():
                             continue
                         fp = os.path.join(root_, fn)
                         rel = os.path.relpath(fp, casedir)
+                        # A symlink is recorded as WHERE it points, not as the
+                        # bytes behind it: a link and a copy with the same
+                        # content are different installs, and a dangling link
+                        # has no content at all.
+                        if os.path.islink(fp):
+                            written[rel] = ["symlink", os.readlink(fp)]
+                            continue
                         written[rel] = [open(fp, "rb").read().hex(),
                                         oct(os.stat(fp).st_mode & 0o777)]
             # The SESSION CACHE is part of the contract too: what `wapps

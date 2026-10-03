@@ -395,8 +395,10 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    // `wapps skill` raised the floor to the live count it measured: 612
+    // (569 + 43). The floor had stayed at 511 through login and sync.
     assert!(
-        equal >= 511,
+        equal >= 612,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

@@ -27,6 +27,7 @@ use wapps::rmverb;
 use wapps::rotateplan;
 use wapps::session;
 use wapps::setverb;
+use wapps::skill;
 use wapps::statusverb;
 use wapps::store;
 use wapps::syncverb;
@@ -438,6 +439,7 @@ fn run() -> Result<(), CmdError> {
             }
         },
         Some(("whoami", _)) => run_whoami(),
+        Some(("skill", sm)) => run_skill(sm),
         Some(("login", lm)) => run_login(lm.get_flag("check"), lm.get_flag("write")),
         Some(("token", tm)) => match tm.subcommand() {
             Some(("exchange", em)) => run_token_exchange(
@@ -2423,4 +2425,43 @@ fn service_creds_present() -> bool {
     let id = std::env::var("CF_ACCESS_CLIENT_ID").unwrap_or_default();
     let secret = std::env::var("CF_ACCESS_CLIENT_SECRET").unwrap_or_default();
     !id.trim().is_empty() && !secret.trim().is_empty()
+}
+
+// --- `wapps skill` ---------------------------------------------------------------
+//
+// No gate at all, as in Go: no agent guard, no binding, no Ctx::resolve. The
+// verb writes documentation, never a value, and the root's identity flags are
+// inert (the corpus measures all four arms). `--config` + `--project` together
+// is still refused, by the root, above.
+fn run_skill(sm: &clap::ArgMatches) -> Result<(), CmdError> {
+    let Some((leaf, lm)) = sm.subcommand() else {
+        let _ = cli::build()
+            .find_subcommand_mut("skill")
+            .unwrap()
+            .print_help();
+        std::process::exit(0);
+    };
+    // cobra.NoArgs: an extra argument is an "unknown command".
+    if let Some(extra) = lm
+        .get_many::<String>("extra")
+        .and_then(|mut v| v.next().cloned())
+    {
+        return Err(CmdError::Plain(format!(
+            "unknown command {} for \"wapps skill {leaf}\"",
+            go_quote(&extra)
+        )));
+    }
+    let flag = |name: &str| lm.try_get_one::<bool>(name).ok().flatten() == Some(&true);
+    let opts = skill::Options::from_flags(
+        flag("local"),
+        lm.try_get_one::<String>("dir").ok().flatten().cloned(),
+        flag("copy"),
+    );
+    let mut out = std::io::stdout();
+    match leaf {
+        "install" => skill::run_install(&mut out, &opts),
+        "status" => skill::run_status(&mut out),
+        _ => skill::run_uninstall(&mut out, &opts),
+    }
+    .map_err(CmdError::Plain)
 }

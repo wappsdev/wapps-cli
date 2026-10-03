@@ -3453,4 +3453,165 @@ SYNC_CASES = [
 ]
 CASES += SYNC_CASES
 
+
+# --- `wapps skill` (install / status / uninstall) ------------------------------
+#
+# The skill lives under $HOME (user scope: ~/.claude/skills/wapps-secrets,
+# linked to the materialized source ~/.config/wapps/skills/wapps-secrets) or
+# under a project directory (--local, default the cwd). Every case gets its OWN
+# home: `HOME={CASE}/home` puts it inside the case directory, which probe.py
+# rebuilds for each binary and snapshots afterwards, symlinks recorded as their
+# targets. So what each binary wrote (link vs copy, the refreshed source, the
+# fingerprint marker, what uninstall left behind) is compared, not just the
+# printed lines, and no case can reach the real ~/.claude.
+#
+# No gate, no binding, no Ctx::resolve: the identity flags are inert, which
+# the four arms below measure rather than waive.
+import os, sys  # noqa: E402
+# The Go asset, found from the pty directory. That directory is this file's
+# own OR on the import path: tests/armcheck.rs imports a COPY of this module
+# from a temp dir, with the pty directory on PYTHONPATH.
+def _skill_asset():
+    rel = os.path.join("..", "..", "..", "..", "..", "internal", "skill",
+                       "assets", "wapps-secrets", "SKILL.md")
+    for base in [os.path.dirname(os.path.abspath(__file__))] + sys.path:
+        fp = os.path.join(base, rel)
+        if base and os.path.exists(fp):
+            return open(fp, "rb").read()
+    raise SystemExit("cases.py: internal/skill/assets/wapps-secrets/SKILL.md not found")
+_SKILL_MD = _skill_asset()
+_SKILL_FP = _hashlib.sha256(b"SKILL.md\0" + _SKILL_MD + b"\0").hexdigest()
+_SK_SRC = "home/.config/wapps/skills/wapps-secrets/"
+_SK_USER = "home/.claude/skills/wapps-secrets/"
+_SK_PROJ = ".claude/skills/wapps-secrets/"
+# A symlink install that is current: source + marker + link.
+_SK_CURRENT_SRC = {_SK_SRC + "SKILL.md": _SKILL_MD, _SK_SRC + ".fingerprint": _SKILL_FP}
+_SK_LINK = {_SK_USER + "SKILL.md": "{CASE}/" + _SK_SRC + "SKILL.md"}
+# The post-`brew upgrade` state: an older binary's source and marker.
+_SK_STALE_SRC = {_SK_SRC + "SKILL.md": b"an older skill text\n",
+                 _SK_SRC + ".fingerprint": "0" * 64}
+SKILL = ["skill"]
+SK_HOME = {"HOME": "{CASE}/home"}
+
+def sk(name, argv, env, files=None, links=None, yaml=None):
+    return (name, argv, dict(env, **SK_HOME) if "HOME" not in env else env,
+            None, None, {"yaml": yaml, "files": files or {}, "links": links or {}})
+
+SKILL_CASES = [
+    # === install, user scope (the default): symlink mode =====================
+    sk("human_skill_install_user_fresh", SKILL + ["install"], HUMAN),
+    sk("agent_skill_install_user_fresh", SKILL + ["install"], AGENT),
+    # A correct link is kept; the source and marker are rewritten anyway.
+    sk("human_skill_install_user_already_current", SKILL + ["install"], HUMAN,
+       _SK_CURRENT_SRC, _SK_LINK),
+    sk("human_skill_install_refreshes_a_stale_source", SKILL + ["install"], HUMAN,
+       _SK_STALE_SRC, _SK_LINK),
+    sk("human_skill_install_replaces_a_dangling_link", SKILL + ["install"], HUMAN,
+       None, {_SK_USER + "SKILL.md": "{CASE}/nowhere/SKILL.md"}),
+    # Go compares the link's target as a STRING: an equivalent but uncleaned
+    # target is not "correct" and is rewritten.
+    sk("human_skill_install_rewrites_an_uncleaned_link", SKILL + ["install"], HUMAN,
+       _SK_CURRENT_SRC,
+       {_SK_USER + "SKILL.md": "{CASE}/home/.config/wapps/skills/./wapps-secrets/SKILL.md"}),
+    # A real file from an older copy install becomes a link.
+    sk("human_skill_install_replaces_a_copied_file_with_a_link", SKILL + ["install"], HUMAN,
+       {_SK_USER + "SKILL.md": _SKILL_MD}),
+    sk("human_skill_install_user_copy", SKILL + ["install", "--copy"], HUMAN),
+    # --dir without --local is ignored: still the user scope.
+    sk("human_skill_install_dir_without_local_is_ignored",
+       SKILL + ["install", "--dir", "proj"], HUMAN),
+
+    # === install, project scope ==============================================
+    sk("human_skill_install_local_symlink_notes_the_machine_path",
+       SKILL + ["install", "--local"], HUMAN),
+    sk("human_skill_install_local_copy", SKILL + ["install", "--local", "--copy"], HUMAN),
+    sk("agent_skill_install_local_copy_overwrites_a_stale_file",
+       SKILL + ["install", "--local", "--copy"], AGENT,
+       {_SK_PROJ + "SKILL.md": b"an older skill text\n"}),
+    # --dir is made absolute AND cleaned (filepath.Abs), and created.
+    sk("human_skill_install_local_dir_is_cleaned",
+       SKILL + ["install", "--local", "--copy", "--dir", "./x/../proj/"], HUMAN),
+    sk("human_skill_install_local_dir_absolute",
+       SKILL + ["install", "--local", "--dir", "{CASE}/proj"], HUMAN),
+
+    # === install failures ====================================================
+    # MkdirAll names the first component that is not a directory.
+    sk("human_skill_install_local_dir_is_a_file",
+       SKILL + ["install", "--local", "--dir", "afile"], HUMAN, {"afile": "x"}),
+    sk("agent_skill_install_local_dir_is_a_file",
+       SKILL + ["install", "--local", "--copy", "--dir", "afile"], AGENT, {"afile": "x"}),
+    sk("human_skill_install_without_home", SKILL + ["install"], dict(HUMAN, HOME="")),
+    # A project copy install never needs $HOME...
+    sk("human_skill_install_local_copy_without_home",
+       SKILL + ["install", "--local", "--copy"], dict(HUMAN, HOME="")),
+    # ...but a project SYMLINK install does, and fails only AFTER it created
+    # the destination directory.
+    sk("human_skill_install_local_symlink_without_home",
+       SKILL + ["install", "--local", "--dir", "proj"], dict(HUMAN, HOME=""),
+       {"proj/keep": "x"}),
+    # The source cannot be materialized: ~/.config is a file.
+    sk("human_skill_install_source_dir_is_blocked", SKILL + ["install"], HUMAN,
+       {"home/.config": "not a dir"}),
+    # The link slot is a non-empty directory: removing it fails silently, and
+    # the symlink call reports the collision.
+    sk("human_skill_install_link_slot_is_a_directory", SKILL + ["install"], HUMAN,
+       {_SK_USER + "SKILL.md/inner": "x"}),
+    # An EMPTY directory in the link slot is removed (os.Remove falls back to
+    # rmdir) and the link is made.
+    ("human_skill_install_link_slot_is_an_empty_directory", SKILL + ["install"],
+     dict(HUMAN, **SK_HOME), None, None,
+     {"yaml": None, "files": {}, "dirs": [_SK_USER + "SKILL.md"]}),
+    # $HOME is joined, so CLEANED: the link target carries no `//` or `/./`.
+    sk("human_skill_install_uncleaned_home", SKILL + ["install"],
+       dict(HUMAN, HOME="{CASE}//home/./")),
+    # cobra.NoArgs: the extra argument is named as an unknown command.
+    sk("agent_skill_install_extra_arg", SKILL + ["install", "extra"], AGENT),
+
+    # === status ==============================================================
+    sk("human_skill_status_nothing_installed", SKILL + ["status"], HUMAN),
+    sk("human_skill_status_both_current", SKILL + ["status"], HUMAN,
+       dict(_SK_CURRENT_SRC, **{_SK_PROJ + "SKILL.md": _SKILL_MD}), _SK_LINK),
+    sk("agent_skill_status_both_stale", SKILL + ["status"], AGENT,
+       dict(_SK_STALE_SRC, **{_SK_PROJ + "SKILL.md": b"an older skill text\n"}), _SK_LINK),
+    sk("human_skill_status_dangling_link_is_stale", SKILL + ["status"], HUMAN,
+       None, _SK_LINK),
+    # The destination directory alone is not an install.
+    sk("human_skill_status_empty_destination_is_not_installed", SKILL + ["status"], HUMAN,
+       {_SK_USER + "README": "x", _SK_PROJ + "other.md": "x"}),
+    # A directory in the file's place: present (copy mode), unreadable, stale.
+    sk("human_skill_status_file_slot_is_a_directory", SKILL + ["status"], HUMAN,
+       {_SK_PROJ + "SKILL.md/inner": "x"}),
+    sk("human_skill_status_without_home", SKILL + ["status"], dict(HUMAN, HOME="")),
+    # status has no flags of its own.
+    sk("agent_skill_status_rejects_dir", SKILL + ["status", "--dir", "x"], AGENT),
+
+    # === uninstall ===========================================================
+    # The materialized source is left in place.
+    sk("human_skill_uninstall_user", SKILL + ["uninstall"], HUMAN,
+       _SK_CURRENT_SRC, _SK_LINK),
+    sk("human_skill_uninstall_nothing_installed", SKILL + ["uninstall"], HUMAN),
+    sk("human_skill_uninstall_local_dir", SKILL + ["uninstall", "--local", "--dir", "proj"],
+       HUMAN, {"proj/" + _SK_PROJ + "SKILL.md": _SKILL_MD, "proj/keep": "x"}),
+    # Not a directory: RemoveAll removes a plain file too.
+    sk("human_skill_uninstall_destination_is_a_file", SKILL + ["uninstall", "--local"], HUMAN,
+       {".claude/skills/wapps-secrets": "x"}),
+    # A symlinked destination: the link goes, what it points at stays.
+    sk("human_skill_uninstall_destination_is_a_link", SKILL + ["uninstall"], HUMAN,
+       {"elsewhere/SKILL.md": _SKILL_MD},
+       {"home/.claude/skills/wapps-secrets": "{CASE}/elsewhere"}),
+    sk("agent_skill_uninstall_rejects_copy", SKILL + ["uninstall", "--copy"], AGENT),
+    sk("human_skill_uninstall_without_home", SKILL + ["uninstall"], dict(HUMAN, HOME="")),
+
+    # === the identity arms: inert ============================================
+    sk("agent_skill_status_project_flag_is_inert", P + SKILL + ["status"], AGENT),
+    sk("human_skill_install_config_flag_is_inert",
+       ["--config", ".wapps.yaml"] + SKILL + ["install", "--local", "--copy"], HUMAN,
+       yaml=VALID_CFG),
+    sk("human_skill_status_rooted_config_is_ignored", SKILL + ["status"], HUMAN,
+       yaml=VALID_CFG),
+    sk("agent_skill_both_identity_flags_are_rejected",
+       ["--config", ".wapps.yaml"] + P + SKILL + ["status"], AGENT, yaml=VALID_CFG),
+]
+CASES += SKILL_CASES
+
 _armcheck()

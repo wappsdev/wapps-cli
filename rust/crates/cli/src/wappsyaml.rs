@@ -169,7 +169,7 @@ fn resolve_rel(config_root: &str, p: &str) -> String {
 }
 
 // go_clean, Go's `filepath.Clean` on a Unix path: lexical only (no symlinks).
-fn go_clean(p: &str) -> String {
+pub fn go_clean(p: &str) -> String {
     let rooted = p.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
     for part in p.split('/') {

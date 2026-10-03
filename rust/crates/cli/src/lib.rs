@@ -33,6 +33,7 @@ pub mod safelog;
 pub mod scrubber;
 pub mod session;
 pub mod setverb;
+pub mod skill;
 pub mod statusverb;
 pub mod store;
 pub mod storevalues;

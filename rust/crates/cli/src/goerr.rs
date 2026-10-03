@@ -20,6 +20,7 @@ pub(crate) fn errno_text(e: &std::io::Error) -> Option<&'static str> {
         ErrorKind::PermissionDenied => "permission denied",
         ErrorKind::IsADirectory => "is a directory",
         ErrorKind::NotADirectory => "not a directory",
+        ErrorKind::AlreadyExists => "file exists",
         _ => return None,
     })
 }

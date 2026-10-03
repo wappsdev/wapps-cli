@@ -714,7 +714,75 @@ pub fn build() -> Command {
                         ),
                 ),
         )
+        .subcommand(skill_command())
 }
+
+// skill_command, `wapps skill`: Go's Short/Long texts byte for byte (pinned
+// by tests/skill.rs against cmd/skill/skill.go). All three leaves are
+// cobra.NoArgs, so each takes a hidden positional and the dispatch names an
+// extra argument as cobra does ("unknown command ...").
+fn skill_command() -> Command {
+    let local = |help: &'static str| {
+        Arg::new("local")
+            .long("local")
+            .action(ArgAction::SetTrue)
+            .help(help)
+    };
+    let dir = Arg::new("dir")
+        .long("dir")
+        .value_name("string")
+        .allow_hyphen_values(true)
+        .help("Project directory for --local (default: current directory)");
+    let extra = Arg::new("extra").num_args(0..).hide(true);
+    Command::new("skill")
+        .about("Manage the wapps-secrets Claude Code skill (AI-safe secret handling)")
+        .long_about(SKILL_LONG)
+        .subcommand(
+            Command::new("install")
+                .about("Install the wapps-secrets skill (default: user-wide ~/.claude/skills)")
+                .long_about(SKILL_INSTALL_LONG)
+                .arg(local(
+                    "Install into the current repo's .claude/skills (project-based) instead of user-wide",
+                ))
+                .arg(dir.clone())
+                .arg(
+                    Arg::new("copy")
+                        .long("copy")
+                        .action(ArgAction::SetTrue)
+                        .help("Write real files instead of symlinks (committable; recommended with --local)"),
+                )
+                .arg(extra.clone()),
+        )
+        .subcommand(
+            Command::new("status")
+                .about("Show whether the wapps-secrets skill is installed and current")
+                .arg(extra.clone()),
+        )
+        .subcommand(
+            Command::new("uninstall")
+                .about("Remove the wapps-secrets skill")
+                .arg(local("Uninstall from the current repo instead of user-wide"))
+                .arg(dir)
+                .arg(extra),
+        )
+}
+
+const SKILL_LONG: &str = "Install the \"wapps-secrets\" skill that teaches AI coding agents
+(Claude Code, Cursor, Aider) to handle this repo's secrets with apply-only
+commands — never reading or printing raw values.
+
+The skill files ship inside the wapps binary, so a Homebrew install needs no
+repo checkout: `wapps skill install` materializes them and symlinks
+them into place. Re-run it after `brew upgrade wapps` to refresh.";
+
+const SKILL_INSTALL_LONG: &str = "Install the wapps-secrets skill.
+
+  wapps skill install                  user-wide (~/.claude/skills) — recommended
+  wapps skill install --local --copy   into ./.claude/skills as committable files
+  wapps skill install --local --dir X  into X/.claude/skills
+
+User-wide is the default: the skill is available in every repo, but its own
+description only activates it where a .wapps.yaml exists.";
 
 // --- GOLGENIN KISA-BICIM YUZU --------------------------------------------------
 //
