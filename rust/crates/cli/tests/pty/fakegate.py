@@ -396,6 +396,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "MALFORMED_IMPORT"})
             if any(not isinstance(v, str) for v in vals.values()):
                 return self._send(400, {"error": "MALFORMED_IMPORT"})
+            # `__DIGEST__` in the set: refuse with a 409 whose code digests
+            # the intent header and every value received. A successful import
+            # prints only a COUNT, so this is the one way a case can see WHAT
+            # went out (`secrets sync` stringifies tofu values and merges
+            # sources) and that the write was tagged `X-Wapps-Intent: sync`.
+            # Only a digest is printed — never a value.
+            if "__DIGEST__" in vals:
+                intent = self.headers.get("X-Wapps-Intent") or "none"
+                canon = json.dumps(vals, sort_keys=True, separators=(",", ":"))
+                h = hashlib.sha256((intent + "\n" + canon).encode()).hexdigest()[:16]
+                return self._send(409, {"error": f"DIGEST-{intent}-{h}"})
             for k in sorted(vals):
                 status, payload = SCRIPT.get(k, (200, None))
                 if status != 200:

@@ -221,6 +221,67 @@ pub fn build() -> Command {
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
                 )
                 .subcommand(
+                    Command::new("sync")
+                        .about("Push declared sources into the store (or to a target with --target)")
+                        // COPIED BYTE FOR BYTE from cmd/secrets/sync.go, and
+                        // WRONG: the code writes the store in one epoch, there
+                        // is no "encrypted archive to dest". The behavior
+                        // follows the code; the text follows the text, so
+                        // `--help` does not diverge once it is measured.
+                        .long_about(SYNC_LONG)
+                        // Value flags take the next token even when it starts
+                        // with `-` (pflag), as on `token exchange`.
+                        .arg(
+                            Arg::new("all-apps")
+                                .long("all-apps")
+                                .action(ArgAction::SetTrue)
+                                .help("push to every app in .wapps.yaml's coolify_sync.apps (prefix-stripped, non-destructive)"),
+                        )
+                        .arg(
+                            Arg::new("app")
+                                .long("app")
+                                .value_name("string")
+                                .allow_hyphen_values(true)
+                                .help("Coolify app UUID for single-app push (mutually exclusive with --all-apps)"),
+                        )
+                        .arg(
+                            Arg::new("coolify-url")
+                                .long("coolify-url")
+                                .value_name("string")
+                                .allow_hyphen_values(true)
+                                .default_value("https://coolify.meapps.dev/api/v1")
+                                .help("Coolify API base URL"),
+                        )
+                        .arg(
+                            Arg::new("dry-run")
+                                .long("dry-run")
+                                .action(ArgAction::SetTrue)
+                                .help("show which keys would be added or changed (names only) without writing"),
+                        )
+                        .arg(
+                            Arg::new("force")
+                                .long("force")
+                                .action(ArgAction::SetTrue)
+                                .help("with --target=coolify: apply the diff (default is dry-run only)"),
+                        )
+                        .arg(
+                            Arg::new("prefix")
+                                .long("prefix")
+                                .value_name("string")
+                                .allow_hyphen_values(true)
+                                .help("with --target=coolify: prefix prepended to each pushed env var name (default empty)"),
+                        )
+                        .arg(
+                            Arg::new("target")
+                                .long("target")
+                                .value_name("string")
+                                .allow_hyphen_values(true)
+                                .help("sync target: empty rebuilds archive from sources; 'coolify' pushes archive to a Coolify app's env"),
+                        )
+                        // syncCmd has no Args in cobra -> ArbitraryArgs.
+                        .arg(Arg::new("ignored").num_args(0..).hide(true)),
+                )
+                .subcommand(
                     Command::new("import-env")
                         .about("Bulk import KEY=VALUE pairs from an env file into the store")
                         // Arite ELLE (cobra ExactArgs(1)).
@@ -776,3 +837,26 @@ pub fn report_error<W: Write>(w: &mut W, err: &CmdError, agent: bool) {
         }
     }
 }
+
+// SYNC_LONG, syncCmd's Long text from cmd/secrets/sync.go, byte for byte.
+// It is stale (see the comment on the `sync` subcommand): kept verbatim on
+// purpose until the Go text itself is corrected.
+const SYNC_LONG: &str = "Without --target: read all sources declared in .wapps.yaml, merge
+them, and write an encrypted archive to dest.
+
+With --target=coolify: read the existing archive and push its contents to
+a Coolify application's env vars. Default is dry-run — pass --force to
+actually apply (which deletes Coolify-only keys to mirror the archive).
+
+Single-app (--app): pushes the WHOLE archive to one app, mirroring
+destructively (Coolify keys absent from the archive deleted on --force).
+
+Multi-app (--all-apps): requires coolify_sync.apps in .wapps.yaml. Each app
+gets only the archive keys matching its archive_prefix, prefix stripped.
+Non-destructive unless coolify_sync.delete_unmanaged: true.
+
+  wapps secrets sync                                        # rebuild archive
+  wapps secrets sync --target=coolify --app <uuid>          # single-app dry-run
+  wapps secrets sync --target=coolify --app <uuid> --force  # single-app apply
+  wapps secrets sync --target=coolify --all-apps            # multi-app dry-run
+  wapps secrets sync --target=coolify --all-apps --force    # multi-app apply";

@@ -454,6 +454,10 @@ pub const HEADER_INTENT: &str = "X-Wapps-Intent";
 /// `wapps dr accept-epoch-reset` seremonisinin pin-INDIREN tek okumasi tasir.
 pub const INTENT_EPOCH_RESET: &str = "epoch-reset";
 
+/// INTENT_SYNC, HeaderIntent's sync value: `secrets sync`'s import carries it
+/// so the audit row reads key.sync (Go: WriteOpts{Sync: true}).
+pub const INTENT_SYNC: &str = "sync";
+
 /// keys_accepting_epoch_reset, `keys` ile AYNI rotayi cagirir ama IKI seyi
 /// degistirir, ve ikisi de yalnizca seremoniye aittir:
 ///   * istek `X-Wapps-Intent: epoch-reset` tasir (audit etiketi, §6.4);
@@ -609,7 +613,14 @@ pub fn import_body(values: &BTreeMap<String, String>) -> String {
 /// cagrilan GET /keys yuzundendir, bu fonksiyon yuzunden DEGIL.
 ///
 /// HATA BAGLAMI "import <proje>".
-pub fn import_values(project: &str, values: &BTreeMap<String, String>) -> Result<(), Error> {
+///
+/// `sync` tags the write `X-Wapps-Intent: sync` (Go: WriteOpts{Sync: true}).
+/// It is informational: the audit row reads key.sync instead of key.write.
+pub fn import_values(
+    project: &str,
+    values: &BTreeMap<String, String>,
+    sync: bool,
+) -> Result<(), Error> {
     if values.is_empty() {
         return Err(Error::new(Code::Internal, "import: no values"));
     }
@@ -622,6 +633,9 @@ pub fn import_values(project: &str, values: &BTreeMap<String, String>) -> Result
     let mut req = agent().post(&url).set("Content-Type", "application/json");
     for (k, v) in &headers {
         req = req.set(k, v);
+    }
+    if sync {
+        req = req.set(HEADER_INTENT, INTENT_SYNC);
     }
     let ctx = format!("import {project}");
     // send_string: govde import_body ile ELDE uretiliyor ki tel bicimi tek bir

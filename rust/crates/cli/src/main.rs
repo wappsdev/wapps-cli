@@ -29,6 +29,7 @@ use wapps::session;
 use wapps::setverb;
 use wapps::statusverb;
 use wapps::store;
+use wapps::syncverb;
 use wapps::trustrepo;
 
 fn main() -> ExitCode {
@@ -292,6 +293,12 @@ fn run() -> Result<(), CmdError> {
                 }
                 run_import_env(&files[0], config, project)
             }
+            Some(("sync", sy)) => run_sync(
+                config,
+                project,
+                sy.get_one::<String>("target").cloned().unwrap_or_default(),
+                sy.get_flag("dry-run"),
+            ),
             Some(("env", em)) => run_env(
                 config,
                 project,
@@ -1560,7 +1567,7 @@ fn run_import_env(
         .cloned()
         .collect();
 
-    store::import_values(&cfg.project, &sets).map_err(CmdError::Cli)?;
+    store::import_values(&cfg.project, &sets, false).map_err(CmdError::Cli)?;
 
     // Auto-apply: bildirilen hedefler HEMEN yazilir ki tuketim tarafi
     // (.env.local vb.) ikinci bir komut beklemeden import'u yansitsin.
@@ -1578,6 +1585,85 @@ fn run_import_env(
     if !overridden.is_empty() {
         let _ = write!(errw, "{}", importenv::override_line(&overridden));
     }
+    Ok(())
+}
+
+// run_sync, `wapps secrets sync` without `--target`.
+//
+// GATE ORDER, measured from the Go oracle:
+//   1. agent policy `allow`, then the binding gate (secretsPreRunE)
+//   2. `--target`: "coolify" is the Coolify arm (NOT ported in this binary);
+//      anything else non-empty is refused by name
+//   3. config requirement (require_store_config; `--project <name>` does not
+//      stand in for one: sync reads `sources:`)
+//   4. tofu preflight, only when a tofu source is declared, BEFORE any
+//      source is read
+//   5. read every source in order, merge (later wins, one STDERR line per
+//      overridden key), envelopes -> plain strings
+//   6. no keys -> error; --dry-run -> names-only report (one bulk read, so
+//      the epoch pin advances); otherwise ONE import tagged
+//      `X-Wapps-Intent: sync` (a write: the pin is not touched)
+//
+// Unlike `import-env`, sync does NOT write the declared targets afterwards.
+fn run_sync(
+    config: Option<String>,
+    project: Option<String>,
+    target: String,
+    dry_run: bool,
+) -> Result<(), CmdError> {
+    let agent = agentmode::is_agent();
+    let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
+    gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
+
+    if target == "coolify" {
+        return Err(CmdError::Cli(Error::new(
+            Code::ActionUnavailable,
+            "sync: --target=coolify is not available in this build",
+        )));
+    }
+    if !target.is_empty() {
+        return Err(CmdError::Plain(format!(
+            "sync: unknown --target {} (allowed: coolify)",
+            go_quote(&target)
+        )));
+    }
+
+    let cfg = ctx.require_store_config("sync").map_err(CmdError::Cli)?;
+    if cfg.sources.iter().any(|s| s.r#type == "tofu") {
+        let lookup = |name: &str| std::env::var(name).unwrap_or_default();
+        if let Some(msg) = wapps::tofu::preflight_env(&lookup) {
+            return Err(CmdError::Plain(msg));
+        }
+    }
+
+    let mut parts = Vec::new();
+    for (i, src) in cfg.resolved_sources().iter().enumerate() {
+        parts.push(syncverb::read_source(i, src).map_err(CmdError::Plain)?);
+    }
+    let (merged, overridden) = syncverb::merge(parts);
+    let mut errw = std::io::stderr();
+    for k in &overridden {
+        let _ = write!(errw, "{}", syncverb::override_line(k));
+    }
+    let sets = syncverb::merged_to_sets(&merged).map_err(CmdError::Plain)?;
+    if sets.is_empty() {
+        return Err(CmdError::Plain(
+            "secrets.sync: no source keys to commit to the store".to_string(),
+        ));
+    }
+
+    let mut out = std::io::stdout();
+    if dry_run {
+        let current = store::read_all(&cfg.project).map_err(CmdError::Cli)?;
+        let _ = write!(out, "{}", syncverb::render_plan(&sets, &current));
+        return Ok(());
+    }
+    store::import_values(&cfg.project, &sets, true).map_err(CmdError::Cli)?;
+    let _ = write!(
+        out,
+        "{}",
+        syncverb::committed_line(sets.len(), &cfg.project)
+    );
     Ok(())
 }
 

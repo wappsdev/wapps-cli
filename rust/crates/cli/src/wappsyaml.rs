@@ -131,19 +131,66 @@ impl WappsYaml {
         }
         self.profiles.get(name).cloned()
     }
+
+    /// resolved_sources, Go's `ResolvedSources`: a copy of `sources` with
+    /// `path` and `workdir` joined to the config root. A tofu source with no
+    /// workdir maps to "." first, so it runs in the config dir and never in
+    /// the operator's cwd.
+    pub fn resolved_sources(&self) -> Vec<SourceConfig> {
+        self.sources
+            .iter()
+            .map(|s| {
+                let mut s = s.clone();
+                s.path = resolve_rel(&self.config_root, &s.path);
+                if s.r#type == "tofu" && s.workdir.is_empty() {
+                    s.workdir = ".".to_string();
+                }
+                s.workdir = resolve_rel(&self.config_root, &s.workdir);
+                s
+            })
+            .collect()
+    }
 }
 
-// resolve_rel, p goreli ise config_root'a ekler. Mutlak yollar ve bos
-// config_root AYNEN gecer. secrets-from-anywhere spec'inin tek kurali bu:
-// goreli bir yol `.wapps.yaml`in dizinine gore, mutlak bir yol aynen.
+// resolve_rel joins a relative p to config_root. Absolute paths and an empty
+// config_root pass through unchanged. This is the one rule of
+// secrets-from-anywhere: a relative path is relative to the `.wapps.yaml`'s
+// directory, an absolute path is taken as is.
+//
+// The join is Go's `filepath.Join`, which CLEANS the result: "./x" and "a/../x"
+// both become "<root>/x", and "." becomes the root itself. Rust's `Path::join`
+// does not clean, and the difference is printed (a sync source's name carries
+// the resolved path).
 fn resolve_rel(config_root: &str, p: &str) -> String {
     if p.is_empty() || config_root.is_empty() || Path::new(p).is_absolute() {
         return p.to_string();
     }
-    Path::new(config_root)
-        .join(p)
-        .to_string_lossy()
-        .into_owned()
+    go_clean(&format!("{config_root}/{p}"))
+}
+
+// go_clean, Go's `filepath.Clean` on a Unix path: lexical only (no symlinks).
+fn go_clean(p: &str) -> String {
+    let rooted = p.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for part in p.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if out.last().is_some_and(|l| *l != "..") {
+                    out.pop();
+                } else if !rooted {
+                    out.push("..");
+                }
+            }
+            _ => out.push(part),
+        }
+    }
+    let body = out.join("/");
+    match (rooted, body.is_empty()) {
+        (true, _) => format!("/{body}"),
+        (false, true) => ".".to_string(),
+        (false, false) => body,
+    }
 }
 
 /// load, `path`teki `.wapps.yaml`i okur ve dogrular.

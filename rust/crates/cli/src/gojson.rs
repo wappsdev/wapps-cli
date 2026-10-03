@@ -257,6 +257,66 @@ pub fn decode_struct(raw: &[u8], st: &GoStruct<'_>) -> Result<Vec<Option<GoValue
     }
 }
 
+/// RawPairs, a JSON object as (key, raw value) pairs in document order.
+pub type RawPairs = Vec<(String, Box<serde_json::value::RawValue>)>;
+
+/// decode_raw_object, `json.Unmarshal(raw, &v)` where v is a type that takes a
+/// JSON object as (key, raw value) pairs: a `map[string]json.RawMessage`, or
+/// a struct whose fields are all `json.RawMessage`. `go_type` is the name Go
+/// prints in a type error.
+///
+/// `Ok(None)` is a top-level `null` (Go leaves the target untouched). Pairs
+/// come back in DOCUMENT order with duplicates kept; the caller decides which
+/// one wins (for both target types, the last one).
+pub fn decode_raw_object(raw: &[u8], go_type: &str) -> Result<Option<RawPairs>, String> {
+    if let Err(e) = serde_json::from_slice::<serde::de::IgnoredAny>(raw) {
+        return Err(go_syntax_error(raw, &e));
+    }
+    let top: Box<serde_json::value::RawValue> =
+        serde_json::from_slice(raw).map_err(|e| e.to_string())?;
+    match kind_of(top.get()) {
+        "null" => Ok(None),
+        "object" => {
+            let entries: Entries = serde_json::from_str(top.get()).map_err(|e| e.to_string())?;
+            Ok(Some(entries.0))
+        }
+        other => Err(format!(
+            "json: cannot unmarshal {other} into Go value of type {go_type}"
+        )),
+    }
+}
+
+/// compact, `json.Compact` on a VALID JSON text: insignificant whitespace is
+/// dropped and nothing else changes — key order, number text and string
+/// escapes stay byte-for-byte. Re-serializing through serde_json::Value would
+/// reorder object keys and rewrite numbers (`2.50` -> `2.5`).
+pub fn compact(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let (mut in_str, mut esc) = (false, false);
+    for c in raw.chars() {
+        if in_str {
+            out.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            ' ' | '\t' | '\n' | '\r' => {}
+            '"' => {
+                in_str = true;
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 // kind_of, the JSON kind of a raw value, named the way Go's type errors do.
 fn kind_of(raw: &str) -> &'static str {
     match raw.trim_start().as_bytes().first() {
@@ -289,8 +349,25 @@ fn go_syntax_error(raw: &[u8], e: &serde_json::Error) -> String {
                 go_quote_char(c)
             )
         }
-        _ => e.to_string(),
+        _ => trailing_data_error(raw).unwrap_or_else(|| e.to_string()),
     }
+}
+
+// trailing_data_error, Go's sentence for a valid value followed by more
+// non-space bytes: "invalid character 'x' after top-level value". None when
+// the input is not of that shape.
+fn trailing_data_error(raw: &[u8]) -> Option<String> {
+    let mut it = serde_json::Deserializer::from_slice(raw).into_iter::<serde::de::IgnoredAny>();
+    it.next()?.ok()?;
+    let rest = &raw[it.byte_offset()..];
+    let c = rest
+        .iter()
+        .copied()
+        .find(|c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r'))?;
+    Some(format!(
+        "invalid character {} after top-level value",
+        go_quote_char(c)
+    ))
 }
 
 // go_quote_char, encoding/json's quoteChar: `'\''`, `'"'`, else strconv.Quote

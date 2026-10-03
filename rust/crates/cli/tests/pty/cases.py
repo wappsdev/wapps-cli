@@ -51,7 +51,16 @@ FIXTURE_FILES = {
     #   3. TF_VAR_ALPHA — EKLENMEMIS olmali. Prefix "" yerine "TF_VAR_"
     #      olsaydi bu iki satir YER DEGISTIRIRDI, ve v0.23.0'da olan tam
     #      olarak buydu.
+    #
+    # `output -json` is the one argv `secrets sync` runs (a `tofu` source). It
+    # prints `tofu-output.json` from its OWN cwd, so the case only passes if
+    # the binary ran it in the source's workdir; a missing file fails with a
+    # message on stderr that must never reach the terminal (Go discards it).
     "tofu": ("#!/bin/sh\n"
+             "if [ \"$1 $2\" = \"output -json\" ]; then\n"
+             "  cat tofu-output.json || exit 1\n"
+             "  exit 0\n"
+             "fi\n"
              "echo \"argv: $*\"\n"
              "echo \"ALPHA=${ALPHA-<unset>}\"\n"
              "echo \"TF_VAR_ALPHA=${TF_VAR_ALPHA-<unset>}\"\n"
@@ -3289,5 +3298,159 @@ SHORT_FLAG_CASES = [
      ["-c", "sub/.wapps.yaml", "secrets", "list"], HUMAN, None, b"y\n", _sub(VALID_CFG)),
 ]
 CASES += SHORT_FLAG_CASES
+
+
+# --- `secrets sync` (without --target) -----------------------------------------
+#
+# Gate order, measured from the Go oracle:
+#
+#   agent policy `allow` -> binding -> --target check -> require config ->
+#   tofu preflight (only when a tofu source is declared) -> read every source
+#   in order -> merge (later wins, one stderr line per overridden key) ->
+#   envelopes to plain strings -> "no source keys" -> --dry-run report OR one
+#   POST /import tagged `X-Wapps-Intent: sync`
+#
+# THE HELP TEXT IS NOT THE ORACLE: it says sync writes "an encrypted archive
+# to dest"; the code writes the store. These cases follow the code.
+#
+# A sync never prints a value, and a successful import only prints a COUNT. So
+# what was sent is made visible by the fake gate: an import that carries the
+# key `__DIGEST__` is refused with a 409 whose code is a digest of the intent
+# header and every value received (fakegate.py). Two binaries that send
+# different values, or one that drops the intent, print different codes. The
+# digest cases run in HUMAN mode: the agent envelope redacts the code.
+#
+# NO REAL SECRET: every value below is a made-up test string.
+SYNC_FILE_CFG = VALID_CFG + "sources:\n  - type: file\n    path: sync.env\n"
+SYNC_TOFU_CFG = VALID_CFG + "sources:\n  - type: tofu\n"
+SYNC_FILES = {
+    # ALPHA matches the gate's __ALL__ value, BETA differs, NEWKEY is new.
+    "sync.env": "# a test file\nALPHA=alpha-test-value-long\n"
+                "export BETA='changed-test-value'\nNEWKEY=\"new test value\"\n",
+    # Every key of the gate's __ALL__ set, with the same values.
+    "insync.env": "ALPHA=alpha-test-value-long\nBETA=beta-test-value-long\nTINY=ab\n",
+    "nodelim.env": "ALPHA=fine\nbaretokenplaceholder\n",
+    "comments.env": "# nothing but a comment\n\n",
+    "denied.env": "DENIED_KEY=test-string\n",
+    # Two sources, one shared key: the later one wins and the earlier value
+    # must not reach the gate (the digest pins which value went out).
+    "first.env": "__DIGEST__=first-test-string\nSHARED=from-the-first-file\n",
+    "second.env": "SHARED=from-the-second-file\n",
+}
+# The tofu output: a string, a list with spaces, a null, a number, a bool and
+# an object whose keys are NOT in sorted order. Go stringifies non-strings
+# with json.Compact (whitespace dropped, key order and number text kept) and
+# null as "". A port that re-serializes reorders `{"b":..,"a":..}`.
+TOFU_OUT = ('{"__DIGEST__": {"value": "d", "type": "string"},\n'
+            ' "ALPHA": {"value": "alpha-test-value-long", "type": "string", "sensitive": true},\n'
+            ' "LIST": {"value": ["a b", 1, 2.50], "type": ["tuple", ["string", "number"]]},\n'
+            ' "NOTHING": {"value": null},\n'
+            ' "NUM": {"value": 1e3},\n'
+            ' "FLAG": {"Value": true},\n'
+            ' "OBJ": {"value": {"b": 1, "a": {"c": [ ]}}},\n'
+            ' "NOVALUE": {"type": "string"}}\n')
+TOFU_ENV = dict(TOFU_PATH,
+                AWS_ACCESS_KEY_ID="fake-not-a-secret",
+                AWS_SECRET_ACCESS_KEY="fake-not-a-secret",
+                AWS_ENDPOINT_URL_S3="https://r2.example.invalid",
+                AWS_REGION="auto",
+                TF_VAR_state_passphrase="fake-not-a-secret")
+
+def sy(name, argv, env, stdin=None, seed=None, pins=None):
+    return (name, argv, env, pins, stdin, seed)
+
+SYNC = ["secrets", "sync"]
+
+SYNC_CASES = [
+    # === the four identity arms x two modes ================================
+    # `bare`: no flag, no config -> NOT_FOUND from requireStoreConfig("sync").
+    sy("human_sync_no_config", SYNC, HUMAN),
+    sy("agent_sync_no_config", SYNC, AGENT),
+    # `proj`: `--project` does not stand in for a config (sync reads
+    # `sources:`). Human -> NOT_FOUND; agent -> the binding gate fires first.
+    sy("human_sync_project_flag_still_needs_a_config", P + SYNC, HUMAN),
+    sy("agent_sync_project_flag_binding_refused", P + SYNC, AGENT),
+    # `rooted`: an unpinned config refuses an agent; a human pins it with "y"
+    # and the store is written.
+    sy("agent_sync_config_unpinned", SYNC, AGENT, seed=cfg(SYNC_FILE_CFG, SYNC_FILES)),
+    sy("human_sync_file_source_writes_the_store", SYNC, HUMAN, b"y\n",
+       cfg(SYNC_FILE_CFG, SYNC_FILES)),
+    # `cfg`: the source path resolves against the CONFIG's directory, not the
+    # cwd. `sync.env` exists only under sub/.
+    cf("human_sync_config_flag_resolves_sources_against_the_config_dir", SYNC, HUMAN,
+       b"y\n", SYNC_FILE_CFG, {"sub/sync.env": SYNC_FILES["sync.env"]}),
+    cf("agent_sync_config_flag_unpinned", SYNC, AGENT, None, SYNC_FILE_CFG,
+       {"sub/sync.env": SYNC_FILES["sync.env"]}),
+
+    # === service token: the binding is legitimately skipped =================
+    sy("agent_sync_behind_a_service_token_writes_the_store", SYNC, CI_TOKENS,
+       seed=cfg(SYNC_FILE_CFG, SYNC_FILES)),
+
+    # === --dry-run: NAMES only, compared against the store =================
+    # One bulk read, so the epoch pin ADVANCES (the plain sync never reads and
+    # leaves it alone — the cases above pin that too).
+    sy("human_sync_dry_run_names_new_and_changed_keys", SYNC + ["--dry-run"], HUMAN,
+       b"y\n", cfg(SYNC_FILE_CFG, SYNC_FILES)),
+    sy("agent_sync_dry_run_in_sync", SYNC + ["--dry-run"], CI_TOKENS, None,
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: insync.env\n", SYNC_FILES)),
+    sy("agent_sync_dry_run_epoch_downgrade_refused", SYNC + ["--dry-run"], CI_TOKENS, None,
+       cfg(SYNC_FILE_CFG, SYNC_FILES), pins=pinfile(9)),
+
+    # === sources failing ===================================================
+    # `./nope.env`: the printed path is Go's filepath.Join, which CLEANS it
+    # (no "/./" in the name).
+    sy("human_sync_missing_source_file", SYNC, HUMAN, b"y\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: ./nope.env\n", SYNC_FILES)),
+    # The error names the line and its LENGTH, never its text.
+    sy("human_sync_malformed_env_line", SYNC, HUMAN, b"y\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: nodelim.env\n", SYNC_FILES)),
+    sy("agent_sync_no_sources_declared", SYNC, CI_TOKENS, None, cfg(VALID_CFG)),
+    sy("agent_sync_a_source_with_no_keys", SYNC, CI_TOKENS, None,
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: comments.env\n", SYNC_FILES)),
+
+    # === merge: later source wins, and the wire carries the sync intent ====
+    sy("human_sync_later_source_overrides_and_the_import_is_tagged_sync", SYNC, HUMAN,
+       b"y\n", cfg(VALID_CFG + "sources:\n  - type: file\n    path: first.env\n"
+                 "  - type: file\n    path: second.env\n", SYNC_FILES)),
+
+    # === gate errors carry the "import <project>" context ==================
+    sy("human_sync_grant_denied", SYNC, HUMAN, b"y\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: denied.env\n", SYNC_FILES)),
+    sy("human_sync_no_session", SYNC, dict(HUMAN, WAPPS_SESSION_TOKEN=""), b"y\n",
+       cfg(SYNC_FILE_CFG, SYNC_FILES)),
+
+    # === tofu source, through the `tofu` shim ==============================
+    # The preflight runs BEFORE any source is read and lists what is missing.
+    sy("agent_sync_tofu_preflight_names_the_missing_env", SYNC, dict(CI_TOKENS, **TOFU_PATH),
+       None, cfg(SYNC_TOFU_CFG, {"tofu-output.json": TOFU_OUT})),
+    # Values reach the wire stringified exactly as Go does (digest). HUMAN
+    # mode on purpose: the agent envelope's scrubber redacts the digest (and
+    # the workdir paths below) as high-entropy text, which would leave the
+    # case comparing two "[REDACTED:28]" strings.
+    sy("human_sync_reads_tofu_through_the_shim", SYNC, dict(HUMAN, **TOFU_ENV), b"y\n",
+       cfg(SYNC_TOFU_CFG, {"tofu-output.json": TOFU_OUT})),
+    # No output file in the workdir: the shim fails with a message on its
+    # stderr, which is discarded; only "exit status 1" is reported.
+    sy("human_sync_tofu_failure_discards_its_stderr", SYNC, dict(HUMAN, **TOFU_ENV), b"y\n",
+       cfg(SYNC_TOFU_CFG)),
+    sy("agent_sync_tofu_missing_binary", SYNC,
+       dict(CI_TOKENS, **dict(TOFU_ENV, PATH="/usr/bin:/bin")), None,
+       cfg(SYNC_TOFU_CFG, {"tofu-output.json": TOFU_OUT})),
+    sy("human_sync_tofu_workdir_does_not_exist", SYNC, dict(HUMAN, **TOFU_ENV), b"y\n",
+       cfg(SYNC_TOFU_CFG + "    workdir: infra\n", {"tofu-output.json": TOFU_OUT})),
+    sy("agent_sync_tofu_output_is_not_an_object", SYNC, dict(CI_TOKENS, **TOFU_ENV), None,
+       cfg(SYNC_TOFU_CFG, {"tofu-output.json": "[]"})),
+    sy("agent_sync_tofu_envelope_is_not_an_object", SYNC, dict(CI_TOKENS, **TOFU_ENV), None,
+       cfg(SYNC_TOFU_CFG, {"tofu-output.json": '{"A": "bare-string"}'})),
+
+    # === --target ==========================================================
+    # Only `coolify` is known; anything else is refused after the gates.
+    sy("human_sync_unknown_target", SYNC + ["--target", "vault"], HUMAN, b"y\n",
+       cfg(SYNC_FILE_CFG, SYNC_FILES)),
+    # syncCmd has no Args: extra arguments are silently ignored.
+    sy("agent_sync_extra_args_are_ignored", SYNC + ["EXTRA"], CI_TOKENS, None,
+       cfg(SYNC_FILE_CFG, SYNC_FILES)),
+]
+CASES += SYNC_CASES
 
 _armcheck()

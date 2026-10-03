@@ -20,6 +20,7 @@
 // No new crate: the child is a std::process::Command, the session file goes
 // through atomicfile.rs, and the JWT segments through gobase64.rs.
 use crate::clierr::{Code, Error};
+use crate::goexec;
 use crate::gotime;
 use crate::session::{self, Claims, State};
 use std::ffi::OsString;
@@ -92,7 +93,7 @@ pub struct CloudflaredRun<'a> {
 /// app token. A missing cloudflared is ACTION_UNAVAILABLE and is decided
 /// BEFORE anything is created on disk.
 pub fn cloudflared_login(run: &CloudflaredRun<'_>) -> Result<String, Error> {
-    let Some(cf) = look_path("cloudflared", run.path_env) else {
+    let Some(cf) = goexec::look_path("cloudflared", run.path_env) else {
         return Err(Error::new(
             Code::ActionUnavailable,
             "wapps login needs cloudflared for the CF Access SSO flow (edge token transfer).\n  \
@@ -192,7 +193,7 @@ fn run_capturing(mut cmd: Command, cf: &Path, deadline: Instant) -> (Waited, Vec
     });
     let waited = loop {
         match child.try_wait() {
-            Ok(Some(st)) => break Waited::Exited(exit_text(st)),
+            Ok(Some(st)) => break Waited::Exited(goexec::exit_text(st)),
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -204,47 +205,6 @@ fn run_capturing(mut cmd: Command, cf: &Path, deadline: Instant) -> (Waited, Vec
     };
     let out = reader.and_then(|h| h.join().ok()).unwrap_or_default();
     (waited, out)
-}
-
-// exit_text, Go's *exec.ExitError text: "exit status N" or "signal: <name>".
-fn exit_text(st: std::process::ExitStatus) -> Option<String> {
-    use std::os::unix::process::ExitStatusExt;
-    if st.success() {
-        return None;
-    }
-    if let Some(code) = st.code() {
-        return Some(format!("exit status {code}"));
-    }
-    let sig = st.signal().unwrap_or(0);
-    // Go's syscall signal table; only the names a dying cloudflared plausibly
-    // reports are carried, the rest print Go's numeric fallback.
-    let name = match sig {
-        1 => "hangup".to_string(),
-        2 => "interrupt".to_string(),
-        9 => "killed".to_string(),
-        15 => "terminated".to_string(),
-        n => format!("signal {n}"),
-    };
-    let core = if st.core_dumped() {
-        " (core dumped)"
-    } else {
-        ""
-    };
-    Some(format!("signal: {name}{core}"))
-}
-
-// look_path, Go's exec.LookPath for a bare name: the first PATH entry holding
-// an executable regular file. A match in a RELATIVE entry is an error in Go
-// (exec.ErrDot), so it ends the search as "not found".
-fn look_path(name: &str, path_env: &str) -> Option<PathBuf> {
-    for dir in path_env.split(':') {
-        let dir = if dir.is_empty() { "." } else { dir };
-        let p = Path::new(dir).join(name);
-        if crate::doctorverb::is_executable_file(&p) {
-            return if p.is_absolute() { Some(p) } else { None };
-        }
-    }
-    None
 }
 
 // TempHome, Go's os.MkdirTemp(base, "wapps-cf-") + defer os.RemoveAll: a
