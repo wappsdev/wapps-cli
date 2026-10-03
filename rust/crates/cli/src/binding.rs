@@ -79,7 +79,10 @@ struct Out<'a> {
 impl Store {
     /// empty, bos bir defter doner (ilk kullanim).
     pub fn empty() -> Self {
-        Store { schema: SCHEMA.to_string(), pins: BTreeMap::new() }
+        Store {
+            schema: SCHEMA.to_string(),
+            pins: BTreeMap::new(),
+        }
     }
 
     /// check, bir depo parmak izi + `.wapps.yaml`in verdigi proje icin
@@ -101,9 +104,16 @@ impl Store {
 
     /// save, pin deposunu ATOMIK olarak 0600 modunda yazar.
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let schema = if self.schema.is_empty() { SCHEMA } else { self.schema.as_str() };
-        let raw = gojson::to_string_indent(&Out { schema, pins: &self.pins })
-            .map_err(|e| format!("binding.Store.Save: {e}"))?;
+        let schema = if self.schema.is_empty() {
+            SCHEMA
+        } else {
+            self.schema.as_str()
+        };
+        let raw = gojson::to_string_indent(&Out {
+            schema,
+            pins: &self.pins,
+        })
+        .map_err(|e| format!("binding.Store.Save: {e}"))?;
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
         atomicfile::create_dir_0700(dir).map_err(|e| format!("binding.Store.Save: mkdir: {e}"))?;
         atomicfile::write(path, raw.as_bytes(), 0o600)
@@ -134,9 +144,15 @@ pub fn load(path: &Path) -> Result<Store, String> {
     let w: Wire = serde_json::from_slice(&raw)
         .map_err(|e| format!("binding.Load: parse {}: {e}", path.display()))?;
     if w.schema != SCHEMA {
-        return Err(format!("binding.Load: unexpected schema {}", gojson::quote(&w.schema)));
+        return Err(format!(
+            "binding.Load: unexpected schema {}",
+            gojson::quote(&w.schema)
+        ));
     }
-    Ok(Store { schema: w.schema, pins: w.pins.unwrap_or_default() })
+    Ok(Store {
+        schema: w.schema,
+        pins: w.pins.unwrap_or_default(),
+    })
 }
 
 /// default_path_from, XDG/HOME degerlerinden pin yolunu cozer (saf bicim).
@@ -145,12 +161,18 @@ pub fn default_path_from(xdg: Option<String>, home: Option<String>) -> Result<Pa
         return Ok(Path::new(&x).join("wapps").join("repo-pins.json"));
     }
     match home.filter(|v| !v.is_empty()) {
-        Some(h) => Ok(Path::new(&h).join(".config").join("wapps").join("repo-pins.json")),
+        Some(h) => Ok(Path::new(&h)
+            .join(".config")
+            .join("wapps")
+            .join("repo-pins.json")),
         None => Err("binding: resolve home dir: $HOME is not set".to_string()),
     }
 }
 
 /// default_path, ~/.config/wapps/repo-pins.json doner (XDG onurlandirilir).
 pub fn default_path() -> Result<PathBuf, String> {
-    default_path_from(std::env::var("XDG_CONFIG_HOME").ok(), std::env::var("HOME").ok())
+    default_path_from(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
 }

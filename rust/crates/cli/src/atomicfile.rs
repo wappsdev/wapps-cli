@@ -21,7 +21,10 @@ use std::path::Path;
 /// write, data'yi path'e ATOMIK ve verilen mod ile yazar.
 pub fn write(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let base = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let base = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())

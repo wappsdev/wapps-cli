@@ -37,7 +37,11 @@ fn corpus() -> Vec<Case> {
 fn redaction_matches_the_go_corpus_case_for_case() {
     let cases = corpus();
     // Bos bir korpus da "fark yok" derdi.
-    assert!(cases.len() >= 20, "korpus yalnizca {} vaka tasiyor", cases.len());
+    assert!(
+        cases.len() >= 20,
+        "korpus yalnizca {} vaka tasiyor",
+        cases.len()
+    );
     let mut bad = Vec::new();
     for c in &cases {
         let got = safelog::redact_patterns(&c.input);
@@ -48,7 +52,12 @@ fn redaction_matches_the_go_corpus_case_for_case() {
             ));
         }
     }
-    assert!(bad.is_empty(), "{} vaka ayristi:\n{}", bad.len(), bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "{} vaka ayristi:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
 }
 
 #[test]
@@ -56,8 +65,17 @@ fn the_corpus_actually_redacts_something() {
     // Hicbir seyi redakte etmeyen bir korpus, redaksiyonu kaldiran bir
     // mutasyonu yakalayamazdi.
     let cases = corpus();
-    let jwt = cases.iter().filter(|c| c.want != c.input && !c.want.contains("[REDACTED:")).count();
-    let token = cases.iter().filter(|c| c.want.contains("[REDACTED:")).count();
+    let jwt = cases
+        .iter()
+        .filter(|c| c.want != c.input && !c.want.contains("[REDACTED:"))
+        .count();
+    let token = cases
+        .iter()
+        .filter(|c| c.want.contains("[REDACTED:"))
+        .count();
     let untouched = cases.iter().filter(|c| c.want == c.input).count();
-    assert!(jwt > 0 && token > 0 && untouched > 0, "jwt={jwt} token={token} untouched={untouched}");
+    assert!(
+        jwt > 0 && token > 0 && untouched > 0,
+        "jwt={jwt} token={token} untouched={untouched}"
+    );
 }

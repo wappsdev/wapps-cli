@@ -102,7 +102,12 @@ impl<'a, W: Write> Scrubber<'a, W> {
         // Uzun degerleri ONCE dene: bir deger baskasinin on-ekiyse once uzunu
         // yakala (daha fazla bayt redakte edilir).
         vals.sort_by_key(|v| std::cmp::Reverse(v.len()));
-        Scrubber { w, values: vals, max_len, pending: Vec::new() }
+        Scrubber {
+            w,
+            values: vals,
+            max_len,
+            pending: Vec::new(),
+        }
     }
 
     /// write_all, gelen baytlari biriktirir ve GUVENLE bosaltilabilir oneki yazar.
@@ -155,7 +160,9 @@ impl<'a, W: Write> Scrubber<'a, W> {
     fn earliest_match(&self) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize)> = None;
         for v in &self.values {
-            let Some(i) = find_sub(&self.pending, v) else { continue };
+            let Some(i) = find_sub(&self.pending, v) else {
+                continue;
+            };
             best = match best {
                 None => Some((i, v.len())),
                 Some((bi, bl)) if i < bi || (i == bi && v.len() > bl) => Some((i, v.len())),

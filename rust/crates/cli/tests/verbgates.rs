@@ -50,7 +50,9 @@ fn scratch() -> PathBuf {
 }
 
 fn run(cmd: &mut Command, what: &str) -> String {
-    let out = cmd.output().unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
     assert!(
         out.status.success(),
         "{what} basarisiz (exit {:?})\nstdout:\n{}\nstderr:\n{}",
@@ -164,7 +166,12 @@ fn both_binaries_gate_exec_apply_and_get_the_same_way() {
     // Oracle'i kaynaktan derle — sahadaki sozlesme Go'nun BUGUNKU davranisi.
     let go_bin = work.join("wapps-go");
     run(
-        Command::new("go").arg("build").arg("-o").arg(&go_bin).arg("./main.go").current_dir(&root),
+        Command::new("go")
+            .arg("build")
+            .arg("-o")
+            .arg(&go_bin)
+            .arg("./main.go")
+            .current_dir(&root),
         "go build (oracle)",
     );
 
@@ -173,7 +180,11 @@ fn both_binaries_gate_exec_apply_and_get_the_same_way() {
 
     // Ayni kapilar PORTLANMIS ikilide de duruyor mu. Bu satir, bu dilimin
     // getirdigi sey: onceki dilimde olculecek bir Rust tarafi YOKTU.
-    let rs = measure(Path::new(env!("CARGO_BIN_EXE_wapps")), &work, &work.join("gates-rs.json"));
+    let rs = measure(
+        Path::new(env!("CARGO_BIN_EXE_wapps")),
+        &work,
+        &work.join("gates-rs.json"),
+    );
     assert_gates(&rs, "rust");
 
     let _ = std::fs::remove_dir_all(&work);

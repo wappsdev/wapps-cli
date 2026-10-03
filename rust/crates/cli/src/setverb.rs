@@ -49,7 +49,10 @@ pub fn read_from_file(path: &str) -> Result<String, String> {
         // gozlemlenebilir sonucu verir (Go'nun string'i de dogrulanmamis bayt
         // dizisidir; JSON kodlamasinda ikisi de U+FFFD'ye duser).
         Ok(raw) => Ok(trim_trailing_newline(&String::from_utf8_lossy(&raw)).to_string()),
-        Err(e) => Err(format!("secrets.set: read --from-file: {}", go_open_error(path, &e))),
+        Err(e) => Err(format!(
+            "secrets.set: read --from-file: {}",
+            go_open_error(path, &e)
+        )),
     }
 }
 
@@ -67,9 +70,7 @@ pub fn read_from_file(path: &str) -> Result<String, String> {
 
 #[cfg(unix)]
 fn read_password_line() -> Result<String, std::io::Error> {
-    use rustix::termios::{
-        tcgetattr, tcsetattr, InputModes, LocalModes, OptionalActions,
-    };
+    use rustix::termios::{tcgetattr, tcsetattr, InputModes, LocalModes, OptionalActions};
     let stdin = rustix::stdio::stdin();
 
     let original = tcgetattr(stdin)?;
@@ -170,7 +171,10 @@ pub fn prompt_value<W: Write>(errw: &mut W, key: &str) -> Result<Captured, Strin
                 // ReadPassword'dan SONRA tek bir newline: kullanicinin
                 // basmadigi (cunku yankilanmadi) satir sonunu biz basiyoruz.
                 let _ = writeln!(errw);
-                Ok(Captured { value: v, tty: true })
+                Ok(Captured {
+                    value: v,
+                    tty: true,
+                })
             }
             Err(e) => {
                 let _ = writeln!(errw);
@@ -201,7 +205,10 @@ pub fn capture_value<W: Write>(
     from_file: Option<&str>,
 ) -> Result<String, String> {
     let captured = match from_file {
-        Some(path) => Captured { value: read_from_file(path)?, tty: true },
+        Some(path) => Captured {
+            value: read_from_file(path)?,
+            tty: true,
+        },
         None => prompt_value(errw, key)?,
     };
 

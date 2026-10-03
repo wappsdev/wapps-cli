@@ -26,8 +26,14 @@ fn prefix_is_applied_once_never_twice() {
     // saklaniyor (coolify_uuid → TF_VAR_coolify_uuid) ama dosya kaynakli
     // sirlar ZATEN onekli geliyor (TF_VAR_gemini_api_key) ve
     // TF_VAR_TF_VAR_gemini_api_key olmamalilar.
-    assert_eq!(envwrite::env_name("TF_VAR_", "coolify_uuid"), "TF_VAR_coolify_uuid");
-    assert_eq!(envwrite::env_name("TF_VAR_", "TF_VAR_gemini_api_key"), "TF_VAR_gemini_api_key");
+    assert_eq!(
+        envwrite::env_name("TF_VAR_", "coolify_uuid"),
+        "TF_VAR_coolify_uuid"
+    );
+    assert_eq!(
+        envwrite::env_name("TF_VAR_", "TF_VAR_gemini_api_key"),
+        "TF_VAR_gemini_api_key"
+    );
     assert_eq!(envwrite::env_name("", "ANY_KEY"), "ANY_KEY");
 }
 
@@ -36,7 +42,10 @@ fn prefix_is_applied_once_never_twice() {
 #[test]
 fn keys_are_emitted_in_sorted_order() {
     // Siralama determinizm icin: testler ve git diff'i kararli kalsin.
-    let out = env_str(r#"{"B":{"value":"2"},"A":{"value":"1"},"C":{"value":"3"}}"#, "");
+    let out = env_str(
+        r#"{"B":{"value":"2"},"A":{"value":"1"},"C":{"value":"3"}}"#,
+        "",
+    );
     assert_eq!(out, "export A='1'\nexport B='2'\nexport C='3'\n");
 }
 
@@ -60,9 +69,15 @@ fn non_string_values_are_emitted_as_compact_json() {
     // Tofu TF_VAR_<ad>'i JSON olarak YENIDEN ayristiriyor, yani liste/harita/
     // bool/sayi kayipsiz gidip geliyor. Bosluklar SIKISTIRILIYOR ki yeniden
     // ayristirmada bosluk artifaktlari kalmasin.
-    assert_eq!(env_str(r#"{"K":{"value":[1, 2, 3]}}"#, ""), "export K='[1,2,3]'\n");
+    assert_eq!(
+        env_str(r#"{"K":{"value":[1, 2, 3]}}"#, ""),
+        "export K='[1,2,3]'\n"
+    );
     assert_eq!(env_str(r#"{"K":{"value":true}}"#, ""), "export K='true'\n");
-    assert_eq!(env_str(r#"{"K":{"value":{"a": 1}}}"#, ""), "export K='{\"a\":1}'\n");
+    assert_eq!(
+        env_str(r#"{"K":{"value":{"a": 1}}}"#, ""),
+        "export K='{\"a\":1}'\n"
+    );
     assert_eq!(env_str(r#"{"K":{"value":42}}"#, ""), "export K='42'\n");
 }
 
@@ -79,11 +94,8 @@ fn malformed_archive_json_is_refused() {
 fn exec_env_entries_are_sorted_and_unquoted() {
     // exec, cocugun env'ine KEY=VALUE koyuyor — bir kabuk satiri DEGIL, yani
     // tirnak/kacis YOK. Bu, env dosyasi yazicisindan bilincli olarak farkli.
-    let (env, _) = execverb::exec_env_and_values(
-        br#"{"B":{"value":"2"},"A":{"value":"it's"}}"#,
-        "",
-    )
-    .unwrap();
+    let (env, _) =
+        execverb::exec_env_and_values(br#"{"B":{"value":"2"},"A":{"value":"it's"}}"#, "").unwrap();
     assert_eq!(env, vec!["A=it's".to_string(), "B=2".to_string()]);
 }
 
@@ -95,7 +107,10 @@ fn exec_non_string_values_keep_their_original_spacing() {
     // getirmek sahadaki ikiliyle ayrisirdi.
     let (env, _) = execverb::exec_env_and_values(br#"{"K":{"value":[1, 2]}}"#, "").unwrap();
     assert_eq!(env, vec!["K=[1, 2]".to_string()]);
-    assert_eq!(env_str(r#"{"K":{"value":[1, 2]}}"#, ""), "export K='[1,2]'\n");
+    assert_eq!(
+        env_str(r#"{"K":{"value":[1, 2]}}"#, ""),
+        "export K='[1,2]'\n"
+    );
 }
 
 #[test]
@@ -148,7 +163,10 @@ fn apply_writes_each_target_at_0600_and_reports_it() {
     {
         use std::os::unix::fs::PermissionsExt;
         // 0600: bu dosya DUZ METIN sir tasiyor.
-        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
 
@@ -163,8 +181,13 @@ fn a_byte_identical_target_is_left_alone_with_its_mtime_intact() {
     let before = std::fs::metadata(&f).unwrap().modified().unwrap();
 
     let mut out: Vec<u8> = Vec::new();
-    applyverb::apply_targets(&cfg, br#"{"K":{"value":"v"}}"#, &d.to_string_lossy(), &mut out)
-        .unwrap();
+    applyverb::apply_targets(
+        &cfg,
+        br#"{"K":{"value":"v"}}"#,
+        &d.to_string_lossy(),
+        &mut out,
+    )
+    .unwrap();
 
     assert_eq!(String::from_utf8(out).unwrap(), "unchanged .env.local\n");
     assert_eq!(
@@ -182,10 +205,21 @@ fn each_target_gets_its_own_effective_prefix() {
     )
     .unwrap();
     let mut out: Vec<u8> = Vec::new();
-    applyverb::apply_targets(&cfg, br#"{"k":{"value":"v"}}"#, &d.to_string_lossy(), &mut out)
-        .unwrap();
-    assert_eq!(std::fs::read_to_string(d.join("tf.env")).unwrap(), "export TF_VAR_k='v'\n");
-    assert_eq!(std::fs::read_to_string(d.join("plain.env")).unwrap(), "export k='v'\n");
+    applyverb::apply_targets(
+        &cfg,
+        br#"{"k":{"value":"v"}}"#,
+        &d.to_string_lossy(),
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(d.join("tf.env")).unwrap(),
+        "export TF_VAR_k='v'\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join("plain.env")).unwrap(),
+        "export k='v'\n"
+    );
 }
 
 #[test]
@@ -198,8 +232,13 @@ fn targets_resolve_against_the_config_root_not_the_cwd() {
     std::fs::create_dir_all(&sub).unwrap();
     let cfg = cfg_with("  - path: .env.local\n");
     let mut out: Vec<u8> = Vec::new();
-    applyverb::apply_targets(&cfg, br#"{"K":{"value":"v"}}"#, &sub.to_string_lossy(), &mut out)
-        .unwrap();
+    applyverb::apply_targets(
+        &cfg,
+        br#"{"K":{"value":"v"}}"#,
+        &sub.to_string_lossy(),
+        &mut out,
+    )
+    .unwrap();
     assert!(sub.join(".env.local").exists(), "config kokune yazilmali");
     assert!(!d.join(".env.local").exists(), "cwd'ye YAZILMAMALI");
 }

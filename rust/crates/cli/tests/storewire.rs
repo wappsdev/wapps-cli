@@ -19,7 +19,11 @@ fn keys_response_is_parsed_from_the_camel_case_wire_field() {
                            {"keyName":"BETA","keyVersion":2}]}"#;
     let got: KeysResult = serde_json::from_str(body).expect("gate govdesi cozulmeli");
     let names: Vec<&str> = got.keys.iter().map(|k| k.key_name.as_str()).collect();
-    assert_eq!(names, ["ALPHA", "BETA"], "anahtar ADLARI `keyName` alanindan okunmali");
+    assert_eq!(
+        names,
+        ["ALPHA", "BETA"],
+        "anahtar ADLARI `keyName` alanindan okunmali"
+    );
     assert_eq!(got.epoch, 7);
 }
 
@@ -65,7 +69,10 @@ fn an_import_body_never_carries_a_bare_key_map() {
     let mut v = BTreeMap::new();
     v.insert("A".to_string(), "x".to_string());
     let body = wapps::store::import_body(&v);
-    assert!(body.starts_with(r#"{"values":"#), "zarf `values` olmali: {body}");
+    assert!(
+        body.starts_with(r#"{"values":"#),
+        "zarf `values` olmali: {body}"
+    );
 }
 
 // --- COMMIT YANITININ EPOCH'U: yazim tarafinin pin girdisi ------------------
@@ -117,8 +124,8 @@ fn a_commit_response_without_an_epoch_is_a_protocol_error_not_a_rollback_accusat
 //
 // ORACLE: internal/store/worker.go safeCode. Uc kural var ve ucu de
 // asagida ayri ayri geziliyor.
-use wapps::store::map_http_error;
 use wapps::clierr::Code;
+use wapps::store::map_http_error;
 
 #[test]
 fn an_empty_gate_code_is_named_unknown_not_left_blank() {
@@ -134,8 +141,16 @@ fn characters_outside_the_safe_class_are_dropped_not_escaped() {
     // `<`, `>`, `/`, bosluk ve satirsonu ATILIR — yerlerine hicbir sey
     // konmaz, yani parcalar BITISIR. Bir port onlari bosluga cevirseydi
     // (ya da kacisla yazsaydi) metin ayrisirdi.
-    let e = map_http_error(400, r#"{"error":"BAD <b>code</b>\nsecond line"}"#, 60, "token exchange");
-    assert_eq!(e.message, "token exchange: bad request (BADbcodebsecondline)");
+    let e = map_http_error(
+        400,
+        r#"{"error":"BAD <b>code</b>\nsecond line"}"#,
+        60,
+        "token exchange",
+    );
+    assert_eq!(
+        e.message,
+        "token exchange: bad request (BADbcodebsecondline)"
+    );
 }
 
 #[test]

@@ -49,14 +49,16 @@ pub fn apply_targets<W: Write>(
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
-                return Err(format!("apply: targets[{i}] {}: stat existing: {e}", t.path))
+                return Err(format!(
+                    "apply: targets[{i}] {}: stat existing: {e}",
+                    t.path
+                ))
             }
         }
 
         atomicfile::write(target, &buf, 0o600)
             .map_err(|e| format!("apply: targets[{i}] {}: write: {e}", t.path))?;
-        writeln!(stdout_w, "wrote {}", t.path)
-            .map_err(|e| format!("apply: write report: {e}"))?;
+        writeln!(stdout_w, "wrote {}", t.path).map_err(|e| format!("apply: write report: {e}"))?;
     }
     Ok(())
 }

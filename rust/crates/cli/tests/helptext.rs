@@ -51,8 +51,10 @@ fn has_word_then_dotted_number(hay: &str, words: &[&str]) -> bool {
                 return false;
             }
             let rest = rest.trim_start();
-            let num: String =
-                rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let num: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             num.contains('.') && num.split('.').all(|p| !p.is_empty())
         })
     })
@@ -101,13 +103,22 @@ fn help_text_carries_no_spec_references() {
 // hicbir seyi korumaz.
 #[test]
 fn walk_reaches_whole_tree() {
-    let names: Vec<String> =
-        walk(&wapps::cli::build()).iter().map(|c| c.get_name().to_string()).collect();
+    let names: Vec<String> = walk(&wapps::cli::build())
+        .iter()
+        .map(|c| c.get_name().to_string())
+        .collect();
     for want in ["wapps", "secrets", "get"] {
-        assert!(names.contains(&want.to_string()), "walk never reached {want}; saw {names:?}");
+        assert!(
+            names.contains(&want.to_string()),
+            "walk never reached {want}; saw {names:?}"
+        );
     }
     // 2. seviyeye ULASTIGININ iddiasi (kontrol listesi degil).
-    assert!(names.len() >= 3, "walk visited only {} commands", names.len());
+    assert!(
+        names.len() >= 3,
+        "walk visited only {} commands",
+        names.len()
+    );
 }
 
 // Koruma BOS DEGIL: sentetik bir agacta, iki seviye derinde ve bir bayrak
@@ -116,12 +127,19 @@ fn walk_reaches_whole_tree() {
 fn detector_catches_hidden_references() {
     let leaf = Command::new("leaf")
         .about("First line is clean.\nSecond line derives the KEK (HKDF §2.3) and is not.")
-        .arg(Arg::new("out").long("out").help("write the env file (SPEC 7.5 format)"))
+        .arg(
+            Arg::new("out")
+                .long("out")
+                .help("write the env file (SPEC 7.5 format)"),
+        )
         .subcommand(Command::new("deep").about("reads the ledger, see section 6.2"));
     let root = Command::new("fake").subcommand(Command::new("mid").subcommand(leaf));
     let joined = violations(&root).join("\n");
     for want in ["HKDF §2.3", "SPEC 7.5", "section 6.2"] {
-        assert!(joined.contains(want), "detector missed {want}; found:\n{joined}");
+        assert!(
+            joined.contains(want),
+            "detector missed {want}; found:\n{joined}"
+        );
     }
 }
 
@@ -141,7 +159,10 @@ struct DeriveCanary {
 fn doc_comments_leak_into_help_and_are_caught() {
     let cmd = DeriveCanary::command();
     let rendered = cmd.clone().render_long_help().to_string();
-    assert!(rendered.contains("§4.11"), "/// yardim metnine girmedi: {rendered}");
+    assert!(
+        rendered.contains("§4.11"),
+        "/// yardim metnine girmedi: {rendered}"
+    );
     assert!(
         !violations(&cmd).is_empty(),
         "detektor `///` uzerinden gelen spec referansini kacirdi"

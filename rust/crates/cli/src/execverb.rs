@@ -162,14 +162,16 @@ pub fn default_exec_runner(
             cmd.env(k, v);
         }
     }
-    cmd.stdin(Stdio::inherit()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     // Baslatma hatasi Go'nun METNIYLE sariliyor: sahadaki ikili
     // "fork/exec <yol>: no such file or directory" basiyor, Rust'in kendi
     // dizesi ise "No such file or directory (os error 2)" — buyuk harfli ve
     // numarali. Olculdu (human_exec_missing_command).
-    let mut child = cmd.spawn().map_err(|e| {
-        std::io::Error::other(crate::goerr::spawn_error(name, &e))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| std::io::Error::other(crate::goerr::spawn_error(name, &e)))?;
 
     // stdout ve stderr AYRI okunuyor; tek bir borudan okumak ikisini karistirir.
     let mut child_out = child.stdout.take().expect("stdout borusu");

@@ -130,7 +130,9 @@ fn is_common_name(s: &str) -> bool {
     if !b[0].is_ascii_alphanumeric() {
         return false;
     }
-    b[1..].iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+    b[1..]
+        .iter()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
 }
 
 /// validate, §4.4 dokuman-ici dogrulamasini uygular (Worker paritesi;
@@ -145,9 +147,14 @@ pub fn validate(doc: &PolicyDoc, topology: &str) -> Result<(), String> {
         return Err("policy: version must be a positive integer".to_string());
     }
     for (i, r) in doc.rules.iter().enumerate() {
-        let selectors = [&r.group, &r.service, &r.aud].iter().filter(|s| !s.is_empty()).count();
+        let selectors = [&r.group, &r.service, &r.aud]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .count();
         if selectors != 1 {
-            return Err(format!("policy: rule[{i}]: exactly one of group/service/aud required"));
+            return Err(format!(
+                "policy: rule[{i}]: exactly one of group/service/aud required"
+            ));
         }
         if !r.aud.is_empty() && topology == "primary" {
             return Err(format!(
@@ -158,7 +165,9 @@ pub fn validate(doc: &PolicyDoc, topology: &str) -> Result<(), String> {
             return Err(format!("policy: rule[{i}].service not a valid common_name"));
         }
         if r.projects.is_empty() {
-            return Err(format!("policy: rule[{i}].projects must be a non-empty array"));
+            return Err(format!(
+                "policy: rule[{i}].projects must be a non-empty array"
+            ));
         }
         for g in &r.projects {
             if g.is_empty() || g.len() > GLOB_MAX_LEN || g.starts_with('!') {
@@ -184,7 +193,9 @@ pub fn validate(doc: &PolicyDoc, topology: &str) -> Result<(), String> {
             }
         }
         if positive == 0 {
-            return Err(format!("policy: rule[{i}].keys: at least one positive glob required"));
+            return Err(format!(
+                "policy: rule[{i}].keys: at least one positive glob required"
+            ));
         }
         if r.verbs.is_empty() {
             return Err(format!("policy: rule[{i}].verbs must be a non-empty array"));
@@ -215,7 +226,11 @@ pub struct Warning {
 
 impl std::fmt::Display for Warning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "lint({}) rule[{}]: {}", self.rule, self.index, self.message)
+        write!(
+            f,
+            "lint({}) rule[{}]: {}",
+            self.rule, self.index, self.message
+        )
     }
 }
 
@@ -258,7 +273,9 @@ fn can_match_prod(key_glob: &str) -> bool {
 // Deny CASE-INSENSITIVE eslesir: kucuk-harf bir ad varyanti bir deny glob'unu
 // atlatmasin.
 fn denied_by_rule(r: &Rule, key: &str) -> bool {
-    r.keys.iter().any(|g| g.starts_with('!') && key_glob_match(&g[1..], key))
+    r.keys
+        .iter()
+        .any(|g| g.starts_with('!') && key_glob_match(&g[1..], key))
 }
 
 /// lint, §7.3 kurallarini uygular:

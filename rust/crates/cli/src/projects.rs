@@ -26,14 +26,20 @@ pub fn default_path_from(xdg: Option<String>, home: Option<String>) -> Result<Pa
         return Ok(Path::new(&x).join("wapps").join("projects.yaml"));
     }
     match home.filter(|v| !v.is_empty()) {
-        Some(h) => Ok(Path::new(&h).join(".config").join("wapps").join("projects.yaml")),
+        Some(h) => Ok(Path::new(&h)
+            .join(".config")
+            .join("wapps")
+            .join("projects.yaml")),
         None => Err("projects: resolve home dir: $HOME is not set".to_string()),
     }
 }
 
 /// default_path, ~/.config/wapps/projects.yaml doner (XDG onurlandirilir).
 pub fn default_path() -> Result<PathBuf, String> {
-    default_path_from(std::env::var("XDG_CONFIG_HOME").ok(), std::env::var("HOME").ok())
+    default_path_from(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
 }
 
 /// resolve, `name` icin kayitli dizini doner.
@@ -42,7 +48,9 @@ pub fn default_path() -> Result<PathBuf, String> {
 /// doner; GERCEK bir okuma/ayristirma hatasi ise AYNEN yuzeye cikar — operator
 /// bozuk bir dosyayi duzeltsin, yaniltici bir "unknown project" gormesin.
 pub fn resolve(name: &str) -> Result<String, String> {
-    let Ok(path) = default_path() else { return Err(unknown_project(name)) };
+    let Ok(path) = default_path() else {
+        return Err(unknown_project(name));
+    };
     resolve_in(&path, name)
 }
 

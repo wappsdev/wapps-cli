@@ -60,7 +60,12 @@ pub fn stdin_is_tty() -> bool {
 
 /// is_agent, uretim saptayicisini kullanir.
 pub fn is_agent() -> bool {
-    Detector { env: &real_env, stdin_is_tty: stdin_is_tty(), allow_override: true }.is_agent()
+    Detector {
+        env: &real_env,
+        stdin_is_tty: stdin_is_tty(),
+        allow_override: true,
+    }
+    .is_agent()
 }
 
 /// Politika adlari (Go tarafiyla ayni dizeler).

@@ -42,7 +42,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("..")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
 }
 
 /// Bir kabuk komutu `node`u DOGRUDAN calistiriyor mu.
@@ -116,9 +119,15 @@ fn a_word_that_merely_starts_with_node_is_not_the_binary() {
 
 #[test]
 fn a_spawn_that_names_node_is_seen() {
-    assert!(names_node_as_a_process("    let out = Command::new(\"node\").arg(&d).output();"));
-    assert!(names_node_as_a_process("\tcmd := exec.Command(\"node\", \"x.mjs\")"));
-    assert!(names_node_as_a_process("  spawn(process.execPath, [script])"));
+    assert!(names_node_as_a_process(
+        "    let out = Command::new(\"node\").arg(&d).output();"
+    ));
+    assert!(names_node_as_a_process(
+        "\tcmd := exec.Command(\"node\", \"x.mjs\")"
+    ));
+    assert!(names_node_as_a_process(
+        "  spawn(process.execPath, [script])"
+    ));
     assert!(names_node_as_a_process("#!/usr/bin/env node"));
 }
 
@@ -126,7 +135,9 @@ fn a_spawn_that_names_node_is_seen() {
 fn prose_about_node_is_not_a_spawn() {
     // Komsu depodaki ders: adi anmak bir kenar degildir.
     assert!(!names_node_as_a_process("// node bu dosyayi asla kosmuyor"));
-    assert!(!names_node_as_a_process("\tcmd := exec.Command(\"git\", \"status\") // node degil"));
+    assert!(!names_node_as_a_process(
+        "\tcmd := exec.Command(\"git\", \"status\") // node degil"
+    ));
     assert!(!names_node_as_a_process("# node:crypto ile uretildi"));
     assert!(!names_node_as_a_process("    let x = \"node_modules\";"));
 }
@@ -140,8 +151,15 @@ fn tracked_files(root: &Path) -> Vec<String> {
         .args(["ls-files"])
         .output()
         .expect("git ls-files kosamadi");
-    assert!(out.status.success(), "git ls-files basarisiz: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+    assert!(
+        out.status.success(),
+        "git ls-files basarisiz: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// TARAYICININ KENDI KAYNAGI — taramanin DISINDA, ve bu bir muafiyet degil bir
@@ -165,17 +183,28 @@ const TARAYICININ_KENDI_KAYNAGI: &str = "rust/crates/cli/tests/noderuntime.rs";
 /// alani komut degildir, ve onlari da taramak kapiyi duzyaziya bagimli
 /// kilardi.
 fn package_scripts(src: &str) -> Vec<String> {
-    let Some(baslangic) = src.find("\"scripts\"") else { return Vec::new() };
-    let Some(acilis) = src[baslangic..].find('{') else { return Vec::new() };
+    let Some(baslangic) = src.find("\"scripts\"") else {
+        return Vec::new();
+    };
+    let Some(acilis) = src[baslangic..].find('{') else {
+        return Vec::new();
+    };
     let govde_baslangic = baslangic + acilis + 1;
-    let Some(kapanis) = src[govde_baslangic..].find('}') else { return Vec::new() };
+    let Some(kapanis) = src[govde_baslangic..].find('}') else {
+        return Vec::new();
+    };
     let govde = &src[govde_baslangic..govde_baslangic + kapanis];
 
     let mut out = Vec::new();
     for satir in govde.lines() {
         // `"ad": "komut"` — degeri ikinci tirnak ciftinden aliyoruz.
         let mut parcalar = satir.split('"');
-        let (_bos, _ad, _ayrac, deger) = (parcalar.next(), parcalar.next(), parcalar.next(), parcalar.next());
+        let (_bos, _ad, _ayrac, deger) = (
+            parcalar.next(),
+            parcalar.next(),
+            parcalar.next(),
+            parcalar.next(),
+        );
         if let Some(deger) = deger {
             out.push(deger.to_string());
         }
@@ -187,9 +216,14 @@ fn package_scripts(src: &str) -> Vec<String> {
 fn package_scripts_reads_the_command_not_the_name() {
     let src = "{\n  \"name\": \"node-thing\",\n  \"scripts\": {\n    \"test\": \"vitest run\",\n    \"gen\": \"node gen.mjs\"\n  },\n  \"dependencies\": { \"x\": \"node-fetch\" }\n}";
     let komutlar = package_scripts(src);
-    assert_eq!(komutlar, vec!["vitest run".to_string(), "node gen.mjs".to_string()]);
+    assert_eq!(
+        komutlar,
+        vec!["vitest run".to_string(), "node gen.mjs".to_string()]
+    );
     // `name` ve `dependencies` icindeki "node" bir komut DEGIL.
-    assert!(!komutlar.iter().any(|k| k.contains("node-thing") || k.contains("node-fetch")));
+    assert!(!komutlar
+        .iter()
+        .any(|k| k.contains("node-thing") || k.contains("node-fetch")));
 }
 
 /// MUAFIYETIN KAPISI: taramadan DISLANAN tek bir yol var ve o yol GERCEKTEN
@@ -210,7 +244,10 @@ fn the_scanner_excludes_exactly_one_path_and_that_path_exists() {
     );
     // Dislama TEK bir `&str` sabiti; bir liste olsaydi bu iddia uzunluga
     // bakardi. Bicimi burada pinliyoruz ki bir sonraki el once buraya baksin.
-    assert!(!TARAYICININ_KENDI_KAYNAGI.contains(','), "dislama TEK bir yol olmali");
+    assert!(
+        !TARAYICININ_KENDI_KAYNAGI.contains(','),
+        "dislama TEK bir yol olmali"
+    );
 }
 
 /// SINIFIN KAPISI: node'a bu depodan is verilmiyor.
@@ -233,7 +270,9 @@ fn nothing_in_this_repo_hands_a_typescript_file_to_node() {
             continue;
         }
         let tam = root.join(yol);
-        let Ok(icerik) = std::fs::read_to_string(&tam) else { continue };
+        let Ok(icerik) = std::fs::read_to_string(&tam) else {
+            continue;
+        };
         okunan += 1;
 
         for (n, satir) in icerik.lines().enumerate() {
@@ -249,7 +288,10 @@ fn nothing_in_this_repo_hands_a_typescript_file_to_node() {
             }
         }
     }
-    assert!(okunan > 200, "yalnizca {okunan} dosya OKUNABILDI — tarama bos gecti");
+    assert!(
+        okunan > 200,
+        "yalnizca {okunan} dosya OKUNABILDI — tarama bos gecti"
+    );
 
     assert!(
         bulgular.is_empty(),
@@ -263,6 +305,10 @@ fn nothing_in_this_repo_hands_a_typescript_file_to_node() {
          Onarim: alani BILDIR ve constructor govdesinde ata; bildirimi sinifin ILK\n\
          alani yap (tsc parametre ozelligini ilk alan olarak uretiyor, sona eklemek\n\
          `Object.keys` sirasini degistirir).",
-        bulgular.iter().map(|b| format!("  {b}")).collect::<Vec<_>>().join("\n"),
+        bulgular
+            .iter()
+            .map(|b| format!("  {b}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }

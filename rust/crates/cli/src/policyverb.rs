@@ -82,7 +82,10 @@ pub fn short12(s: &str) -> String {
 
 /// render_show, `policy show`un insan-okunur raporudur.
 pub fn render_show(version: u64, sha256: &str, doc: &PolicyDoc) -> String {
-    let mut out = format!("version: {version}\nsha256:  {sha256}\nrules:   {}\n", doc.rules.len());
+    let mut out = format!(
+        "version: {version}\nsha256:  {sha256}\nrules:   {}\n",
+        doc.rules.len()
+    );
     for (i, r) in doc.rules.iter().enumerate() {
         out.push_str(&format!("  [{i}] {}\n", render_rule(r)));
     }
@@ -101,10 +104,16 @@ pub fn render_show(version: u64, sha256: &str, doc: &PolicyDoc) -> String {
 pub fn read_policy_file(path: &Path) -> Result<PolicyDoc, Error> {
     let p = path.to_string_lossy().to_string();
     let raw = std::fs::read(path).map_err(|e| {
-        Error::new(Code::Internal, format!("read policy file {p}: {}", crate::goerr::open_error(&p, &e)))
+        Error::new(
+            Code::Internal,
+            format!("read policy file {p}: {}", crate::goerr::open_error(&p, &e)),
+        )
     })?;
     let mut doc: PolicyDoc = serde_json::from_slice(&raw).map_err(|e| {
-        Error::new(Code::PolicyInvalid, format!("policy file {p} not valid JSON: {}", go_json_error(&e)))
+        Error::new(
+            Code::PolicyInvalid,
+            format!("policy file {p} not valid JSON: {}", go_json_error(&e)),
+        )
     })?;
     if doc.version == 0 {
         doc.version = 1;

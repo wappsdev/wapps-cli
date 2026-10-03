@@ -60,7 +60,9 @@ fn scratch() -> PathBuf {
 }
 
 fn run(cmd: &mut Command, what: &str) -> String {
-    let out = cmd.output().unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
     assert!(
         out.status.success(),
         "{what} basarisiz (exit {:?})\nstdout:\n{}\nstderr:\n{}",
@@ -110,8 +112,16 @@ const RS_REFUSAL_DETAIL: &str =
 const GATE_VALUE: &str = "value-for-plain";
 
 fn assert_refused(s: &Side, who: &str, scenario: &str) {
-    assert_eq!(s.exit, 1, "{who}/{scenario}: cikis kodu 1 bekleniyordu\n{}", s.stderr);
-    assert!(s.stdout.is_empty(), "{who}/{scenario}: stdout bos degil: {:?}", s.stdout);
+    assert_eq!(
+        s.exit, 1,
+        "{who}/{scenario}: cikis kodu 1 bekleniyordu\n{}",
+        s.stderr
+    );
+    assert!(
+        s.stdout.is_empty(),
+        "{who}/{scenario}: stdout bos degil: {:?}",
+        s.stdout
+    );
     assert!(
         s.stderr.contains(REFUSAL_CODE),
         "{who}/{scenario}: red zarfi beklenen kodu tasimiyor:\n{}",
@@ -146,7 +156,12 @@ fn trust_store_divergence_is_pinned() {
 
     let go_bin = work.join("wapps-go");
     run(
-        Command::new("go").arg("build").arg("-o").arg(&go_bin).arg("./main.go").current_dir(&root),
+        Command::new("go")
+            .arg("build")
+            .arg("-o")
+            .arg(&go_bin)
+            .arg("./main.go")
+            .current_dir(&root),
         "go build (oracle)",
     );
 
@@ -250,11 +265,12 @@ fn trust_store_divergence_is_pinned() {
             go_c.stderr, rs_c.stderr,
             "public_chain: gecerli bir zincirde iki taraf ayrisiyor"
         );
-        assert_eq!(go_c.exit, rs_c.exit, "public_chain: cikis kodlari ayrisiyor");
-    } else {
-        println!(
-            "public_chain ATLANDI (ag gerekiyor) — WAPPS_TLS_PUBLIC_CHAIN=1 ile acilir"
+        assert_eq!(
+            go_c.exit, rs_c.exit,
+            "public_chain: cikis kodlari ayrisiyor"
         );
+    } else {
+        println!("public_chain ATLANDI (ag gerekiyor) — WAPPS_TLS_PUBLIC_CHAIN=1 ile acilir");
     }
 
     let _ = std::fs::remove_dir_all(&work);

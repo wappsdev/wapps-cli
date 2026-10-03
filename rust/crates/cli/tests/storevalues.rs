@@ -44,7 +44,9 @@ impl FakeStore {
         Ok(self.values.keys().cloned().collect())
     }
     fn read(&self, project: &str, keys: &[String]) -> Result<BTreeMap<String, String>, Error> {
-        self.read_calls.borrow_mut().push((project.to_string(), keys.to_vec()));
+        self.read_calls
+            .borrow_mut()
+            .push((project.to_string(), keys.to_vec()));
         if let Some(code) = self.read_err {
             return Err(Error::new(code, "denied on key"));
         }
@@ -57,7 +59,10 @@ impl FakeStore {
 
 fn fake(pairs: &[(&str, &str)]) -> FakeStore {
     FakeStore {
-        values: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        values: pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
         ..Default::default()
     }
 }
@@ -85,13 +90,24 @@ fn only_the_keys_that_exist_are_read() {
     .expect("store_values")
     .expect("config var sayiliyor");
 
-    assert_eq!(got.get("DEPLOY_PROXY_TOKEN_VAULTER").map(String::as_str), Some("tok-store"));
-    assert_eq!(got.get("DEPLOY_PROXY_CF_ACCESS_CLIENT_ID").map(String::as_str), Some("id-store"));
+    assert_eq!(
+        got.get("DEPLOY_PROXY_TOKEN_VAULTER").map(String::as_str),
+        Some("tok-store")
+    );
+    assert_eq!(
+        got.get("DEPLOY_PROXY_CF_ACCESS_CLIENT_ID")
+            .map(String::as_str),
+        Some("id-store")
+    );
     assert!(
         !got.contains_key("PROXY_TOKEN"),
         "eksik anahtarlar sonucta YOK olmali, present-empty DEGIL"
     );
-    assert_eq!(*f.keys_calls.borrow(), 1, "ad duzlemi TAM BIR KEZ sorulmali");
+    assert_eq!(
+        *f.keys_calls.borrow(),
+        1,
+        "ad duzlemi TAM BIR KEZ sorulmali"
+    );
     let calls = f.read_calls.borrow();
     assert_eq!(calls.len(), 1, "tam bir bulk okuma beklenir");
     assert_eq!(calls[0].0, "testproj");
@@ -99,7 +115,10 @@ fn only_the_keys_that_exist_are_read() {
     got_keys.sort();
     assert_eq!(
         got_keys,
-        s(&["DEPLOY_PROXY_CF_ACCESS_CLIENT_ID", "DEPLOY_PROXY_TOKEN_VAULTER"]),
+        s(&[
+            "DEPLOY_PROXY_CF_ACCESS_CLIENT_ID",
+            "DEPLOY_PROXY_TOKEN_VAULTER"
+        ]),
         "okuma YALNIZCA mevcut anahtarlari istemeli"
     );
 }
@@ -130,13 +149,19 @@ fn an_empty_intersection_performs_no_read_at_all() {
 #[test]
 fn without_a_config_it_returns_none_and_never_touches_the_store() {
     let f = fake(&[("DEPLOY_PROXY_TOKEN_VAULTER", "tok")]);
-    let got = store_values(None, &s(&["DEPLOY_PROXY_TOKEN_VAULTER"]), &|p| f.keys(p), &|p, k| {
-        f.read(p, k)
-    })
+    let got = store_values(
+        None,
+        &s(&["DEPLOY_PROXY_TOKEN_VAULTER"]),
+        &|p| f.keys(p),
+        &|p, k| f.read(p, k),
+    )
     .expect("config yoklugu bir hata DEGIL");
     assert!(got.is_none(), "config yokken None beklenir");
     assert_eq!(*f.keys_calls.borrow(), 0);
-    assert!(f.read_calls.borrow().is_empty(), "backend:store config'i olmadan store'a dokunulmamali");
+    assert!(
+        f.read_calls.borrow().is_empty(),
+        "backend:store config'i olmadan store'a dokunulmamali"
+    );
 }
 
 // GERCEK bir okuma hatasi (ornegin grant reddi) AYNEN yuzer. Yutulsaydi
@@ -162,6 +187,9 @@ fn a_real_read_error_propagates_instead_of_being_swallowed() {
 #[test]
 fn a_repeated_candidate_is_requested_once_and_order_is_preserved() {
     let present = s(&["A", "B", "C"]);
-    assert_eq!(wanted_subset(&present, &s(&["C", "A", "C", "B", "A"])), s(&["C", "A", "B"]));
+    assert_eq!(
+        wanted_subset(&present, &s(&["C", "A", "C", "B", "A"])),
+        s(&["C", "A", "B"])
+    );
     assert_eq!(wanted_subset(&present, &s(&["Z"])), Vec::<String>::new());
 }

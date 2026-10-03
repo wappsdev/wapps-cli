@@ -11,7 +11,7 @@
 // edildigi. Asagidaki tablo tahmin edilmedi — Go'da
 // `time.Parse(time.RFC3339, in)` kosturularak URETILDI. Uc satiri sasirtici ve
 // ucu de elle yazilmis bir dogrulayicinin kacirmasi en muhtemel yerler.
-use wapps::rotateplan::{query_escape, query_string, rfc3339_valid, render_text};
+use wapps::rotateplan::{query_escape, query_string, render_text, rfc3339_valid};
 use wapps::store::{RotatePlanItem, RotatePlanResult};
 
 // GO'DAN OLCULEN KABUL KUMESI.
@@ -81,14 +81,20 @@ const REJECTED: &[&str] = &[
 #[test]
 fn rfc3339_accepts_exactly_what_go_accepts() {
     for s in ACCEPTED {
-        assert!(rfc3339_valid(s), "Go bunu KABUL ediyor, biz reddettik: {s:?}");
+        assert!(
+            rfc3339_valid(s),
+            "Go bunu KABUL ediyor, biz reddettik: {s:?}"
+        );
     }
 }
 
 #[test]
 fn rfc3339_rejects_exactly_what_go_rejects() {
     for s in REJECTED {
-        assert!(!rfc3339_valid(s), "Go bunu REDDEDIYOR, biz kabul ettik: {s:?}");
+        assert!(
+            !rfc3339_valid(s),
+            "Go bunu REDDEDIYOR, biz kabul ettik: {s:?}"
+        );
     }
 }
 
@@ -136,8 +142,14 @@ fn an_empty_plan_prints_a_sentence_and_no_table() {
     });
     assert!(out.contains("0 item(s)"), "{out}");
     assert!(out.contains("nothing to rotate"), "{out}");
-    assert!(!out.contains("PROJECT"), "bos planda baslik satiri BASILMAMALI:\n{out}");
-    assert!(!out.contains("Next:"), "bos planda kapanis satiri da yok:\n{out}");
+    assert!(
+        !out.contains("PROJECT"),
+        "bos planda baslik satiri BASILMAMALI:\n{out}"
+    );
+    assert!(
+        !out.contains("Next:"),
+        "bos planda kapanis satiri da yok:\n{out}"
+    );
 }
 
 // BOS `last_read` "(assume-policy)" olmali: satirin audit'ten degil policy
@@ -168,5 +180,8 @@ fn the_json_shape_carries_names_and_counters_but_no_value_field() {
         json,
         r#"{"identity":"human:a@b.co","generated_at":"g","items":[{"project":"vaulter","key":"DB_PASSWORD","last_read":"2026-01-02T03:04:05Z","reads":12}]}"#
     );
-    assert!(!json.contains("\"value\""), "sonuc semasinda deger alani OLMAMALI: {json}");
+    assert!(
+        !json.contains("\"value\""),
+        "sonuc semasinda deger alani OLMAMALI: {json}"
+    );
 }

@@ -39,8 +39,7 @@ use std::collections::BTreeMap;
 /// kez gecerse bulk istege iki kez girmez. Sira KORUNUYOR (sıralanmıyor),
 /// cunku Go da korumuyor.
 pub fn wanted_subset(present: &[String], keys: &[String]) -> Vec<String> {
-    let mut avail: std::collections::BTreeSet<&str> =
-        present.iter().map(String::as_str).collect();
+    let mut avail: std::collections::BTreeSet<&str> = present.iter().map(String::as_str).collect();
     let mut want = Vec::with_capacity(keys.len());
     for k in keys {
         if avail.remove(k.as_str()) {
@@ -78,7 +77,9 @@ pub fn store_values(
     read_of: &ReadFn<'_>,
 ) -> Result<Option<BTreeMap<String, String>>, Error> {
     // Config yok → (None). Cagiran env-only cozumlemeye HATASIZ duser.
-    let Some(project) = project else { return Ok(None) };
+    let Some(project) = project else {
+        return Ok(None);
+    };
 
     let present = keys_of(project)?;
     let want = wanted_subset(&present, keys);

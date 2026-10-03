@@ -122,7 +122,11 @@ fn has_mixed_case(s: &[u8]) -> bool {
 // scan, leftmost-first, ORTUSMEYEN degistirme dongusudur (Go'nun ReplaceAll'i).
 // `replace` None donerse eslesme AYNEN korunur ama tarama yine eslesmenin
 // SONUNDAN devam eder — ReplaceAllStringFunc'in davranisi budur.
-fn scan(s: &str, find: fn(&[u8], usize) -> Option<usize>, replace: fn(&[u8]) -> Option<String>) -> String {
+fn scan(
+    s: &str,
+    find: fn(&[u8], usize) -> Option<usize>,
+    replace: fn(&[u8]) -> Option<String>,
+) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;

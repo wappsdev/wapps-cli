@@ -14,38 +14,61 @@
 use wapps::importenv;
 
 fn parse(s: &str) -> Result<Vec<(String, String)>, String> {
-    importenv::parse_env_file("in.env", s.as_bytes())
-        .map(|m| m.into_iter().collect::<Vec<_>>())
+    importenv::parse_env_file("in.env", s.as_bytes()).map(|m| m.into_iter().collect::<Vec<_>>())
 }
 
 #[test]
 fn it_reads_plain_pairs() {
-    assert_eq!(parse("A=1\nB=2\n").unwrap(), vec![("A".into(), "1".into()), ("B".into(), "2".into())]);
+    assert_eq!(
+        parse("A=1\nB=2\n").unwrap(),
+        vec![("A".into(), "1".into()), ("B".into(), "2".into())]
+    );
 }
 
 #[test]
 fn comments_and_blank_lines_are_skipped() {
-    assert_eq!(parse("# note\n\n   \n   # indented note\nA=1\n").unwrap(), vec![("A".into(), "1".into())]);
+    assert_eq!(
+        parse("# note\n\n   \n   # indented note\nA=1\n").unwrap(),
+        vec![("A".into(), "1".into())]
+    );
 }
 
 #[test]
 fn the_export_prefix_is_stripped_but_only_with_its_space() {
-    assert_eq!(parse("export A=1\n").unwrap(), vec![("A".into(), "1".into())]);
+    assert_eq!(
+        parse("export A=1\n").unwrap(),
+        vec![("A".into(), "1".into())]
+    );
     // "exportA" bir ONEK DEGIL — anahtar adinin kendisi.
-    assert_eq!(parse("exportA=1\n").unwrap(), vec![("exportA".into(), "1".into())]);
+    assert_eq!(
+        parse("exportA=1\n").unwrap(),
+        vec![("exportA".into(), "1".into())]
+    );
 }
 
 #[test]
 fn surrounding_whitespace_is_trimmed_from_both_sides() {
-    assert_eq!(parse("  A  =  1  \n").unwrap(), vec![("A".into(), "1".into())]);
+    assert_eq!(
+        parse("  A  =  1  \n").unwrap(),
+        vec![("A".into(), "1".into())]
+    );
 }
 
 #[test]
 fn a_matching_quote_pair_is_stripped() {
-    assert_eq!(parse("A=\"a b\"\n").unwrap(), vec![("A".into(), "a b".into())]);
-    assert_eq!(parse("A='a b'\n").unwrap(), vec![("A".into(), "a b".into())]);
+    assert_eq!(
+        parse("A=\"a b\"\n").unwrap(),
+        vec![("A".into(), "a b".into())]
+    );
+    assert_eq!(
+        parse("A='a b'\n").unwrap(),
+        vec![("A".into(), "a b".into())]
+    );
     // Es olmayan tirnaklar AYNEN kalir.
-    assert_eq!(parse("A=\"a b'\n").unwrap(), vec![("A".into(), "\"a b'".into())]);
+    assert_eq!(
+        parse("A=\"a b'\n").unwrap(),
+        vec![("A".into(), "\"a b'".into())]
+    );
     // Tek karakter kisaltilmaz (Go: len < 2 -> as-is).
     assert_eq!(parse("A=\"\n").unwrap(), vec![("A".into(), "\"".into())]);
     // Bos tirnak cifti bos degere coker.
@@ -60,7 +83,10 @@ fn an_empty_value_is_kept_not_rejected() {
 
 #[test]
 fn a_later_line_wins_over_an_earlier_one() {
-    assert_eq!(parse("A=first\nA=second\n").unwrap(), vec![("A".into(), "second".into())]);
+    assert_eq!(
+        parse("A=first\nA=second\n").unwrap(),
+        vec![("A".into(), "second".into())]
+    );
 }
 
 #[test]
@@ -71,8 +97,14 @@ fn a_line_without_a_delimiter_reports_its_length_but_never_its_text() {
     // terminale/CI loguna/ajan transcript'ine DUSMESIN.
     let secretish = "aaaaaaaaaaaaaaaaaaaaaaaa"; // 24 karakter, uydurma
     let err = parse(&format!("A=1\n{secretish}\n")).unwrap_err();
-    assert_eq!(err, "source[file (in.env)]: line 2: no '=' delimiter (line length 24)");
-    assert!(!err.contains(secretish), "hata mesaji satirin ICERIGINI tasimamali: {err}");
+    assert_eq!(
+        err,
+        "source[file (in.env)]: line 2: no '=' delimiter (line length 24)"
+    );
+    assert!(
+        !err.contains(secretish),
+        "hata mesaji satirin ICERIGINI tasimamali: {err}"
+    );
 }
 
 #[test]
@@ -86,12 +118,18 @@ fn a_leading_equals_sign_is_a_delimiter_error_too() {
 
 #[test]
 fn a_value_may_contain_further_equals_signs() {
-    assert_eq!(parse("A=b=c=d\n").unwrap(), vec![("A".into(), "b=c=d".into())]);
+    assert_eq!(
+        parse("A=b=c=d\n").unwrap(),
+        vec![("A".into(), "b=c=d".into())]
+    );
 }
 
 #[test]
 fn a_trailing_carriage_return_is_dropped_like_bufio_scanlines() {
-    assert_eq!(parse("A=1\r\nB=2\r\n").unwrap(), vec![("A".into(), "1".into()), ("B".into(), "2".into())]);
+    assert_eq!(
+        parse("A=1\r\nB=2\r\n").unwrap(),
+        vec![("A".into(), "1".into()), ("B".into(), "2".into())]
+    );
 }
 
 // --- rapor satirlari --------------------------------------------------------
@@ -110,7 +148,10 @@ fn the_override_warning_uses_gos_slice_formatting() {
         importenv::override_line(&["A".to_string(), "B".to_string()]),
         "⚠ overwrote existing keys: [A B]\n"
     );
-    assert_eq!(importenv::override_line(&["A".to_string()]), "⚠ overwrote existing keys: [A]\n");
+    assert_eq!(
+        importenv::override_line(&["A".to_string()]),
+        "⚠ overwrote existing keys: [A]\n"
+    );
 }
 
 // --- GET /keys hatasinin SINIFLANDIRILMASI ----------------------------------

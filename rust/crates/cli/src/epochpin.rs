@@ -73,14 +73,23 @@ pub fn default_path_from(xdg: Option<String>, home: Option<String>) -> Result<Pa
         return Ok(Path::new(&x).join("wapps").join("epochs.json"));
     }
     match home.filter(|v| !v.is_empty()) {
-        Some(h) => Ok(Path::new(&h).join(".config").join("wapps").join("epochs.json")),
-        None => Err(Error::new(Code::Internal, "store: resolve home dir: $HOME is not set")),
+        Some(h) => Ok(Path::new(&h)
+            .join(".config")
+            .join("wapps")
+            .join("epochs.json")),
+        None => Err(Error::new(
+            Code::Internal,
+            "store: resolve home dir: $HOME is not set",
+        )),
     }
 }
 
 /// default_path, uretim yolunu cozer.
 pub fn default_path() -> Result<PathBuf, Error> {
-    default_path_from(std::env::var("XDG_CONFIG_HOME").ok(), std::env::var("HOME").ok())
+    default_path_from(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
 }
 
 fn load(path: &Path) -> Result<Pins, Error> {
@@ -89,19 +98,37 @@ fn load(path: &Path) -> Result<Pins, Error> {
         // Dosya yoksa pin de yok: bos kume. Bu fail-open DEGIL — pin 0 demek,
         // ve 0'in altinda bir epoch yok.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Pins { schema: SCHEMA.to_string(), pins: BTreeMap::new() })
+            return Ok(Pins {
+                schema: SCHEMA.to_string(),
+                pins: BTreeMap::new(),
+            })
         }
-        Err(e) => return Err(Error::new(Code::Internal, format!("store.loadEpochPins: {e}"))),
+        Err(e) => {
+            return Err(Error::new(
+                Code::Internal,
+                format!("store.loadEpochPins: {e}"),
+            ))
+        }
     };
     let w: Wire = serde_json::from_slice(&raw)
         .map_err(|e| Error::new(Code::Internal, format!("store.loadEpochPins: parse: {e}")))?;
-    Ok(Pins { schema: w.schema, pins: w.pins.unwrap_or_default() })
+    Ok(Pins {
+        schema: w.schema,
+        pins: w.pins.unwrap_or_default(),
+    })
 }
 
 fn save(path: &Path, p: &Pins) -> Result<(), Error> {
-    let schema = if p.schema.is_empty() { SCHEMA } else { p.schema.as_str() };
-    let raw = gojson::to_string_indent(&Out { schema, pins: &p.pins })
-        .map_err(|e| Error::new(Code::Internal, format!("store.epochPins.save: {e}")))?;
+    let schema = if p.schema.is_empty() {
+        SCHEMA
+    } else {
+        p.schema.as_str()
+    };
+    let raw = gojson::to_string_indent(&Out {
+        schema,
+        pins: &p.pins,
+    })
+    .map_err(|e| Error::new(Code::Internal, format!("store.epochPins.save: {e}")))?;
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     create_dir_0700(dir)
         .map_err(|e| Error::new(Code::Internal, format!("store.epochPins.save: mkdir: {e}")))?;
@@ -134,8 +161,9 @@ pub fn check_and_advance(
     if served < pinned {
         if accept_reset {
             p.pins.insert(project.to_string(), served);
-            return save(path, &p)
-                .map_err(|e| Error::new(Code::Internal, format!("persist epoch pin (reset): {e}")));
+            return save(path, &p).map_err(|e| {
+                Error::new(Code::Internal, format!("persist epoch pin (reset): {e}"))
+            });
         }
         return Err(Error::new(
             Code::EpochDowngrade,

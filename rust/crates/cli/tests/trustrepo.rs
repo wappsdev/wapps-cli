@@ -57,7 +57,10 @@ fn short_repo_truncates_at_sixty_characters() {
 
 #[test]
 fn the_success_line_uses_the_shortened_repo() {
-    assert_eq!(trustrepo::success_line("/short", "proj"), "pinned /short → proj\n");
+    assert_eq!(
+        trustrepo::success_line("/short", "proj"),
+        "pinned /short → proj\n"
+    );
 }
 
 #[test]

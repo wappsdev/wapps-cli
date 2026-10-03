@@ -52,7 +52,9 @@ fn scratch() -> PathBuf {
 }
 
 fn run(cmd: &mut Command, what: &str) -> String {
-    let out = cmd.output().unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
     assert!(
         out.status.success(),
         "{what} basarisiz (exit {:?})\nstdout:\n{}\nstderr:\n{}",
@@ -239,7 +241,11 @@ fn assert_policies(v: &serde_json::Value, side: &str) {
     // ajan reddi, ne kontrol duzlemi, ne baglama. Cikis 1'dir ama sebebi
     // TESHIS SONUCU (bu cevrede araclar/env eksik), bir RET degil.
     let (err, code) = obs(v, "doctor");
-    for refusal in ["AGENT_MODE_REFUSED", "CONTROL_PLANE_REQUIRED", "BINDING_UNPINNED"] {
+    for refusal in [
+        "AGENT_MODE_REFUSED",
+        "CONTROL_PLANE_REQUIRED",
+        "BINDING_UNPINNED",
+    ] {
         assert!(
             !err.contains(refusal),
             "[{side}] doctor'un ajan-modu kapisi YOKTUR; {refusal} gorundu.\nstderr: {err:?}"
@@ -270,14 +276,23 @@ fn both_binaries_apply_the_same_per_verb_agent_policy() {
     // Oracle'i kaynaktan derle — sahadaki sozlesme Go'nun BUGUNKU davranisi.
     let go_bin = work.join("wapps-go");
     run(
-        Command::new("go").arg("build").arg("-o").arg(&go_bin).arg("./main.go").current_dir(&root),
+        Command::new("go")
+            .arg("build")
+            .arg("-o")
+            .arg(&go_bin)
+            .arg("./main.go")
+            .current_dir(&root),
         "go build (oracle)",
     );
 
     let go = measure(&go_bin, &work, &work.join("policy-go.json"));
     assert_policies(&go, "go");
 
-    let rs = measure(Path::new(env!("CARGO_BIN_EXE_wapps")), &work, &work.join("policy-rs.json"));
+    let rs = measure(
+        Path::new(env!("CARGO_BIN_EXE_wapps")),
+        &work,
+        &work.join("policy-rs.json"),
+    );
     assert_policies(&rs, "rust");
 
     let _ = std::fs::remove_dir_all(&work);

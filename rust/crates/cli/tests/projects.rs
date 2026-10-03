@@ -22,7 +22,10 @@ fn a_registered_name_resolves_to_its_directory() {
     let d = tmp("hit");
     let reg = d.join("projects.yaml");
     std::fs::write(&reg, "projects:\n  vaulter: /srv/infra/vaulter\n").unwrap();
-    assert_eq!(projects::resolve_in(&reg, "vaulter").unwrap(), "/srv/infra/vaulter");
+    assert_eq!(
+        projects::resolve_in(&reg, "vaulter").unwrap(),
+        "/srv/infra/vaulter"
+    );
 }
 
 #[test]
@@ -51,7 +54,9 @@ fn an_empty_directory_entry_counts_as_unregistered() {
     let d = tmp("empty");
     let reg = d.join("projects.yaml");
     std::fs::write(&reg, "projects:\n  vaulter: \"\"\n").unwrap();
-    assert!(projects::resolve_in(&reg, "vaulter").unwrap_err().starts_with("unknown project"));
+    assert!(projects::resolve_in(&reg, "vaulter")
+        .unwrap_err()
+        .starts_with("unknown project"));
 }
 
 #[test]

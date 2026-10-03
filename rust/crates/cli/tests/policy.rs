@@ -27,7 +27,11 @@ fn rule(sel: (&str, &str), projects: &[&str], keys: &[&str], verbs: &[&str]) -> 
 }
 
 fn doc(rules: Vec<Rule>) -> policy::PolicyDoc {
-    policy::PolicyDoc { schema: policy::SCHEMA_POLICY.to_string(), version: 1, rules }
+    policy::PolicyDoc {
+        schema: policy::SCHEMA_POLICY.to_string(),
+        version: 1,
+        rules,
+    }
 }
 
 // --- glob (§4.2 pinli sozdizimi) --------------------------------------------
@@ -80,14 +84,22 @@ fn rotate_implies_write_but_delete_is_never_implied() {
 
 #[test]
 fn a_well_formed_document_passes() {
-    let d = doc(vec![rule(("group", "dev@wapps.co"), &["*"], &["*", "!*_PROD_*"], &["read"])]);
+    let d = doc(vec![rule(
+        ("group", "dev@wapps.co"),
+        &["*"],
+        &["*", "!*_PROD_*"],
+        &["read"],
+    )]);
     assert_eq!(policy::validate(&d, "primary"), Ok(()));
 }
 
 #[test]
 fn every_rejection_names_the_rule_index_and_the_reason() {
-    let bad_schema =
-        policy::PolicyDoc { schema: "nope".into(), version: 1, rules: vec![] };
+    let bad_schema = policy::PolicyDoc {
+        schema: "nope".into(),
+        version: 1,
+        rules: vec![],
+    };
     for (name, d, want) in [
         ("schema", bad_schema, "policy: schema must be wapps-secrets/policy/v1"),
         (
@@ -189,7 +201,12 @@ fn lint_texts(d: &policy::PolicyDoc) -> Vec<String> {
 
 #[test]
 fn rule_b_warns_when_a_group_can_reach_prod_keys() {
-    let d = doc(vec![rule(("group", "eng"), &["vaulter"], &["*"], &["read"])]);
+    let d = doc(vec![rule(
+        ("group", "eng"),
+        &["vaulter"],
+        &["*"],
+        &["read"],
+    )]);
     assert_eq!(
         lint_texts(&d),
         vec!["lint(b) rule[0]: group \"eng\" can reach *_PROD_*-matching keys via \"*\" — plaintext read is the MOST dangerous verb in a server-decrypt model; consider a \"!*_PROD_*\" deny glob"]
@@ -198,8 +215,17 @@ fn rule_b_warns_when_a_group_can_reach_prod_keys() {
 
 #[test]
 fn rule_b_is_silenced_by_a_deny_glob_in_the_same_rule() {
-    let d = doc(vec![rule(("group", "eng"), &["vaulter"], &["*", "!*_PROD_*"], &["read"])]);
-    assert!(lint_texts(&d).is_empty(), "kural-ici deny (b)'yi susturur: {:?}", lint_texts(&d));
+    let d = doc(vec![rule(
+        ("group", "eng"),
+        &["vaulter"],
+        &["*", "!*_PROD_*"],
+        &["read"],
+    )]);
+    assert!(
+        lint_texts(&d).is_empty(),
+        "kural-ici deny (b)'yi susturur: {:?}",
+        lint_texts(&d)
+    );
 }
 
 #[test]
@@ -220,7 +246,12 @@ fn rule_d_warns_on_a_service_row_with_star_verbs() {
 
 #[test]
 fn rule_e_warns_when_admin_is_scoped_because_the_scope_is_dead() {
-    let d = doc(vec![rule(("group", "admins"), &["vaulter"], &["*"], &["admin"])]);
+    let d = doc(vec![rule(
+        ("group", "admins"),
+        &["vaulter"],
+        &["*"],
+        &["admin"],
+    )]);
     assert_eq!(
         lint_texts(&d),
         vec!["lint(e) rule[0]: rule grants `admin` with project/key scoping — admin ops are GLOBAL (§4.2); the scoping is dead and misleads reviewers"]

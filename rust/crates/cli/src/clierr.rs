@@ -119,7 +119,12 @@ pub struct Error {
 impl Error {
     pub fn new(code: Code, message: impl Into<String>) -> Self {
         let (recovery, retryable) = code.spec();
-        Error { code, message: message.into(), recovery: recovery.to_string(), retryable }
+        Error {
+            code,
+            message: message.into(),
+            recovery: recovery.to_string(),
+            retryable,
+        }
     }
 
     /// with_recovery, kurtarma metnini override eder (or. GRANT_DENIED'da).

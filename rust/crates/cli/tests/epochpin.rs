@@ -24,7 +24,10 @@ fn a_missing_pin_file_pins_the_served_epoch() {
     let dir = scratch("fresh");
     let path = dir.join("wapps/epochs.json");
     epochpin::check_and_advance(&path, "testproj", 7, false).expect("ilk pin kabul edilmeli");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), go_pinfile("testproj", 7));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        go_pinfile("testproj", 7)
+    );
 }
 
 #[test]
@@ -44,7 +47,10 @@ fn a_lower_served_epoch_is_refused_as_epoch_downgrade() {
         "possible rollback attack — do NOT force; if the store was LEGITIMATELY rebuilt, a human must run the paper-verified ceremony: wapps dr accept-epoch-reset --project testproj"
     );
     // Reddedilen bir okuma pin'i GERI ALMAZ.
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), go_pinfile("testproj", 9));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        go_pinfile("testproj", 9)
+    );
 }
 
 #[test]
@@ -54,7 +60,10 @@ fn a_higher_served_epoch_advances_the_pin() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, go_pinfile("testproj", 3)).unwrap();
     epochpin::check_and_advance(&path, "testproj", 7, false).expect("ileri gitmek serbest");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), go_pinfile("testproj", 7));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        go_pinfile("testproj", 7)
+    );
 }
 
 // Go, served == pinned oldugunda dosyaya HIC dokunmuyor. Bunu kanitlamak icin
@@ -82,7 +91,10 @@ fn the_ceremony_flag_lowers_the_pin_instead_of_refusing() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, go_pinfile("testproj", 9)).unwrap();
     epochpin::check_and_advance(&path, "testproj", 7, true).expect("seremoni indirebilir");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), go_pinfile("testproj", 7));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        go_pinfile("testproj", 7)
+    );
 }
 
 // Pin'ler PER-PROJE: bir projenin ilerlemesi digerinin pin'ini silmez.
@@ -110,7 +122,11 @@ fn an_unknown_field_in_the_pin_file_is_refused() {
     let dir = scratch("unknown");
     let path = dir.join("wapps/epochs.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "{\"schema\":\"wapps-epoch-pins/v1\",\"pins\":{},\"extra\":1}").unwrap();
+    std::fs::write(
+        &path,
+        "{\"schema\":\"wapps-epoch-pins/v1\",\"pins\":{},\"extra\":1}",
+    )
+    .unwrap();
     let err = epochpin::check_and_advance(&path, "testproj", 7, false)
         .expect_err("tanimsiz alan FAIL-CLOSED olmali");
     assert_eq!(err.code, Code::Internal);
@@ -125,7 +141,10 @@ fn a_null_pins_field_reads_as_an_empty_map() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "{\"schema\":\"wapps-epoch-pins/v1\",\"pins\":null}").unwrap();
     epochpin::check_and_advance(&path, "testproj", 7, false).unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), go_pinfile("testproj", 7));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        go_pinfile("testproj", 7)
+    );
 }
 
 #[cfg(unix)]
@@ -136,7 +155,11 @@ fn the_pin_file_is_owner_only() {
     let path = dir.join("wapps/epochs.json");
     epochpin::check_and_advance(&path, "testproj", 7, false).unwrap();
     let file = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-    let parent = std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+    let parent = std::fs::metadata(path.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(file, 0o600, "pin dosyasi 0600 olmali");
     assert_eq!(parent, 0o700, "pin dizini 0700 olmali");
 }

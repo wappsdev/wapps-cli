@@ -5,8 +5,10 @@ use wapps::clierr::{self, Code};
 
 #[test]
 fn envelope_is_one_json_line_with_go_field_order() {
-    let e = clierr::Error::new(Code::AgentModeRefused,
-        "surface refused in agent mode (prints secret values or is irreversible)");
+    let e = clierr::Error::new(
+        Code::AgentModeRefused,
+        "surface refused in agent mode (prints secret values or is irreversible)",
+    );
     let mut buf = Vec::new();
     clierr::emit(&mut buf, &e);
     assert_eq!(
@@ -25,7 +27,10 @@ fn go_escapes_angle_brackets_ampersand_and_line_separators() {
     clierr::emit(&mut buf, &e);
     let s = String::from_utf8(buf).unwrap();
     // Go ikilisinden OLCULEN bayt dizisi.
-    assert!(s.contains(r"unknown flag: --\u003ca\u003e\u0026b"), "got: {s}");
+    assert!(
+        s.contains(r"unknown flag: --\u003ca\u003e\u0026b"),
+        "got: {s}"
+    );
     assert!(!s.contains("--<a>&b"), "ham hali kalmamali: {s}");
 }
 
@@ -48,7 +53,10 @@ fn envelope_redacts_secret_shaped_text_before_it_is_written() {
     clierr::emit(&mut buf, &e);
     let s = String::from_utf8(buf).unwrap();
     assert!(s.contains("unknown flag: --[REDACTED:24]"), "got: {s}");
-    assert!(!s.contains("AKIAIOSFODNN7EXAMPLEZZ12"), "ham jeton zarfa girdi: {s}");
+    assert!(
+        !s.contains("AKIAIOSFODNN7EXAMPLEZZ12"),
+        "ham jeton zarfa girdi: {s}"
+    );
 }
 
 // Kurtarma satiri da dis metin tasiyabiliyor (ornegin bir CAS catismasinda
@@ -69,5 +77,8 @@ fn envelope_redacts_the_recovery_line_too() {
 #[test]
 fn the_human_summary_is_not_redacted_like_the_envelope() {
     let e = clierr::Error::new(Code::Internal, "unknown flag: --AKIAIOSFODNN7EXAMPLEZZ12");
-    assert_eq!(e.to_string(), "INTERNAL: unknown flag: --AKIAIOSFODNN7EXAMPLEZZ12");
+    assert_eq!(
+        e.to_string(),
+        "INTERNAL: unknown flag: --AKIAIOSFODNN7EXAMPLEZZ12"
+    );
 }

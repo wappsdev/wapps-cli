@@ -48,8 +48,8 @@ pub fn render(project: &str) -> String {
 pub fn run(repo_root: &str, project: &str, force: bool) -> Result<String, String> {
     let project = if project.is_empty() {
         // Go: filepath.Base(filepath.Abs(repoRoot)).
-        let abs = abs_path(repo_root)
-            .map_err(|e| format!("secrets.init: resolve repo root: {e}"))?;
+        let abs =
+            abs_path(repo_root).map_err(|e| format!("secrets.init: resolve repo root: {e}"))?;
         Path::new(&abs)
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -114,7 +114,10 @@ fn abs_path(p: &str) -> std::io::Result<String> {
     if path.is_absolute() {
         return Ok(p.to_string());
     }
-    Ok(std::env::current_dir()?.join(path).to_string_lossy().into_owned())
+    Ok(std::env::current_dir()?
+        .join(path)
+        .to_string_lossy()
+        .into_owned())
 }
 
 // go_join, Go'nun filepath.Join'i gibi birlestirir ve TEMIZLER.

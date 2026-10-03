@@ -62,11 +62,20 @@ fn the_coolify_probe_targets_health_not_the_base_url() {
         "https://coolify.meapps.dev/api/v1/health",
         "bos taban VARSAYILANA dusmeli"
     );
-    assert_eq!(coolify_health_endpoint("https://x.invalid/api/v1"), "https://x.invalid/api/v1/health");
+    assert_eq!(
+        coolify_health_endpoint("https://x.invalid/api/v1"),
+        "https://x.invalid/api/v1/health"
+    );
     // Sondaki egik cizgi CIFTLENMEMELI.
-    assert_eq!(coolify_health_endpoint("https://x.invalid/api/v1/"), "https://x.invalid/api/v1/health");
+    assert_eq!(
+        coolify_health_endpoint("https://x.invalid/api/v1/"),
+        "https://x.invalid/api/v1/health"
+    );
     // Zaten /health ile bitiyorsa IKINCI kez eklenmemeli.
-    assert_eq!(coolify_health_endpoint("https://x.invalid/health"), "https://x.invalid/health");
+    assert_eq!(
+        coolify_health_endpoint("https://x.invalid/health"),
+        "https://x.invalid/health"
+    );
 }
 
 fn exec_set<'a>(paths: &'a [&'a str]) -> impl Fn(&std::path::Path) -> bool + 'a {
@@ -107,7 +116,10 @@ fn a_session_resolves_to_three_states_not_two() {
 
     // Jeton var, expiry BILINMIYOR → canli, kalan 0.
     let unknown = |k: &str| (k == "WAPPS_SESSION_TOKEN").then(|| "t".to_string());
-    assert_eq!(session_state(&unknown, missing, 1000), SessionState::Live { ttl_secs: 0 });
+    assert_eq!(
+        session_state(&unknown, missing, 1000),
+        SessionState::Live { ttl_secs: 0 }
+    );
 
     let with = |exp: &'static str| {
         move |k: &str| match k {
@@ -116,13 +128,25 @@ fn a_session_resolves_to_three_states_not_two() {
             _ => None,
         }
     };
-    assert_eq!(session_state(&with("2000"), missing, 1000), SessionState::Live { ttl_secs: 1000 });
+    assert_eq!(
+        session_state(&with("2000"), missing, 1000),
+        SessionState::Live { ttl_secs: 1000 }
+    );
     // `<=` : tam esitlik DOLMUS sayilir (Go: ExpiresAt <= now).
-    assert_eq!(session_state(&with("1000"), missing, 1000), SessionState::Expired);
-    assert_eq!(session_state(&with("999"), missing, 1000), SessionState::Expired);
+    assert_eq!(
+        session_state(&with("1000"), missing, 1000),
+        SessionState::Expired
+    );
+    assert_eq!(
+        session_state(&with("999"), missing, 1000),
+        SessionState::Expired
+    );
     // AYRISTIRILAMAYAN bir expiry "bilinmiyor"a duser (Go: ParseInt hatasinda
     // exp 0 kalir) — oturumu DUSURMEZ.
-    assert_eq!(session_state(&with("not-a-number"), missing, 1000), SessionState::Live { ttl_secs: 0 });
+    assert_eq!(
+        session_state(&with("not-a-number"), missing, 1000),
+        SessionState::Live { ttl_secs: 0 }
+    );
 }
 
 // `--for tofu` raporunda SIRA sozlesme: once MEVCUT degiskenler kontrat
@@ -144,9 +168,18 @@ fn the_tofu_report_prints_present_vars_before_missing_ones() {
     assert_eq!(lines[0], "✗ tofu binary not found in PATH");
     assert_eq!(lines[1], "✓ AWS_ACCESS_KEY_ID set");
     assert_eq!(lines[2], "✓ AWS_REGION set");
-    assert!(lines[3].starts_with("✗ AWS_SECRET_ACCESS_KEY not set"), "{out}");
-    assert!(lines[4].starts_with("✗ AWS_ENDPOINT_URL_S3 not set"), "{out}");
-    assert!(lines[5].starts_with("✗ TF_VAR_state_passphrase not set"), "{out}");
+    assert!(
+        lines[3].starts_with("✗ AWS_SECRET_ACCESS_KEY not set"),
+        "{out}"
+    );
+    assert!(
+        lines[4].starts_with("✗ AWS_ENDPOINT_URL_S3 not set"),
+        "{out}"
+    );
+    assert!(
+        lines[5].starts_with("✗ TF_VAR_state_passphrase not set"),
+        "{out}"
+    );
 }
 
 // HEPSI hazir → tek sifir-cikisli doctor dali, ve KAPANIS satiri basiliyor.
@@ -154,7 +187,10 @@ fn the_tofu_report_prints_present_vars_before_missing_ones() {
 fn a_ready_tofu_environment_is_the_only_zero_exit_branch() {
     let (out, ok) = tofu_env_report(true, &|_| "fake-not-a-secret".to_string());
     assert!(ok);
-    assert!(out.ends_with("\n✓ Tofu environment ready for sync.\n"), "{out}");
+    assert!(
+        out.ends_with("\n✓ Tofu environment ready for sync.\n"),
+        "{out}"
+    );
     assert!(!out.contains('✗'), "{out}");
     // Kurtarma ipucu YALNIZCA basarisizlikta.
     assert!(!out.contains("wapps secrets sync"), "{out}");

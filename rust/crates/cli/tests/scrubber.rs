@@ -63,15 +63,25 @@ fn run_case(c: &Case) -> (Vec<String>, String, String) {
 fn scrubber_matches_the_go_corpus_case_for_case() {
     let cases = corpus();
     // Bos bir korpus da "fark yok" derdi.
-    assert!(cases.len() >= 20, "korpus yalnizca {} vaka tasiyor", cases.len());
+    assert!(
+        cases.len() >= 20,
+        "korpus yalnizca {} vaka tasiyor",
+        cases.len()
+    );
     let mut bad = Vec::new();
     for c in &cases {
         let (filtered, note, out) = run_case(c);
         if out != c.want_out {
-            bad.push(format!("{} out:\n  want: {:?}\n  got:  {:?}", c.name, c.want_out, out));
+            bad.push(format!(
+                "{} out:\n  want: {:?}\n  got:  {:?}",
+                c.name, c.want_out, out
+            ));
         }
         if note != c.want_note {
-            bad.push(format!("{} note:\n  want: {:?}\n  got:  {:?}", c.name, c.want_note, note));
+            bad.push(format!(
+                "{} note:\n  want: {:?}\n  got:  {:?}",
+                c.name, c.want_note, note
+            ));
         }
         if filtered != c.want_filtered {
             bad.push(format!(
@@ -89,11 +99,16 @@ fn the_corpus_actually_exercises_the_hard_parts() {
     // ve hicbir mutasyonu yakalamaz.
     let cases = corpus();
     let redacted = cases.iter().filter(|c| c.want_out.contains("***")).count();
-    let untouched = cases.iter().filter(|c| c.want_out == c.chunks.concat()).count();
+    let untouched = cases
+        .iter()
+        .filter(|c| c.want_out == c.chunks.concat())
+        .count();
     let multi_chunk = cases.iter().filter(|c| c.chunks.len() > 1).count();
     let noted = cases.iter().filter(|c| !c.want_note.is_empty()).count();
-    let filtered_out =
-        cases.iter().filter(|c| c.want_filtered.len() < c.values.len()).count();
+    let filtered_out = cases
+        .iter()
+        .filter(|c| c.want_filtered.len() < c.values.len())
+        .count();
     assert!(
         redacted > 0 && untouched > 0 && multi_chunk > 0 && noted > 0 && filtered_out > 0,
         "korpus bir kolu kaciriyor: redacted={redacted} untouched={untouched} \

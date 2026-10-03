@@ -68,19 +68,26 @@ impl Ctx {
             }
             let abs = abs_path(Path::new(c))
                 .map_err(|e| Error::new(Code::Internal, format!("resolve --config path: {e}")))?;
-            return Ok(Ctx { config_path: Some(abs), project_override: None });
+            return Ok(Ctx {
+                config_path: Some(abs),
+                project_override: None,
+            });
         }
         match project {
-            None => Ok(Ctx { config_path: None, project_override: None }),
+            None => Ok(Ctx {
+                config_path: None,
+                project_override: None,
+            }),
             Some(name) => match projects::resolve(name) {
                 Ok(dir) => Ok(Ctx {
                     config_path: Some(Path::new(&dir).join(WAPPS_YAML_PATH)),
                     project_override: None,
                 }),
                 // Defterde YOKSA ad'in kendisiyle devam edilir.
-                Err(_) => {
-                    Ok(Ctx { config_path: None, project_override: Some(name.to_string()) })
-                }
+                Err(_) => Ok(Ctx {
+                    config_path: None,
+                    project_override: Some(name.to_string()),
+                }),
             },
         }
     }
@@ -184,7 +191,9 @@ pub fn check_repo_binding<W: Write>(
     // Config YOKSA (ya da okunamiyorsa) baglama kontrolu de YOK. Ayristirma
     // hatasi burada YUTULUYOR — Go da yutuyor — ve bir adim sonra
     // require_store_config'ten yuksek sesle geri geliyor.
-    let Ok(Some(cfg)) = ctx.load_or_none() else { return Ok(()) };
+    let Ok(Some(cfg)) = ctx.load_or_none() else {
+        return Ok(());
+    };
 
     // Service principal (CI): CF Access service-token CIFTI env'de doluysa
     // depo-pin kontrolu ATLANIR. Taze bir CI container'inda trust-repo (TTY)
@@ -248,7 +257,10 @@ pub fn check_repo_binding<W: Write>(
     if !ask(&repo_id, &cfg.project, errw) {
         return Err(Error::new(
             Code::BindingUnpinned,
-            format!("not pinned; binding declined for {}", crate::gojson::quote(&cfg.project)),
+            format!(
+                "not pinned; binding declined for {}",
+                crate::gojson::quote(&cfg.project)
+            ),
         ));
     }
     store.pin(
@@ -259,7 +271,9 @@ pub fn check_repo_binding<W: Write>(
             backend: cfg.backend.clone(),
         },
     );
-    store.save(&path).map_err(|e| Error::new(Code::Internal, format!("save repo pin: {e}")))?;
+    store
+        .save(&path)
+        .map_err(|e| Error::new(Code::Internal, format!("save repo pin: {e}")))?;
     let _ = writeln!(
         errw,
         "✓ bound this repo to project {} (change it later with: wapps secrets trust-repo)",
@@ -305,7 +319,11 @@ fn service_token_pair_set() -> bool {
 /// Config depo KOKUNDEYSE kimlik CIPLAK URL olarak kalir — boylece tek-projeli
 /// depolarin MEVCUT pinleri gecerliligini korur.
 pub fn repo_identity(cfg: &WappsYaml) -> String {
-    let root = if cfg.config_root().is_empty() { "." } else { cfg.config_root() };
+    let root = if cfg.config_root().is_empty() {
+        "."
+    } else {
+        cfg.config_root()
+    };
     let sub = git_repo_subpath(root);
 
     // origin varsa kimlik ona baglanir: ayni deponun her checkout'u pini
@@ -349,7 +367,10 @@ fn git_out(dir: &str, args: &[&str]) -> Option<String> {
 // bile). git --git-common-dir worktree'den de ana depodan da AYNI .git'i
 // gosterir, o yuzden hepsi tek pinde bulusur.
 fn git_main_repo_root(dir: &str) -> Option<String> {
-    let git_dir = git_out(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let git_dir = git_out(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
     if git_dir.is_empty() {
         return None;
     }

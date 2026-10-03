@@ -48,7 +48,11 @@ pub const FULL_TOOLS: &[(&str, &str)] = &[
 /// Adda AYIRAC varsa PATH'e HIC bakilmaz (Go ile ayni): dogrudan o yol denenir.
 /// Bir DIZIN esleşme SAYILMAZ — aksi halde PATH'te `git/` adli bir dizin,
 /// eksik bir ikiliyi "var" gosterirdi.
-pub fn look_path(name: &str, path_env: &str, is_executable: &dyn Fn(&std::path::Path) -> bool) -> bool {
+pub fn look_path(
+    name: &str,
+    path_env: &str,
+    is_executable: &dyn Fn(&std::path::Path) -> bool,
+) -> bool {
     if name.contains('/') {
         return is_executable(std::path::Path::new(name));
     }
@@ -183,9 +187,13 @@ pub fn session_state(
     now_unix: i64,
 ) -> SessionState {
     let expires_at = match env("WAPPS_SESSION_TOKEN").filter(|t| !t.is_empty()) {
-        Some(_) => env("WAPPS_SESSION_EXPIRES").and_then(|e| e.parse::<i64>().ok()).unwrap_or(0),
+        Some(_) => env("WAPPS_SESSION_EXPIRES")
+            .and_then(|e| e.parse::<i64>().ok())
+            .unwrap_or(0),
         None => {
-            let Ok(raw) = std::fs::read(session_path) else { return SessionState::Absent };
+            let Ok(raw) = std::fs::read(session_path) else {
+                return SessionState::Absent;
+            };
             // Bozuk JSON ya da BOS jeton → oturum YOK (Go: Unmarshal hatasi
             // veya s.Token == "" → ok=false).
             match serde_json::from_slice::<SessionFile>(&raw) {
@@ -200,7 +208,9 @@ pub fn session_state(
     if expires_at == 0 {
         return SessionState::Live { ttl_secs: 0 };
     }
-    SessionState::Live { ttl_secs: expires_at - now_unix }
+    SessionState::Live {
+        ttl_secs: expires_at - now_unix,
+    }
 }
 
 // SessionFile, diskteki oturum dosyasidir. `token` YALNIZCA bos olup
@@ -220,20 +230,31 @@ struct SessionFile {
 /// Isin cogu kontrol duzlemine hic dokunmuyor, o yuzden "admin oturumu yok"
 /// bir hata degil bir NOT. `all_ok`a KATKI VERMEZ — ve admin DOLMUS olsa bile
 /// ayni `·` satiri basilir (Go: `ok && !Expired` tek dala bakiyor).
-pub fn render_session_lines(host: &str, read: &SessionState, admin: &SessionState) -> (String, bool) {
+pub fn render_session_lines(
+    host: &str,
+    read: &SessionState,
+    admin: &SessionState,
+) -> (String, bool) {
     let mut out = String::new();
     let mut ok = true;
     match read {
         SessionState::Absent => {
-            out.push_str(&format!("✗ no secrets-gate session for {host} — run 'wapps login'\n"));
+            out.push_str(&format!(
+                "✗ no secrets-gate session for {host} — run 'wapps login'\n"
+            ));
             ok = false;
         }
         SessionState::Expired => {
-            out.push_str(&format!("✗ secrets-gate session for {host} expired — run 'wapps login'\n"));
+            out.push_str(&format!(
+                "✗ secrets-gate session for {host} expired — run 'wapps login'\n"
+            ));
             ok = false;
         }
         SessionState::Live { ttl_secs } => {
-            out.push_str(&format!("✓ secrets-gate session live ({})\n", go_duration(*ttl_secs)));
+            out.push_str(&format!(
+                "✓ secrets-gate session live ({})\n",
+                go_duration(*ttl_secs)
+            ));
         }
     }
     match admin {

@@ -122,7 +122,9 @@ fn file_source_requires_path() {
 
 #[test]
 fn sources_are_optional_under_store() {
-    assert!(parse_ok("version: 2\nbackend: store\nproject: lab\n").sources.is_empty());
+    assert!(parse_ok("version: 2\nbackend: store\nproject: lab\n")
+        .sources
+        .is_empty());
 }
 
 // --- targets ----------------------------------------------------------------
@@ -147,9 +149,7 @@ fn target_path_traversal_is_refused() {
 #[test]
 fn duplicate_target_path_names_both_indices() {
     assert_eq!(
-        parse_err(
-            "version: 2\nproject: p\ntargets:\n  - path: .env.local\n  - path: .env.local\n"
-        ),
+        parse_err("version: 2\nproject: p\ntargets:\n  - path: .env.local\n  - path: .env.local\n"),
         "config: targets[1]: duplicate path \".env.local\" (also at targets[0])"
     );
 }
@@ -164,7 +164,10 @@ fn absent_target_prefix_falls_back_to_the_default() {
         "version: 2\nproject: p\ndefault_prefix: \"TF_VAR_\"\ntargets:\n  - path: .env.local\n",
     );
     assert!(cfg.targets[0].prefix.is_none(), "prefix ABSENT olmali");
-    assert_eq!(cfg.targets[0].effective_prefix(&cfg.default_prefix), "TF_VAR_");
+    assert_eq!(
+        cfg.targets[0].effective_prefix(&cfg.default_prefix),
+        "TF_VAR_"
+    );
 }
 
 #[test]
@@ -181,7 +184,10 @@ fn explicit_target_prefix_beats_an_empty_default() {
     let cfg = parse_ok(
         "version: 2\nproject: p\ntargets:\n  - path: terraform.tfvars.json\n    prefix: \"TF_VAR_\"\n",
     );
-    assert_eq!(cfg.targets[0].effective_prefix(&cfg.default_prefix), "TF_VAR_");
+    assert_eq!(
+        cfg.targets[0].effective_prefix(&cfg.default_prefix),
+        "TF_VAR_"
+    );
 }
 
 // --- profiller (§7.6) -------------------------------------------------------
@@ -193,7 +199,10 @@ fn named_profile_returns_its_keys_and_empty_name_means_all() {
     );
     assert_eq!(
         cfg.profile_keys("deploy"),
-        Some(vec!["DATABASE_URL".to_string(), "COOLIFY_TOKEN".to_string()])
+        Some(vec![
+            "DATABASE_URL".to_string(),
+            "COOLIFY_TOKEN".to_string()
+        ])
     );
     assert_eq!(cfg.profile_keys("nosuch"), None);
     // Bos ad → "tum granted anahtarlar": Some(bos liste).
@@ -222,7 +231,10 @@ fn relative_target_paths_resolve_against_the_config_dir() {
     // yazmali — <cwd>/.env.local DEGIL. Duz metin sir dosyalarini operatorun
     // o an bulundugu dizine sacmak, bu satirin engelledigi sey.
     let cfg = parse_ok("version: 2\nproject: p\ntargets:\n  - path: .env.local\n");
-    assert_eq!(cfg.targets[0].resolve_path("/repo/proj"), "/repo/proj/.env.local");
+    assert_eq!(
+        cfg.targets[0].resolve_path("/repo/proj"),
+        "/repo/proj/.env.local"
+    );
     // Mutlak yol AYNEN gecer.
     let abs = parse_ok("version: 2\nproject: p\ntargets:\n  - path: /tmp/x.env\n");
     assert_eq!(abs.targets[0].resolve_path("/repo/proj"), "/tmp/x.env");

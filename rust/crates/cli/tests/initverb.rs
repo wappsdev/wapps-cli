@@ -32,7 +32,10 @@ project: myproj\n\
 #[test]
 fn the_generated_file_is_byte_identical_to_the_go_template() {
     let got = initverb::render("myproj");
-    assert_eq!(got, GO_TEMPLATE, "uretilen sablon Go'nunkinden BAYT olarak ayrisiyor");
+    assert_eq!(
+        got, GO_TEMPLATE,
+        "uretilen sablon Go'nunkinden BAYT olarak ayrisiyor"
+    );
 }
 
 // GIDIS-DONUS: kendi ayristiricimiz kendi ciktimizi okuyabilmeli.
@@ -46,7 +49,10 @@ fn the_generated_file_parses_with_our_own_parser() {
     assert_eq!(cfg.backend, wapps::wappsyaml::BACKEND_STORE);
     // `targets:` blogu YORUMDA — yani bos gelmeli. Yorum isaretini dusuren bir
     // sablon degisikligi `apply`i sessizce farkli davrandirirdi.
-    assert!(cfg.targets.is_empty(), "sablondaki targets blogu YORUM olmali");
+    assert!(
+        cfg.targets.is_empty(),
+        "sablondaki targets blogu YORUM olmali"
+    );
 }
 
 #[test]
@@ -57,7 +63,11 @@ fn init_writes_exactly_one_file_and_names_the_project() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(entries, [".wapps.yaml"], "init YALNIZCA .wapps.yaml yazmali");
+    assert_eq!(
+        entries,
+        [".wapps.yaml"],
+        "init YALNIZCA .wapps.yaml yazmali"
+    );
     assert!(out.contains("wapps init complete"), "cikti: {out}");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -30,7 +30,9 @@ fn scratch() -> PathBuf {
 }
 
 fn run(cmd: &mut Command, what: &str) -> String {
-    let out = cmd.output().unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{what} calistirilamadi: {e}"));
     assert!(
         out.status.success(),
         "{what} basarisiz (exit {:?})\nstdout:\n{}\nstderr:\n{}",
@@ -43,7 +45,10 @@ fn run(cmd: &mut Command, what: &str) -> String {
 
 fn field<'a>(json: &'a str, key: &str) -> &'a str {
     let pat = format!("\"{key}\":");
-    let i = json.find(&pat).unwrap_or_else(|| panic!("{key} yok: {json}")) + pat.len();
+    let i = json
+        .find(&pat)
+        .unwrap_or_else(|| panic!("{key} yok: {json}"))
+        + pat.len();
     let rest = json[i..].trim_start();
     let end = rest.find([',', '\n', '}']).unwrap_or(rest.len());
     rest[..end].trim().trim_matches('"')
@@ -57,14 +62,20 @@ fn set_never_echoes_the_typed_value_to_the_terminal() {
 
     let go_bin = work.join("wapps-go");
     run(
-        Command::new("go").arg("build").arg("-o").arg(&go_bin).arg("./main.go").current_dir(&root),
+        Command::new("go")
+            .arg("build")
+            .arg("-o")
+            .arg(&go_bin)
+            .arg("./main.go")
+            .current_dir(&root),
         "go build (oracle)",
     );
 
     let mut seen = Vec::new();
-    for (label, bin) in
-        [("go", go_bin.as_path()), ("rust", Path::new(env!("CARGO_BIN_EXE_wapps")))]
-    {
+    for (label, bin) in [
+        ("go", go_bin.as_path()),
+        ("rust", Path::new(env!("CARGO_BIN_EXE_wapps"))),
+    ] {
         let out = work.join(format!("{label}.json"));
         run(
             Command::new("python3")
@@ -94,6 +105,9 @@ fn set_never_echoes_the_typed_value_to_the_terminal() {
     }
 
     // 3) Ve iki ikili bu yuzeyde AYNI davranmali (Go oracle).
-    assert_eq!(seen[0], seen[1], "go ve rust yankisiz-okuma yuzeyinde ayrisiyor");
+    assert_eq!(
+        seen[0], seen[1],
+        "go ve rust yankisiz-okuma yuzeyinde ayrisiyor"
+    );
     let _ = std::fs::remove_dir_all(&work);
 }

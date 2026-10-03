@@ -42,7 +42,10 @@ fn it_writes_sorted_export_lines_at_0600() {
         "export ALPHA='a'\nexport BETA='b'\n"
     );
     let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "duz metin sir dosyasi 0600 olmali, {mode:o} degil");
+    assert_eq!(
+        mode, 0o600,
+        "duz metin sir dosyasi 0600 olmali, {mode:o} degil"
+    );
 }
 
 #[test]
@@ -50,7 +53,10 @@ fn no_temp_file_survives_a_successful_write() {
     let d = tmpdir("notmp");
     let target = d.join("out.env");
     envverb::write_env_file_atomic(&target, ARCHIVE, "").expect("yazim");
-    assert!(!d.join("out.env.tmp").exists(), "gecici dosya rename'den sonra kalmamali");
+    assert!(
+        !d.join("out.env.tmp").exists(),
+        "gecici dosya rename'den sonra kalmamali"
+    );
 }
 
 #[test]
@@ -95,7 +101,11 @@ fn a_preexisting_wide_temp_cannot_widen_the_secret() {
     let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "bayat bir 0644 `.tmp` sirri GENISLETEMEZ");
     // Bayat dosyaya DOKUNULMAMIS olmali: yazici artik onu hic acmiyor.
-    assert_eq!(std::fs::read_to_string(&tmp).unwrap(), "bayat", "bayat `.tmp` YENIDEN KULLANILDI");
+    assert_eq!(
+        std::fs::read_to_string(&tmp).unwrap(),
+        "bayat",
+        "bayat `.tmp` YENIDEN KULLANILDI"
+    );
 }
 
 #[test]

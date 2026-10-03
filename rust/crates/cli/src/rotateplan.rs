@@ -37,7 +37,11 @@ pub fn render_text(res: &RotatePlanResult) -> String {
         // BOS `last_read` "(assume-policy)" olur: satir audit'ten degil
         // policy kurallarindan turemis demektir. Bos dize basmak, operatore
         // "hic okunmamis" ile "audit kaydi yok"u AYNI gosterirdi.
-        let last = if it.last_read.is_empty() { "(assume-policy)" } else { &it.last_read };
+        let last = if it.last_read.is_empty() {
+            "(assume-policy)"
+        } else {
+            &it.last_read
+        };
         s.push_str(&format!(
             "  {:<20} {:<32} {:<25} {}\n",
             it.project, it.key, last, it.reads
@@ -94,9 +98,7 @@ pub fn rfc3339_valid(s: &str) -> bool {
     if !(d(17) && d(18)) {
         return false;
     }
-    let num = |i: usize, n: usize| -> u32 {
-        s[i..i + n].parse::<u32>().unwrap_or(u32::MAX)
-    };
+    let num = |i: usize, n: usize| -> u32 { s[i..i + n].parse::<u32>().unwrap_or(u32::MAX) };
     let (year, month, day) = (num(0, 4), num(5, 2), num(8, 2));
     let (hour, min, sec) = (num(11, 2), num(14, 2), num(17, 2));
     if !(1..=12).contains(&month) {
@@ -143,7 +145,9 @@ fn days_in_month(year: u32, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => 29,
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
+        }
         2 => 28,
         _ => 0,
     }

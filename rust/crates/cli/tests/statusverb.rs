@@ -63,8 +63,11 @@ fn the_json_form_is_a_single_line_with_the_go_field_order() {
 fn the_pin_is_read_for_the_named_project() {
     let dir = tempdir("status-pin");
     let p = dir.join("epochs.json");
-    std::fs::write(&p, r#"{"schema":"wapps-epoch-pins/v1","pins":{"testproj":5,"other":9}}"#)
-        .unwrap();
+    std::fs::write(
+        &p,
+        r#"{"schema":"wapps-epoch-pins/v1","pins":{"testproj":5,"other":9}}"#,
+    )
+    .unwrap();
     assert_eq!(statusverb::read_epoch_pin(&p, "testproj"), 5);
     assert_eq!(statusverb::read_epoch_pin(&p, "other"), 9);
     // Kayitli olmayan proje → 0, hata DEGIL.
@@ -74,13 +77,19 @@ fn the_pin_is_read_for_the_named_project() {
 
 #[test]
 fn an_empty_project_name_reads_as_zero_without_touching_disk() {
-    assert_eq!(statusverb::read_epoch_pin(std::path::Path::new("/nonexistent"), ""), 0);
+    assert_eq!(
+        statusverb::read_epoch_pin(std::path::Path::new("/nonexistent"), ""),
+        0
+    );
 }
 
 #[test]
 fn a_missing_or_corrupt_pin_file_reads_as_zero() {
     let dir = tempdir("status-pin-bad");
-    assert_eq!(statusverb::read_epoch_pin(&dir.join("nope.json"), "testproj"), 0);
+    assert_eq!(
+        statusverb::read_epoch_pin(&dir.join("nope.json"), "testproj"),
+        0
+    );
     let bad = dir.join("bad.json");
     std::fs::write(&bad, "{not json at all").unwrap();
     assert_eq!(statusverb::read_epoch_pin(&bad, "testproj"), 0);
@@ -97,8 +106,11 @@ fn a_missing_or_corrupt_pin_file_reads_as_zero() {
 fn status_tolerates_pin_fields_that_the_read_path_would_reject() {
     let dir = tempdir("status-pin-extra");
     let p = dir.join("epochs.json");
-    std::fs::write(&p, r#"{"schema":"wapps-epoch-pins/v1","pins":{"testproj":7},"future":1}"#)
-        .unwrap();
+    std::fs::write(
+        &p,
+        r#"{"schema":"wapps-epoch-pins/v1","pins":{"testproj":7},"future":1}"#,
+    )
+    .unwrap();
     assert_eq!(
         statusverb::read_epoch_pin(&p, "testproj"),
         7,
@@ -189,14 +201,23 @@ fn no_session_anywhere_reads_as_invalid() {
 #[test]
 fn the_gate_host_becomes_a_safe_file_name() {
     assert_eq!(statusverb::host_file("gw.meapps.dev"), "gw.meapps.dev.json");
-    assert_eq!(statusverb::host_file("127.0.0.1:8080"), "127.0.0.1_8080.json");
+    assert_eq!(
+        statusverb::host_file("127.0.0.1:8080"),
+        "127.0.0.1_8080.json"
+    );
     assert_eq!(statusverb::host_file("a/b"), "a_b.json");
 }
 
 #[test]
 fn the_gate_host_is_the_host_part_of_the_gate_url() {
-    assert_eq!(statusverb::host_of("http://127.0.0.1:8080"), "127.0.0.1:8080");
-    assert_eq!(statusverb::host_of("https://gw.meapps.dev"), "gw.meapps.dev");
+    assert_eq!(
+        statusverb::host_of("http://127.0.0.1:8080"),
+        "127.0.0.1:8080"
+    );
+    assert_eq!(
+        statusverb::host_of("https://gw.meapps.dev"),
+        "gw.meapps.dev"
+    );
     // Ayristirilamayan bir deger varsayilana duser — status hard-fail ETMEZ.
     assert_eq!(statusverb::host_of("::::"), "gw.meapps.dev");
 }

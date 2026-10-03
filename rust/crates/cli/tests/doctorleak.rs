@@ -22,13 +22,34 @@ use std::process::Command;
 // KANARYALAR: her biri farkli bir kimlik yuzeyinden geliyor. Ayirt edici
 // olmalari sart — ciktida rastlantiyla bulunacak bir dize olmamalilar.
 const CANARIES: &[(&str, &str)] = &[
-    ("WAPPS_SESSION_TOKEN", "canary-session-3f9a-not-a-real-secret"),
-    ("CF_ACCESS_CLIENT_ID", "canary-clientid-7c21-not-a-real-secret"),
-    ("CF_ACCESS_CLIENT_SECRET", "canary-clientsecret-b48e-not-a-real-secret"),
-    ("WAPPS_MACHINE_TOKEN", "canary-machine-d17f-not-a-real-secret"),
-    ("TF_VAR_state_passphrase", "canary-passphrase-a6b0-not-a-real-secret"),
-    ("AWS_SECRET_ACCESS_KEY", "canary-awssecret-e52c-not-a-real-secret"),
-    ("AWS_ACCESS_KEY_ID", "canary-awskeyid-91d3-not-a-real-secret"),
+    (
+        "WAPPS_SESSION_TOKEN",
+        "canary-session-3f9a-not-a-real-secret",
+    ),
+    (
+        "CF_ACCESS_CLIENT_ID",
+        "canary-clientid-7c21-not-a-real-secret",
+    ),
+    (
+        "CF_ACCESS_CLIENT_SECRET",
+        "canary-clientsecret-b48e-not-a-real-secret",
+    ),
+    (
+        "WAPPS_MACHINE_TOKEN",
+        "canary-machine-d17f-not-a-real-secret",
+    ),
+    (
+        "TF_VAR_state_passphrase",
+        "canary-passphrase-a6b0-not-a-real-secret",
+    ),
+    (
+        "AWS_SECRET_ACCESS_KEY",
+        "canary-awssecret-e52c-not-a-real-secret",
+    ),
+    (
+        "AWS_ACCESS_KEY_ID",
+        "canary-awskeyid-91d3-not-a-real-secret",
+    ),
 ];
 
 fn repo_root() -> PathBuf {
@@ -71,7 +92,9 @@ fn observe(bin: &Path, work: &Path, args: &[&str]) -> String {
     for (k, v) in CANARIES {
         cmd.env(k, v);
     }
-    let out = cmd.output().unwrap_or_else(|e| panic!("{} kosturulamadi: {e}", bin.display()));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{} kosturulamadi: {e}", bin.display()));
     format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),

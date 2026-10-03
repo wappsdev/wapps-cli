@@ -79,10 +79,15 @@ pub fn map_http_error(status: u16, body: &str, retry_after: u64, ctx: &str) -> E
     match status {
         401 => Error::new(
             Code::SessionExpired,
-            format!("{ctx}: gate rejected the session ({})", safe_code(&we.error)),
+            format!(
+                "{ctx}: gate rejected the session ({})",
+                safe_code(&we.error)
+            ),
         ),
         403 => match we.error.as_str() {
-            "MACHINE_TOKEN_REQUIRED" | "TOKEN_EXPIRED" | "TOKEN_REVOKED"
+            "MACHINE_TOKEN_REQUIRED"
+            | "TOKEN_EXPIRED"
+            | "TOKEN_REVOKED"
             | "TOKEN_SCOPE_EXCEEDED" => Error::new(
                 Code::SessionExpired,
                 format!("{ctx}: machine token invalid ({})", safe_code(&we.error)),
@@ -112,17 +117,29 @@ pub fn map_http_error(status: u16, body: &str, retry_after: u64, ctx: &str) -> E
         },
         404 => {
             if !we.key.is_empty() {
-                Error::new(Code::NotFound, format!("{ctx}: key {} not found", safe_code(&we.key)))
+                Error::new(
+                    Code::NotFound,
+                    format!("{ctx}: key {} not found", safe_code(&we.key)),
+                )
             } else {
-                Error::new(Code::NotFound, format!("{ctx}: not found ({})", safe_code(&we.error)))
+                Error::new(
+                    Code::NotFound,
+                    format!("{ctx}: not found ({})", safe_code(&we.error)),
+                )
             }
         }
-        409 => Error::new(Code::CasConflict, format!("{ctx}: {}", safe_code(&we.error))),
+        409 => Error::new(
+            Code::CasConflict,
+            format!("{ctx}: {}", safe_code(&we.error)),
+        ),
         412 => {
             if we.error == "POLICY_CONFLICT" {
                 Error::new(
                     Code::PolicyConflict,
-                    format!("{ctx}: policy version conflict (current {})", we.current_version),
+                    format!(
+                        "{ctx}: policy version conflict (current {})",
+                        we.current_version
+                    ),
                 )
             } else {
                 Error::new(Code::CasConflict, format!("{ctx}: epoch conflict"))
@@ -130,18 +147,30 @@ pub fn map_http_error(status: u16, body: &str, retry_after: u64, ctx: &str) -> E
         }
         413 => {
             if we.error == "RESPONSE_TOO_LARGE" {
-                Error::new(Code::ActionUnavailable, format!("{ctx}: read response too large"))
-                    .with_recovery(
-                        "this bulk read exceeds the gate's response cap — request fewer keys at a time",
-                    )
+                Error::new(
+                    Code::ActionUnavailable,
+                    format!("{ctx}: read response too large"),
+                )
+                .with_recovery(
+                    "this bulk read exceeds the gate's response cap — request fewer keys at a time",
+                )
             } else {
-                Error::new(Code::BlobTooLarge, format!("{ctx}: {}", safe_code(&we.error)))
+                Error::new(
+                    Code::BlobTooLarge,
+                    format!("{ctx}: {}", safe_code(&we.error)),
+                )
             }
         }
         422 => {
             if we.error == "POLICY_INVALID" {
-                let idx = we.rule_index.map(|i| i.to_string()).unwrap_or_else(|| "?".to_string());
-                Error::new(Code::PolicyInvalid, format!("{ctx}: policy invalid (rule index {idx})"))
+                let idx = we
+                    .rule_index
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                Error::new(
+                    Code::PolicyInvalid,
+                    format!("{ctx}: policy invalid (rule index {idx})"),
+                )
             } else {
                 Error::new(Code::Internal, format!("{ctx}: {}", safe_code(&we.error)))
             }
@@ -155,12 +184,19 @@ pub fn map_http_error(status: u16, body: &str, retry_after: u64, ctx: &str) -> E
                 Code::AuditUnavailable,
                 format!("{ctx}: audit ledger unavailable — plaintext refused"),
             ),
-            "IDENTITY_UNAVAILABLE" => {
-                Error::new(Code::IdentityUnavailable, format!("{ctx}: identity/groups unresolvable"))
-            }
-            _ => Error::new(Code::ServiceMisconfig, format!("{ctx}: {}", safe_code(&we.error))),
+            "IDENTITY_UNAVAILABLE" => Error::new(
+                Code::IdentityUnavailable,
+                format!("{ctx}: identity/groups unresolvable"),
+            ),
+            _ => Error::new(
+                Code::ServiceMisconfig,
+                format!("{ctx}: {}", safe_code(&we.error)),
+            ),
         },
-        400 => Error::new(Code::Internal, format!("{ctx}: bad request ({})", safe_code(&we.error))),
+        400 => Error::new(
+            Code::Internal,
+            format!("{ctx}: bad request ({})", safe_code(&we.error)),
+        ),
         s => Error::new(Code::Internal, format!("{ctx}: unexpected status {s}")),
     }
 }
@@ -190,7 +226,9 @@ const DEFAULT_RETRY_AFTER: u64 = 60;
 
 // add_pem_file, tek bir PEM dosyasindaki sertifikalari depoya ekler.
 fn add_pem_file(store: &mut rustls::RootCertStore, path: &std::path::Path) {
-    let Ok(iter) = rustls_pki_types::CertificateDer::pem_file_iter(path) else { return };
+    let Ok(iter) = rustls_pki_types::CertificateDer::pem_file_iter(path) else {
+        return;
+    };
     for der in iter.flatten() {
         let _ = store.add(der);
     }
@@ -198,8 +236,9 @@ fn add_pem_file(store: &mut rustls::RootCertStore, path: &std::path::Path) {
 
 // root_store, gomulu tabani kurar ve env ile bildirilen koklerin USTUNE ekler.
 fn root_store() -> rustls::RootCertStore {
-    let mut store =
-        rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let mut store = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
     if let Some(f) = std::env::var_os("SSL_CERT_FILE") {
         add_pem_file(&mut store, std::path::Path::new(&f));
     }
@@ -250,7 +289,10 @@ pub fn read(project: &str, keys: &[String]) -> Result<ReadResult, Error> {
     match req.send_json(body) {
         Ok(resp) => {
             let text = resp.into_string().map_err(|e| {
-                Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
+                Error::new(
+                    Code::NetworkRequired,
+                    format!("secrets gate response truncated: {e}"),
+                )
             })?;
             let out = serde_json::from_str::<ReadResult>(&text)
                 .map_err(|e| Error::new(Code::Internal, format!("decode {ctx}: {e}")))?;
@@ -445,7 +487,10 @@ fn keys_inner(project: &str, accept_reset: bool) -> Result<KeysResult, Error> {
     match req.call() {
         Ok(resp) => {
             let text = resp.into_string().map_err(|e| {
-                Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
+                Error::new(
+                    Code::NetworkRequired,
+                    format!("secrets gate response truncated: {e}"),
+                )
             })?;
             let out = serde_json::from_str::<KeysResult>(&text)
                 .map_err(|e| Error::new(Code::Internal, format!("decode {ctx}: {e}")))?;
@@ -499,7 +544,10 @@ pub fn audit_head() -> Result<(u64, String), Error> {
     match req.call() {
         Ok(resp) => {
             let text = resp.into_string().map_err(|e| {
-                Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
+                Error::new(
+                    Code::NetworkRequired,
+                    format!("secrets gate response truncated: {e}"),
+                )
             })?;
             let out = serde_json::from_str::<Head>(&text)
                 .map_err(|e| Error::new(Code::Internal, format!("decode {ctx}: {e}")))?;
@@ -613,9 +661,7 @@ pub fn delete(project: &str, key: &str) -> Result<(), Error> {
     match req.call() {
         // Govde OKUNMUYOR: Go tarafi da 200'de govdeye bakmiyor.
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(status, resp)) => {
-            Err(status_error(status, resp, &ctx))
-        }
+        Err(ureq::Error::Status(status, resp)) => Err(status_error(status, resp, &ctx)),
         Err(ureq::Error::Transport(t)) => Err(Error::new(
             Code::NetworkRequired,
             format!("secrets gate unreachable: {t}"),
@@ -794,7 +840,10 @@ pub fn token_mint(
     // pipeline adimina bosluk vermek, ona gecerli bir jeton vermis gibi
     // gorunurdu.
     if out.token.trim().is_empty() {
-        return Err(Error::new(Code::TokenExchangeFailed, "gate returned an empty token"));
+        return Err(Error::new(
+            Code::TokenExchangeFailed,
+            "gate returned an empty token",
+        ));
     }
     Ok((out.token, out.exp))
 }
@@ -981,7 +1030,10 @@ fn decode_body<T: serde::de::DeserializeOwned>(
     ctx: &str,
 ) -> Result<T, Error> {
     let text = resp.into_string().map_err(|e| {
-        Error::new(Code::NetworkRequired, format!("secrets gate response truncated: {e}"))
+        Error::new(
+            Code::NetworkRequired,
+            format!("secrets gate response truncated: {e}"),
+        )
     })?;
     serde_json::from_str::<T>(&text)
         .map_err(|_| Error::new(Code::Internal, format!("{ctx}: malformed gate response")))

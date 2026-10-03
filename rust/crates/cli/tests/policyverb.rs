@@ -62,7 +62,10 @@ fn a_rule_never_renders_a_value_only_names_and_globs() {
 #[test]
 fn an_identical_rule_set_reports_no_changes() {
     let rules = vec![r("eng", &["*"], &["*"], &["read"])];
-    assert_eq!(policyverb::rule_diff(&rules, &rules), "rule diff:\n  (no rule changes)\n");
+    assert_eq!(
+        policyverb::rule_diff(&rules, &rules),
+        "rule diff:\n  (no rule changes)\n"
+    );
 }
 
 #[test]
@@ -103,7 +106,12 @@ fn the_show_report_names_version_sha_and_every_rule() {
     let doc = PolicyDoc {
         schema: wapps::policy::SCHEMA_POLICY.to_string(),
         version: 3,
-        rules: vec![r("developers@wapps.co", &["*"], &["*", "!*_PROD_*"], &["read"])],
+        rules: vec![r(
+            "developers@wapps.co",
+            &["*"],
+            &["*", "!*_PROD_*"],
+            &["read"],
+        )],
     };
     assert_eq!(
         policyverb::render_show(3, "abc123", &doc),
@@ -121,7 +129,11 @@ fn a_missing_file_is_internal_not_policy_invalid() {
     assert_eq!(err.code, wapps::clierr::Code::Internal);
     assert_eq!(
         err.message,
-        format!("read policy file {}: open {}: no such file or directory", p.display(), p.display())
+        format!(
+            "read policy file {}: open {}: no such file or directory",
+            p.display(),
+            p.display()
+        )
     );
 }
 
@@ -129,13 +141,19 @@ fn a_missing_file_is_internal_not_policy_invalid() {
 fn an_unknown_field_is_reported_with_gos_sentence() {
     let d = tmpdir("unknown");
     let p = d.join("p.json");
-    std::fs::write(&p, r#"{"schema":"wapps-secrets/policy/v1","version":1,"rules":[],"extra":1}"#)
-        .unwrap();
+    std::fs::write(
+        &p,
+        r#"{"schema":"wapps-secrets/policy/v1","version":1,"rules":[],"extra":1}"#,
+    )
+    .unwrap();
     let err = policyverb::read_policy_file(&p).unwrap_err();
     assert_eq!(err.code, wapps::clierr::Code::PolicyInvalid);
     assert_eq!(
         err.message,
-        format!("policy file {} not valid JSON: json: unknown field \"extra\"", p.display())
+        format!(
+            "policy file {} not valid JSON: json: unknown field \"extra\"",
+            p.display()
+        )
     );
 }
 
@@ -192,7 +210,11 @@ fn an_aud_rule_is_refused_offline_because_the_topology_is_primary() {
     )
     .unwrap();
     let err = policyverb::read_policy_file(&p).unwrap_err();
-    assert!(err.message.contains("rejected in PRIMARY"), "{}", err.message);
+    assert!(
+        err.message.contains("rejected in PRIMARY"),
+        "{}",
+        err.message
+    );
 }
 
 // --- tel bicimi (gate'e giden BAYTLAR) ---------------------------------------
@@ -216,7 +238,10 @@ fn the_document_serialises_in_go_struct_order_with_empty_selectors_omitted() {
 
 #[test]
 fn a_service_rule_omits_group_and_aud_but_keeps_the_three_lists() {
-    let mut rule = Rule { service: "ci".into(), ..Default::default() };
+    let mut rule = Rule {
+        service: "ci".into(),
+        ..Default::default()
+    };
     rule.projects = vec!["p".into()];
     rule.keys = vec!["*".into()];
     rule.verbs = vec!["read".into()];

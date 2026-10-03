@@ -59,7 +59,11 @@ fn unknown_fields_are_refused() {
     // kisitinin) eski bir ikilide gorunmez olmasi demek olurdu.
     let d = tmpdir("unknown");
     let p = d.join("repo-pins.json");
-    std::fs::write(&p, br#"{"schema":"wapps-repo-pins/v1","pins":{},"extra":true}"#).unwrap();
+    std::fs::write(
+        &p,
+        br#"{"schema":"wapps-repo-pins/v1","pins":{},"extra":true}"#,
+    )
+    .unwrap();
     assert!(binding::load(&p).is_err(), "bilinmeyen alan reddedilmeli");
 }
 
@@ -74,7 +78,14 @@ fn no_pin_is_unpinned() {
 #[test]
 fn matching_pin_passes() {
     let mut s = binding::Store::empty();
-    s.pin("fp", Pin { repo: "r".into(), project: "proj".into(), backend: "store".into() });
+    s.pin(
+        "fp",
+        Pin {
+            repo: "r".into(),
+            project: "proj".into(),
+            backend: "store".into(),
+        },
+    );
     assert_eq!(s.check("fp", "proj"), Ok(()));
 }
 
@@ -83,7 +94,14 @@ fn a_pin_naming_a_different_project_is_a_mismatch() {
     // Pinin VAR OLMA SEBEBI bu dal: config PINLI OLANDAN BASKA bir projeyi
     // talep ediyor. Satir ici cozulmez; bir insanin trust-repo kosmasi gerekir.
     let mut s = binding::Store::empty();
-    s.pin("fp", Pin { repo: "r".into(), project: "pinned".into(), backend: "store".into() });
+    s.pin(
+        "fp",
+        Pin {
+            repo: "r".into(),
+            project: "pinned".into(),
+            backend: "store".into(),
+        },
+    );
     assert_eq!(s.check("fp", "other"), Err(binding::CheckError::Mismatch));
 }
 
@@ -96,7 +114,11 @@ fn save_writes_gos_exact_bytes_at_0600() {
     let mut s = binding::Store::empty();
     s.pin(
         "a9ac52733d008ffa8a60422f3db8c58330aac4a321ebd8fe518455f0ea4b3a6a",
-        Pin { repo: "/tmp/d".into(), project: "p".into(), backend: "store".into() },
+        Pin {
+            repo: "/tmp/d".into(),
+            project: "p".into(),
+            backend: "store".into(),
+        },
     );
     s.save(&p).expect("kaydedilemedi");
 
@@ -125,7 +147,14 @@ fn a_saved_store_round_trips() {
     let d = tmpdir("roundtrip");
     let p = d.join("repo-pins.json");
     let mut s = binding::Store::empty();
-    s.pin("fp", Pin { repo: "r".into(), project: "proj".into(), backend: "store".into() });
+    s.pin(
+        "fp",
+        Pin {
+            repo: "r".into(),
+            project: "proj".into(),
+            backend: "store".into(),
+        },
+    );
     s.save(&p).unwrap();
     let back = binding::load(&p).expect("geri okunamadi");
     assert_eq!(back.check("fp", "proj"), Ok(()));
@@ -135,8 +164,22 @@ fn a_saved_store_round_trips() {
 fn re_pinning_the_same_repo_overwrites() {
     // Acik bir re-pin serbesttir (trust-repo bunu yapiyor).
     let mut s = binding::Store::empty();
-    s.pin("fp", Pin { repo: "r".into(), project: "old".into(), backend: "store".into() });
-    s.pin("fp", Pin { repo: "r".into(), project: "new".into(), backend: "store".into() });
+    s.pin(
+        "fp",
+        Pin {
+            repo: "r".into(),
+            project: "old".into(),
+            backend: "store".into(),
+        },
+    );
+    s.pin(
+        "fp",
+        Pin {
+            repo: "r".into(),
+            project: "new".into(),
+            backend: "store".into(),
+        },
+    );
     assert_eq!(s.check("fp", "new"), Ok(()));
     assert_eq!(s.check("fp", "old"), Err(binding::CheckError::Mismatch));
 }

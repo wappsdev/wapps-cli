@@ -140,13 +140,20 @@ fn resolve_rel(config_root: &str, p: &str) -> String {
     if p.is_empty() || config_root.is_empty() || Path::new(p).is_absolute() {
         return p.to_string();
     }
-    Path::new(config_root).join(p).to_string_lossy().into_owned()
+    Path::new(config_root)
+        .join(p)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// load, `path`teki `.wapps.yaml`i okur ve dogrular.
 pub fn load(path: &Path) -> Result<WappsYaml, String> {
     let data = std::fs::read(path).map_err(|e| {
-        format!("config: read {}: {}", path.display(), crate::goerr::open_error(&path.display().to_string(), &e))
+        format!(
+            "config: read {}: {}",
+            path.display(),
+            crate::goerr::open_error(&path.display().to_string(), &e)
+        )
     })?;
     let mut y = parse(&data)?;
     // Yuklenen dosyanin MUTLAK dizini kaydediliyor ki dest/targets/sources
@@ -280,7 +287,9 @@ fn validate_targets(targets: &[Target]) -> Result<(), String> {
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, t) in targets.iter().enumerate() {
         if t.path.is_empty() {
-            return Err(format!("config: targets[{i}]: missing required field 'path'"));
+            return Err(format!(
+                "config: targets[{i}]: missing required field 'path'"
+            ));
         }
         if t.path.contains("..") {
             return Err(format!(
@@ -333,7 +342,10 @@ fn validate_coolify_sync(cs: Option<&CoolifySync>) -> Result<(), String> {
             if i == j {
                 continue;
             }
-            if cs.apps[j].archive_prefix.starts_with(&cs.apps[i].archive_prefix) {
+            if cs.apps[j]
+                .archive_prefix
+                .starts_with(&cs.apps[i].archive_prefix)
+            {
                 return Err(format!(
                     "config: coolify_sync.apps: overlapping archive_prefix {} (apps[{i}]) and {} (apps[{j}]) — prefixes must be mutually exclusive so a key routes to exactly one app",
                     crate::gojson::quote(&cs.apps[i].archive_prefix),

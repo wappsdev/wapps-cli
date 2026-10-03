@@ -26,7 +26,12 @@ fn key_names_are_sorted_by_the_client() {
 // harfler kucuklerden once gelir; locale-duyarli bir sort burada ayrisirdi.
 #[test]
 fn the_sort_is_bytewise_not_locale_aware() {
-    let names = vec!["b".to_string(), "A".to_string(), "a".to_string(), "B".to_string()];
+    let names = vec![
+        "b".to_string(),
+        "A".to_string(),
+        "a".to_string(),
+        "B".to_string(),
+    ];
     assert_eq!(listverb::render(&names), "A\nB\na\nb\n");
 }
 
@@ -37,7 +42,11 @@ fn an_empty_key_set_prints_nothing_and_is_not_an_error() {
 
 #[test]
 fn project_names_keep_the_server_order() {
-    let projects = vec!["vaulter".to_string(), "lumira".to_string(), "navlun-app".to_string()];
+    let projects = vec![
+        "vaulter".to_string(),
+        "lumira".to_string(),
+        "navlun-app".to_string(),
+    ];
     assert_eq!(
         projectsverb::render(&projects),
         "vaulter\nlumira\nnavlun-app\n",
