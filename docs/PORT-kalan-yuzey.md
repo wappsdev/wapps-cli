@@ -69,6 +69,11 @@ Gezilen düğüm sayısı: **Go 50**, **Rust 31**. Rust'ta olmayan yol: **19**.
 >
 > **After slice 3:** `login` landed → Rust carries **36** nodes, **14** paths
 > missing, and `cmd/login.go` is fully ported.
+>
+> **After slice 5:** `secrets sync` landed WITHOUT its Coolify arm → Rust
+> carries **37** nodes, **13** paths missing. The node is there with all seven
+> Go flags, but `--target=coolify` is refused (ACTION_UNAVAILABLE) until
+> slice 6.
 
 Aşağıdaki tabloda "yerel bayraklar" kök kalıtsal bayrakları (`-c/--config`,
 `-p/--project`, `-v/--verbose`, `-h/--help`) DIŞARIDA bırakır — cobra onları
@@ -592,7 +597,7 @@ fazladan bir argüman cobra'da SESSİZCE yutuluyor; clap 1 ile düşüyordu.
 
 ---
 
-### Dilim 5 — `secrets sync` (yalnız `--target`sız kol)
+### Dilim 5 — `secrets sync` (yalnız `--target`sız kol) · **LANDED**
 
 | | |
 |---|---|
@@ -603,6 +608,72 @@ fazladan bir argüman cobra'da SESSİZCE yutuluyor; clap 1 ile düşüyordu.
 | differential vakası | **14–18** (4 kol × 2 mod + `--dry-run`, kaynak yok, bozuk `.env` satırı, `tofu` shim'i üzerinden okuma) |
 | kapı | `cargo test` yeşil |
 | dikkat | Yardım metni "encrypted archive" diyor, kod store'a yazıyor (§2.3). **Oracle koddur.** Yardım metni birebir kopyalanmalı (yanlış olsa da), yoksa `--help` bir gün ölçülmeye başlandığında ayrışır |
+
+**What landed (measured).**
+
+| | |
+|---|---|
+| verbs | `secrets sync`, `secrets sync --dry-run`. `--target=<other>` is refused with Go's sentence; `--target=coolify` returns `ACTION_UNAVAILABLE` ("not available in this build") until slice 6 — a known, unmeasured divergence, deliberately NOT in the corpus |
+| new modules | `syncverb.rs` (source names and reads, `tofu output -json` runner, merge, `mergedToSets`, `rawValueToString`, the `--dry-run` report), `goexec.rs` (`look_path` + `exit_text` moved out of `loginverb.rs` unchanged — `tofu` is now their second caller) |
+| extended | `wappsyaml.rs` (`resolved_sources`, and `resolve_rel` now CLEANS like Go's `filepath.Join`), `gojson.rs` (`decode_raw_object`, `compact` = `json.Compact`, Go's "after top-level value" syntax error), `store.rs` (`import_values(.., sync)` sends `X-Wapps-Intent: sync`), `cli.rs` (the node, its seven flags, and Go's `Long` text byte for byte) |
+| new crate | **NONE** — the estimate held. The `.env` parser is `importenv::parse_env_file`, shared exactly as Go shares `ParseEnvFileBytes` |
+| differential cases | **28** (priced 14–18): 4 arms × 2 modes = 8, plus service token, 3 `--dry-run` (report, in sync, epoch downgrade), 4 source failures (missing file, malformed line, no sources, a source with no keys), merge + sync intent, 2 gate errors, 7 through the `tofu` shim (preflight, value stringification, child failure, missing binary, missing workdir, output not an object, envelope not an object), unknown `--target`, extra args |
+| harness | `fakegate.py`: an import that carries the key `__DIGEST__` is refused with a 409 whose code digests the `X-Wapps-Intent` header and every value received — a successful import prints only a count, so this is the one way a case sees WHAT went out. The digest cases run in HUMAN mode because the agent envelope's scrubber redacts the code. The `tofu` shim in `FIXTURE_FILES` gained an `output -json` branch that cats `tofu-output.json` from its own cwd (so the workdir is measured) |
+| new tests | `tests/syncverb.rs` (20): stringification vectors (null → "", key order and `2.50`/`1e3` kept), Go's case-insensitive last-wins `value` field, Go's type and syntax sentences, merge order, source names, `resolved_sources` cleaning, the `--dry-run` text, and the `Long` help text compared against `cmd/secrets/sync.go` |
+| gate | see the commit: `cargo test` (differential `EQUAL=569 DIFFERENT=0 UNSOUND=0` = 541 + 28), `cargo clippy --all-targets`, `cargo fmt --all -- --check`, `cargo deny check`, `go build ./...`, `go test ./...` (no Go file changed) |
+| red before green | all 28 cases DIFFERENT against the pre-slice binary (`unrecognized subcommand`) |
+| mutation proofs | each reverted and the file compared byte for byte with its backup: (a) no `X-Wapps-Intent: sync` on the import → 2 cases red (both digest cases); (b) stringify non-strings by re-serializing instead of compacting → 1 red (`human_sync_reads_tofu_through_the_shim`); (c) `resolve_rel` without Go's Clean → 4 red; (d) the `tofu` child's stderr inherited → 1 red (`human_sync_tofu_failure_discards_its_stderr`); (e) one word of the copied `Long` text changed → `the_long_help_is_go_s_text_byte_for_byte_stale_as_it_is` red |
+
+**Findings.**
+
+1. *§2.3 confirmed and kept, on purpose.* The `Long` text still says "write an
+   encrypted archive to dest"; the code writes the store in one epoch. The
+   Rust help copies the text byte for byte and a test pins it to the Go
+   source; the BEHAVIOR follows the code. Fixing the text is a Go change and
+   belongs to its own commit on both sides.
+2. *`resolve_rel` did not clean, and that was a live divergence outside sync
+   too.* Go joins with `filepath.Join` (which cleans); Rust used `Path::join`.
+   A tofu source with no workdir maps to "." and printed `<root>/.` instead of
+   `<root>`; `./x` printed `<root>/./x`. The fix is in the shared helper, so
+   target paths and the `set` file-source path now clean too. The whole
+   corpus stayed equal after the change.
+3. *Go reports merge collisions in RANDOM order when one source overrides
+   several keys* (`source.Merge` ranges over a map). Rust prints them sorted
+   within each source. Every corpus case overrides at most one key per
+   source, so the order is never measured; it cannot be, against Go.
+4. *Which malformed key Go names is random too* (`mergedToSets` ranges over a
+   map). Rust names the first in sorted order. Measured only with one bad key.
+5. *Sync does NOT write the declared targets*, although a comment in
+   `cmd/secrets/apply.go` lists sync among the callers of
+   `applyTargetsAfterWrite`. Only `import-env` calls it. Rust follows the code.
+6. *`rawValueToString` is not `secrets env`'s stringifier.* A null value
+   imports as "", where `env` prints `null`. Separately, `envwrite.rs`'s
+   compaction re-serializes through `serde_json::Value`, which reorders object
+   keys and rewrites numbers; Go's `json.Compact` does neither. That is a
+   suspected divergence in `secrets env`/`apply` for object-valued secrets,
+   NOT measured and NOT changed in this slice.
+7. *The config root is canonicalized in Rust (symlinks resolved) but only
+   made absolute in Go* (`filepath.Abs`). Under a symlinked cwd (e.g. macOS
+   `/tmp` → `/private/tmp`) the paths in sync's error messages would differ.
+   The harness's workdir is already canonical, so this is NOT measured.
+
+**What the pricing got wrong.**
+
+1. *14–18 cases was low:* 28 landed. The tofu arm alone needed 7 because each
+   Go `os/exec` behavior is a separate observable sentence (missing binary vs
+   missing workdir, discarded stderr, exit status).
+2. *`internal/source/file_writer.go` (99 lines) has no non-test caller.*
+   `WriteFileSource` is dead in Go; nothing was ported for it. The live Go
+   surface of this slice is ≈480 lines, not 582.
+3. *"The config half is ported" was half true:* validation was, but
+   `ResolvedSources` (the tofu "." default and Go's path cleaning) was not.
+
+**Not measured.** The Coolify arm (slice 6). Collision order with several
+overridden keys per source and the choice among several malformed keys (both
+random in Go). A tofu child killed by a signal. Syntax errors in tofu output
+other than empty input, a bad first byte, and trailing data (serde's sentence
+otherwise). A relative PATH entry holding `tofu` (Go's `exec.ErrDot`).
+Symlinked config roots (finding 7).
 
 ---
 
@@ -682,7 +753,7 @@ fazladan bir argüman cobra'da SESSİZCE yutuluyor; clap 1 ile düşüyordu.
 | 2 | `whoami` · İNDİ | 60 | yok | 14 (gerçek) |
 | 3 | `login` · LANDED | 634 | none | 30 (actual) |
 | 4 | `token exchange` · İNDİ | 70 | yok | 40 (gerçek) |
-| 5 | `secrets sync` (arşiv kolu) | 582 | yok | 14–18 |
+| 5 | `secrets sync` (no `--target` arm) · LANDED | 582 (≈480 live, see slice 5) | none | 28 (actual) |
 | 6 | `coolify` + sync/coolify | 1438 | yok | 35–45 |
 | 7 | `deploy` | 582 | yok | 20–26 |
 | 8 | `skill` | 539 | yok | 18–24 |
