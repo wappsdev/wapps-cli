@@ -677,6 +677,29 @@ Symlinked config roots (finding 7).
 
 ---
 
+#### Finding after landing: a `file` source can read outside the repository (owner decision)
+
+A background security review flagged `syncverb.rs` for path traversal. The Rust code is a
+faithful port, so the finding is about the **Go behaviour it reproduces**, and it is recorded
+here rather than fixed in the port:
+
+- `ResolvedSources` joins a relative `path` to the config root without bounding `..`, and passes
+  an absolute `path` through unchanged. The absolute case is deliberate and tested in Go
+  (`TestResolvedSources_AbsoluteUnchanged`, "secrets-from-anywhere").
+- So a cloned repository's `.wapps.yaml` can name `~/.ssh/id_rsa` or `../../other/.env` as a
+  source, and `wapps secrets sync` would parse it as `.env` and write the `KEY=value` lines into
+  the project the same file names.
+- Mitigation today: the repo-binding gate. An unpinned repository refuses agent mode and asks a
+  human, but the human is not shown which files the YAML will read.
+
+Fixing it changes the shipped Go CLI's behaviour (it would break projects that use absolute
+source paths), and fixing it only in Rust breaks the differential. The owner chooses between:
+(A) bound sources to the config root in both binaries, (B) keep the behaviour but list the files
+a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
+
+
+---
+
 ### Dilim 6 — `coolify` ailesi + `secrets sync --target=coolify`
 
 | | |
