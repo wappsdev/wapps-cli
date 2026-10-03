@@ -3498,7 +3498,8 @@ def sk(name, argv, env, files=None, links=None, yaml=None):
             None, None, {"yaml": yaml, "files": files or {}, "links": links or {}})
 
 SKILL_CASES = [
-    # === install, user scope (the default): symlink mode ==============    sk("human_skill_install_user_fresh", SKILL + ["install"], HUMAN),
+    # === install, user scope (the default): symlink mode =====================
+    sk("human_skill_install_user_fresh", SKILL + ["install"], HUMAN),
     sk("agent_skill_install_user_fresh", SKILL + ["install"], AGENT),
     # A correct link is kept; the source and marker are rewritten anyway.
     sk("human_skill_install_user_already_current", SKILL + ["install"], HUMAN,
@@ -3612,7 +3613,6 @@ SKILL_CASES = [
        ["--config", ".wapps.yaml"] + P + SKILL + ["status"], AGENT, yaml=VALID_CFG),
 ]
 CASES += SKILL_CASES
-=======
 # --- `coolify update-env` and `coolify set-labels` ------------------------------
 #
 # Order, measured from the Go oracle:
