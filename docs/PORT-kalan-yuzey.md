@@ -728,7 +728,7 @@ a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
 
 ---
 
-### Dilim 8 — `skill` ailesi
+### Dilim 8 — `skill` ailesi · **LANDED**
 
 | | |
 |---|---|
@@ -738,6 +738,64 @@ a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
 | differential vakası | **18–24** (üç fiil × `--local`/`--copy`/`--dir` × kurulu/kurulu-değil/eskimiş durumları) |
 | kapı | `cargo test` yeşil |
 | bağımlılık | Dilim 10 bunun ÜSTÜNE oturuyor (auto-refresh, `skill.AutoRefresh()`i çağırıyor) |
+
+**What landed (measured).**
+
+| | |
+|---|---|
+| verbs | `skill install` (`--local`, `--dir`, `--copy`), `skill status`, `skill uninstall` (`--local`, `--dir`). No gate, as in Go: no agent guard, no binding, no `Ctx::resolve`; the root's `--config`/`--project` are inert (all four arms are in the corpus, none waived) and only their combination is refused, by the root |
+| new module | `skill.rs` (embedded asset via `include_str!` of the Go asset itself, the `ring` fingerprint, Go-faithful `MkdirAll`/`Remove`/`RemoveAll`, install/status/uninstall and their output). `AutoRefresh` is NOT ported — it is slice 10 |
+| extended | `cli.rs` (the node, Go's Short/Long texts byte for byte), `main.rs` (one dispatch arm + `run_skill`), `goerr.rs` (`AlreadyExists` → "file exists", for Go's `symlink <old> <new>: file exists`), `wappsyaml.rs` (`go_clean` made `pub` so the skill paths reuse it instead of a third copy) |
+| new crate | **NONE** — the estimate held |
+| differential cases | **43** (priced 18–24): install 23 (user symlink fresh/current/stale source/dangling link/uncleaned link target/copied file in the slot, user copy, `--dir` without `--local`, project symlink/copy/stale copy/cleaned relative `--dir`/absolute `--dir`, `--dir` naming a file ×2, no `$HOME` ×3, `~/.config` blocked, link slot a non-empty and an empty directory, uncleaned `$HOME`, extra arg), status 8, uninstall 7, identity arms 4, both flags 1 |
+| harness | Every skill case gets its OWN home: `HOME={CASE}/home` (`{CASE}` is new in `probe.py`, substituted in env values, argv and seeded link targets) puts `$HOME` inside the case directory, which is rebuilt for each binary and snapshotted after the run — so what each binary wrote is compared and no case can reach the real `~/.claude`. Before this the corpus shared one `fakehome` across cases AND across the two binaries. The `written` snapshot now records a symlink as `["symlink", <target>]` (a link and a copy with the same bytes are different installs; a dangling link has no bytes) and an empty directory as `["emptydir", <mode>]`; the seed gained `links` and `dirs`. Measured: with the extended snapshot the 569 previous cases stayed EQUAL against the pre-slice binary. `cases.py` reads the Go asset to seed "current" installs; it looks it up from the pty directory on the import path too, because `tests/armcheck.rs` imports a COPY of the module from a temp dir (the first version used `__file__` only and turned armcheck red) |
+| new tests | `tests/skill.rs` (4): the embedded text equals the Go asset byte for byte, the fingerprint equals the one a Go install wrote (`3a6443b6…`), its framing (`name NUL content NUL`), and the Short/Long texts evaluated out of `cmd/skill/skill.go` |
+| gate | `cargo test --release` (differential `EQUAL=612 DIFFERENT=0 UNSOUND=0` = 569 + 43; the floor in `differential.rs` raised from 511 to the live count 612), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `cargo deny check`, `go build ./...`, `go test ./...` (no Go file changed) |
+| red before green | all 43 cases DIFFERENT against the pre-slice binary (`unrecognized subcommand`) |
+| mutation proofs | each reverted, the file compared byte for byte with its backup: (a) compare the existing link as a `Path` instead of a string → 1 red (`…rewrites_an_uncleaned_link`); (b) join without Go's Clean → 2 red; (c) `Remove` without the rmdir fallback → 1 red (`…link_slot_is_an_empty_directory`); (d) `std::fs::create_dir_all` instead of Go's `MkdirAll` → 3 red (the error names a different path); (e) materialize the source before creating the destination → 3 red (the empty destination a failed install leaves behind); (f) `RemoveAll` as `remove_dir_all` on a file → 1 red; (g) no `.fingerprint` marker → 11 red |
+
+**Findings.**
+
+1. *The corpus could not have measured this verb as it stood.* `HOME` was one
+   shared `fakehome`, reused by every case and by both binaries in turn, so the
+   Go run's install would have been the Rust run's starting state. And the
+   snapshot followed symlinks, so a link and a copy compared equal and a
+   dangling link crashed the probe. Both fixed in the harness (above).
+2. *Go compares the existing link target as a STRING.* A link to
+   `…/skills/./wapps-secrets/SKILL.md` is "wrong" and rewritten; Rust's `Path`
+   equality ignores `/./` and would keep it. Same family: every path is
+   `filepath.Join`ed, so `HOME=/x//home/./` produces a clean target.
+3. *Install is not atomic across its steps.* The destination directory is
+   created BEFORE the source is materialized, so a symlink install that fails
+   on `$HOME` (unset, or `~/.config` a file) leaves an empty
+   `.claude/skills/wapps-secrets` behind. Kept as the oracle does it; a case
+   pins it.
+4. *`os.Remove` falls back to `rmdir`*, so an empty directory in the link's
+   place is replaced silently, while a non-empty one fails with
+   `symlink <old> <new>: file exists`.
+5. *`NeedsRefresh` has no non-test caller in Go* (only `AutoRefresh` is used,
+   from `root.go`). Nothing was ported for it.
+
+**What the pricing got wrong.**
+
+1. *18–24 cases was low:* 43 landed. Most of the extra cases are the
+   filesystem states a skill directory can be in (stale source, dangling,
+   uncleaned or wrong link, real file, empty and non-empty directory in the
+   slot, a file in place of the destination, a symlinked destination), each a
+   separate branch of Go's code with its own on-disk result.
+2. *"No new crate" held, but the harness was the real cost:* the probe had to
+   learn per-case homes, symlinks and empty directories before a single case
+   could be trusted.
+
+**Not measured.** A umask other than the harness's (Go chmods files to 0644
+explicitly and Rust does too; directories follow the umask in both). The
+`--flag=false` form of the bool flags (pflag accepts it, clap does not — a
+cross-cutting gap of every ported bool flag, not opened here). `--dir` with no
+value and unknown shorthand flags. Failures of the temp-file write or the
+rename (Go's message carries a random temp name, so it cannot be compared).
+A failing `RemoveAll` (Rust prints `unlinkat <dest>: <errno>`). A failing
+`getwd`. Bare `wapps skill` (help layout, slice 9). The auto-refresh after
+other verbs (slice 10).
 
 ---
 
@@ -779,7 +837,7 @@ a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
 | 5 | `secrets sync` (no `--target` arm) · LANDED | 582 (≈480 live, see slice 5) | none | 28 (actual) |
 | 6 | `coolify` + sync/coolify | 1438 | yok | 35–45 |
 | 7 | `deploy` | 582 | yok | 20–26 |
-| 8 | `skill` | 539 | yok | 18–24 |
+| 8 | `skill` · LANDED | 539 (AutoRefresh is slice 10) | none | 43 (actual) |
 | 9 | yardım düzeni | (cobra) | **KARAR** §4.2 | ~6 + 50 snapshot |
 | 10 | updatecheck + auto-refresh | 256+ | ölçülmedi | yeni korpus alt kümesi |
 
