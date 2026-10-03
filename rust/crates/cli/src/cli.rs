@@ -229,6 +229,11 @@ pub fn build() -> Command {
                         // follows the code; the text follows the text, so
                         // `--help` does not diverge once it is measured.
                         .long_about(SYNC_LONG)
+                        // pflag lets every flag repeat, the last value
+                        // winning; clap refuses a repeated single-value flag
+                        // unless it overrides itself. Measured:
+                        // agent_sync_coolify_repeated_app_last_wins.
+                        .args_override_self(true)
                         // Value flags take the next token even when it starts
                         // with `-` (pflag), as on `token exchange`.
                         .arg(

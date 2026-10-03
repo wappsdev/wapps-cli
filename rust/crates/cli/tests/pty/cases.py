@@ -4040,4 +4040,212 @@ COOLIFY_DEPLOY_CASES = [
 ]
 CASES += COOLIFY_DEPLOY_CASES
 
+
+# --- `secrets sync --target=coolify` --------------------------------------------
+#
+# Order, measured from the Go oracle (cmd/secrets/sync_coolify.go):
+#
+#   agent policy `allow` -> binding (secretsPreRunE) -> --app/--all-apps
+#   (exclusive, one required) -> COOLIFY_API_TOKEN -> .wapps.yaml (loaded, NOT
+#   required through requireStoreConfig: its own sentence) -> ONE bulk store
+#   read (the epoch pin advances) -> single-app: the app uuid check and the
+#   env list, or multi-app: coolify_sync.apps -> per app: diff, print, apply.
+#
+# The Coolify URL comes ONLY from --coolify-url (never COOLIFY_URL), hence
+# `{GATE}` in argv. `--dry-run` is ignored here: dry-run is the default and
+# `--force` applies.
+#
+# The store answers project `coolproj` with its own set (GATE_SCRIPT
+# "__ALL__@coolproj"); the fake API serves each app's env table
+# (fakegate.py, COOLIFY_APP_ENVS). An apply prints only counts, so the
+# journal apps (uuid "...-j") end every apply with a DELETE the fake refuses
+# with a digest of every write it received, in order: values, flags, env
+# uuids and the add -> change -> remove sequence.
+#
+# The diff is the destructive part and is walked as a matrix:
+#   single-app (--app): the WHOLE archive, --prefix PREPENDED, Coolify keys
+#     absent from it REMOVED (always), is_coolify keys skipped on both sides,
+#     preview entries ignored, exclude_keys NOT applied;
+#   multi-app (--all-apps): per app only the keys under its archive_prefix,
+#     prefix STRIPPED (a key equal to the prefix dropped), exclude_keys
+#     applied, removal only with delete_unmanaged; one app failing does not
+#     stop the others, and any failure fails the command;
+#   each x dry-run (default) / --force.
+#
+# NO REAL SECRET: every value is a made-up test string.
+GATE_SCRIPT["__ALL__@coolproj"] = [200, {"epoch": 7, "values": {
+    "ALPHA": "alpha-test-value-long",          # app-sync: unchanged
+    "BETA": "beta-new-test-value",             # app-sync: changed
+    "NEWKEY": "new test value",                # app-sync: added
+    "MANAGED_URL": "stale-copy-test-value",    # app-sync: Coolify-managed
+    "PREVIEWED": "runtime-test-value",         # app-sync: runtime equal, preview differs
+    "PREVONLY": "p",                           # app-sync: only a preview entry
+    "SENTRY_RELEASE": "r1",
+    "WEB_PORT": "8080",                        # app-web: unchanged
+    "WEB_HOST": "web.example.test",            # app-web: changed
+    "WEB_SENTRY_RELEASE": "r2",                # app-web: excluded
+    "WEB_SERVICE_FQDN_WEB": "x",               # app-web: Coolify-managed
+    "WEB_": "strips-to-nothing",               # app-web: dropped (empty name)
+    "API_PORT": "9090",                        # app-api: unchanged
+    "API_SECRET_NAME": "api-test-string",      # app-api: added
+}}]
+COOL_CFG = "version: 2\nproject: coolproj\n"
+
+def _multi(apps, delete=None, exclude=True):
+    y = COOL_CFG + "coolify_sync:\n"
+    if delete is not None:
+        y += f"  delete_unmanaged: {delete}\n"
+    if exclude:
+        # A duplicate and two entries that never apply: counted once, and
+        # only where the key is present and not already Coolify-managed.
+        y += "  exclude_keys: [SENTRY_RELEASE, SERVICE_FQDN_WEB, UNUSED, SENTRY_RELEASE]\n"
+    y += "  apps:\n"
+    for uuid, name, prefix in apps:
+        y += f"    - uuid: {uuid}\n"
+        if name:
+            y += f"      name: {name}\n"
+        y += f"      archive_prefix: {prefix}\n"
+    return y
+
+MULTI_APPS = [("app-web", "web", "WEB_"), ("app-api", None, "API_"),
+              ("app-none", "none", "NOPE_")]
+COOL_MULTI = _multi(MULTI_APPS)
+COOL_MULTI_DEL = _multi(MULTI_APPS, delete="true")
+
+CS = ["secrets", "sync", "--target", "coolify", "--coolify-url", "{GATE}/api/v1"]
+CS_APP = CS + ["--app", "app-sync"]
+CS_ALL = CS + ["--all-apps"]
+CSH = dict(HUMAN, COOLIFY_API_TOKEN="coolify-test-token-not-a-secret")
+CSA = dict(CI_TOKENS, COOLIFY_API_TOKEN="coolify-test-token-not-a-secret")
+CSAG = dict(AGENT, COOLIFY_API_TOKEN="coolify-test-token-not-a-secret")
+
+def cs(name, argv, env, yaml=COOL_CFG, stdin=None, pins=None):
+    """A sync case in its own dir with `yaml` as .wapps.yaml. A human case
+    answers the binding prompt with "y"; an agent case runs behind the CI
+    service token (the binding is legitimately skipped)."""
+    if stdin is None and env.get("WAPPS_AGENT_MODE") == "0":
+        stdin = b"y\n"
+    return (name, argv, env, pins, stdin, cfg(yaml))
+
+SYNC_COOLIFY_CASES = [
+    # === the four identity arms x two modes ================================
+    # `bare`: no config. Go's own sentence, not requireStoreConfig's NOT_FOUND.
+    ("human_sync_coolify_no_config", CS_APP, CSH),
+    ("agent_sync_coolify_no_config", CS_APP, CSAG),
+    # `proj`: `--project` does not stand in for the config.
+    ("human_sync_coolify_project_flag_still_needs_a_config", P + CS_APP, CSH),
+    ("agent_sync_coolify_project_flag_binding_refused", P + CS_APP, CSAG),
+    # `rooted`: an unpinned config refuses an agent; a human pins it.
+    cs("agent_sync_coolify_config_unpinned", CS_APP, CSAG),
+    cs("human_sync_coolify_single_app_dry_run", CS_APP, CSH),
+    # `cfg`: the config is the flag's; the store is read for ITS project.
+    cf("human_sync_coolify_config_flag", CS_APP, CSH, b"y\n", COOL_CFG),
+    cf("agent_sync_coolify_config_flag_unpinned", CS_APP, CSAG, None, COOL_CFG),
+
+    # === refusals before the store is read =================================
+    cs("agent_sync_coolify_app_and_all_apps_are_exclusive",
+       CS + ["--app", "app-sync", "--all-apps"], CSA),
+    cs("agent_sync_coolify_needs_app_or_all_apps", CS, CSA),
+    cs("human_sync_coolify_without_token", CS_APP, dict(CSH, COOLIFY_API_TOKEN="")),
+    # The flag check comes before the token check.
+    cs("agent_sync_coolify_flag_check_before_token", CS,
+       dict(CSA, COOLIFY_API_TOKEN="")),
+    # A config that fails to load: its error comes back plain. (A YAML SYNTAX
+    # error is not used: yaml.v3 and the port's parser word it differently,
+    # a known divergence of the shared loader, docs/PORT-kalan-yuzey.md.)
+    cs("agent_sync_coolify_config_that_fails_to_load", CS_APP, CSA,
+       yaml="version: 3\nproject: coolproj\n"),
+    cs("human_sync_coolify_overlapping_prefixes_refused", CS_ALL, CSH,
+       yaml=_multi([("app-web", "web", "WEB_"), ("app-api", None, "WEB_P")])),
+
+    # === store errors =======================================================
+    cs("human_sync_coolify_no_session", CS_APP,
+       dict(CSH, WAPPS_SESSION_TOKEN="")),
+    cs("agent_sync_coolify_epoch_downgrade_refused", CS_APP, CSA,
+       pins=pinfile(9, "coolproj")),
+
+    # === single-app: the diff ==============================================
+    cs("agent_sync_coolify_single_app_dry_run", CS_APP, CSA),
+    # `--dry-run` changes nothing here.
+    cs("agent_sync_coolify_dry_run_flag_is_ignored", CS_APP + ["--dry-run"], CSA),
+    # The list in a {"data": [...]} envelope diffs the same.
+    cs("agent_sync_coolify_single_app_data_envelope",
+       CS + ["--app", "app-data"], CSA),
+    # A 2xx answer that is neither: an empty app, every key added.
+    cs("agent_sync_coolify_single_app_empty_list", CS + ["--app", "app-object"], CSA),
+    # --prefix is PREPENDED: every key is new and every Coolify key goes.
+    cs("human_sync_coolify_single_app_prefix", CS_APP + ["--prefix", "X_"], CSH),
+    cs("agent_sync_coolify_repeated_app_last_wins",
+       CS + ["--app", "app-missing", "--app", "app-sync"], CSA),
+    cs("agent_sync_coolify_extra_args_are_ignored", CS_APP + ["EXTRA"], CSA),
+
+    # === single-app: --force ===============================================
+    cs("human_sync_coolify_single_app_force", CS_APP + ["--force"], CSH),
+    cs("agent_sync_coolify_single_app_force", CS_APP + ["--force"], CSA),
+    # The journal: every write, in order, ends in the refused ZZ_JOURNAL delete.
+    cs("human_sync_coolify_single_app_force_journal",
+       CS + ["--app", "app-sync-j", "--force"], CSH),
+    cs("human_sync_coolify_single_app_force_journal_with_prefix",
+       CS + ["--app", "app-sync-j", "--force", "--prefix", "X_"], CSH),
+    # Failures stop the apply where they happen (ADD, then a PATCH after 409,
+    # then a DELETE), and nothing is reported as applied.
+    cs("human_sync_coolify_single_app_add_fails",
+       CS_APP + ["--force", "--prefix", "BROKEN_"], CSH),
+    cs("agent_sync_coolify_single_app_patch_after_409_fails",
+       CS_APP + ["--force", "--prefix", "GONE_"], CSA),
+    cs("human_sync_coolify_single_app_remove_fails",
+       CS + ["--app", "app-delfail", "--force"], CSH),
+    # A key held twice at runtime: the LAST entry is compared (ALPHA is
+    # unchanged) and its env uuid is the one deleted (the journal pins it).
+    cs("human_sync_coolify_single_app_duplicate_runtime_key_last_wins",
+       CS + ["--app", "app-dup-j", "--force"], CSH),
+    # An env uuid from the API is checked before it goes into the path.
+    cs("human_sync_coolify_single_app_bad_env_uuid",
+       CS + ["--app", "app-badenv", "--force"], CSH),
+
+    # === single-app: the app ===============================================
+    # The uuid is checked AFTER the store read (the pin still advances).
+    cs("human_sync_coolify_single_app_bad_uuid", CS + ["--app", "../x"], CSH),
+    cs("agent_sync_coolify_single_app_missing", CS + ["--app", "app-missing"], CSA),
+    cs("agent_sync_coolify_wrong_token", CS_APP,
+       dict(CSA, COOLIFY_API_TOKEN="not-the-test-token")),
+
+    # === multi-app ==========================================================
+    cs("human_sync_coolify_all_apps_dry_run", CS_ALL, CSH, yaml=COOL_MULTI),
+    cs("agent_sync_coolify_all_apps_dry_run", CS_ALL, CSA, yaml=COOL_MULTI),
+    cs("human_sync_coolify_all_apps_force", CS_ALL + ["--force"], CSH, yaml=COOL_MULTI),
+    cs("agent_sync_coolify_all_apps_force", CS_ALL + ["--force"], CSA, yaml=COOL_MULTI),
+    cs("human_sync_coolify_all_apps_delete_unmanaged_dry_run", CS_ALL, CSH,
+       yaml=COOL_MULTI_DEL),
+    cs("agent_sync_coolify_all_apps_delete_unmanaged_force", CS_ALL + ["--force"], CSA,
+       yaml=COOL_MULTI_DEL),
+    # delete_unmanaged: false written out is the default.
+    cs("agent_sync_coolify_all_apps_delete_unmanaged_false",
+       CS_ALL + ["--force"], CSA, yaml=_multi(MULTI_APPS, delete="false")),
+    # Without exclude_keys the excluded key is diffed like any other.
+    cs("agent_sync_coolify_all_apps_without_exclude_keys", CS_ALL, CSA,
+       yaml=_multi(MULTI_APPS, exclude=False)),
+    # --prefix belongs to single-app and is ignored here.
+    cs("agent_sync_coolify_all_apps_prefix_is_ignored",
+       CS_ALL + ["--prefix", "X_"], CSA, yaml=COOL_MULTI),
+    # Both journals: each app's writes, then each app's apply "fails" on the
+    # digest; the second app still runs and the command fails naming both.
+    cs("human_sync_coolify_all_apps_force_journal", CS_ALL + ["--force"], CSH,
+       yaml=_multi([("app-web-j", "web", "WEB_"), ("app-api-j", None, "API_")],
+                   delete="true")),
+    # One app's list failing does not stop the next; dry-run line, then error.
+    cs("human_sync_coolify_all_apps_list_failure_is_isolated", CS_ALL, CSH,
+       yaml=_multi([("app-missing", "gone", "WEB_"), ("app-api", None, "API_")])),
+    cs("agent_sync_coolify_all_apps_bad_app_uuid_in_config", CS_ALL + ["--force"], CSA,
+       yaml=_multi([("a.b", "dotted", "WEB_"), ("app-api", None, "API_")])),
+    # One app's apply failing does not stop the next.
+    cs("human_sync_coolify_all_apps_apply_failure_is_isolated", CS_ALL + ["--force"], CSH,
+       yaml=_multi([("app-delfail", "del", "WEB_"), ("app-api", None, "API_")],
+                   delete="true")),
+    cs("agent_sync_coolify_all_apps_no_coolify_sync_block", CS_ALL, CSA),
+    cs("agent_sync_coolify_all_apps_empty_apps_list", CS_ALL, CSA,
+       yaml=COOL_CFG + "coolify_sync:\n  delete_unmanaged: true\n  apps: []\n"),
+]
+CASES += SYNC_COOLIFY_CASES
+
 _armcheck()

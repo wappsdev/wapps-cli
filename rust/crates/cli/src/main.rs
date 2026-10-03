@@ -8,6 +8,7 @@ use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
 use wapps::configctx::{self, Ctx};
 use wapps::confirm;
+use wapps::coolifysync;
 use wapps::coolifyverb;
 use wapps::doctorverb;
 use wapps::drverb;
@@ -314,6 +315,16 @@ fn run() -> Result<(), CmdError> {
                 project,
                 sy.get_one::<String>("target").cloned().unwrap_or_default(),
                 sy.get_flag("dry-run"),
+                CoolifyTarget {
+                    app: sy.get_one::<String>("app").cloned().unwrap_or_default(),
+                    all_apps: sy.get_flag("all-apps"),
+                    force: sy.get_flag("force"),
+                    prefix: sy.get_one::<String>("prefix").cloned().unwrap_or_default(),
+                    url: sy
+                        .get_one::<String>("coolify-url")
+                        .cloned()
+                        .unwrap_or_default(),
+                },
             ),
             Some(("env", em)) => run_env(
                 config,
@@ -1619,8 +1630,8 @@ fn run_import_env(
 //
 // GATE ORDER, measured from the Go oracle:
 //   1. agent policy `allow`, then the binding gate (secretsPreRunE)
-//   2. `--target`: "coolify" is the Coolify arm (NOT ported in this binary);
-//      anything else non-empty is refused by name
+//   2. `--target`: "coolify" is the Coolify arm (run_sync_coolify); anything
+//      else non-empty is refused by name
 //   3. config requirement (require_store_config; `--project <name>` does not
 //      stand in for one: sync reads `sources:`)
 //   4. tofu preflight, only when a tofu source is declared, BEFORE any
@@ -1637,16 +1648,14 @@ fn run_sync(
     project: Option<String>,
     target: String,
     dry_run: bool,
+    coolify: CoolifyTarget,
 ) -> Result<(), CmdError> {
     let agent = agentmode::is_agent();
     let ctx = Ctx::resolve(config.as_deref(), project.as_deref()).map_err(CmdError::Cli)?;
     gate(&ctx, agentmode::POLICY_ALLOW, agent)?;
 
     if target == "coolify" {
-        return Err(CmdError::Cli(Error::new(
-            Code::ActionUnavailable,
-            "sync: --target=coolify is not available in this build",
-        )));
+        return run_sync_coolify(&ctx, coolify);
     }
     if !target.is_empty() {
         return Err(CmdError::Plain(format!(
@@ -1692,6 +1701,75 @@ fn run_sync(
         syncverb::committed_line(sets.len(), &cfg.project)
     );
     Ok(())
+}
+
+// CoolifyTarget, the flags only `sync --target=coolify` reads. `--dry-run`
+// is not among them: dry-run is that arm's default and `--force` applies.
+struct CoolifyTarget {
+    app: String,
+    all_apps: bool,
+    force: bool,
+    prefix: String,
+    url: String,
+}
+
+// run_sync_coolify, `wapps secrets sync --target=coolify`, after the agent
+// policy and the binding gate (cmd/secrets/sync_coolify.go, runSyncCoolify):
+//
+//   1. --app / --all-apps: exclusive, one of them required;
+//   2. COOLIFY_API_TOKEN;
+//   3. the config, loaded but NOT through require_store_config: a missing one
+//      is this arm's own sentence (and `--project <name>` does not stand in);
+//   4. ONE bulk store read (the epoch pin advances, even when the app uuid
+//      turns out to be invalid);
+//   5. the Coolify half (coolifysync): single-app or multi-app.
+//
+// The Coolify URL is `--coolify-url` only; COOLIFY_URL is not read here.
+fn run_sync_coolify(ctx: &Ctx, flags: CoolifyTarget) -> Result<(), CmdError> {
+    if !flags.app.is_empty() && flags.all_apps {
+        return Err(CmdError::Plain(
+            "sync --target=coolify: --app and --all-apps are mutually exclusive".to_string(),
+        ));
+    }
+    if flags.app.is_empty() && !flags.all_apps {
+        return Err(CmdError::Plain(
+            "sync --target=coolify: one of --app <uuid> or --all-apps required".to_string(),
+        ));
+    }
+    let token = std::env::var("COOLIFY_API_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        return Err(CmdError::Plain(
+            "sync --target=coolify: COOLIFY_API_TOKEN not set".to_string(),
+        ));
+    }
+    // Go returns config.Load's error as a plain error.
+    let Some(cfg) = ctx.load_or_none().map_err(|e| CmdError::Plain(e.message))? else {
+        return Err(CmdError::Plain(
+            "sync --target=coolify: .wapps.yaml required (need dest path for archive)".to_string(),
+        ));
+    };
+    let values = store::read_all(&cfg.project).map_err(CmdError::Cli)?;
+    let client = wapps::coolify::Client::new(&flags.url, &token);
+    let mut out = std::io::stdout();
+    if flags.all_apps {
+        coolifysync::run_all_apps(
+            &client,
+            cfg.coolify_sync.as_ref(),
+            &values,
+            flags.force,
+            &mut out,
+        )
+    } else {
+        coolifysync::run_single(
+            &client,
+            &flags.app,
+            &values,
+            &flags.prefix,
+            flags.force,
+            &mut out,
+        )
+    }
+    .map_err(CmdError::Plain)
 }
 
 // run_env, `wapps secrets env` — export satirlari.

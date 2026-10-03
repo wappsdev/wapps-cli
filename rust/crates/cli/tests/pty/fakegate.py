@@ -362,6 +362,14 @@ COOLIFY_APP_ENVS = {
     "app-badenv": [
         _env("../x", "OLD_KEY", "old-test-value"),
     ],
+    # A key held TWICE at runtime: Go keeps the LAST entry, for the value
+    # compared and for the env uuid deleted.
+    "app-dup": [
+        _env("env-a1", "ALPHA", "an-older-test-value"),
+        _env("env-a2", "ALPHA", "alpha-test-value-long"),
+        _env("env-o1", "OLD_KEY", "old-test-value"),
+        _env("env-o2", "OLD_KEY", "old-test-value"),
+    ],
     # A DELETE the API refuses.
     "app-delfail": [
         _env("env-broken", "OLD_KEY", "old-test-value"),

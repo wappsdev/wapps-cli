@@ -7,6 +7,7 @@ pub mod clierr;
 pub mod configctx;
 pub mod confirm;
 pub mod coolify;
+pub mod coolifysync;
 pub mod coolifyverb;
 pub mod cryptoid;
 pub mod doctorverb;
