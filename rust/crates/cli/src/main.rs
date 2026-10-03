@@ -42,8 +42,9 @@ fn main() -> ExitCode {
         Err(e) => {
             let mut err_out = std::io::stderr();
             cli::report_error(&mut err_out, &e, agent);
-            // Sahadaki ikili her hatada 1 ile cikiyor (clap'in 2'si DEGIL).
-            ExitCode::from(1)
+            // 1 for every reported error (Go's root, not clap's 2); a verb
+            // that owns its code (deploy, a mirrored child) carries it here.
+            ExitCode::from(e.exit_code())
         }
     }
 }
@@ -881,8 +882,9 @@ fn run_dr_bootstrap(
         &|name, args, env, so, se| execverb::default_exec_runner(name, args, env, so, se),
     )?;
     match action {
-        // Alt-surecin cikis kodu AYNEN yansitiliyor (Go'da os.Exit).
-        execverb::ExitAction::Exit(code) => std::process::exit(code),
+        // The child's exit code is mirrored as is (Go: os.Exit). `as u8` is
+        // the truncation exit(2) applies anyway: -1 (no code) leaves as 255.
+        execverb::ExitAction::Exit(code) => Err(CmdError::Exit(code as u8)),
         execverb::ExitAction::Ok => Ok(()),
     }
 }
@@ -2171,8 +2173,8 @@ fn exec_core(
     )
     .map_err(CmdError::Plain)?;
     match action {
-        // Alt-surecin cikis kodu AYNEN yansitiliyor.
-        execverb::ExitAction::Exit(code) => std::process::exit(code),
+        // The child's exit code is mirrored as is (see run_dr_bootstrap).
+        execverb::ExitAction::Exit(code) => Err(CmdError::Exit(code as u8)),
         execverb::ExitAction::Ok => Ok(()),
     }
 }

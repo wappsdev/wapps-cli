@@ -15,6 +15,21 @@ use std::io::Write;
 pub enum CmdError {
     Cli(clierr::Error),
     Plain(String),
+    /// Exit: the verb has already written everything it had to say and owns
+    /// its process exit code — `wapps deploy`'s 0..8 contract, or a child's
+    /// code mirrored by the exec family. The reporter prints nothing for it.
+    Exit(u8),
+}
+
+impl CmdError {
+    /// exit_code, the code the process leaves with. Every reported error
+    /// exits 1, as Go's root does after reportError (not clap's 2).
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            CmdError::Exit(code) => *code,
+            CmdError::Cli(_) | CmdError::Plain(_) => 1,
+        }
+    }
 }
 
 impl From<clierr::Error> for CmdError {
@@ -1002,6 +1017,8 @@ pub fn report_error<W: Write>(w: &mut W, err: &CmdError, agent: bool) {
         (false, CmdError::Plain(msg)) => {
             let _ = writeln!(w, "Error: {msg}");
         }
+        // The verb wrote its own output; there is nothing left to report.
+        (_, CmdError::Exit(_)) => {}
     }
 }
 

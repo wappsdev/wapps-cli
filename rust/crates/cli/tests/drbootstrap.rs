@@ -128,6 +128,7 @@ fn show(e: &CmdError) -> String {
     match e {
         CmdError::Cli(c) => c.to_string(),
         CmdError::Plain(m) => m.clone(),
+        CmdError::Exit(code) => format!("exit {code}"),
     }
 }
 
@@ -157,6 +158,7 @@ fn as_cli(e: &CmdError) -> &wapps::clierr::Error {
     match e {
         CmdError::Cli(c) => c,
         CmdError::Plain(m) => panic!("kodlu hata bekleniyordu, DUZ geldi: {m}"),
+        CmdError::Exit(code) => panic!("expected a coded error, got exit {code}"),
     }
 }
 
@@ -165,6 +167,7 @@ fn as_plain(e: &CmdError) -> String {
     match e {
         CmdError::Plain(m) => m.clone(),
         CmdError::Cli(c) => panic!("DUZ hata bekleniyordu, kodlu geldi: {c}"),
+        CmdError::Exit(code) => panic!("expected a plain error, got exit {code}"),
     }
 }
 
