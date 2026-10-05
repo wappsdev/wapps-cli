@@ -1,5 +1,5 @@
 //! Stateless HTTP MCP calls. The Worker owns schemas, ownership and attention.
-use super::{config::Config, tool_error};
+use super::{config::Config, rpc_error_payload, tool_error};
 use serde_json::{json, Value};
 use std::{
     io::Read,
@@ -134,7 +134,10 @@ pub(super) fn call(
                     | "agent_result"
             ),
         );
-        if name != "agent_await" || result.get("error").is_some() || result["isError"] == true {
+        if name != "agent_await"
+            || rpc_error_payload(&result).is_some()
+            || result["isError"] == true
+        {
             return result;
         }
         let unchanged = result["structuredContent"]["changed"] == false;
@@ -223,24 +226,92 @@ fn decode(response: ureq::Response, id: &Value) -> Result<Value, ()> {
             return Err(());
         }
         if message.get("id") == Some(id) {
-            if answer.is_some()
-                || message.get("result").is_some() == message.get("error").is_some()
-                || !message
-                    .get("result")
-                    .or_else(|| message.get("error"))
-                    .is_some_and(Value::is_object)
-            {
+            if answer.is_some() {
                 return Err(());
             }
-            answer = Some(if message.get("error").is_some() {
-                json!({"error":message["error"]})
-            } else {
-                message["result"].clone()
+            answer = Some(match (message.get("result"), message.get("error")) {
+                (Some(result), None) if valid_tool_result(result) => result.clone(),
+                (None, Some(error)) if valid_rpc_error(error) => json!({"error":error}),
+                _ => return Err(()),
             });
         }
     }
     answer.ok_or(())
 }
+// Validate the wire shapes of MCP 2025-06-18, which this bridge advertises.
+// Keep the original Value: extension fields must survive validation, and the
+// existing redaction policy must still run on all of them. In particular, do not
+// default missing content to [] (some newer SDK deserializers do that).
+fn valid_tool_result(value: &Value) -> bool {
+    value
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().all(valid_content))
+        && optional(value, "structuredContent", Value::is_object)
+        && optional(value, "isError", Value::is_boolean)
+        && optional(value, "_meta", Value::is_object)
+}
+
+fn valid_rpc_error(value: &Value) -> bool {
+    // JSON-RPC requires an integer, not a string or a fractional number. JSON
+    // numbers such as -32000.0 still represent integers; do not impose i32 bounds.
+    value
+        .get("code")
+        .and_then(Value::as_f64)
+        .is_some_and(|n| n.fract() == 0.0)
+        && value.get("message").is_some_and(Value::is_string)
+}
+
+fn optional(value: &Value, key: &str, valid: impl FnOnce(&Value) -> bool) -> bool {
+    value.get(key).is_none_or(valid)
+}
+
+fn valid_annotations(value: &Value) -> bool {
+    value.is_object()
+        && optional(value, "audience", |v| {
+            v.as_array().is_some_and(|roles| {
+                roles
+                    .iter()
+                    .all(|role| matches!(role.as_str(), Some("user" | "assistant")))
+            })
+        })
+        && optional(value, "priority", |v| {
+            v.as_f64().is_some_and(|n| (0.0..=1.0).contains(&n))
+        })
+        && optional(value, "lastModified", Value::is_string)
+}
+
+fn valid_content(value: &Value) -> bool {
+    if !optional(value, "_meta", Value::is_object)
+        || !optional(value, "annotations", valid_annotations)
+    {
+        return false;
+    }
+    match value.get("type").and_then(Value::as_str) {
+        Some("text") => value.get("text").is_some_and(Value::is_string),
+        Some("image" | "audio") => {
+            value.get("data").is_some_and(Value::is_string)
+                && value.get("mimeType").is_some_and(Value::is_string)
+        }
+        Some("resource") => value.get("resource").is_some_and(|resource| {
+            resource.get("uri").is_some_and(Value::is_string)
+                && optional(resource, "mimeType", Value::is_string)
+                && optional(resource, "_meta", Value::is_object)
+                && (resource.get("text").is_some_and(Value::is_string)
+                    || resource.get("blob").is_some_and(Value::is_string))
+        }),
+        Some("resource_link") => {
+            value.get("name").is_some_and(Value::is_string)
+                && value.get("uri").is_some_and(Value::is_string)
+                && ["title", "description", "mimeType"]
+                    .iter()
+                    .all(|key| optional(value, key, Value::is_string))
+                && optional(value, "size", Value::is_number)
+        }
+        _ => false,
+    }
+}
+
 fn waited(result: &mut Value, started: Instant) {
     if let Some(object) = result["structuredContent"].as_object_mut() {
         object.insert(

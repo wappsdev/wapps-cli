@@ -678,6 +678,8 @@ fn relay_is_forwarded_but_human_confirmation_is_not_an_agent_tool() {
 fn await_polls_until_changed_and_preserves_cloud_attention_projection() {
     let mut changed = frozen()["agent_await success"]["result"].clone();
     changed["structuredContent"]["changed"] = json!(true);
+    let mut unchanged = result(json!({"changed":false,"attention":{"digest":"cursor"}}));
+    unchanged["error"] = json!({"application":"extension, not an RPC error"});
     let cloud = FakeCloud::start(
         vec![
             exchange(
@@ -685,7 +687,7 @@ fn await_polls_until_changed_and_preserves_cloud_attention_projection() {
                 "alpha",
                 "agent_await",
                 json!({"sinceDigest":"cursor"}),
-                result(json!({"changed":false,"attention":{"digest":"cursor"}})),
+                unchanged,
             ),
             exchange(
                 0,
@@ -768,6 +770,232 @@ fn refuses_http_and_malformed_responses_without_echoing_bodies_or_retrying() {
         );
         assert!(!transcript.contains(SECRET));
         assert_eq!(cloud.requests().len(), 1);
+    }
+}
+
+// Exercise the real decoder over both transports, not just a shape helper. The
+// strict peer also catches retries and changes to mission/job/digest routing.
+fn cloud_envelopes(cases: &[Value], content_type: &str, tool: &str, args: Value) -> Vec<Value> {
+    let exchanges = cases
+        .iter()
+        .enumerate()
+        .map(|(id, payload)| {
+            let mut message = payload.clone();
+            message["jsonrpc"] = json!("2.0");
+            message["id"] = json!(id);
+            let mut case = exchange(id as u64, "alpha", tool, args.clone(), Value::Null);
+            case.envelope.content_type = content_type.into();
+            case.body = if content_type == "text/event-stream" {
+                format!("event: message\ndata: {message}\n\n")
+            } else {
+                message.to_string()
+            };
+            case
+        })
+        .collect();
+    let cloud = FakeCloud::start(exchanges, Some(SECRET.into())).unwrap();
+    let home = Home::new(cloud.url());
+    let mut local = args;
+    local["missionId"] = json!("alpha");
+    if tool == "agent_await" {
+        local["waitMs"] = json!(3000);
+    }
+    let steps: Vec<_> = cases
+        .iter()
+        .map(|_| json!({"tool":tool,"arguments":local}))
+        .collect();
+    let transcript = home.run(json!(steps));
+    assert!(!transcript.contains(SECRET));
+    assert!(cloud.unanswered().is_empty());
+    assert_eq!(
+        cloud.requests().len(),
+        cases.len(),
+        "no protocol-error retry"
+    );
+    assert!(cloud.requests().iter().all(|r| r.access && !r.leaked));
+    let output = answers(&transcript);
+    assert_eq!(output.len(), cases.len());
+    output
+}
+
+fn malformed_cloud_envelopes(content_type: &str) {
+    let mut cases = vec![
+        json!({"result":{}}),
+        json!({"result":{"structuredContent":{"answer":42}}}),
+        json!({"error":{}}),
+        json!({"error":{"message":"missing code"}}),
+        json!({"error":{"code":-32603}}),
+        json!({"result":{"content":[]},"error":{"code":-32603,"message":"conflict"}}),
+    ];
+    for content in [Value::Null, json!({}), json!("text"), json!(true), json!(3)] {
+        cases.push(json!({"result":{"content":content}}));
+    }
+    for code in [
+        Value::Null,
+        json!("-32603"),
+        json!(true),
+        json!({}),
+        json!(-1.5),
+    ] {
+        cases.push(json!({"error":{"code":code,"message":"invalid code"}}));
+    }
+    for message in [Value::Null, json!(42), json!(false), json!([]), json!({})] {
+        cases.push(json!({"error":{"code":-32603,"message":message}}));
+    }
+    for block in [
+        Value::Null,
+        json!("not a block"),
+        json!({}),
+        json!({"type":"unknown","text":"not an extension field"}),
+        json!({"type":"text"}),
+        json!({"type":"text","text":3}),
+        json!({"type":"image","data":"YQ=="}),
+        json!({"type":"image","data":[],"mimeType":"image/png"}),
+        json!({"type":"audio","mimeType":"audio/wav"}),
+        json!({"type":"audio","data":"YQ==","mimeType":false}),
+        json!({"type":"resource"}),
+        json!({"type":"resource","resource":{"uri":"file:///a"}}),
+        json!({"type":"resource","resource":{"text":"missing URI"}}),
+        json!({"type":"resource","resource":{"uri":"file:///a","blob":1}}),
+        json!({"type":"resource","resource":{"uri":"file:///a","text":"ok","mimeType":false}}),
+        json!({"type":"resource_link","uri":"file:///a"}),
+        json!({"type":"resource_link","name":"a","uri":false}),
+        json!({"type":"resource_link","name":"a","uri":"file:///a","size":"big"}),
+        json!({"type":"text","text":"ok","_meta":null}),
+        json!({"type":"text","text":"ok","annotations":[]}),
+        json!({"type":"text","text":"ok","annotations":{"audience":["system"]}}),
+        json!({"type":"text","text":"ok","annotations":{"priority":1.1}}),
+        json!({"type":"text","text":"ok","annotations":{"priority":-0.1}}),
+        json!({"type":"text","text":"ok","annotations":{"lastModified":1}}),
+    ] {
+        cases
+            .push(json!({"result":{"content":[{"type":"text","text":"valid first block"},block]}}));
+    }
+    for (key, value) in [
+        ("isError", Value::Null),
+        ("isError", json!("true")),
+        ("structuredContent", Value::Null),
+        ("structuredContent", json!([])),
+        ("_meta", json!("not an object")),
+    ] {
+        let mut payload = json!({"result":{"content":[]}});
+        payload["result"][key] = value;
+        cases.push(payload);
+    }
+    // Invalid envelopes must be replaced, not echoed or polled even if they say
+    // changed:false. The sentinel is synthetic, never a real credential.
+    for payload in &mut cases {
+        payload["extension"] = json!(SECRET);
+        if let Some(result) = payload.get_mut("result") {
+            result["diagnostic"] = json!(SECRET);
+        }
+        if let Some(error) = payload.get_mut("error") {
+            error["data"] = json!({"diagnostic":SECRET});
+        }
+    }
+    let output = cloud_envelopes(
+        &cases,
+        content_type,
+        "agent_await",
+        json!({"sinceDigest":"cursor","jobId":"job-a"}),
+    );
+    let failures: Vec<_> = output
+        .iter()
+        .enumerate()
+        .filter(|(_, reply)| {
+            reply["result"]["structuredContent"]["error"] != "CLOUD_PROTOCOL"
+                || reply["result"]["isError"] != true
+                || reply.get("error").is_some()
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{content_type}: malformed case indices {failures:?}"
+    );
+}
+
+#[test]
+fn malformed_cloud_json_envelopes_become_protocol_errors() {
+    malformed_cloud_envelopes("application/json");
+}
+
+#[test]
+fn malformed_cloud_sse_envelopes_become_protocol_errors() {
+    malformed_cloud_envelopes("text/event-stream");
+}
+
+#[test]
+fn malformed_cloud_await_result_is_not_polled() {
+    for content_type in ["application/json", "text/event-stream"] {
+        let output = cloud_envelopes(
+            &[json!({"result":{"structuredContent":{"changed":false}}})],
+            content_type,
+            "agent_await",
+            json!({"sinceDigest":"cursor"}),
+        );
+        assert_eq!(
+            output[0]["result"]["structuredContent"]["error"],
+            "CLOUD_PROTOCOL"
+        );
+    }
+}
+
+#[test]
+fn valid_cloud_envelopes_preserve_content_refusals_and_extensions() {
+    // MCP 2025-06-18 has five content variants. Unknown properties are allowed;
+    // an unknown content discriminator is not a new variant in this version.
+    let refusal = frozen()["agent_status refusal"]["result"].clone();
+    let cases = vec![
+        json!({"result":{"content":[]}}),
+        json!({"result":{"content":[],"structuredContent":{"answer":42},"isError":false,"_meta":{"vendor/key":[1]},"extension":{"anything":true}}}),
+        json!({"result":{"content":[],"error":{},"result":"both are extension fields here"}}),
+        json!({"result":{"content":[
+            {"type":"text","text":"ok","annotations":{"audience":["user","assistant"],"priority":0,"lastModified":"2025-06-18T00:00:00Z","extension":true},"_meta":{},"extension":null},
+            {"type":"image","data":"YQ==","mimeType":"image/png","annotations":{"priority":1}},
+            {"type":"audio","data":"YQ==","mimeType":"audio/wav"},
+            {"type":"resource","resource":{"uri":"file:///a","mimeType":"text/plain","text":"a","_meta":{},"extension":true}},
+            {"type":"resource","resource":{"uri":"file:///b","blob":"YQ=="}},
+            {"type":"resource_link","name":"a","title":"A","uri":"file:///a","description":"a file","mimeType":"text/plain","size":1,"annotations":{},"_meta":{},"extension":3}
+        ]}}),
+        json!({"result":refusal}),
+        json!({"error":{"code":-32603,"message":"failure","data":[1,{"nested":true}],"extension":true}}),
+        json!({"error":{"code":-32000.0,"message":"","data":null}}),
+    ];
+    for content_type in ["application/json", "text/event-stream"] {
+        let output = cloud_envelopes(
+            &cases,
+            content_type,
+            "agent_status",
+            json!({"jobId":"job-a"}),
+        );
+        for (reply, expected) in output.iter().zip(&cases) {
+            if let Some(error) = expected.get("error") {
+                assert_eq!(&reply["error"], error);
+                assert!(reply.get("result").is_none());
+            } else {
+                assert_eq!(reply["result"], expected["result"]);
+                assert!(reply.get("error").is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn valid_cloud_rpc_errors_are_sanitized_without_becoming_tool_refusals() {
+    for content_type in ["application/json", "text/event-stream"] {
+        let output = cloud_envelopes(
+            &[
+                json!({"error":{"code":-32603,"message":format!("failure {SECRET}"),"data":{"echo":SECRET,"capability":"private-fixture","nested":[SECRET]},"extension":SECRET}}),
+            ],
+            content_type,
+            "agent_status",
+            json!({"jobId":"job-a"}),
+        );
+        assert_eq!(
+            output[0],
+            json!({"jsonrpc":"2.0","id":0,"error":{"code":-32603,"message":"failure [REDACTED]","data":{"echo":"[REDACTED]","capability":"[REDACTED]","nested":["[REDACTED]"]},"extension":"[REDACTED]"}})
+        );
     }
 }
 

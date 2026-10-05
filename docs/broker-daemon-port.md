@@ -1416,6 +1416,55 @@ the retained probes re-compared **1043 equal, 0 different, 0 unsound**, and the 
 release suite was then run again to exit 0. The separate run excluding only the long
 PTY test also passed (523 tests); it was not used as a substitute for the full gate.
 
+**Follow-up: malformed cloud envelopes after `991a608`.** Sol's committed-source
+probe (`rust/target/sol-13-1-verification/malformed-envelope.log`) demonstrated that
+HTTP 200 `result: {}` and `error: {}` escaped to stdio. The shared JSON/SSE decoder
+had checked only `is_object`. It now validates the advertised **MCP 2025-06-18**
+wire shapes: required `content` array, all five content variants and their required
+fields, typed optional result/resource/annotation fields, and an integer JSON-RPC
+error code with a string message. It retains the original JSON rather than dropping
+extension properties or defaulting missing content to an empty array. This checks
+protocol shapes, not the Worker's application output schemas; no dependency was added.
+
+Both HTTP transports have **50 malformed-envelope cases** through the release stdio
+binary. Before the repair, **49** in each table escaped `CLOUD_PROTOCOL`; the conflicting
+result/error control was already refused. A separate malformed `changed: false`
+result caused a second HTTP request. The red run exited **101** (4 passed, 3 failed).
+These cases now produce sanitized `CLOUD_PROTOCOL` tool errors without another request.
+Valid empty content, text, image, audio, text/blob resources, resource links, structured
+output, frozen tool refusals, RPC errors and extension properties remain accepted.
+
+The review caught a second wire-shape collision: the reply writer and await poller
+mistook a tool result's allowed `error` extension for a JSON-RPC error. Red regressions
+exited **101** (5 passed, 2 failed). They now use the validated required `content` field
+to distinguish tool results from the bridge's RPC-error wrappers. The existing await
+poll test includes this extension, and both transports retain it as result data.
+A further test checks that valid RPC errors retain their code/message/data shape while
+scrubbing the synthetic credential and read-restricted fields. Mission, work-item and
+job selection, credential sourcing, HTTP limits and the redaction policy are unchanged.
+
+Repair evidence is under `rust/target/sol-13-1-verification/` (local, untracked build
+output): `repair-red.log`, `repair-extension-red.log`, `repair-mcp.log`,
+`repair-fmt.log`, `repair-clippy.log`, `repair-deny.log`, `repair-release.log` and
+`repair-release-final.log`. The targeted release suite passed **28 tests, exit 0**.
+Format and clippy (`--all-targets --locked --offline -- -D warnings`) exited **0**;
+dependency policy (`cargo deny --offline --locked check`) exited **0**, with the same
+unused-license and duplicate-syn warnings. Offline mode uses the cached advisory
+database; it is not a fresh advisory fetch. The first complete release run exited
+**0** (**528 passed, 2 intentionally ignored**); it began before the last
+extension/sanitization changes, so it was not treated as final proof. The final
+`cargo test --manifest-path rust/Cargo.toml --release --locked --offline -- --nocapture`
+exited **0**: **529 passed, 0 failed, 2 intentionally ignored plugin-oracle runs**, and
+PTY **1043 equal, 0 different, 0 unsound**. No test exclusion or mutation sweep was used.
+
+The code-simplifier and find-bugs checklists were applied to the complete repair diff
+and the surrounding decoder, reply and polling paths. The collision above was fixed;
+no other repair-scope finding remains. The added code is bounded by the existing
+response limit and introduces no new I/O, authorization, state or cryptography. The
+external challenge helper remains unavailable and was not retried. No mutation sweep
+or independent Sol verification stage was started by this repair; that stage is next.
+The pre-existing untracked `docs/preparation/` directories were not edited or staged.
+
 No deployment, release, main merge, push, installation, migration, or real
 plugin/data/config write is part of this slice. Slice 13.2 has not been started.
 

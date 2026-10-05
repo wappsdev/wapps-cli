@@ -63,8 +63,17 @@ fn rpc_error(code: i32, message: &str) -> Value {
     json!({"error":{"code":code,"message":message}})
 }
 
+fn rpc_error_payload(value: &Value) -> Option<&Value> {
+    // Validated CallToolResults always have content and may carry an extension
+    // named error. Only our RPC-error wrappers omit content; never promote a
+    // tool's application data to the response envelope or a polling decision.
+    value
+        .get("error")
+        .filter(|_| value.get("content").is_none())
+}
+
 fn reply(output: &Output, id: &Value, result: Value) -> Result<(), String> {
-    let response = if let Some(error) = result.get("error") {
+    let response = if let Some(error) = rpc_error_payload(&result) {
         json!({"jsonrpc":"2.0","id":id,"error":error})
     } else {
         json!({"jsonrpc":"2.0","id":id,"result":result})
