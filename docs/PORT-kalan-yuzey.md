@@ -737,10 +737,11 @@ differential stays equal.
   spell out: trust-repo is included (it is the other way to pin; leaving it out would leave
   one pin path blind), and `tofu` sources are listed by their workdir (sync runs
   `tofu output -json` there, which is a read from outside the repository just the same).
-- *"Outside" is lexical and per path component*: a path is inside when it equals the root or
-  starts with `root + "/"` (`/a/bc` is not under `/a/b`). Symlinks are not resolved, so a link
-  inside the root that points elsewhere is listed as inside. Under `--config`, the root is the
-  config file's directory, not the repository root.
+- *"Outside" is per path component*: a path is inside when it equals the root or starts with
+  `root + "/"` (`/a/bc` is not under `/a/b`). As landed it was lexical, so a link inside the
+  root that pointed elsewhere was listed as inside; the hardening below decides it on the
+  resolved path. Under `--config`, the root is the config file's directory, not the repository
+  root.
 - *Code.* Go: `cmd/secrets/agentgate.go` (`bindPromptText`, `syncReadsBlock`, `withinRoot`; the
   `bindPrompt` seam now takes the config), `cmd/secrets/trustrepo.go` (one line). Rust:
   `configctx.rs` (`bind_prompt_text`, `sync_reads_block`, `within_root`; `check_repo_binding`'s
@@ -782,8 +783,8 @@ differential stays equal.
   included). `gofmt -l cmd/` lists `cmd/secrets/env.go`, which this change does not touch and
   which is listed on `main` too.
 
-**Open finding (not fixed, needs a decision).** The listed paths are printed raw, exactly as
-the repo id and the project name already were. A hostile `.wapps.yaml` can put a carriage
+**Open finding at landing (since fixed for the list, see the hardening below).** The listed
+paths were printed raw, exactly as the repo id and the project name already were. A hostile `.wapps.yaml` can put a carriage
 return or an ANSI escape in a `path:` and redraw the line so the outside marker (or the whole
 entry) is hidden on a terminal. Quoting only paths that contain control characters (Go
 `strconv.Quote`, Rust `gostrconv::quote`) would close it for the list; the project name has
@@ -794,6 +795,89 @@ binding prompt prints and touches a known `quote` divergence (non-ASCII, slice 6
 makes absolute, so the printed paths would differ under e.g. `/tmp`; the harness's workdir is
 canonical). A config at `/` (the `root == "/"` branch is unit-tested only). Whether a human
 actually reads the list before answering.
+
+#### Hardening the sync-reads list: symlinks and terminal escapes · **LANDED**
+
+A background security review of the list above found two ways to defeat its purpose (the
+human who pins sees exactly what a later sync will read). Both fixed identically in Go and
+Rust; the printed form of every case the corpus already had is unchanged.
+
+1. *Symlink containment bypass.* `withinRoot` was lexical, so `link.env -> ~/.ssh/id_rsa`
+   inside the root was listed as inside. Now containment is decided on the resolved path of
+   both the source and the root (`realPath` / `real_path`). An existing path goes through
+   `filepath.EvalSymlinks` / `std::fs::canonicalize`. A path that does not exist yet is
+   resolved through its longest existing ancestor: the parent is resolved, then the last
+   component is followed if it is a (dangling) symlink, else appended. That is not only the
+   fallback the review asked for: a dangling link to `~/.aws/credentials` reads the file once
+   it exists, so it must show its target now. A relative path or a chain of more than 40 links
+   (Linux `MAXSYMLINKS`; a loop) falls back to the lexical clean. The raw path is resolved, not
+   the cleaned one, because that is what the reader opens (`/etc/../x` on macOS is
+   `/private/x`).
+   When the resolved path differs from where the path reads (the resolved root plus the same
+   suffix when it is lexically inside, the path itself otherwise), the target is shown:
+   `file /r/link.env -> /home/u/.ssh/id_rsa (outside the config root)`. An in-root link to an
+   in-root file shows its target without the mark. A link loop shows where the walk stopped
+   (`loop1 -> loop2`), unmarked; sync itself fails on it with ELOOP.
+2. *Terminal escape injection.* Every string in the block (type, path, target) now goes
+   through one function, `visible`: printable text is kept, and C0, DEL, C1, every Unicode
+   space other than `' '` (U+00A0, U+2028, U+2029, ...) and every Cf format character (the
+   bidi overrides U+202A-E and U+2066-9, ZWSP, BOM, tags) is rendered as a Go-style escape
+   (`\n`, `\x1b`, `\u202e`, `\U000e0041`). In Go, bytes that are not UTF-8 become `\xff`
+   (Rust `&str` cannot hold them). The set is spelled out rather than `unicode.IsPrint`, so
+   the two binaries escape the same code points: Go's table is a copy of
+   `gostrconv::is_format`, which is now `pub(crate)`. A backslash is printable and kept, so a
+   path literally named `a\nb` and one holding a newline print the same; nothing a terminal
+   interprets can be smuggled that way, and it was left so.
+
+- *Code.* Go `cmd/secrets/agentgate.go` (`syncReadsBlock`, `expectedRealPath`, `realPath`,
+  `visible`, `isFormat`). Rust `configctx.rs` (`sync_reads_block`, `expected_real_path`,
+  `real_path`, `visible`), `gostrconv.rs` (`is_format` visibility only).
+- *Tests, red first.* Go `syncreads_test.go` and Rust `tests/syncreads.rs`, the same vectors:
+  an in-root link to an existing outside file, a dangling relative link
+  (`../missing/id_rsa`), a symlinked directory with a missing file under it, an in-root alias,
+  a plain file; `ESC[2K\r` + a forged `file ok.env` line, a newline, U+202E in paths; a
+  `visible` table (C0 named escapes, DEL, NUL, C1, Unicode spaces, bidi, ZWSP, BOM, a tag
+  character; printable ASCII, backslash, Latin-1, an emoji kept). With a stub `visible` and the
+  old lexical block: Go 3 of 3 new tests red, Rust 4 of 4 (Rust ran the loop test too). The
+  loop test and the Go-only non-UTF-8 vector were added after the code, so their proof is the
+  mutation table below, not a red run. The previous `/etc/../abs/x.env` vector became
+  `/nonexistent-wapps/../abs/x.env`: on macOS `/etc` is a symlink, so the resolved path now
+  differs (`-> /private/abs/x.env`) and the vector would depend on the platform. The Go
+  tests whose expectations are built from `t.TempDir()` now resolve it first (`realTempDir`),
+  for the same reason.
+- *Differential.* **4 new cases** (`SYNC_READS_HARDEN_CASES`): a dangling file link to outside
+  the case directory, a symlinked directory (`sub -> ..`), an escape-laden path in the inline
+  prompt, and the same in trust-repo's. The subset (8 + 4) against the new Go binary and the
+  pre-slice Rust binary: `EQUAL=8 DIFFERENT=4`; after the port `EQUAL=12`. Floor 905 -> 909.
+- *Mutation proofs*, each file restored and compared byte for byte with its backup. Rust
+  (unit tests / 12-case differential subset): containment on the lexical path 1 red / 2
+  DIFFERENT; path not escaped 1 / 2; no `->` target 2 / 2; dangling link not followed 2 / 1;
+  Cf not escaped 2 / 2. Go (unit tests): the same five mutants, 1, 1, 2, 2, 2 red. The hop
+  limit was not mutated (without it the loop test would recurse without end; not run). One Rust mutant first failed to compile and so measured a stale binary; it was
+  rewritten and rerun, and the numbers above are from the rerun.
+- *A stale binary, caught by the full run.* The first full `cargo test --release` reported
+  `EQUAL=908 DIFFERENT=1` (the symlinked-source case, Rust listing `link.env` as inside). The
+  source was correct: the mutation script restored each file with `shutil.copy2`, which also
+  restores the old mtime, so cargo kept the release binary of the last mutant ("dangling link
+  not followed") as up to date. After touching the restored files the run was clean. Any
+  mutation script that restores with metadata-preserving copies has this trap; restore the
+  content and leave the mtime new, or touch the file afterwards.
+- *Gates*, each run as its own command and its exit code read on its own: `go build ./...` 0,
+  `go vet ./cmd/... ./internal/...` 0, `go test ./...` 0, `cargo fmt --all -- --check` 0,
+  `cargo clippy --all-targets -- -D warnings` 0, `cargo deny check` 0, `cargo test --release
+  -- --nocapture` 0 (differential `EQUAL=909 DIFFERENT=0 UNSOUND=0`, 297 s; 55 test binaries
+  ok, `armcheck` included).
+
+**Not measured.** Case-insensitive volumes: macOS `realpath` may return the on-disk case of a
+name, Go's `EvalSymlinks` keeps the given case, so the `->` target could differ between the
+binaries for a source spelled in another case (both decide containment consistently, the
+corpus spells paths in their real case). A symlink target that is not UTF-8 (Rust renders it
+lossily, Go escapes the bytes). A symlinked config root under Go: the root is now resolved for
+the decision, but a `../` source under a symlinked cwd prints `-> <resolved>` in Go only,
+because only Go's root is non-canonical (slice 5 finding 7). The `repo:` and `project:` lines
+of both prompts are still printed raw; `project` comes from the same `.wapps.yaml` and has
+the exposure the review described, `repo` is the remote URL or the directory path. Left out
+because the slice was scoped to the block; it is the next candidate for `visible`.
 
 
 ---

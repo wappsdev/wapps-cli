@@ -34,7 +34,7 @@ fn every_source_is_resolved_and_the_outside_ones_are_marked() {
          \x20 - type: file\n    path: sync.env\n\
          \x20 - type: file\n    path: ./sub/../inside.env\n\
          \x20 - type: file\n    path: ../other/.env\n\
-         \x20 - type: file\n    path: /etc/../abs/x.env\n\
+         \x20 - type: file\n    path: /nonexistent-wapps/../abs/x.env\n\
          \x20 - type: tofu\n\
          \x20 - type: tofu\n    workdir: /tf\n",
     );
@@ -122,4 +122,125 @@ fn trust_repo_lists_what_sync_reads_before_asking() {
         "got {block:?}\nwant suffix {want:?}"
     );
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// --- hardening: symlinks and terminal escapes --------------------------------
+//
+// The same vectors as cmd/secrets/syncreads_test.go.
+
+// real_scratch is scratch() with its symlinks resolved (macOS: /var ->
+// /private/var), so paths built from it are the paths the kernel opens.
+fn real_scratch(name: &str) -> PathBuf {
+    std::fs::canonicalize(scratch(name)).expect("canonical scratch")
+}
+
+/// symlink_fixture builds base/repo (the config root) next to base/outside
+/// (holding secret.env), with these links inside the root:
+///
+///   link.env     -> base/outside/secret.env   (absolute, target exists)
+///   dangling.env -> ../missing/id_rsa         (relative, target absent)
+///   sub          -> base/outside              (a directory)
+///   alias.env    -> sync.env                  (stays inside)
+fn symlink_fixture(name: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::symlink;
+    let base = real_scratch(name);
+    let root = base.join("repo");
+    let out = base.join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("secret.env"), "K=v\n").unwrap();
+    std::fs::write(root.join("sync.env"), "K=v\n").unwrap();
+    symlink(out.join("secret.env"), root.join("link.env")).unwrap();
+    symlink("../missing/id_rsa", root.join("dangling.env")).unwrap();
+    symlink(&out, root.join("sub")).unwrap();
+    symlink("sync.env", root.join("alias.env")).unwrap();
+    (base, root)
+}
+
+#[test]
+fn containment_is_decided_on_the_resolved_path() {
+    let (base, root) = symlink_fixture("links");
+    let cfg = load_in(
+        &root,
+        "version: 2\nproject: p\nsources:\n\
+         \x20 - type: file\n    path: link.env\n\
+         \x20 - type: file\n    path: dangling.env\n\
+         \x20 - type: file\n    path: sub/deeper/x.env\n\
+         \x20 - type: file\n    path: alias.env\n\
+         \x20 - type: file\n    path: sync.env\n",
+    );
+    let (b, r) = (base.display(), root.display());
+    let want = format!(
+        "  sync reads:\n\
+         \x20   file {r}/link.env -> {b}/outside/secret.env{OUTSIDE}\n\
+         \x20   file {r}/dangling.env -> {b}/missing/id_rsa{OUTSIDE}\n\
+         \x20   file {r}/sub/deeper/x.env -> {b}/outside/deeper/x.env{OUTSIDE}\n\
+         \x20   file {r}/alias.env -> {r}/sync.env\n\
+         \x20   file {r}/sync.env\n"
+    );
+    assert_eq!(configctx::sync_reads_block(&cfg), want);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn control_and_bidi_characters_are_escaped() {
+    let root = real_scratch("escapes");
+    let cfg = load_in(
+        &root,
+        "version: 2\nproject: p\nsources:\n\
+         \x20 - type: file\n    path: \"a\\x1b[2K\\rfile ok.env\"\n\
+         \x20 - type: file\n    path: \"b\\nc.env\"\n\
+         \x20 - type: file\n    path: \"d\\u202eenv.txt\"\n",
+    );
+    let r = root.display();
+    let want = format!(
+        "  sync reads:\n\
+         \x20   file {r}/a\\x1b[2K\\rfile ok.env\n\
+         \x20   file {r}/b\\nc.env\n\
+         \x20   file {r}/d\\u202eenv.txt\n"
+    );
+    assert_eq!(configctx::sync_reads_block(&cfg), want);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn visible_keeps_printable_text_and_escapes_the_rest() {
+    for (input, want) in [
+        ("plain/path-1.env", "plain/path-1.env"),
+        ("back\\slash", "back\\slash"),
+        ("caf\u{e9} \u{1f600}", "caf\u{e9} \u{1f600}"),
+        ("\x1b[2K\r", "\\x1b[2K\\r"),
+        ("a\nb\tc", "a\\nb\\tc"),
+        ("\x07\x08\x0c\x0b\x00\x7f", "\\a\\b\\f\\v\\x00\\x7f"),
+        ("\u{85}\u{9b}", "\\u0085\\u009b"),
+        (
+            "\u{a0}\u{2028}\u{2029}\u{3000}",
+            "\\u00a0\\u2028\\u2029\\u3000",
+        ),
+        (
+            "x\u{202e}y\u{2066}z\u{200b}\u{feff}",
+            "x\\u202ey\\u2066z\\u200b\\ufeff",
+        ),
+        ("\u{e0041}", "\\U000e0041"),
+    ] {
+        assert_eq!(configctx::visible(input), want, "visible({input:?})");
+    }
+}
+
+#[test]
+fn a_link_loop_ends() {
+    use std::os::unix::fs::symlink;
+    let root = real_scratch("loop");
+    symlink("loop2", root.join("loop1")).unwrap();
+    symlink("loop1", root.join("loop2")).unwrap();
+    let cfg = load_in(
+        &root,
+        "version: 2\nproject: p\nsources:\n  - type: file\n    path: loop1\n",
+    );
+    let r = root.display();
+    assert_eq!(
+        configctx::sync_reads_block(&cfg),
+        format!("  sync reads:\n    file {r}/loop1 -> {r}/loop2\n")
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

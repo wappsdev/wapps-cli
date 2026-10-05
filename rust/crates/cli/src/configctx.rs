@@ -15,6 +15,7 @@
 //      CONFIRMATION on the human/TTY path.
 use crate::binding;
 use crate::clierr::{Code, Error};
+use crate::gostrconv;
 use crate::projects;
 use crate::wappsyaml::{self, WappsYaml};
 use std::io::Write;
@@ -319,22 +320,36 @@ pub fn bind_prompt_text(repo_id: &str, cfg: &WappsYaml) -> String {
 /// Pinning a binding is what lets a later sync (or an agent) run without
 /// asking, so the human who pins is shown exactly what that sync will read.
 /// Shared by the inline prompt and `trust-repo`'s.
+///
+/// Containment is decided on the RESOLVED path (`real_path` of the source
+/// and of the root), so a symlink inside the root that points out is marked.
+/// When the path resolves somewhere other than where it reads, the resolved
+/// target is shown after "->". Every string in the block passes through
+/// `visible`, so a path cannot carry a terminal escape that redraws the
+/// prompt.
 pub fn sync_reads_block(cfg: &WappsYaml) -> String {
     let srcs = cfg.resolved_sources();
     if srcs.is_empty() {
         return String::new();
     }
     let root = cfg.config_root();
+    let real_root = real_path(root);
     let mut b = String::from("  sync reads:\n");
     for s in &srcs {
-        let p = if s.r#type == "tofu" {
+        let raw = if s.r#type == "tofu" {
             &s.workdir
         } else {
             &s.path
         };
-        let p = wappsyaml::go_clean(p);
-        b.push_str(&format!("    {} {p}", s.r#type));
-        if !within_root(&p, root) {
+        let p = wappsyaml::go_clean(raw);
+        // The kernel resolves the RAW path (an absolute source reaches the
+        // reader uncleaned, and "link/.." is the link target's parent).
+        let real = real_path(raw);
+        b.push_str(&format!("    {} {}", visible(&s.r#type), visible(&p)));
+        if real != expected_real_path(&p, root, &real_root) {
+            b.push_str(&format!(" -> {}", visible(&real)));
+        }
+        if !within_root(&real, &real_root) {
             b.push_str(" (outside the config root)");
         }
         b.push('\n');
@@ -342,14 +357,106 @@ pub fn sync_reads_block(cfg: &WappsYaml) -> String {
     b
 }
 
-/// within_root reports whether the cleaned path p is root or lies under it.
-/// Lexical and component-wise ("/ab" is not under "/a"); symlinks are not
-/// resolved, so a link inside the root that points out counts as inside.
+// expected_real_path is where p would resolve if no symlink below the root
+// were involved: under the resolved root when p is lexically inside it, p
+// itself otherwise. A resolved path that differs from it is shown.
+fn expected_real_path(p: &str, root: &str, real_root: &str) -> String {
+    if !within_root(p, root) {
+        return p.to_string();
+    }
+    let rest = p.strip_prefix(root).unwrap_or_default();
+    wappsyaml::go_clean(&format!("{real_root}/{rest}"))
+}
+
+/// within_root reports whether the cleaned path p is root or lies under it,
+/// component-wise ("/ab" is not under "/a"). It is lexical: callers that
+/// need symlinks resolved pass `real_path` results.
 pub fn within_root(p: &str, root: &str) -> bool {
     if root == "/" {
         return p.starts_with('/');
     }
     p == root || p.strip_prefix(root).is_some_and(|r| r.starts_with('/'))
+}
+
+// MAX_LINK_HOPS bounds the symlinks real_path follows past a missing
+// component (Linux's MAXSYMLINKS), so a link loop ends.
+const MAX_LINK_HOPS: u32 = 40;
+
+/// real_path resolves every symlink in the absolute path p, the way the
+/// kernel does when sync opens it. An existing path is
+/// `std::fs::canonicalize`d. A path that does not exist yet is resolved
+/// through its longest existing ancestor: the parent is resolved, and the
+/// last component is followed when it is a (dangling) symlink or appended
+/// when it is absent, so a link to a file that appears later still shows
+/// where it points. A relative path, or a link chain longer than
+/// MAX_LINK_HOPS, falls back to the lexical `go_clean`. The Go twin
+/// (agentgate.go realPath) is the same walk.
+pub fn real_path(p: &str) -> String {
+    real_path_hops(p, 0)
+}
+
+fn real_path_hops(p: &str, hops: u32) -> String {
+    if let Ok(r) = std::fs::canonicalize(p) {
+        return r.to_string_lossy().into_owned();
+    }
+    if hops > MAX_LINK_HOPS || !p.starts_with('/') {
+        return wappsyaml::go_clean(p);
+    }
+    let i = p.rfind('/').unwrap_or_default();
+    let (dir, base) = (if i == 0 { "/" } else { &p[..i] }, &p[i + 1..]);
+    let d = real_path_hops(dir, hops);
+    match base {
+        "" | "." => return d,
+        ".." => return wappsyaml::go_clean(&format!("{d}/..")),
+        _ => {}
+    }
+    let c = wappsyaml::go_clean(&format!("{d}/{base}"));
+    if let Ok(t) = std::fs::read_link(&c) {
+        let t = t.to_string_lossy();
+        let t = if t.starts_with('/') {
+            t.into_owned()
+        } else {
+            format!("{d}/{t}")
+        };
+        return real_path_hops(&t, hops + 1);
+    }
+    c
+}
+
+/// visible renders s for a terminal: printable text is kept, and every
+/// control character (C0, DEL, C1), Unicode space other than ' ', and format
+/// character (Cf, which holds the bidi overrides) becomes a Go-style escape
+/// (`\n`, `\x1b`, `\u202e`, `\U000e0041`). A path from a cloned repository's
+/// `.wapps.yaml` cannot then erase or forge a line of the prompt. A
+/// backslash is printable and is kept as is. The set is spelled out so the
+/// Go twin (agentgate.go visible) escapes exactly the same code points.
+pub fn visible(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x0b' => out.push_str("\\v"),
+            _ if c < ' ' || c == '\x7f' => {
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            _ if c.is_ascii() => out.push(c),
+            _ if c.is_control() || c.is_whitespace() || gostrconv::is_format(c) => {
+                if (c as u32) < 0x10000 {
+                    let _ = write!(out, "\\u{:04x}", c as u32);
+                } else {
+                    let _ = write!(out, "\\U{:08x}", c as u32);
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // service_token_pair_set reports whether BOTH halves of the CF Access service
