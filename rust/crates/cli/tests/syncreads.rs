@@ -244,3 +244,50 @@ fn a_link_loop_ends() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// --- hardening: the repo and project lines -------------------------------------
+//
+// The same vectors as cmd/secrets/syncreads_test.go. project comes from the
+// cloned repo's .wapps.yaml and repo is a remote URL or a directory path, so
+// both are attacker-controlled text.
+
+const HOSTILE: &str = "a\x1b[2K\rproject: forged\nb\u{202e}c";
+const HOSTILE_ESCAPED: &str = "a\\x1b[2K\\rproject: forged\\nb\\u202ec";
+
+#[test]
+fn the_bind_prompt_escapes_repo_and_project() {
+    let d = scratch("bindhostile");
+    let mut cfg = load_in(&d, "version: 2\nproject: testproj\n");
+    cfg.project = HOSTILE.to_string();
+    assert_eq!(
+        configctx::bind_prompt_text(HOSTILE, &cfg),
+        format!(
+            "This repo is not bound to a project yet.\n  repo:    {HOSTILE_ESCAPED}\n  \
+             project: {HOSTILE_ESCAPED}\nBind them? [y/N]: "
+        )
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn trust_repo_escapes_every_user_controlled_line() {
+    let d = scratch("trusthostile");
+    let mut cfg = load_in(
+        &d,
+        "version: 2\nproject: testproj\nprofiles:\n  dev: [\"x\"]\n",
+    );
+    cfg.project = HOSTILE.to_string();
+    cfg.profiles = std::collections::BTreeMap::from([(HOSTILE.to_string(), vec!["x".to_string()])]);
+    assert_eq!(
+        trustrepo::prompt_block(HOSTILE, &cfg),
+        format!(
+            "Pin repo→project binding:\n  repo:    {HOSTILE_ESCAPED}\n  project: {HOSTILE_ESCAPED}\n  \
+             backend: store\n  profiles: {HOSTILE_ESCAPED}\nPin this binding? [y/N]: "
+        )
+    );
+    assert_eq!(
+        trustrepo::success_line(HOSTILE, HOSTILE),
+        format!("pinned {HOSTILE_ESCAPED} → {HOSTILE_ESCAPED}\n")
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

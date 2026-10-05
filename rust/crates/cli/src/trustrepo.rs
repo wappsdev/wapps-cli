@@ -17,6 +17,7 @@
 //     erase the difference.
 //  2. THE PROMPT GOES TO STDOUT (Go: cmd.OutOrStdout()), unlike the inline
 //     prompt (stderr).
+use crate::configctx::visible;
 use crate::wappsyaml::WappsYaml;
 use std::io::{BufRead, BufReader, Read, Write};
 
@@ -26,14 +27,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 /// typed.
 pub fn prompt_block(repo_id: &str, cfg: &WappsYaml) -> String {
     let mut s = String::from("Pin repo→project binding:\n");
-    s.push_str(&format!("  repo:    {repo_id}\n"));
-    s.push_str(&format!("  project: {}\n", cfg.project));
-    s.push_str(&format!("  backend: {}\n", cfg.backend));
+    s.push_str(&format!("  repo:    {}\n", visible(repo_id)));
+    s.push_str(&format!("  project: {}\n", visible(&cfg.project)));
+    s.push_str(&format!("  backend: {}\n", visible(&cfg.backend)));
     if !cfg.profiles.is_empty() {
         // A BTreeMap is already alphabetical: Go sorts the names with
         // sort.Strings, the same order.
         let names: Vec<&str> = cfg.profiles.keys().map(|k| k.as_str()).collect();
-        s.push_str(&format!("  profiles: {}\n", names.join(", ")));
+        s.push_str(&format!("  profiles: {}\n", visible(&names.join(", "))));
     }
     s.push_str(&crate::configctx::sync_reads_block(cfg));
     s.push_str("Pin this binding? [y/N]: ");
@@ -59,7 +60,11 @@ pub fn short_repo(s: &str) -> String {
 
 /// success_line is the single line printed after pinning.
 pub fn success_line(repo_id: &str, project: &str) -> String {
-    format!("pinned {} → {project}\n", short_repo(repo_id))
+    format!(
+        "pinned {} → {}\n",
+        visible(&short_repo(repo_id)),
+        visible(project)
+    )
 }
 
 /// confirm_y writes the prompt and reports whether the answer is "y" (case

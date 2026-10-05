@@ -875,9 +875,34 @@ corpus spells paths in their real case). A symlink target that is not UTF-8 (Rus
 lossily, Go escapes the bytes). A symlinked config root under Go: the root is now resolved for
 the decision, but a `../` source under a symlinked cwd prints `-> <resolved>` in Go only,
 because only Go's root is non-canonical (slice 5 finding 7). The `repo:` and `project:` lines
-of both prompts are still printed raw; `project` comes from the same `.wapps.yaml` and has
-the exposure the review described, `repo` is the remote URL or the directory path. Left out
-because the slice was scoped to the block; it is the next candidate for `visible`.
+of both prompts were still printed raw at the end of this slice; see the follow-up below.
+
+
+#### Follow-up: the repo and project lines of both prompts · **LANDED**
+
+The two lines the hardening slice left raw now go through `visible` in both binaries
+(Go `bindPromptText`, `trustRepoCore`; Rust `bind_prompt_text`, `trustrepo::prompt_block`).
+Beyond the two named lines, every other user-controlled string the prompts print is escaped
+too: trust-repo's `backend:` value, the `profiles:` list (profile names are YAML keys of the
+cloned file) and the `pinned <repo> -> <project>` line (the repo after `shortRepo`, so the
+cut happens on the raw text, as before).
+
+- *Tests, red first.* Go `syncreads_test.go` and Rust `tests/syncreads.rs`, the same vector
+  in `repo`, `project` and a profile name: `ESC[2K\r` + a forged `project:` line + newline +
+  U+202E. Both unit tests of each side failed on the raw code (Go 2 of 2, Rust 2 of 2) and
+  pass after. Differential: 3 cases (`human_sync_bind_prompt_escapes_project`,
+  `human_trust_repo_escapes_project`, `..._and_profile`). Run against the new Go binary and
+  the pre-slice Rust binary: `EQUAL=0 DIFFERENT=3`; after the port `EQUAL=3`. Floor 909 -> 912.
+- *A second divergence the new case found.* The inline prompt's refusal error quotes the
+  project with `%q`. Rust used `gojson::quote` (Rust `{:?}`: `\u{1b}`, `\u{202e}`), Go's
+  `strconv.Quote` writes `\x1b`, `\u202e`. Two of the three cases still differed after the
+  prompt was fixed until that call used `gostrconv::quote`. The other `gojson::quote` callers
+  (policy, goerr, gostrconv) quote names and were not touched; the same limit applies to
+  them if a control character ever reaches one. Not measured.
+- *Not done.* No mutation proof for this slice; the red-first runs above are the evidence. The
+  repo line itself is covered by the unit vectors only: the differential cannot give a case a
+  hostile repository identity (it is the case directory's path).
+- *Gates*, each run on its own, exit codes read on their own: see the lane report.
 
 
 ---

@@ -3522,6 +3522,19 @@ SYNC_READS_HARDEN_CASES = [
 ]
 CASES += SYNC_READS_HARDEN_CASES
 
+# The repo: and project: lines of both prompts print through the same escaping
+# function. project comes from the cloned repo's .wapps.yaml (attacker text).
+_ESC_PROJECT = '"a\\x1b[2K\\rproject: forged\\nb\\u202ec"'
+_ESC_CFG = ("version: 2\nproject: " + _ESC_PROJECT + "\n")
+PROMPT_ESCAPE_CASES = [
+    sy("human_sync_bind_prompt_escapes_project", SYNC, HUMAN, b"n\n", cfg(_ESC_CFG)),
+    ("human_trust_repo_escapes_project", ["secrets", "trust-repo"], HUMAN, None, b"n\n",
+     cfg(_ESC_CFG)),
+    ("human_trust_repo_escapes_project_and_profile", ["secrets", "trust-repo"], HUMAN, None, b"y\n",
+     cfg(_ESC_CFG + "profiles:\n  " + _ESC_PROJECT + ": [x]\n")),
+]
+CASES += PROMPT_ESCAPE_CASES
+
 
 # --- `wapps skill` (install / status / uninstall) ------------------------------
 #

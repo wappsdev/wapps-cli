@@ -61,16 +61,16 @@ func trustRepoCore(cfg *config.WappsYAML, repoID, bindingPath string, confirm fu
 	fp := binding.Fingerprint(repoID)
 
 	fmt.Fprintf(out, "Pin repo→project binding:\n")
-	fmt.Fprintf(out, "  repo:    %s\n", repoID)
-	fmt.Fprintf(out, "  project: %s\n", cfg.Project)
-	fmt.Fprintf(out, "  backend: %s\n", cfg.Backend)
+	fmt.Fprintf(out, "  repo:    %s\n", visible(repoID))
+	fmt.Fprintf(out, "  project: %s\n", visible(cfg.Project))
+	fmt.Fprintf(out, "  backend: %s\n", visible(cfg.Backend))
 	if len(cfg.Profiles) > 0 {
 		names := make([]string, 0, len(cfg.Profiles))
 		for n := range cfg.Profiles {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		fmt.Fprintf(out, "  profiles: %s\n", strings.Join(names, ", "))
+		fmt.Fprintf(out, "  profiles: %s\n", visible(strings.Join(names, ", ")))
 	}
 	fmt.Fprint(out, syncReadsBlock(cfg))
 	fmt.Fprintf(out, "Pin this binding? [y/N]: ")
@@ -87,7 +87,7 @@ func trustRepoCore(cfg *config.WappsYAML, repoID, bindingPath string, confirm fu
 	if err := store.Save(bindingPath); err != nil {
 		return clierr.Wrapf(clierr.Internal, err, "save repo pins")
 	}
-	fmt.Fprintf(out, "pinned %s → %s\n", shortRepo(repoID), cfg.Project)
+	fmt.Fprintf(out, "pinned %s → %s\n", visible(shortRepo(repoID)), visible(cfg.Project))
 	return nil
 }
 
