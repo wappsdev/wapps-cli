@@ -5,6 +5,7 @@ pub mod binding;
 pub mod cli;
 pub mod clierr;
 pub mod cobrahelp;
+pub mod completion;
 pub mod configctx;
 pub mod confirm;
 pub mod coolify;

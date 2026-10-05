@@ -8,6 +8,7 @@ use wapps::binding;
 use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
 use wapps::cobrahelp;
+use wapps::completion;
 use wapps::configctx::{self, Ctx};
 use wapps::confirm;
 use wapps::coolifysync;
@@ -160,6 +161,15 @@ fn run() -> Result<(), CmdError> {
         _ => None,
     };
 
+    // `completion <shell>`: pflag's bool value error, at parse time too.
+    let completion_descriptions = match matches.subcommand() {
+        Some(("completion", cm)) => match cm.subcommand() {
+            Some((_, sm)) => Some(completion::descriptions(sm).map_err(CmdError::Plain)?),
+            None => None,
+        },
+        _ => None,
+    };
+
     // cobra's own steps, in its order: an unknown word on the root (Find),
     // then the help flag, `--version`, and a family's page — all before the
     // root's PersistentPreRunE (the mutual exclusion below) and before any
@@ -185,6 +195,14 @@ fn run() -> Result<(), CmdError> {
         }
         _ => None,
     };
+
+    // `completion <shell>`: cobra's NoArgs, after the help flag and before
+    // the root's PersistentPreRunE (the mutual exclusion below).
+    if let Some(("completion", cm)) = matches.subcommand() {
+        if let Some((shell, sm)) = cm.subcommand() {
+            completion::no_args(shell, sm).map_err(CmdError::Plain)?;
+        }
+    }
 
     // `--config` + `--project` BIRLIKTE: ret DISPATCH'TEN ONCE, ve FIILDEN
     // BAGIMSIZ. Buraya konmasinin sebebi olculdu: Go'da bu kontrol root'un
@@ -493,6 +511,10 @@ fn run() -> Result<(), CmdError> {
         Some(("deploy", _)) => match deploy_opts {
             Some(opts) => run_deploy(config, project, &opts),
             None => unreachable!("deploy's options are parsed above"),
+        },
+        Some(("completion", cm)) => match (cm.subcommand(), completion_descriptions) {
+            (Some((shell, _)), Some(descriptions)) => run_completion(shell, descriptions),
+            _ => unreachable!("cobra_preflight prints a family's page"),
         },
         Some(("help", hm)) => {
             let topic: Vec<String> = hm
@@ -2698,4 +2720,12 @@ fn run_skill(sm: &clap::ArgMatches) -> Result<(), CmdError> {
         _ => skill::run_uninstall(&mut out, &opts),
     }
     .map_err(CmdError::Plain)
+}
+
+// run_completion, `wapps completion <shell>`: no gate, as in Go (cobra's
+// default command; Homebrew runs it at install time, without a terminal).
+// Its NoArgs was checked before the mutual exclusion.
+fn run_completion(shell: &str, descriptions: bool) -> Result<(), CmdError> {
+    completion::write(&mut std::io::stdout(), shell, descriptions)
+        .map_err(|e| CmdError::Plain(e.to_string()))
 }

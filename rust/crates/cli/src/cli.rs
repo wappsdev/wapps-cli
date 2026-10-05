@@ -40,7 +40,11 @@ impl From<clierr::Error> for CmdError {
 
 /// build, the command tree as the dispatch parses it.
 pub fn build() -> Command {
-    cobra_shape(tree())
+    // The help command's words are a hidden positional for the parser; the
+    // completion tree gives `help` the command tree instead.
+    cobra_shape(tree()).mut_subcommand("help", |h| {
+        h.arg(Arg::new("topic").num_args(0..).hide(true))
+    })
 }
 
 // cobra_shape gives every node cobra's parsing surface for help: a `-h/--help`
@@ -71,6 +75,90 @@ fn cobra_shape(mut cmd: Command) -> Command {
         cmd = cmd.mut_subcommand(name, cobra_shape);
     }
     cmd
+}
+
+/// completion_tree, the command tree as the completion scripts describe it:
+/// cobra's completion surface, not its parsing surface. Every node gets the
+/// help flag, and every node below the root the root's persistent flags
+/// (cobra adds them to each command's flag set unless a local flag already
+/// has the name, which is how a local `--project` shadows the root's). No
+/// node gets `cobra_shape`'s hidden stray-word positional: it exists for the
+/// parser, and in a zsh script a variadic positional on a family swallows the
+/// subcommand name, so Tab would never descend (measured).
+pub fn completion_tree() -> Command {
+    let root = tree();
+    let persistent: Vec<Arg> = root
+        .get_arguments()
+        .filter(|a| ["verbose", "config", "project"].contains(&a.get_id().as_str()))
+        .cloned()
+        .collect();
+    // cobra's help command completes a command path (`help secrets <Tab>`
+    // offers `secrets`'s commands): a mirror of the tree, names only, each
+    // node with the help command's flags as cobra offers them past `help`.
+    // Except `help help`: in clap_complete's zsh script a node with options
+    // under a parent of the same name adds them on the parent's empty word
+    // (measured: `wapps help <Tab>` offered `-c -h -p -v`), so it stays bare.
+    let topics: Vec<Command> = root
+        .get_subcommands()
+        .map(|c| match c.get_name() {
+            "help" => help_topic(c),
+            _ => completion_shape(help_topic(c), &persistent),
+        })
+        .collect();
+    let mut root = with_help_flag(root);
+    let names: Vec<String> = root
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    for name in names {
+        root = root.mut_subcommand(name, |c| completion_shape(c, &persistent));
+    }
+    root.mut_subcommand("help", |h| h.subcommands(topics))
+}
+
+fn completion_shape(cmd: Command, persistent: &[Arg]) -> Command {
+    let mut cmd = with_help_flag(cmd);
+    for flag in persistent {
+        let long = flag.get_long();
+        if cmd.get_arguments().any(|a| a.get_long() == long) {
+            continue;
+        }
+        // A distinct id: a positional may already use the flag's (`projects
+        // rm`'s `project`), and cobra matches flags by name, not by id.
+        let id = format!("persistent-{}", flag.get_id());
+        cmd = cmd.arg(flag.clone().id(id));
+    }
+    let names: Vec<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    for name in names {
+        cmd = cmd.mut_subcommand(name, |c| completion_shape(c, persistent));
+    }
+    cmd
+}
+
+fn help_topic(cmd: &Command) -> Command {
+    let topic =
+        Command::new(cmd.get_name().to_string()).subcommands(cmd.get_subcommands().map(help_topic));
+    match cmd.get_about() {
+        Some(about) => topic.about(about.clone()),
+        None => topic,
+    }
+}
+
+fn with_help_flag(cmd: Command) -> Command {
+    if cmd.is_disable_help_flag_set() {
+        return cmd;
+    }
+    let usage = format!("help for {}", cmd.get_name());
+    cmd.disable_help_flag(true).arg(
+        Arg::new("help")
+            .short('h')
+            .long("help")
+            .action(ArgAction::SetTrue)
+            .help(usage),
+    )
 }
 
 const ROOT_LONG: &str = "wapps is the umbrella CLI for the wappsdev estate.
@@ -104,8 +192,7 @@ fn tree() -> Command {
                 .long_about(
                     "Help provides help for any command in the application.\nSimply type wapps help [path to command] for full details.",
                 )
-                .override_usage("help [command]")
-                .arg(Arg::new("topic").num_args(0..).hide(true)),
+                .override_usage("help [command]"),
         )
         .arg(
             Arg::new("verbose")
@@ -906,6 +993,7 @@ fn tree() -> Command {
         )
         .subcommand(skill_command())
         .subcommand(deploy_command())
+        .subcommand(completion_command())
 }
 
 // skill_command, `wapps skill`: Go's Short/Long texts byte for byte (pinned
@@ -957,6 +1045,105 @@ fn skill_command() -> Command {
                 .arg(extra),
         )
 }
+
+// completion_command, cobra's default `completion` command (cobra v1.10.2
+// completions.go, InitDefaultCompletionCmd): its Short/Long texts and those of
+// its four shells, byte for byte, with the root's name filled in. The family
+// has no Run; each shell is NoArgs (the hidden `extra` positional, so main can
+// give cobra's sentence) and has `--no-descriptions`.
+fn completion_command() -> Command {
+    let shell = |name: &'static str, long: &'static str| {
+        Command::new(name)
+            .about(format!("Generate the autocompletion script for {name}"))
+            .long_about(long)
+            .arg(pflag_bool(
+                "no-descriptions",
+                "disable completion descriptions",
+            ))
+            .arg(Arg::new("extra").num_args(0..).hide(true))
+    };
+    Command::new("completion")
+        .about("Generate the autocompletion script for the specified shell")
+        .long_about(COMPLETION_LONG)
+        .subcommand(shell("bash", COMPLETION_BASH_LONG))
+        .subcommand(shell("zsh", COMPLETION_ZSH_LONG))
+        .subcommand(shell("fish", COMPLETION_FISH_LONG))
+        .subcommand(shell("powershell", COMPLETION_POWERSHELL_LONG))
+}
+
+const COMPLETION_LONG: &str =
+    "Generate the autocompletion script for wapps for the specified shell.
+See each sub-command's help for details on how to use the generated script.
+";
+
+const COMPLETION_BASH_LONG: &str = "Generate the autocompletion script for the bash shell.
+
+This script depends on the 'bash-completion' package.
+If it is not installed already, you can install it via your OS's package manager.
+
+To load completions in your current shell session:
+
+\tsource <(wapps completion bash)
+
+To load completions for every new session, execute once:
+
+#### Linux:
+
+\twapps completion bash > /etc/bash_completion.d/wapps
+
+#### macOS:
+
+\twapps completion bash > $(brew --prefix)/etc/bash_completion.d/wapps
+
+You will need to start a new shell for this setup to take effect.
+";
+
+const COMPLETION_ZSH_LONG: &str = "Generate the autocompletion script for the zsh shell.
+
+If shell completion is not already enabled in your environment you will need
+to enable it.  You can execute the following once:
+
+\techo \"autoload -U compinit; compinit\" >> ~/.zshrc
+
+To load completions in your current shell session:
+
+\tsource <(wapps completion zsh)
+
+To load completions for every new session, execute once:
+
+#### Linux:
+
+\twapps completion zsh > \"${fpath[1]}/_wapps\"
+
+#### macOS:
+
+\twapps completion zsh > $(brew --prefix)/share/zsh/site-functions/_wapps
+
+You will need to start a new shell for this setup to take effect.
+";
+
+const COMPLETION_FISH_LONG: &str = "Generate the autocompletion script for the fish shell.
+
+To load completions in your current shell session:
+
+\twapps completion fish | source
+
+To load completions for every new session, execute once:
+
+\twapps completion fish > ~/.config/fish/completions/wapps.fish
+
+You will need to start a new shell for this setup to take effect.
+";
+
+const COMPLETION_POWERSHELL_LONG: &str = "Generate the autocompletion script for powershell.
+
+To load completions in your current shell session:
+
+\twapps completion powershell | Out-String | Invoke-Expression
+
+To load completions for every new session, add the output of the above command
+to your powershell profile.
+";
 
 // deploy_command, `wapps deploy <service>`: Go's Short/Long texts byte for
 // byte (pinned by tests/deployverb.rs against cmd/deploy/deploy.go). The

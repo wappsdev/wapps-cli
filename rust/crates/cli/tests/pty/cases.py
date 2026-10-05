@@ -3178,6 +3178,13 @@ ARM_WAIVERS = {
         "cfg": "same reason",
         "rooted": "same reason",
     },
+    # Same as `secre`: a typo whose suggestion is `completion`.
+    "comp": {
+        "proj": "unknown root word: Find fails before identity flags are read; "
+                "the arm is measured on `nosuch`",
+        "cfg": "same reason",
+        "rooted": "same reason",
+    },
     "rotate skip": {
         "proj": "run_rotate_skip(run_id, target, reason) — proje adi "
                 "ARGUMANDAN geliyor (`<proje>/<anahtar>`), bayraktan degil",
@@ -4557,10 +4564,6 @@ CASES += DEPLOY_CASES
 # root's only), and a family's page (no Run) — all BEFORE the root's
 # PersistentPreRunE, so `--config` + `--project` together is not refused there.
 # `help` is a runnable command: the mutual exclusion does fire for it.
-#
-# The root's page lists `completion` in Go; that command waits for an owner
-# decision, so diff.py removes its one listing line from the oracle's output
-# (and counts how often it did).
 HELP_CASES = [
     # --- bare `wapps`: the root's page, exit 0, in every arm ---
     ("human_bare_wapps", [], HUMAN),
@@ -4640,5 +4643,45 @@ HELP_CASES = [
     ("agent_bare_tofu_prints_its_page", ["tofu"], AGENT),
 ]
 CASES += HELP_CASES
+
+
+# === completion (the slice after slice 9) =======================================
+#
+# The scripts themselves are different bytes in the two binaries (cobra's call
+# the binary back through `__complete`, clap_complete's carry the tree), so no
+# case here prints one: what Tab offers is compared by tests/completion.rs.
+# These cases pin everything around the scripts that IS the same bytes: the
+# family page, cobra's NoArgs on each shell, the unknown flag, the root's
+# mutual exclusion (the shells are runnable), and the typo suggestion.
+COMPLETION_CASES = [
+    ("human_completion_bare_is_its_page", ["completion"], HUMAN),
+    ("agent_completion_project_flag_is_its_page", P + ["completion"], AGENT),
+    # A family takes a stray word and prints its page (cobra checks Runnable
+    # before NoArgs).
+    ("agent_completion_stray_word_is_its_page", ["completion", "nosuch"], AGENT),
+    # cobra.NoArgs on a shell: the extra word is an "unknown command".
+    ("agent_completion_bash_extra_word", ["completion", "bash", "extra"], AGENT),
+    ("human_completion_fish_extra_word", ["completion", "fish", "extra"], HUMAN),
+    ("agent_completion_zsh_extra_word_config_flag",
+     CFG_SUB + ["completion", "zsh", "extra"], AGENT, None, None, _sub()),
+    ("agent_completion_powershell_extra_word_rooted",
+     ["completion", "powershell", "extra"], AGENT, None, None, cfg(VALID_CFG)),
+    # NoArgs runs before the root's PersistentPreRunE...
+    ("agent_completion_extra_word_before_both_identity_flags",
+     CFG_SUB + P + ["completion", "bash", "extra"], AGENT, None, None, _sub()),
+    # ...which refuses the pair for a runnable shell.
+    ("agent_completion_both_identity_flags_are_rejected",
+     CFG_SUB + P + ["completion", "bash"], AGENT, None, None, _sub()),
+    ("agent_completion_unknown_flag", ["completion", "zsh", "--bogus"], AGENT),
+    # pflag parses the bool's value at parse time, before NoArgs.
+    ("agent_completion_no_descriptions_bad_value",
+     ["completion", "zsh", "--no-descriptions=maybe", "extra"], AGENT),
+    ("agent_completion_no_descriptions_extra_word",
+     ["completion", "zsh", "--no-descriptions", "extra"], AGENT),
+    # The root's typo suggestion now names `completion`.
+    ("human_root_unknown_command_suggests_completion", ["comp"], HUMAN),
+    ("agent_root_unknown_command_suggests_completion", ["comp"], AGENT),
+]
+CASES += COMPLETION_CASES
 
 _armcheck()

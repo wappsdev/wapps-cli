@@ -322,7 +322,7 @@ fn command_path(chain: &[&Command]) -> String {
 }
 
 // UseLine: the parent's path, the Use string, then " [flags]" (every command
-// has at least the help flag).
+// has at least the help flag) unless the command sets DisableFlagsInUseLine.
 fn use_line(chain: &[&Command]) -> String {
     let c = chain[chain.len() - 1];
     let use_ = c
@@ -334,11 +334,15 @@ fn use_line(chain: &[&Command]) -> String {
     } else {
         use_
     };
-    if !line.contains("[flags]") {
+    if !line.contains("[flags]") && !DISABLE_FLAGS_IN_USE_LINE.contains(&line.as_str()) {
         line.push_str(" [flags]");
     }
     line
 }
+
+// The commands that set cobra's DisableFlagsInUseLine, by Use line. One:
+// cobra's own `completion bash` (completions.go); its three siblings do not.
+const DISABLE_FLAGS_IN_USE_LINE: &[&str] = &["wapps completion bash"];
 
 struct Flag {
     long: String,

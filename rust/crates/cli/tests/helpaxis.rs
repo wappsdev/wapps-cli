@@ -8,17 +8,10 @@
 // Commands:"), so a node added to Go appears here without anyone writing it down.
 //
 // Three forms are compared for every node: `<path> --help`, `<path> -h` and
-// `help <path>` (cobra's help command reaches the same page).
-//
-// One recorded exception: `completion`. Its port waits for the owner (see
-// docs/PORT-kalan-yuzey.md, slice 9), so its subtree is not walked and its one
-// listing line is removed from the root's page before comparing. The removal
-// asserts the line was there, so it cannot outlive the port silently.
+// `help <path>` (cobra's help command reaches the same page). No node is
+// excepted: `completion` and its four shells are compared like every other.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-
-const COMPLETION_LINE: &str =
-    "  completion  Generate the autocompletion script for the specified shell\n";
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -97,9 +90,6 @@ fn walk(bin: &Path, work: &Path, path: Vec<String>, out: &mut Vec<Vec<String>>) 
     let page = String::from_utf8_lossy(&run(bin, work, &args).stdout).to_string();
     out.push(path.clone());
     for child in children(&page) {
-        if path.is_empty() && child == "completion" {
-            continue;
-        }
         let mut next = path.clone();
         next.push(child);
         walk(bin, work, next, out);
@@ -132,9 +122,9 @@ fn every_help_page_matches_the_oracle() {
         rs_nodes.iter().map(|p| p.join(" ")).collect::<Vec<_>>(),
         "the two binaries list different command trees"
     );
-    // Floor: the walk must really reach the tree (49 nodes measured when this
-    // test landed: Go's 54 minus the 5 of `completion`).
-    assert!(go_nodes.len() >= 49, "walked only {} nodes", go_nodes.len());
+    // Floor: the walk must really reach the tree (54 nodes since `completion`
+    // and its four shells joined; 49 when this test landed without them).
+    assert!(go_nodes.len() >= 54, "walked only {} nodes", go_nodes.len());
 
     let mut diffs = Vec::new();
     let mut compared = 0;
@@ -148,18 +138,8 @@ fn every_help_page_matches_the_oracle() {
                 .collect(),
         ];
         for args in forms {
-            let mut g = run(&go, &work, &args);
+            let g = run(&go, &work, &args);
             let r = run(&rs, &work, &args);
-            if path.is_empty() {
-                let page = String::from_utf8(g.stdout).unwrap();
-                assert_eq!(
-                    page.matches(COMPLETION_LINE).count(),
-                    1,
-                    "the oracle's root page no longer lists `completion` once; \
-                     drop this exception: {args:?}"
-                );
-                g.stdout = page.replacen(COMPLETION_LINE, "", 1).into_bytes();
-            }
             compared += 1;
             if g.stdout != r.stdout || g.stderr != r.stderr || g.status.code() != r.status.code() {
                 diffs.push(format!(
