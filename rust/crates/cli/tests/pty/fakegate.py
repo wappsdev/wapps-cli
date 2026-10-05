@@ -36,6 +36,14 @@ DP_* and _deploy_proxy below):
   POST   /dp/v1/deploy/{service}            -> trigger (wapps deploy)
   GET    /dp/v1/deployments/{id}            -> status poll (wapps deploy --wait)
 
+And a fake GitHub "latest release" endpoint under /gh, for the update check
+(cases set WAPPS_UPDATE_CHECK_URL to "{GATE}/gh/<scenario>"; see _github):
+  GET    /gh/tag/{tag}                  -> 200 {"tag_name": tag}
+  GET    /gh/status/{code}              -> code, a valid release body
+  GET    /gh/raw/{hex}                  -> 200, these exact body bytes
+  GET    /gh/slow/{seconds}/{tag}       -> the tag, after a sleep
+  GET    /gh/redirect/{tag}             -> 302 to /gh/tag/{tag}
+
 TEL ADI `keyName` (camelCase) — bu bir AYRINTI DEGIL. Bu dosya bir sure
 `key_name` yaydi (Rust'in alan adi) ve o yanlis ad GERCEK bir ayrismayi
 gizledi: Go `keyName` okudugu icin BOS adlar aliyordu, Rust ise dolu.
@@ -741,6 +749,44 @@ def _deploy_proxy(h, method, rawpath):
     return True
 
 
+def _github(h, rawpath):
+    """Serves one fake GitHub releases request; returns False if the path is
+    not /gh. Like GitHub it wants a User-Agent, and both binaries send
+    `wapps-cli` with GitHub's v3 Accept header; anything else is a 400, so
+    every case that prints a notice also proves the two headers (on the
+    redirected request too)."""
+    path = urlparse(rawpath).path
+    if not path.startswith("/gh/"):
+        return False
+    if (h.headers.get("User-Agent") != "wapps-cli"
+            or h.headers.get("Accept") != "application/vnd.github+json"):
+        h._send(400, {"message": "unexpected headers"})
+        return True
+    parts = path[len("/gh/"):].split("/", 1)
+    kind, arg = parts[0], unquote(parts[1]) if len(parts) > 1 else ""
+    try:
+        if kind == "tag":
+            h._send(200, {"tag_name": arg, "name": "release " + arg})
+        elif kind == "status":
+            h._send(int(arg), {"tag_name": "v0.24.0"})
+        elif kind == "raw":
+            h._send_raw(200, bytes.fromhex(arg))
+        elif kind == "slow":
+            secs, tag = arg.split("/", 1)
+            time.sleep(float(secs))
+            h._send(200, {"tag_name": tag})
+        elif kind == "redirect":
+            h.send_response(302)
+            h.send_header("Location", "/gh/tag/" + arg)
+            h.send_header("Content-Length", "0")
+            h.end_headers()
+        else:
+            h._send(404, {"message": "Not Found"})
+    except OSError:
+        pass  # the client gave up (its 2 s timeout); nothing to answer
+    return True
+
+
 def _bulk(project):
     """The bulk set a project reads: "__ALL__@<project>" when the corpus gives
     that project one of its own (`coolproj`, the Coolify sync cases), else the
@@ -763,6 +809,8 @@ class H(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def do_GET(self):
+        if _github(self, self.path):
+            return
         if _deploy_proxy(self, "GET", self.path):
             return
         if _coolify(self, "GET", self.path, self._drain()):

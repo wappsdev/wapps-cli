@@ -91,11 +91,11 @@ func resolveProjectFlag() error {
 	}
 	dir, err := projects.Resolve(projectName)
 	if err != nil {
-		// Kayıt defterinde YOKSA bu bir hata DEĞİLDİR: store'un ihtiyacı olan tek
-		// şey proje ADI. list/get/rm/projects yerel dosyaya hiç bakmadığından
-		// `--project navlun-app` her dizinden çalışır. Yerel dosya GEREKTİREN
-		// verb'ler (apply/sync/exec/env — targets/sources okurlar) kendi net
-		// "no .wapps.yaml found" hatasını verir.
+		// NOT being in the registry is not an error: all the store needs is the
+		// project NAME. list/get/rm/projects never look at a local file, so
+		// `--project navlun-app` works from any directory. The verbs that DO
+		// need the local file (apply/sync/exec/env read targets/sources) give
+		// their own clear "no .wapps.yaml found" error.
 		secrets.SetProjectName(projectName)
 		return nil
 	}
@@ -104,11 +104,11 @@ func resolveProjectFlag() error {
 }
 
 func Execute() {
-	// SilenceErrors/SilenceUsage: cobra hatayı KENDİSİ basıyordu, sonra aşağıdaki
-	// blok bir kez daha basıyordu — kullanıcı aynı satırı iki kez, kurtarma
-	// satırını ise HİÇ görmüyordu. Basma işi tek yerde toplandı. Usage dökümü de
-	// susturuldu: bir binding/oturum hatasına 20 satır bayrak listesi eklemek
-	// gerçek mesajı gömüyor (`--help` elbette çalışmaya devam eder).
+	// SilenceErrors/SilenceUsage: cobra used to print the error ITSELF and the
+	// block below printed it again — the user saw the same line twice and the
+	// recovery line NEVER. Printing now happens in one place. The usage dump is
+	// silenced too: 20 lines of flags appended to a binding/session error bury
+	// the real message (`--help` of course still works).
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true
 
@@ -128,36 +128,35 @@ func Execute() {
 	}
 }
 
-// reportError, CLI'nın TEK hata basma yeridir ve okuyucuya göre BİÇİM seçer.
+// reportError is the CLI's ONLY error printer, and it picks the FORMAT by reader.
 //
-// Sözleşme tek eksenli: `agent` bayrağı, verb'leri zaten kapılayan
-// agentmode.IsAgent() ile AYNI saptama (§7.4.1). Böylece bir reddin KENDİSİ ile
-// o reddin BİÇİMİ ayrışamaz — ajan modunda reddedilen bir verb'ün hatasını yine
-// ajan biçiminde alırsınız.
+// The contract has one axis: the `agent` flag is the SAME detection
+// (agentmode.IsAgent(), §7.4.1) that already gates the verbs. So a refusal and
+// the FORMAT of that refusal cannot diverge — a verb refused in agent mode
+// reports its error in the agent format.
 //
-//   - insan terminali → DEĞİŞMEDİ: "Error: <cümle>" + "  → <kurtarma>".
-//     Bir cümlenin yerine JSON satırı koymak insan için regresyondur.
-//   - ajan/CI (ajan işareti veya non-TTY stdin) → SPEC §7.5 zarfı: stderr'e TEK
-//     satır JSON. Bir cümleyi ayrıştırmak zorunda kalmak, sözleşmenin var olma
-//     sebebi.
+//   - human terminal → UNCHANGED: "Error: <sentence>" + "  → <recovery>".
+//     Replacing a sentence with a JSON line would be a regression for a human.
+//   - agent/CI (agent marker or non-TTY stdin) → the SPEC §7.5 envelope: ONE
+//     line of JSON on stderr. Having to parse a sentence is the reason the
+//     contract exists.
 //
-// İki biçim YAN YANA basılmaz: zarfın "tek satır" olması sözleşmenin parçası,
-// ve insan tarafında da JSON gürültüsü istenmiyor. Her okuyucu TAM OLARAK bir
-// gösterim görür.
+// The two formats are never printed side by side: "one line" is part of the
+// envelope's contract, and the human side does not want JSON noise. Every
+// reader sees EXACTLY one rendering.
 func reportError(w io.Writer, err error, agent bool) {
 	if err == nil {
 		return
 	}
 	if agent {
-		// Zarf kodu, mesajı, kurtarmayı ve retryable'ı KENDİSİ taşır.
+		// The envelope carries the code, message, recovery and retryable ITSELF.
 		clierr.Emit(w, err)
 		return
 	}
 	fmt.Fprintf(w, "Error: %v\n", err)
-	// KURTARMA SATIRI: clierr kayıt defteri her kod için "ne yapmalı"yı
-	// taşıyor ama Error() onu içermediğinden bugüne dek hiç basılmamıştı.
-	// Hatanın yarısı buydu: kullanıcı neyin yanlış olduğunu görüyor, nasıl
-	// düzelteceğini görmüyordu.
+	// RECOVERY LINE: the clierr registry carries "what to do" for every code,
+	// but Error() does not include it, so it had never been printed. That was
+	// half of the bug: the user saw what was wrong, not how to fix it.
 	if rec := clierr.RecoveryOf(err); rec != "" {
 		fmt.Fprintf(w, "  → %s\n", rec)
 	}
@@ -177,18 +176,26 @@ func maybeNotifyUpdate() {
 		term.IsTerminal(int(os.Stderr.Fd())), agentmode.IsAgent()) {
 		return
 	}
-	updatecheck.MaybeNotify(os.Stderr, updatecheck.Options{CurrentVersion: Version})
+	updatecheck.MaybeNotify(os.Stderr, updatecheck.Options{
+		CurrentVersion: Version,
+		// WAPPS_UPDATE_CHECK_URL replaces the GitHub releases endpoint; unset or
+		// empty, the default applies. It exists so the Rust port's differential
+		// can point both binaries at a fake releases server: the default is
+		// HTTPS to api.github.com, which no test can stand in for. Whatever the
+		// server answers, only digits and dots reach the terminal (MaybeNotify).
+		APIURL: os.Getenv("WAPPS_UPDATE_CHECK_URL"),
+	})
 }
 
-// humanNoticesEnabled, insan-için YAN bildirimlerin ("yeni sürüm var", "skill
-// tazelendi") basılıp basılmayacağını söyler.
+// humanNoticesEnabled says whether the human-only SIDE notices ("a new version
+// is available", "skill refreshed") are printed.
 //
-// Ajan modunda stderr bir SÖZLEŞME KANALI: reportError oraya tek satır JSON
-// zarfı yazıyor, ve üzerine düşen her ek satır zarfı ayrıştıran tarafı bozar.
-// Eski koşul yalnızca stderr'in TTY olmasına bakıyordu — ama stderr bir terminal
-// İKEN stdin bir pipe olabilir (`cat cfg | wapps ...`), ve o bağlamda okuyucu
-// bir ajandır. Bildirimin insan olup olmadığı sorusu, hangi hata biçiminin
-// basılacağı sorusuyla AYNI soru; o yüzden aynı ekseni kullanıyor.
+// In agent mode stderr is a CONTRACT CHANNEL: reportError writes a one-line
+// JSON envelope there, and every extra line breaks whoever parses it. The old
+// condition only looked at stderr being a TTY — but stdin can be a pipe WHILE
+// stderr is a terminal (`cat cfg | wapps ...`), and in that context the reader
+// is an agent. Whether the notice is for a human is the SAME question as which
+// error format to print, so it uses the same axis.
 func humanNoticesEnabled(noUpdateCheck, stderrIsTTY, agent bool) bool {
 	return !noUpdateCheck && stderrIsTTY && !agent
 }
@@ -207,8 +214,8 @@ func maybeAutoRefreshSkill() {
 		// `skill ...` manages the skill explicitly; don't double-report.
 		return
 	}
-	// Tazeleme ajan modunda da KOŞAR (CI güncel skill'i alsın); yalnızca
-	// bildirim satırı insana özel.
+	// The refresh RUNS in agent mode too (so CI gets the current skill); only
+	// the notice line is for humans.
 	if skillpkg.AutoRefresh() && humanNoticesEnabled(false,
 		term.IsTerminal(int(os.Stderr.Fd())), agentmode.IsAgent()) {
 		fmt.Fprintln(os.Stderr, "✓ wapps-secrets skill refreshed to match the new wapps version.")
@@ -222,9 +229,9 @@ func init() {
 	rootCmd.MarkFlagsMutuallyExclusive("config", "project")
 	rootCmd.AddCommand(secrets.SecretsCmd)
 	rootCmd.AddCommand(secrets.DrCmd)       // §8.4 disaster recovery (dr verify/restore — B2 replica + Shamir shares)
-	rootCmd.AddCommand(secrets.RotateCmd)   // rotasyon worklist yönetimi (rotate skip — kayıtlı SKIP kaçış kapısı)
-	rootCmd.AddCommand(secrets.ProjectsCmd) // proje kavramı sırlardan bağımsız → kökte
-	rootCmd.AddCommand(secrets.TofuCmd)     // birinci-sınıf `wapps tofu` (secrets exec --prefix '' -- tofu sarımı)
+	rootCmd.AddCommand(secrets.RotateCmd)   // rotation worklist management (rotate skip — the recorded SKIP escape hatch)
+	rootCmd.AddCommand(secrets.ProjectsCmd) // projects are independent of secrets → on the root
+	rootCmd.AddCommand(secrets.TofuCmd)     // first-class `wapps tofu` (wraps secrets exec --prefix '' -- tofu)
 	rootCmd.AddCommand(coolifycmd.CoolifyCmd)
 	rootCmd.AddCommand(skillcmd.SkillCmd)
 	rootCmd.AddCommand(deploycmd.DeployCmd)

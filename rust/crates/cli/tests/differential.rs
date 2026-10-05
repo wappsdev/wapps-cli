@@ -120,8 +120,9 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // Built as the release builds it: `cmd.Version` from the ldflag, set to
     // the Rust crate's version (the owner's rule: Cargo.toml's version is the
     // tag's), so `--version` is compared and not merely "dev" against a semver.
-    // The update check this would arm stays off: probe.py sets
-    // WAPPS_NO_UPDATE_CHECK=1 for every case.
+    // That also arms the update check: probe.py sets WAPPS_NO_UPDATE_CHECK=1
+    // for every case, and only UPDATE_CASES (slice 10) unset it and point
+    // both binaries at the fake releases endpoint.
     let go_bin = work.join("wapps-go");
     run(
         Command::new("go")
@@ -419,9 +420,11 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // cobra's Find) added 42 and brought the long-excluded
     // `agent_unknown_subcommand` back: 955. `completion` (its family page,
     // NoArgs on each shell, the bool flag, the mutual exclusion, the `comp`
-    // suggestion) added 14: 969.
+    // suggestion) added 14: 969. The update check and the skill auto-refresh
+    // (slice 10: a fake GitHub releases endpoint, the shared cache file, the
+    // gates, the zone of the written time) added 74: 1043.
     assert!(
-        equal >= 969,
+        equal >= 1043,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

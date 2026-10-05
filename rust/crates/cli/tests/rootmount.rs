@@ -84,6 +84,10 @@ fn run_agent(bin: &Path, args: &[&str], work: &Path) -> (String, i32) {
         .env("WAPPS_SESSION_TOKEN", "")
         .env("CF_ACCESS_CLIENT_ID", "")
         .env("CF_ACCESS_CLIENT_SECRET", "")
+        // HOME is inherited here, and the skill auto-refresh runs after every
+        // command, agent mode included: without the opt-out both binaries
+        // could rewrite the developer's real ~/.config/wapps/skills.
+        .env("WAPPS_NO_UPDATE_CHECK", "1")
         .stdin(std::process::Stdio::null())
         .output()
         .expect("ikili calistirilamadi");
