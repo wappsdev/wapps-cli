@@ -221,6 +221,18 @@ fn run() -> Result<(), CmdError> {
     }
 
     if let Some(("broker", bm)) = matches.subcommand() {
+        if let Some((name, args)) = bm.subcommand() {
+            if wapps::broker::owner::handles(name) {
+                let code = match wapps::broker::owner::run(name, args) {
+                    Ok(()) => 0,
+                    Err(problem) => {
+                        eprintln!("broker: {problem}");
+                        1
+                    }
+                };
+                return Err(CmdError::Exit(code));
+            }
+        }
         if let Some(("daemon", dm)) = bm.subcommand() {
             let result = if dm.get_flag("stop") {
                 wapps::broker::daemon::stop()

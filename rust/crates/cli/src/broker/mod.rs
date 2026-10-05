@@ -2,6 +2,7 @@
 mod config;
 pub mod daemon;
 mod forward;
+pub mod owner;
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, Read},
