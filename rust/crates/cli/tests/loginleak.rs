@@ -11,6 +11,7 @@
 // TMPDIR and requiring it to be empty when the run ends.
 //
 // NO REAL SECRET: the token is an unsigned test string.
+use broker_oracle::exe::write_executable;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -111,16 +112,15 @@ fn login_never_prints_or_strays_a_token_byte() {
     let bin_dir = work.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let shim = bin_dir.join("cloudflared");
-    std::fs::write(
+    write_executable(
         &shim,
-        "#!/bin/sh\n\
+        b"#!/bin/sh\n\
          [ \"$2\" = token ] || exit \"${LOGIN_EXIT:-0}\"\n\
          printf '%s\\n' \"$CF_SHIM_TOKEN\" >&2\n\
          printf '%s\\n' \"$CF_SHIM_TOKEN\"\n\
          exit \"${TOKEN_EXIT:-0}\"\n",
     )
     .unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     for (label, bin) in binaries(&work) {
         let runs: [Step; 4] = [

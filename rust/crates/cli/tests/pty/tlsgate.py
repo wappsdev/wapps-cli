@@ -12,7 +12,8 @@ gecici bir dizine yaziliyor ve kosum bitince siliniyor. Agaca hicbir sertifika,
 anahtar ya da gercek alan adi yazilmiyor. Dondurulen deger sabit bir test
 dizesi."""
 import json, ssl, sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from gateproc import Server
 
 
 class H(BaseHTTPRequestHandler):
@@ -35,6 +36,6 @@ if __name__ == "__main__":
     port, crt, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(crt, key)
-    srv = HTTPServer(("127.0.0.1", port), H)
+    srv = Server(("127.0.0.1", port), H)
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     srv.serve_forever()

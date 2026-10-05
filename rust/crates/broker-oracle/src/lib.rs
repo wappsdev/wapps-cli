@@ -20,6 +20,7 @@
 
 pub mod cloud;
 pub mod compare;
+pub mod exe;
 pub mod hermetic;
 pub mod mcp;
 pub mod normalize;

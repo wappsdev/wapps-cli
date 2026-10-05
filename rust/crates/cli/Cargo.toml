@@ -112,3 +112,10 @@ ring = "0.17"
 # record in the doc). No default features; the +1 is clap_complete alone (its
 # one dependency without that feature, clap, was already in the graph).
 clap_complete = "4"
+
+[dev-dependencies]
+# Test support from this workspace (no package enters the lock): the tests that
+# write a shim and run it at once write it through
+# `broker_oracle::exe::write_executable`, so Linux cannot refuse it with
+# ETXTBSY while a sibling test's fork holds the write descriptor.
+broker-oracle = { path = "../broker-oracle", version = "0.0.0" }

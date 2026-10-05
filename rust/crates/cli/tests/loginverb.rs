@@ -10,9 +10,9 @@
 //     isolated temp HOME is deleted after the run, which no case can observe
 //     from the outside. Both are measured here with an injected timeout and an
 //     injected temp base.
+use broker_oracle::exe::write_executable;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use wapps::clierr::Code;
@@ -91,8 +91,7 @@ fn scratch(tag: &str) -> PathBuf {
 
 fn shim(dir: &Path, body: &str) {
     let p = dir.join("bin/cloudflared");
-    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&p, format!("#!/bin/sh\n{body}\n").as_bytes()).unwrap();
 }
 
 fn run(dir: &Path, timeout: Duration) -> Result<String, wapps::clierr::Error> {

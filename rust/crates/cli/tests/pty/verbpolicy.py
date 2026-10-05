@@ -50,11 +50,12 @@ ALDIRIR ve bir ajan yetki kurallarini yazabilir.
 Gate SAHTE ve yereldir; gercek bir gate'e HIC baglanilmaz ve buradaki hicbir
 deger gercek bir sir DEGILDIR.
 """
-import json, os, socket, subprocess, sys, time
+import json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
 from cases import GATE_SCRIPT
+import gateproc
 
 CFG = "version: 2\nproject: testproj\n"
 
@@ -102,16 +103,8 @@ def main():
     workdir = os.path.join(workdir, "policy", tag)
     os.makedirs(workdir, exist_ok=True)
 
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
-    gate = subprocess.Popen([sys.executable, os.path.join(here, "fakegate.py"),
-                             str(port), json.dumps(GATE_SCRIPT)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(200):
-        try:
-            socket.create_connection(("127.0.0.1", port), 0.05).close(); break
-        except OSError: time.sleep(0.02)
-    else:
-        raise SystemExit("fake gate did not come up")
+    gate, port = gateproc.start(os.path.join(here, "fakegate.py"),
+                                [json.dumps(GATE_SCRIPT)])
 
     res = {}
     try:

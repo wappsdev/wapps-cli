@@ -1326,6 +1326,7 @@ decided the same day. OD16 came out of measuring OD9 and OD10; the owner decided
 23. **13.0-b** The recorded `tools/list` is 15,624 bytes, not 16,966.
 24. **13.0-d** The same read-only role settles `review_pending` on codex and `completed` on claude.
 25. **13.0-g** The plugin's suite leaves 6 detached daemons per pair of runs.
+26. **13.0-h** (found on the first hosted CI run) On Linux, a fake installed with `fs::copy` and run at once can fail with `Text file busy`: a child forked by a sibling test thread holds the write descriptor until it execs. `peer::install` now writes every fake through `broker_oracle::exe::write_executable`, which writes out of process, so the window does not exist. Measured in `docs/PORT-kalan-yuzey.md`, "First CI run on the hosted runners".
 
 ---
 

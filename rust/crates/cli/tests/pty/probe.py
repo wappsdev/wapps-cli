@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """Runs a binary under a pty over every case and dumps the results as JSON."""
-import calendar, datetime, hashlib, json, os, re, shutil, socket, subprocess, sys, time
+import calendar, datetime, hashlib, json, os, re, shutil, sys, time
 from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
 from cases import CASES, GATE_SCRIPT, FIXTURE_FILES
 from workdir import demand_usable
+import gateproc
 
 def bindpath_for(cfg):
     return os.path.join(cfg, "wapps", "repo-pins.json")
-
-def free_port():
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 # --- the update check's cache file (`<cache dir>/wapps/version-check.json`) ---
 #
@@ -79,18 +77,9 @@ def main():
     # SIGKILL yer — yani olcum bir DAVRANIS degil bir ZAMAN ASIMI olur. Bu
     # SESSIZ arizaydi; artik 97 ile GURULTULU (bkz. workdir.py).
     demand_usable(workdir)
-    port = free_port()
     here = os.path.dirname(os.path.abspath(__file__))
-    gate = subprocess.Popen([sys.executable, os.path.join(here, "fakegate.py"),
-                             str(port), json.dumps(GATE_SCRIPT)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # gate ayaga kalkana kadar bekle (kosula bagli bekleme, sabit uyku degil)
-    for _ in range(200):
-        try:
-            socket.create_connection(("127.0.0.1", port), 0.05).close(); break
-        except OSError: time.sleep(0.02)
-    else:
-        raise SystemExit("fake gate did not come up")
+    gate, port = gateproc.start(os.path.join(here, "fakegate.py"),
+                                [json.dumps(GATE_SCRIPT)])
 
     cfg = os.path.join(workdir, "xdgcfg")
     os.makedirs(cfg, exist_ok=True)
