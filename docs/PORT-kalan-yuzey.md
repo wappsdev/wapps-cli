@@ -902,7 +902,7 @@ cut happens on the raw text, as before).
 - *Not done.* No mutation proof for this slice; the red-first runs above are the evidence. The
   repo line itself is covered by the unit vectors only: the differential cannot give a case a
   hostile repository identity (it is the case directory's path).
-- *Gates*, each run on its own, exit codes read on their own: see the lane report.
+- *Gates*, each run on its own, exit codes read on their own: `go build ./...` 0, `go vet ./cmd/... ./internal/...` 0, `go test ./...` 0, `cargo fmt --all -- --check` 0, `cargo clippy --all-targets -- -D warnings` 0, `cargo deny check` 0, `cargo test --release -- --nocapture` 0 (differential `EQUAL=912 DIFFERENT=0 UNSOUND=0`; 58 test binaries ok).
 
 
 ---
