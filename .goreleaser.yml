@@ -1,6 +1,13 @@
 version: 2
 project_name: wapps
 
+# The Rust CLI's `--version` is rust/crates/cli/Cargo.toml's version, and that
+# must equal the tag (owner decision, 2026-10-05): a tag Cargo.toml does not
+# carry fails the release here, before anything is built.
+before:
+  hooks:
+    - sh rust/check-version.sh {{ .Version }}
+
 builds:
   - id: wapps
     main: ./main.go
