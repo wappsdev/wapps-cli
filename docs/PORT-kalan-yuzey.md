@@ -688,7 +688,7 @@ Symlinked config roots (finding 7).
 
 ---
 
-#### Finding after landing: a `file` source can read outside the repository (owner decision)
+#### Finding after landing: a `file` source can read outside the repository (owner decision: B · **LANDED**)
 
 A background security review flagged `syncverb.rs` for path traversal. The Rust code is a
 faithful port, so the finding is about the **Go behaviour it reproduces**, and it is recorded
@@ -707,6 +707,93 @@ Fixing it changes the shipped Go CLI's behaviour (it would break projects that u
 source paths), and fixing it only in Rust breaks the differential. The owner chooses between:
 (A) bound sources to the config root in both binaries, (B) keep the behaviour but list the files
 a sync will read in the binding prompt, (C) leave it. Recommendation: (A).
+
+**Decision taken (owner, 2026-10-05): (B). LANDED** in both binaries in one change, so the
+differential stays equal.
+
+- *Behaviour kept.* Relative (`../`) and absolute source paths still resolve and are read
+  exactly as before; `ResolvedSources` is untouched.
+- *What the prompt shows now.* When the binding gate asks a human to bind an unpinned
+  repository, a `sync reads:` block lists every declared source, resolved against the config
+  root and cleaned (`filepath.Clean` / `go_clean`), one per line as `<type> <path>`, and marks
+  the ones outside the config root with `(outside the config root)`. No sources → no block, so
+  the prompt is byte-identical to before for every config without `sources:`.
+
+  ```
+  This repo is not bound to a project yet.
+    repo:    /work/repo
+    project: testproj
+    sync reads:
+      file /work/repo/sync.env
+      file /work/other/.env (outside the config root)
+      tofu /work/repo
+  Bind them? [y/N]:
+  ```
+
+- *Where it shows.* The pin is per repository and authorizes every later verb (an agent's
+  sync included), so the list is printed by the shared gate (`checkRepoBinding` /
+  `check_repo_binding`), whichever verb reached it, and by `secrets trust-repo`'s own prompt
+  (stdout, after `backend:`/`profiles:`). Two choices made here that the decision text did not
+  spell out: trust-repo is included (it is the other way to pin; leaving it out would leave
+  one pin path blind), and `tofu` sources are listed by their workdir (sync runs
+  `tofu output -json` there, which is a read from outside the repository just the same).
+- *"Outside" is lexical and per path component*: a path is inside when it equals the root or
+  starts with `root + "/"` (`/a/bc` is not under `/a/b`). Symlinks are not resolved, so a link
+  inside the root that points elsewhere is listed as inside. Under `--config`, the root is the
+  config file's directory, not the repository root.
+- *Code.* Go: `cmd/secrets/agentgate.go` (`bindPromptText`, `syncReadsBlock`, `withinRoot`; the
+  `bindPrompt` seam now takes the config), `cmd/secrets/trustrepo.go` (one line). Rust:
+  `configctx.rs` (`bind_prompt_text`, `sync_reads_block`, `within_root`; `check_repo_binding`'s
+  `ask` takes `&WappsYaml`), `trustrepo.rs` (`prompt_block`), `main.rs` (the two `ask`
+  closures). The Turkish comments of `agentgate.go`, `binding_test.go`, `trustrepo.go`,
+  `configctx.rs` and `trustrepo.rs` were translated to English in the same change; no code
+  changed with them.
+- *Tests.* Go `cmd/secrets/syncreads_test.go` (6) and Rust `tests/syncreads.rs` (6), the same
+  vectors: inside / cleaned / `../` / uncleaned absolute / tofu default and absolute workdir,
+  no sources, the component-wise root check, both prompt texts with and without sources,
+  trust-repo's block. Red first: with stub functions, 4 of 6 failed on each side (the two that
+  passed pin the unchanged no-sources prompt).
+- *Differential.* **8 new cases** (`SYNC_READS_CASES`): a source inside the root (`./sub/../`,
+  read after "y"), a relative `../` source (marked; after "y" the read is attempted outside the
+  repository and fails on the absent file, so the kept behaviour is measured), an uncleaned
+  absolute source (printed cleaned, declined), a sibling that shares the root as a string
+  prefix (`cases/<name>.env`, outside), `--config` (root = `sub/`, `../sync.env` marked and
+  read), a tofu workdir, the list shown by `secrets list`, and trust-repo's prompt. Against
+  the pre-slice Rust binary and the new Go binary: 7 of the first 7 DIFFERENT, each only by the
+  block; after the port 8 EQUAL. Floor in `differential.rs` raised 897 → 905 (the live count,
+  measured: 909 cases − 4 excluded).
+- *Existing cases touched.* The whole corpus (904 cases at that point: 897 + the first 7 new)
+  run against the new Go binary and the pre-slice Rust binary: `EQUAL=885 DIFFERENT=19
+  UNSOUND=0`. The 19 are the 7 new cases and **12 existing human `secrets sync` cases** that
+  answer the prompt with "y" for a config with `sources:`; a script that strips the block from
+  Go's output made all 19 byte-identical to the old Rust output, so the block is the only
+  change. No other verb's existing case declares `sources:`.
+- *Mutation proofs* (Rust, each against the 8-case subset, file restored and compared byte for
+  byte with its backup): (a) root check as a plain string prefix → 1 red (the sibling case);
+  (b) path not cleaned → 1 (the absolute case); (c) tofu listed by `path` instead of `workdir`
+  → 1; (d) trust-repo without the block → 1; (e) no outside marker → 7; (f) inline prompt
+  without the block → 7. Go (against the unit tests, the oracle cannot be checked by the
+  differential): string-prefix root check → `TestWithinRoot…` red; no `Clean` →
+  `TestSyncReadsBlock…` red.
+- *Gates*, each run as its own command and its exit code read on its own: `go build ./...` 0,
+  `go vet ./cmd/... ./internal/...` 0, `go test ./...` 0, `cargo fmt --all -- --check` 0,
+  `cargo clippy --all-targets -- -D warnings` 0, `cargo deny check` 0, `cargo test --release`
+  0 (differential `EQUAL=905 DIFFERENT=0 UNSOUND=0`, 497 s; 55 test binaries ok, `armcheck`
+  included). `gofmt -l cmd/` lists `cmd/secrets/env.go`, which this change does not touch and
+  which is listed on `main` too.
+
+**Open finding (not fixed, needs a decision).** The listed paths are printed raw, exactly as
+the repo id and the project name already were. A hostile `.wapps.yaml` can put a carriage
+return or an ANSI escape in a `path:` and redraw the line so the outside marker (or the whole
+entry) is hidden on a terminal. Quoting only paths that contain control characters (Go
+`strconv.Quote`, Rust `gostrconv::quote`) would close it for the list; the project name has
+the same exposure and predates this change. Not done here because it changes what every
+binding prompt prints and touches a known `quote` divergence (non-ASCII, slice 6a).
+
+**Not measured.** A symlinked config root (slice 5 finding 7: Rust canonicalizes, Go only
+makes absolute, so the printed paths would differ under e.g. `/tmp`; the harness's workdir is
+canonical). A config at `/` (the `root == "/"` branch is unit-tested only). Whether a human
+actually reads the list before answering.
 
 
 ---

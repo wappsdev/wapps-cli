@@ -1,18 +1,18 @@
-// configctx, "hangi `.wapps.yaml`" sorusunu ve ondan tureyen BAGLAMA kapisini
-// tasir.
+// configctx carries the "which `.wapps.yaml`" question and the BINDING gate
+// derived from it.
 //
 // ORACLE: cmd/root.go (resolveProjectFlag), cmd/secrets/sync.go
 // (wappsConfigPath, loadOrNil), cmd/secrets/store_backend.go
 // (requireStoreConfig, storeProject), cmd/secrets/agentgate.go
-// (checkRepoBinding, repoIdentity).
+// (checkRepoBinding, repoIdentity, bindPromptText, syncReadsBlock).
 //
-// BU DILIMIN ACTIGI IKI KAPI — `exec`/`apply` tam olarak bunlarin arkasindaydi:
+// The two gates `exec`/`apply` sat behind:
 //
-//   1. `--project` config gereksinimini ATLATMIYOR. get/set yalnizca proje
-//      ADINA ihtiyac duyar (storeProject); exec/apply targets/sources OKUR,
-//      yani yerel dosya SART (requireStoreConfig).
-//   2. Config varken `--project` yoksa, pinlenmemis bir baglama INSAN/TTY
-//      yolunda satir ici ONAY ister.
+//   1. `--project` does NOT bypass the config requirement. get/set need only
+//      the project NAME (storeProject); exec/apply READ targets/sources, so
+//      the local file is REQUIRED (requireStoreConfig).
+//   2. With a config and no `--project`, an unpinned binding asks for inline
+//      CONFIRMATION on the human/TTY path.
 use crate::binding;
 use crate::clierr::{Code, Error};
 use crate::projects;
@@ -20,47 +20,48 @@ use crate::wappsyaml::{self, WappsYaml};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// WAPPS_YAML_PATH, --config/--project override'i yokken kullanilan
-/// (cwd-goreli) varsayilan dosya adi.
+/// WAPPS_YAML_PATH is the default (cwd-relative) file name used when there is
+/// no --config/--project override.
 pub const WAPPS_YAML_PATH: &str = ".wapps.yaml";
 
-/// Ctx, cozulmus config baglamidir.
+/// Ctx is the resolved config context.
 ///
-/// `project_override`: `--project <ad>` VERILDI ama kayit defterinde YOK.
-/// Store'un ihtiyaci olan tek sey ad oldugundan (list/get/rm/projects yerel
-/// dosyaya hic bakmaz) boyle bir cagri deposuz calisir. exec/apply icin ise
-/// yeterli DEGILDIR — kendi net "no .wapps.yaml found" hatalarini verirler.
+/// `project_override`: `--project <name>` was GIVEN but is NOT in the
+/// registry. The store needs only the name (list/get/rm/projects never look at
+/// a local file), so such a call works without a repo. It is NOT enough for
+/// exec/apply, which give their own clear "no .wapps.yaml found" errors.
 pub struct Ctx {
     pub config_path: Option<PathBuf>,
     pub project_override: Option<String>,
 }
 
-/// MUTUALLY_EXCLUSIVE, `--config` + `--project` reddinin TEK metin kaynagi.
+/// MUTUALLY_EXCLUSIVE is the ONE text source of the `--config` + `--project`
+/// refusal.
 ///
-/// SABIT, fonksiyon DEGIL — cunku iki cagiran onu FARKLI SARIYOR ve fark
-/// OLCULDU:
+/// A CONSTANT, not a function, because its two callers WRAP it DIFFERENTLY and
+/// the difference was MEASURED:
 ///
-///   * dispatch (main.rs) → `CmdError::Plain`. Go'da bu hata root'un
-///     `PersistentPreRunE`undan DUZ bir `fmt.Errorf` olarak donuyor, yani
-///     insan yolunda "Error: <cumle>" basiliyor — kod oneki YOK, kurtarma
-///     satiri YOK. Ilk duzeltme burada `Error::new(Code::Internal, ...)`
-///     kullandi ve ajan yolu ESITLENDI ama INSAN yolu ayrisik kaldi
-///     (differential DIFFERENT=1): Rust "Error: INTERNAL: ... → run wapps
-///     doctor" basiyordu. `Plain` ajan modunda zaten Internal'a sariliyor,
-///     yani ZARF da dogru kaliyor.
-///   * `Ctx::resolve` → yapisal `Error`. Bu yol programatik/test cagrilari
-///     icin duruyor (Go'daki `resolveProjectFlag`in kendi kontrolu gibi) ve
-///     dispatch onu yakaladigi icin SAHADAN ERISILEMEZ.
+///   * dispatch (main.rs) → `CmdError::Plain`. In Go this error comes back from
+///     the root's `PersistentPreRunE` as a PLAIN `fmt.Errorf`, so the human
+///     path prints "Error: <sentence>" with NO code prefix and NO recovery
+///     line. The first fix used `Error::new(Code::Internal, ...)` here; the
+///     agent path became EQUAL but the HUMAN path stayed divergent
+///     (differential DIFFERENT=1): Rust printed "Error: INTERNAL: ... → run
+///     wapps doctor". `Plain` is already wrapped as Internal in agent mode, so
+///     the ENVELOPE stays right too.
+///   * `Ctx::resolve` → a structured `Error`. That path exists for
+///     programmatic/test calls (like Go's own check in `resolveProjectFlag`)
+///     and is UNREACHABLE from the field because dispatch catches it first.
 ///
-/// Metin iki yere KOPYALANSAYDI biri gunun birinde otekinden ayrisirdi.
+/// Had the text been COPIED to two places, one would drift from the other.
 pub const MUTUALLY_EXCLUSIVE: &str = "--config and --project are mutually exclusive";
 
 impl Ctx {
-    /// resolve, --config/--project bayraklarini bir baglama cevirir.
+    /// resolve turns the --config/--project flags into a context.
     ///
-    /// `--project`, kayit defteri uzerinden <dir>/.wapps.yaml'a cozulmeye
-    /// CALISILIR. Defterde yoksa bu bir HATA DEGILDIR: ad, project_override
-    /// olarak tasinir.
+    /// `--project` is TRIED against the registry to resolve to
+    /// <dir>/.wapps.yaml. Not being in the registry is NOT an ERROR: the name is
+    /// carried as project_override.
     pub fn resolve(config: Option<&str>, project: Option<&str>) -> Result<Ctx, Error> {
         if let Some(c) = config {
             if project.is_some() {
@@ -83,7 +84,7 @@ impl Ctx {
                     config_path: Some(Path::new(&dir).join(WAPPS_YAML_PATH)),
                     project_override: None,
                 }),
-                // Defterde YOKSA ad'in kendisiyle devam edilir.
+                // NOT in the registry: continue with the name itself.
                 Err(_) => Ok(Ctx {
                     config_path: None,
                     project_override: Some(name.to_string()),
@@ -92,8 +93,8 @@ impl Ctx {
         }
     }
 
-    /// path, yuklenecek `.wapps.yaml` yolunu doner: override varsa o, yoksa
-    /// cwd-goreli varsayilan.
+    /// path returns the `.wapps.yaml` path to load: the override when set,
+    /// else the cwd-relative default.
     pub fn path(&self) -> PathBuf {
         match &self.config_path {
             Some(p) => p.clone(),
@@ -101,9 +102,10 @@ impl Ctx {
         }
     }
 
-    /// load_or_none, dosya YOKSA None doner; ayristirma hatalarini YUKSEK SESLE
-    /// yayar. "Dosya yok" ile "dosya bozuk"u ayirmak, sessizce baska bir yola
-    /// sapmakla operatore yazim hatasini gostermek arasindaki farktir.
+    /// load_or_none returns None when the file DOES NOT EXIST and propagates
+    /// parse errors LOUDLY. Telling "no file" from "broken file" is the
+    /// difference between silently taking another path and showing the
+    /// operator their typo.
     pub fn load_or_none(&self) -> Result<Option<WappsYaml>, Error> {
         let p = self.path();
         if !p.exists() {
@@ -115,15 +117,15 @@ impl Ctx {
         }
     }
 
-    /// store_project, YALNIZCA proje ADINA ihtiyac duyan verb'ler
-    /// (list/get/rm/projects) icindir: gate'e gitmek icin yerel bir
-    /// `.wapps.yaml`, dizin ya da depo GEREKMEZ.
+    /// store_project is for the verbs that need ONLY the project NAME
+    /// (list/get/rm/projects): reaching the gate needs NO local `.wapps.yaml`,
+    /// directory or repo.
     ///
-    /// `--project` bir dizine cozulmediyse ADIN KENDISI yeterlidir; aksi halde
-    /// normal yerel config yuklenir ve YOKLUGU bir hatadir.
+    /// When `--project` did not resolve to a directory the NAME ITSELF is
+    /// enough; otherwise the local config is loaded and its ABSENCE is an error.
     ///
-    /// Bu, exec/apply'in kullandigi `require_store_config`ten ayri durmali:
-    /// oradaki verb'ler `targets`/`sources` OKUYOR, yani yerel dosya SART.
+    /// This must stay separate from `require_store_config`, which exec/apply
+    /// use: those verbs READ `targets`/`sources`, so the local file is REQUIRED.
     pub fn store_project(&self, verb: &str) -> Result<String, Error> {
         if let Some(p) = &self.project_override {
             return Ok(p.clone());
@@ -131,12 +133,11 @@ impl Ctx {
         Ok(self.require_store_config(verb)?.project)
     }
 
-    /// require_store_config, yerel `.wapps.yaml`i yukler ve VAR OLMASINI sart
-    /// kosar. targets veya sources OKUYAN verb'ler (apply/sync/exec/env) bunu
-    /// cagirir; yalnizca proje ADI yeten verb'ler (list/get/rm/projects)
-    /// cagirmaz.
+    /// require_store_config loads the local `.wapps.yaml` and REQUIRES it to
+    /// exist. Verbs that READ targets or sources (apply/sync/exec/env) call
+    /// it; verbs that need only the project NAME (list/get/rm/projects) do not.
     ///
-    /// `verb`, hatayi konumlandirmak icin ("apply: ...").
+    /// `verb` places the error ("apply: ...").
     pub fn require_store_config(&self, verb: &str) -> Result<WappsYaml, Error> {
         match self.load_or_none()? {
             Some(c) => Ok(c),
@@ -155,27 +156,28 @@ fn abs_path(p: &Path) -> std::io::Result<PathBuf> {
     Ok(std::env::current_dir()?.join(p))
 }
 
-/// check_repo_binding, bir config icin depo→proje baglamasinin GUVENILEN
-/// home-dir'de pinli oldugunu dogrular (SPEC §7.1 trust-repo).
+/// check_repo_binding verifies that a config's repo→project binding is
+/// pinned in the TRUSTED home dir (SPEC §7.1 trust-repo).
 ///
-/// `errw` insan yolundaki onay diyalogunun ve onay satirinin gittigi yerdir
-/// (Go'da os.Stderr).
+/// `errw` is where the human path's confirmation dialogue and success line go
+/// (os.Stderr in Go). `ask` receives the repo identity and the loaded config,
+/// so the prompt can show every source a sync would read.
 pub fn check_repo_binding<W: Write>(
     ctx: &Ctx,
     is_agent: bool,
     stdin_is_tty: bool,
     errw: &mut W,
-    ask: &dyn Fn(&str, &str, &mut W) -> bool,
+    ask: &dyn Fn(&str, &WappsYaml, &mut W) -> bool,
 ) -> Result<(), Error> {
-    // Ciplak `--project <ad>` (defterde olmayan): ortada baglanacak bir depo
-    // YOKTUR. Bir INSAN icin bu, hedefi komut satirinda acikca adlandirmaktir —
-    // pinin korudugu confused-deputy durumu degil. Bir AJAN icin degildir: pin
-    // tam olarak "A deposundaki ajan B projesini okumasin" icindir ve ajanin
-    // `--project` yazabilmesi onu YETKILI YAPMAZ → fail-closed.
+    // A bare `--project <name>` (not in the registry): there is NO repo to
+    // bind. For a HUMAN this names the target explicitly on the command line,
+    // not the confused-deputy case the pin guards. For an AGENT it is: the pin
+    // exists precisely so that an agent in repo A cannot read project B, and
+    // being able to type `--project` does NOT authorize it → fail-closed.
     if let Some(p) = &ctx.project_override {
         if is_agent {
-            // Kurtarma satiri override ediliyor: ortada pinlenecek bir depo
-            // YOK, o yuzden "trust-repo kosur" varsayilani burada anlamsiz.
+            // The recovery line is overridden: there is NO repo to pin, so the
+            // default "run trust-repo" would be meaningless here.
             return Err(Error::new(
                 Code::BindingUnpinned,
                 format!(
@@ -188,21 +190,22 @@ pub fn check_repo_binding<W: Write>(
         return Ok(());
     }
 
-    // Config YOKSA (ya da okunamiyorsa) baglama kontrolu de YOK. Ayristirma
-    // hatasi burada YUTULUYOR — Go da yutuyor — ve bir adim sonra
-    // require_store_config'ten yuksek sesle geri geliyor.
+    // No config (or an unreadable one): no binding check. A parse error is
+    // SWALLOWED here, as Go swallows it, and comes back loudly one step later
+    // from require_store_config.
     let Ok(Some(cfg)) = ctx.load_or_none() else {
         return Ok(());
     };
 
-    // Service principal (CI): CF Access service-token CIFTI env'de doluysa
-    // depo-pin kontrolu ATLANIR. Taze bir CI container'inda trust-repo (TTY)
-    // imkansiz; bu muafiyet olmadan store tuketen HER adim BINDING_UNPINNED ile
-    // olurdu. Cift'in YARISI set ise bypass YOK — fail-closed aynen surer.
+    // Service principal (CI): when the CF Access service-token PAIR is set in
+    // the env, the repo-pin check is SKIPPED. trust-repo (TTY) is impossible in
+    // a fresh CI container; without this exemption EVERY step that consumes
+    // the store would die with BINDING_UNPINNED. With only HALF of the pair set
+    // there is NO bypass; fail-closed stays as is.
     //
-    // GUVENLIK KISITI: bu muafiyet per-repo confused-deputy hapsini kaldirir;
-    // geriye yalnizca sunucu-tarafi per-key policy kalir. YALNIZCA service
-    // token'lar PER-PROJECT scoped ise guvenlidir.
+    // SECURITY CONSTRAINT: this exemption removes the per-repo confused-deputy
+    // containment; only the server-side per-key policy is left. It is safe
+    // ONLY while service tokens are PER-PROJECT scoped.
     if service_token_pair_set() {
         return Ok(());
     }
@@ -217,10 +220,10 @@ pub fn check_repo_binding<W: Write>(
     match store.check(&fp, &cfg.project) {
         Ok(()) => return Ok(()),
         Err(binding::CheckError::Mismatch) => {
-            // UYUSMAZLIK satir ici COZULMEZ. Config'in PINLI OLANDAN BASKA bir
-            // projeyi talep etmesi, pinin var olma sebebinin ta kendisi. Yeni
-            // bir baglama siradan ve zararsizdir; bir baglamayi DEGISTIRMEK
-            // kasitli bir karar ister.
+            // A MISMATCH is NEVER resolved inline. The config claiming a
+            // project OTHER than the pinned one is the very reason the pin
+            // exists. A new binding is ordinary and harmless; CHANGING a
+            // binding takes a deliberate decision.
             return Err(Error::new(
                 Code::BindingUnpinned,
                 format!(
@@ -233,14 +236,14 @@ pub fn check_repo_binding<W: Write>(
         Err(binding::CheckError::Unpinned) => {}
     }
 
-    // Buradan sonrasi PINSIZ durum: baglama henuz hic kurulmamis.
+    // From here on the binding is UNPINNED: it has never been set up.
     //
-    // Ajan/CI → fail-closed. Pinin GERCEKTEN is gordugu yer burasi: uydurulmus
-    // ya da ele gecmis bir `.wapps.yaml` kendi basina bir proje TALEP EDEMESIN.
-    // Bir ajanin o dosyayi yazabiliyor olmasi, onu yetkili yapmaz.
+    // Agent/CI → fail-closed. This is where the pin REALLY works: a forged or
+    // compromised `.wapps.yaml` must not CLAIM a project on its own. An agent
+    // being able to write that file does not authorize it.
     if is_agent || !stdin_is_tty {
-        // Insan ama TTY yok (boru/script) → SORAMAYIZ, o yuzden sormus gibi de
-        // yapmayiz.
+        // A human without a TTY (pipe/script): we CANNOT ask, so we do not
+        // pretend to either.
         return Err(Error::new(
             Code::BindingUnpinned,
             format!(
@@ -250,11 +253,13 @@ pub fn check_repo_binding<W: Write>(
         ));
     }
 
-    // Insan, terminalde: bu dizine gelip komutu yazmis olmasi NIYET BEYANIDIR.
-    // Ayri bir komut ogretmek yerine BURADA soruyoruz — guvenlik ayni (onaylayan
-    // yine bir insan), surtunme depo basina tek tus. Proje ADIYLA gosteriliyor:
-    // korunan sey tam olarak bu, HANGI projenin talep edildigini gorebilmek.
-    if !ask(&repo_id, &cfg.project, errw) {
+    // A human at a terminal: coming to this directory and typing the command
+    // is a STATEMENT OF INTENT. We ask HERE instead of teaching a separate
+    // command; the security is the same (a human still confirms) and the
+    // friction is one key per repo. The project is shown BY NAME, because
+    // seeing WHICH project is claimed is exactly what is protected, and so is
+    // every source a sync would read (owner decision B, see sync_reads_block).
+    if !ask(&repo_id, &cfg, errw) {
         return Err(Error::new(
             Code::BindingUnpinned,
             format!(
@@ -282,12 +287,9 @@ pub fn check_repo_binding<W: Write>(
     Ok(())
 }
 
-/// bind_prompt, pinsiz bir baglamayi SATIR ICI onaylatir.
-pub fn bind_prompt<W: Write>(repo_id: &str, project: &str, errw: &mut W) -> bool {
-    let _ = write!(
-        errw,
-        "This repo is not bound to a project yet.\n  repo:    {repo_id}\n  project: {project}\nBind them? [y/N]: "
-    );
+/// bind_prompt asks a human to confirm an unpinned binding INLINE.
+pub fn bind_prompt<W: Write>(repo_id: &str, cfg: &WappsYaml, errw: &mut W) -> bool {
+    let _ = write!(errw, "{}", bind_prompt_text(repo_id, cfg));
     let _ = errw.flush();
     let mut line = String::new();
     if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
@@ -297,27 +299,80 @@ pub fn bind_prompt<W: Write>(repo_id: &str, project: &str, errw: &mut W) -> bool
     a == "y" || a == "yes"
 }
 
-// service_token_pair_set, CF Access service-token ciftinin IKISININ de env'de
-// dolu oldugunu soyler. Okuma, non-interactive auth yolundaki TrimSpace
-// davranisiyla BIREBIR ayni ki "auth geciyor ama pin muafiyeti gecmiyor"
-// ayrismasi olmasin.
+/// bind_prompt_text is the inline binding question: the repo, the project it
+/// claims, and every source a sync of this config would read.
+pub fn bind_prompt_text(repo_id: &str, cfg: &WappsYaml) -> String {
+    format!(
+        "This repo is not bound to a project yet.\n  repo:    {repo_id}\n  project: {}\n{}Bind them? [y/N]: ",
+        cfg.project,
+        sync_reads_block(cfg)
+    )
+}
+
+/// sync_reads_block lists the sources `wapps secrets sync` would read for
+/// cfg, resolved against the config root and cleaned, one per line, with the
+/// ones outside the config root marked. Empty when no source is declared.
+///
+/// Owner decision (B), 2026-10-05: a source may name any file (a relative
+/// "../" path or an absolute one is deliberate, "secrets-from-anywhere"), so
+/// a cloned repository's `.wapps.yaml` can point sync at `~/.ssh/id_rsa`.
+/// Pinning a binding is what lets a later sync (or an agent) run without
+/// asking, so the human who pins is shown exactly what that sync will read.
+/// Shared by the inline prompt and `trust-repo`'s.
+pub fn sync_reads_block(cfg: &WappsYaml) -> String {
+    let srcs = cfg.resolved_sources();
+    if srcs.is_empty() {
+        return String::new();
+    }
+    let root = cfg.config_root();
+    let mut b = String::from("  sync reads:\n");
+    for s in &srcs {
+        let p = if s.r#type == "tofu" {
+            &s.workdir
+        } else {
+            &s.path
+        };
+        let p = wappsyaml::go_clean(p);
+        b.push_str(&format!("    {} {p}", s.r#type));
+        if !within_root(&p, root) {
+            b.push_str(" (outside the config root)");
+        }
+        b.push('\n');
+    }
+    b
+}
+
+/// within_root reports whether the cleaned path p is root or lies under it.
+/// Lexical and component-wise ("/ab" is not under "/a"); symlinks are not
+/// resolved, so a link inside the root that points out counts as inside.
+pub fn within_root(p: &str, root: &str) -> bool {
+    if root == "/" {
+        return p.starts_with('/');
+    }
+    p == root || p.strip_prefix(root).is_some_and(|r| r.starts_with('/'))
+}
+
+// service_token_pair_set reports whether BOTH halves of the CF Access service
+// token pair are set. The read matches the non-interactive auth path's
+// TrimSpace EXACTLY, so "auth passes but the pin exemption does not" cannot
+// happen.
 fn service_token_pair_set() -> bool {
     let get = |k: &str| std::env::var(k).unwrap_or_default().trim().to_string();
     !get("CF_ACCESS_CLIENT_ID").is_empty() && !get("CF_ACCESS_CLIENT_SECRET").is_empty()
 }
 
-/// repo_identity, BAGLANAN birimin kararli kimligini doner.
+/// repo_identity returns the stable identity of the BOUND unit.
 ///
-/// Bu birim DEPO DEGIL, "su `.wapps.yaml`"dir: origin URL'i + config'in depo
-/// kokune gore yolu.
+/// That unit is NOT the repo but "this `.wapps.yaml`": the origin URL plus the
+/// config's path relative to the repo root.
 ///
-/// NEDEN YOL DA DAHIL: eskiden kimlik yalnizca origin URL'iydi, yani bir
-/// monorepo'daki BUTUN projeler tek parmak izine cakisiyordu. Biri pinlenince
-/// digerleri "repo is pinned to a different project" ile ERISILEMEZ hale
-/// geliyordu. Yolu eklemek iliskiyi cok-coka cevirir.
+/// WHY THE PATH IS INCLUDED: the identity used to be the origin URL alone, so
+/// EVERY project in a monorepo collapsed onto one fingerprint. Once one was
+/// pinned the others became UNREACHABLE with "repo is pinned to a different
+/// project". Adding the path makes the relation many-to-many.
 ///
-/// Config depo KOKUNDEYSE kimlik CIPLAK URL olarak kalir — boylece tek-projeli
-/// depolarin MEVCUT pinleri gecerliligini korur.
+/// When the config sits at the repo ROOT the identity stays the BARE URL, so
+/// EXISTING pins of single-project repos stay valid.
 pub fn repo_identity(cfg: &WappsYaml) -> String {
     let root = if cfg.config_root().is_empty() {
         "."
@@ -326,17 +381,18 @@ pub fn repo_identity(cfg: &WappsYaml) -> String {
     };
     let sub = git_repo_subpath(root);
 
-    // origin varsa kimlik ona baglanir: ayni deponun her checkout'u pini
-    // PAYLASIR.
+    // With an origin the identity binds to it: every checkout of the repo
+    // SHARES the pin.
     if let Some(url) = git_remote_url(root) {
         return match sub {
             Some(s) if !s.is_empty() => format!("{url}#{s}"),
             _ => url,
         };
     }
-    // origin YOKSA (yerel depo) ANA depo koku kullanilir — worktree'nin kendi
-    // koku DEGIL. Aksi halde her worktree ayri bir kimlik alirdi: 25 worktree,
-    // 25 baglama sorusu ve ajan tarafinda 25 ayri BINDING_UNPINNED demek olurdu.
+    // WITHOUT an origin (a local repo) the MAIN repo root is used, NOT the
+    // worktree's own root. Otherwise every worktree would get its own
+    // identity: 25 worktrees, 25 binding questions and 25 separate
+    // BINDING_UNPINNED refusals on the agent side.
     if let Some(main) = git_main_repo_root(root) {
         return match sub {
             Some(s) if !s.is_empty() => format!("{main}#{s}"),
@@ -363,9 +419,9 @@ fn git_out(dir: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-// git_main_repo_root, ANA calisma agacinin kokunu doner (worktree'den cagrilsa
-// bile). git --git-common-dir worktree'den de ana depodan da AYNI .git'i
-// gosterir, o yuzden hepsi tek pinde bulusur.
+// git_main_repo_root returns the root of the MAIN working tree (even when
+// called from a worktree). git --git-common-dir points at the SAME .git from a
+// worktree and from the main repo, so they all meet in one pin.
 fn git_main_repo_root(dir: &str) -> Option<String> {
     let git_dir = git_out(
         dir,
@@ -377,13 +433,13 @@ fn git_main_repo_root(dir: &str) -> Option<String> {
     Some(Path::new(&git_dir).parent()?.to_string_lossy().into_owned())
 }
 
-// git_repo_subpath, dir'in git kokune gore yolunu doner ("" = kokun kendisi).
+// git_repo_subpath returns dir's path relative to its git root ("" = the root itself).
 fn git_repo_subpath(dir: &str) -> Option<String> {
     let p = git_out(dir, &["rev-parse", "--show-prefix"])?;
     Some(p.trim_end_matches('/').to_string())
 }
 
-// git_remote_url, `git -C <dir> remote get-url origin` doner; hata/bossa None.
+// git_remote_url returns `git -C <dir> remote get-url origin`; None on error or empty output.
 fn git_remote_url(dir: &str) -> Option<String> {
     let u = git_out(dir, &["remote", "get-url", "origin"])?;
     if u.is_empty() {
