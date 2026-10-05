@@ -368,12 +368,16 @@ kriptografik/format ihtiyacı yok.
 
 ### 4.2 GERÇEK crate kararı olan TEK yer: `completion`
 
-> **DECIDED 2026-10-05 by the owner: drop `completion`.** Nobody uses it: the
-> Homebrew formula does not install a completion script and the owner's shell
-> loads none, so Tab completion does not work today. The subcommand is removed
-> from BOTH binaries (Go and Rust) in the same change, so the differential stays
-> equal; no crate is added. Nothing is deployed against it, so no compatibility
-> path is kept.
+> **DECIDED 2026-10-05 by the owner: keep `completion` and make it actually work.**
+> Today nobody gets Tab completion: the Homebrew formula installs no completion
+> script and the owner's shell loads none. The owner first chose to drop it, then
+> reversed the same day: port it and install it. The Rust binary generates the
+> scripts with `clap_complete` (from the clap maintainers; generated from the
+> command definitions, so it cannot drift as verbs are added — an embedded copy
+> of cobra's output would). The Homebrew formula (`.goreleaser.yml` `install`)
+> installs the bash, zsh and fish completions. Go's cobra script and clap's are
+> different bytes, so the differential compares what Tab offers (the candidate
+> words at each position), not the script text.
 
 cobra dört betik üretiyor ve boyutları ölçüldü:
 
