@@ -890,7 +890,7 @@ P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec 
 | # | slice | TS lines (§7.1) | depends on | behaviour inventory | cases |
 |---|---|---:|---|---|---|
 | **R0** | **The Rust binary ships. Being handled:** owner decision 2026-10-05, the Rust `wapps` replaces the Go binary in the Homebrew release when the CLI port is done. That release slice is running on `wapps-cli` `lane/cli-s10` (worktree `.worktrees/cli-s10`, no commit of its own yet; the branch is at `c8c7daf`). What it has to change was measured here: `.goreleaser.yml`'s `builds:` has one entry, `main: ./main.go`, and `.github/workflows/{ci,release}.yml` mention `cargo` **0** times. The version rule already exists (`before` hook `sh rust/check-version.sh {{ .Version }}`, `PORT-kalan-yuzey.md` §4.3). `goreleaser check` failing on the deprecated `brews` is a separate open owner decision (`64549cb`) | — | `lane/cli-s10` | — | the existing differential |
-| **13.0** | **LANDED 2026-10-05** (§7.2): oracle harness: fake `claude`/`codex` recorders, fake cloud from recorded fixtures, MCP transcript runner, hermetic skill roots (Finding 0.1). Section 6 says it exists before any slice, so every slice below depends on it. Lives in `rust/crates/broker-oracle` | 0 | — | Finding 0.1 | harness only: 39 tests run by `cargo test`, 2 ignored oracle runs |
+| **13.0** | **LANDED 2026-10-05** (§7.2): oracle harness: fake `claude`/`codex` recorders, fake cloud from recorded fixtures, MCP transcript runner, hermetic skill roots (Finding 0.1). Section 6 says it exists before any slice, so every slice below depends on it. Lives in `rust/crates/broker-oracle` | 0 | — | Finding 0.1 | harness only: 44 tests run by `cargo test` (39, plus 5 from the pre-merge security repair), 2 ignored oracle runs |
 | **13.1** | `wapps broker serve`: stdio MCP, enrollment (cwd → project), the Access service token (OD2: a 0600 file), `tools/list` (the Worker's list with 3 entries replaced and the 2 handoff tools removed: 24 tools) and the 13 verbatim tools forwarded to the Worker MCP, the observe and rewrite classes without the quota merge, `orchestrator_claim` without resume, the `agent_await` cursor loop (OD4), read redaction (§3.7). `agent_submit`, `agent_cancel`, `agent_attach`, `agent_report` answer `ACTION_UNAVAILABLE`; `roles_list` is the Worker's answer | 501 | **13.0**, P12, P-b, live | 8 files / 26 tests | ≥ 51 (seam 2) |
 | **13.2** | the daemon: `wapps broker daemon`, unix socket, `O_EXCL` claim, detached spawn, idle exit, session tracking (gone-owner release) | 745 | 13.1 | 6 / 26 | not measured; inventory 26 |
 | **13.3** | execution core + **codex** worker: `agent_submit` → routing (an explicit provider, review independence, continuity, the sole declared side; never a directive) → `POST …/jobs` → `POST …/jobs/attach` with the job id as run id, whose answer is the worker's task (Finding 4.3b) → spawn → progress heartbeat < 5 min → finish; `agent_cancel`; role spawn spec (OD7); **prompt delivery** (skills, repository rulebook, scratch, pause sections), which the codex seam compares byte for byte; **the scrub on every note, output and error that leaves the machine** (§4.5, OD15); the owner-pause classifier that stops a codex job; **the quota reading** into daemon memory, because it decides which codex events are notes (§7.1). Read-only roles only. Five declared stubs: writing roles refused (13.4), `handBack` refused (13.6), the transcript and the observed model not recorded (13.9) | 2,416 | 13.2 | 16 / 89, plus the 19 files of §6 | not measured; seam 1 codex + seam 3 |
@@ -1118,7 +1118,7 @@ slice 10 and the release switch run on `lane/cli-s10` inside `rust/crates/cli` a
 `.goreleaser.yml`; this lane touches neither. The only shared files are
 `rust/Cargo.toml` (one `members` entry, and its header comment translated) and
 `rust/Cargo.lock` (the crate's own entry). **0 external crates added**: its dependencies
-are `serde` and `serde_json`, already in the lock, and the fake cloud speaks HTTP/1.1 over
+are `serde`, `serde_json` and (since the security repair below) `rustix`, already in the lock, and the fake cloud speaks HTTP/1.1 over
 `std::net`. The lock holds 101 packages, 100 of them external, as before. Note for the
 release lane: a workspace-wide `cargo build --release` now also builds the harness's
 `broker-oracle-fake` binary; building with `-p wapps` does not.
@@ -1222,6 +1222,45 @@ recorded by the fake in its place).
 - **13.0-g. The plugin's suite leaves 6 detached daemons per pair of runs**, each alive
   until its 10-minute idle exit. The harness stops them; the oracle runs leave none (their
   daemon is stopped by pid from `broker.daemon.json`).
+
+**Pre-merge security repair (2026-10-05, same branch).** A background security review of
+the harness found two issues; both are fixed and tested before the merge.
+
+- **The daemon's pid was signalled unvalidated.** `plugin.rs` read `pid` from
+  `broker.daemon.json` (a file the system under test writes) and ran `kill -TERM <pid>`
+  with the JSON value as text: `-1` would have signalled every process the owner runs, `0`
+  or a negative a process group. Now `signal_target` accepts only a JSON integer from 2 to
+  `i32::MAX` that is not the harness's own pid, and the signals go through `kill(2)` via
+  `rustix::process` (`kill_process`, `test_kill_process`) instead of the `kill` binary.
+  The task said "fits in u32"; the bound is `i32::MAX` because `pid_t` is an `i32` and a
+  `u32` above it would wrap negative. A refused record is reported on stderr and nothing is
+  signalled. **0 packages added**: rustix 0.38.44 was already in the lock through
+  `crates/cli`; its `process` feature only enables `linux-raw-sys/prctl` (already locked),
+  and the lock diff is the one dependency line under `broker-oracle` (101 packages, as
+before). Note for the release lane: in a workspace-wide build, feature unification compiles
+the CLI's rustix with `process` too; `-p wapps` alone does not. Unit tests: `-1`, `0`,
+  `1`, a negative, `4243.0`, `4243.5`, `"4243"`, `null`, `true`, `u64::MAX`, `u32::MAX`,
+  `i32::MAX + 1`, our own pid and a missing `pid` are refused; `2`, `4243` and `i32::MAX`
+  accepted. Measured before the fix: `1` and our own pid were accepted (rustix's
+  `Pid::from_raw` already refuses `<= 0`, the `kill` binary did not).
+- **The temp root was predictable and reused.** `temp_root` did `remove_dir_all` then
+  `create_dir_all` on `/tmp/bo-<tag>-<pid>`, so a directory another user created there was
+  accepted. Now `create_root` makes it with one `mkdir(2)` at mode 0700
+  (`DirBuilderExt`), which fails with `EEXIST` on any directory or symlink (dangling
+  included) and follows neither; nothing at the path is removed. It stays under `/tmp`
+  (the 104-byte socket path limit). Tests: a pre-existing directory (its planted file
+  untouched), a symlink to a directory (target left empty), a dangling symlink (target not
+  created) are refused; a fresh root is mode 0700. Measured before the fix: all three
+  failed. **Consequence:** a root left by an earlier run (failed runs keep theirs,
+  successful runs keep all but `plugin/`) whose pid the OS reuses now makes `temp_root`
+  panic with the path, instead of being silently wiped; remove it and rerun. 30 such
+  roots were in `/tmp` on the build machine at the time.
+- The recorded behaviour did not change: the ignored `plugin_oracle` run against plugin
+  `c6d7e09` produced the committed recordings again (22,883 / 3,591 / 3,008 bytes, two
+  runs byte-equal) and left 0 daemons running (`pgrep` before and after). Its time, 112 s,
+  is not comparable with the 14.4 s above: the machine's load average was 150-218 from
+  other lanes' builds. The plugin suite run (`plugin_suite.rs`) was not rerun; it does not
+  use either changed path except `temp_root`.
 
 **Not measured in 13.0.** No Rust daemon exists, so no seam ran with a Rust side; the
 fakes and the runner were exercised against themselves, the plugin and the platform's

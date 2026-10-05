@@ -5,9 +5,10 @@
 # dev-dependency while the CLI port (lane/cli-s10) changes `crates/cli` and
 # `.goreleaser.yml` without the two lanes touching one file.
 #
-# No new crate enters the graph: serde and serde_json are already in
+# No new crate enters the graph: serde, serde_json and rustix are already in
 # Cargo.lock through `crates/cli`, and the fake cloud speaks HTTP/1.1 over
-# `std::net` rather than through a server crate.
+# `std::net` rather than through a server crate. rustix's `process` feature
+# (kill(2) for stopping the plugin's daemon) adds no package to the lock.
 [package]
 name = "broker-oracle"
 version = "0.0.0"
@@ -17,6 +18,7 @@ publish = false
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rustix = { version = "0.38", features = ["process"] }
 
 [[bin]]
 name = "broker-oracle-fake"

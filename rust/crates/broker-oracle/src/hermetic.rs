@@ -11,21 +11,37 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A fresh, empty directory `/tmp/bo-<tag>-<pid>`.
+/// A fresh, empty directory `/tmp/bo-<tag>-<pid>`, created by [`create_root`].
 ///
 /// Under `/tmp` and not `std::env::temp_dir()`: the daemon's unix socket lives
 /// below this root, and macOS limits a socket path to 104 bytes, which the
 /// per-user `/var/folders/...` directory nearly spends on its own. Not inside
 /// any git repository either, so a `git` run in a fixture never climbs into the
 /// tree that holds the harness.
+///
+/// Panics if anything already sits at the path (a run kept after a failure
+/// under a reused pid, or something another user planted): remove it and rerun.
 pub fn temp_root(tag: &str) -> PathBuf {
     let root = PathBuf::from(format!("/tmp/bo-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("cannot create the oracle's temp root");
+    create_root(&root).expect("cannot create the oracle's temp root");
     root
+}
+
+/// Creates `root` as a new directory with mode 0700, or fails.
+///
+/// The path is predictable and `/tmp` is shared, so the directory must be one
+/// this process made: `mkdir(2)` fails with `EEXIST` on anything already there,
+/// a directory or a symlink (dangling or not), and follows neither. Nothing at
+/// the path is removed or reused. The parent must exist (`/tmp` does).
+pub fn create_root(root: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", root.display())))
 }
 
 /// The fixed text of a fixture skill.

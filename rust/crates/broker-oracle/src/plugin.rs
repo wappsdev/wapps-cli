@@ -19,6 +19,7 @@ use crate::hermetic::{build_home, build_project, temp_root};
 use crate::mcp::{self, Server};
 use crate::normalize::Normalizer;
 use crate::peer::{self, PeerConfig};
+use rustix::process::{kill_process, test_kill_process, Pid, Signal};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -158,39 +159,64 @@ pub fn copy_plugin(repo: &Path, to: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(bundled)
 }
 
+/// The process a daemon record names, if it is safe to signal.
+///
+/// The record is a file the system under test writes, so its `pid` is checked
+/// before it reaches `kill(2)`: only a JSON integer from 2 to `i32::MAX`
+/// (`pid_t` is an `i32`, and a larger `u32` would wrap negative), and never
+/// `own`. Anything else, `-1` (every process the user owns), `0` or a negative
+/// (a process group), `1` (init), a float, a string, is refused.
+fn signal_target(record: &Value, own: u32) -> Result<Pid, String> {
+    let raw = record.get("pid").ok_or("the record has no pid")?;
+    let pid = raw
+        .as_u64()
+        .and_then(|n| i32::try_from(n).ok())
+        .filter(|&n| n > 1)
+        .ok_or_else(|| format!("pid {raw} is not a single process id above 1"))?;
+    if pid as u32 == own {
+        return Err(format!("pid {pid} is this process"));
+    }
+    Pid::from_raw(pid).ok_or_else(|| format!("pid {pid} is not a process id"))
+}
+
 /// Stops the plugin's daemon however the run ends. It is started detached in
 /// its own process group, so closing the stdio server does not stop it, and
 /// left alone it would idle for ten minutes.
+///
+/// Signals go through `kill(2)` (rustix, already in the lock for the CLI),
+/// not the `kill` binary, so no argument is ever parsed as an option or a
+/// process group.
 struct Daemon {
     record: PathBuf,
 }
 
-impl Daemon {
-    fn pid(&self) -> Option<String> {
-        let text = fs::read_to_string(&self.record).ok()?;
-        let record: Value = serde_json::from_str(&text).ok()?;
-        record.get("pid").map(|p| p.to_string())
-    }
-}
-
-fn alive(pid: &str) -> bool {
-    Command::new("kill")
-        .args(["-0", pid])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let Some(pid) = self.pid() else { return };
-        let _ = Command::new("kill").args(["-TERM", &pid]).status();
+        // No record: the daemon never started, there is nothing to stop.
+        let Ok(text) = fs::read_to_string(&self.record) else {
+            return;
+        };
+        let target = serde_json::from_str::<Value>(&text)
+            .map_err(|e| e.to_string())
+            .and_then(|record| signal_target(&record, std::process::id()));
+        let pid = match target {
+            Ok(pid) => pid,
+            Err(e) => {
+                eprintln!(
+                    "broker-oracle: not signalling the daemon of {}: {e}",
+                    self.record.display()
+                );
+                return;
+            }
+        };
+        let alive = || test_kill_process(pid).is_ok();
+        let _ = kill_process(pid, Signal::Term);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while alive(&pid) && Instant::now() < deadline {
+        while alive() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        if alive(&pid) {
-            let _ = Command::new("kill").args(["-KILL", &pid]).status();
+        if alive() {
+            let _ = kill_process(pid, Signal::Kill);
         }
     }
 }
@@ -318,4 +344,46 @@ fn run_in(root: &Path, repo: &Path, fake: &Path, scenario: &Scenario) -> Result<
         fs::write(kept.join(name), text).map_err(|e| e.to_string())?;
     }
     Ok(Recording { files })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::signal_target;
+    use serde_json::json;
+
+    const OWN: u32 = 4242;
+
+    #[test]
+    fn a_pid_that_would_signal_more_than_one_process_or_ourselves_is_refused() {
+        for pid in [
+            json!(-1),
+            json!(0),
+            json!(1),
+            json!(-4243),
+            json!(4243.0),
+            json!(4243.5),
+            json!("4243"),
+            json!(null),
+            json!(true),
+            json!(u64::MAX),
+            json!(u64::from(u32::MAX)),
+            json!(i64::from(i32::MAX) + 1),
+            json!(OWN),
+        ] {
+            let record = json!({ "pid": pid });
+            assert!(
+                signal_target(&record, OWN).is_err(),
+                "{pid} must not be signalled"
+            );
+        }
+        assert!(signal_target(&json!({}), OWN).is_err(), "no pid at all");
+    }
+
+    #[test]
+    fn a_plain_positive_pid_is_accepted() {
+        for pid in [2_u32, 4243, i32::MAX as u32] {
+            let target = signal_target(&json!({ "pid": pid }), OWN).unwrap();
+            assert_eq!(target.as_raw_nonzero().get() as u32, pid);
+        }
+    }
 }
