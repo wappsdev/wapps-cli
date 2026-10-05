@@ -28,7 +28,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 # YOK, yani yasagi gevsetmeye gerek kalmiyor.
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 # stdin'in TTY olup olmadigi — agentmode'un ekseni.
-rustix = { version = "0.38", features = ["termios", "stdio"] }
+rustix = { version = "0.38", features = ["termios", "stdio", "fs", "process"] }
 # rustls / webpki-roots / rustls-pki-types: HEPSI zaten `ureq`in grafiginde vardi
 # (asagidaki `tls` ozelligi getiriyor). Burada DOGRUDAN bagimlilik yapilmalarinin
 # tek sebebi kok deposunu ELDE KURMAK (store.rs, `root_store`): `ureq`in
@@ -112,6 +112,9 @@ ring = "0.17"
 # record in the doc). No default features; the +1 is clap_complete alone (its
 # one dependency without that feature, clap, was already in the graph).
 clap_complete = "4"
+
+# URL parsing and path-segment encoding for the broker; already in ureq's graph.
+url = "2"
 
 [dev-dependencies]
 # Test support from this workspace (no package enters the lock): the tests that

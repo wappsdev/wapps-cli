@@ -115,8 +115,15 @@ fn every_help_page_matches_the_oracle() {
     walk(&go, &work, Vec::new(), &mut go_nodes);
     let mut rs_nodes = Vec::new();
     walk(&rs, &work, Vec::new(), &mut rs_nodes);
-    // The same tree, not merely the same pages for Go's nodes: a node only
-    // Rust lists would otherwise go unseen.
+    // Slice 13.1's two Rust-only nodes are explicit, not a blanket allowance
+    // for any extra command. Every legacy node still compares byte-for-byte.
+    let added: Vec<_> = rs_nodes
+        .iter()
+        .filter(|p| !go_nodes.contains(p))
+        .map(|p| p.join(" "))
+        .collect();
+    assert_eq!(added, ["broker", "broker serve"]);
+    rs_nodes.retain(|p| go_nodes.contains(p));
     assert_eq!(
         go_nodes.iter().map(|p| p.join(" ")).collect::<Vec<_>>(),
         rs_nodes.iter().map(|p| p.join(" ")).collect::<Vec<_>>(),
@@ -139,7 +146,12 @@ fn every_help_page_matches_the_oracle() {
         ];
         for args in forms {
             let g = run(&go, &work, &args);
-            let r = run(&rs, &work, &args);
+            let mut r = run(&rs, &work, &args);
+            // Only this exact new root row is outside the Go oracle's surface.
+            r.stdout = String::from_utf8(r.stdout)
+                .unwrap()
+                .replace("  broker      Local broker bridge\n", "")
+                .into_bytes();
             compared += 1;
             if g.stdout != r.stdout || g.stderr != r.stderr || g.status.code() != r.status.code() {
                 diffs.push(format!(
