@@ -82,15 +82,20 @@ fn ensure(paths: &Paths) -> Result<UnixStream, String> {
     let exe = std::env::current_exe().map_err(|_| "cannot locate wapps executable")?;
     // Absolute executable, no shell, no inherited stdin/stdout/credentials, and
     // setsid in the child. A racing starter loses the kernel claim harmlessly.
-    let mut child = Command::new(exe)
-        .args(["broker", "daemon", "--detached"])
-        .env_clear()
-        .env("HOME", std::env::var_os("HOME").ok_or("HOME is required")?)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "cannot spawn broker daemon")?;
+    let home = std::env::var_os("HOME").ok_or("HOME is required")?;
+    let spawn = || {
+        Command::new(&exe)
+            .args(["broker", "daemon", "--detached"])
+            .env_clear()
+            .env("HOME", &home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| "cannot spawn broker daemon")
+    };
+    let mut child = spawn()?;
+    let mut recovered = false;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Ok(stream) = connect(paths) {
@@ -107,9 +112,20 @@ fn ensure(paths: &Paths) -> Result<UnixStream, String> {
             let _ = child.wait();
             return Err("broker daemon did not become ready within 15 seconds".into());
         }
-        // A contender may have exited because another starter won. Keep waiting
-        // for that winner's socket, including its partial startup window.
-        let _ = child.try_wait();
+        // A loser may have raced an owner that is draining, not starting.
+        // Permit one replacement, only after our child has exited and the kernel
+        // lock is free. A live/partial-startup owner is never displaced. The
+        // replacement still competes normally; the original deadline is retained.
+        if !recovered
+            && child
+                .try_wait()
+                .map_err(|_| "cannot inspect daemon starter")?
+                .is_some()
+            && paths.lock_available()?
+        {
+            child = spawn()?;
+            recovered = true;
+        }
         thread::sleep(Duration::from_millis(20));
     }
 }

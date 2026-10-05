@@ -66,6 +66,11 @@ impl Session {
         if !matches!(name, "orchestrator_claim" | "orchestrator_release") {
             return forward::call(config, id, name, args, cancelled);
         }
+        // Apply the forwarding boundary's local checks before any automatic
+        // mutation. Tool schemas and lease authority still belong to the cloud.
+        if let Err(error) = forward::validate(config, id, name, &args) {
+            return error;
+        }
         let _serial = self.sessions.ownership.lock().unwrap();
         let mission = args["missionId"].as_str().unwrap_or("").to_owned();
         if name == "orchestrator_claim" {

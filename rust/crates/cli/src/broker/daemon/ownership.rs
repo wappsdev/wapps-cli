@@ -28,6 +28,16 @@ impl Paths {
             directory: directory_path,
         })
     }
+    pub fn lock_available(&self) -> Result<bool, String> {
+        // Observe only the permanent kernel lock, never a PID or socket age.
+        // The spawned daemon must acquire the lock again to become the owner.
+        let file = private_file(&self.directory.join("lock"))?;
+        match file.try_lock() {
+            Ok(()) => Ok(true),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+            Err(std::fs::TryLockError::Error(_)) => Err("cannot inspect daemon lock".into()),
+        }
+    }
     pub fn check_socket(&self) -> Result<(), String> {
         let meta = fs::symlink_metadata(&self.socket).map_err(|_| "daemon socket is absent")?;
         if !meta.file_type().is_socket() || !owned(&meta) || meta.mode() & 0o777 != 0o600 {

@@ -892,7 +892,7 @@ P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec 
 | **R0** | **The Rust binary ships. Being handled:** owner decision 2026-10-05, the Rust `wapps` replaces the Go binary in the Homebrew release when the CLI port is done. That release slice is running on `wapps-cli` `lane/cli-s10` (worktree `.worktrees/cli-s10`, no commit of its own yet; the branch is at `c8c7daf`). What it has to change was measured here: `.goreleaser.yml`'s `builds:` has one entry, `main: ./main.go`, and `.github/workflows/{ci,release}.yml` mention `cargo` **0** times. The version rule already exists (`before` hook `sh rust/check-version.sh {{ .Version }}`, `PORT-kalan-yuzey.md` §4.3). `goreleaser check` failing on the deprecated `brews` is a separate open owner decision (`64549cb`) | — | `lane/cli-s10` | — | the existing differential |
 | **13.0** | **LANDED 2026-10-05** (§7.2): oracle harness: fake `claude`/`codex` recorders, fake cloud from recorded fixtures, MCP transcript runner, hermetic skill roots (Finding 0.1). Section 6 says it exists before any slice, so every slice below depends on it. Lives in `rust/crates/broker-oracle` | 0 | — | Finding 0.1 | harness only: 44 tests run by `cargo test` (39, plus 5 from the pre-merge security repair), 2 ignored oracle runs |
 | **13.1** | Implemented on `lane/broker-daemon-13-1` (§7.3): `wapps broker serve`, stdio MCP, enrollment (cwd → project, **not mission**), a 0600 Access credential, and 24 current Worker tool schemas with per-call `missionId` routing. The observe/rewrite classes preserve cloud answers without quota merge; claim does not resume; await polls with bounded deadlines; reads are redacted. `agent_submit`, `agent_cancel`, `agent_attach`, `agent_report` honestly refuse `ACTION_UNAVAILABLE`. No handoff tools; no mission creation by listing | 501 | **13.0**, P12, P-b, live | 8 files / 26 tests | ≥ 51 (seam 2) |
-| **13.2** | the daemon: `wapps broker daemon`, unix socket, `O_EXCL` claim, detached spawn, idle exit, session tracking (gone-owner release) | 745 | 13.1 | 6 / 26 | 22 lifecycle tests (17 process + 5 unit); measured record in §7.4 |
+| **13.2** | the daemon: `wapps broker daemon`, unix socket, `O_EXCL` claim, detached spawn, idle exit, session tracking (gone-owner release) | 745 | 13.1 | 6 / 26 | 27 lifecycle regressions (20 process + 7 unit); rejected baseline in §7.4, repair evidence and bounds in §7.5 |
 | **13.3** | execution core + **codex** worker: `agent_submit` → routing (an explicit provider, review independence, continuity, the sole declared side; never a directive) → `POST …/jobs` → `POST …/jobs/attach` with the job id as run id, whose answer is the worker's task (Finding 4.3b) → spawn → progress heartbeat < 5 min → finish; `agent_cancel`; role spawn spec (OD7); **prompt delivery** (skills, repository rulebook, scratch, pause sections), which the codex seam compares byte for byte; **the scrub on every note, output and error that leaves the machine** (§4.5, OD15); the owner-pause classifier that stops a codex job; **the quota reading** into daemon memory, because it decides which codex events are notes (§7.1). Read-only roles only. Five declared stubs: writing roles refused (13.4), `handBack` refused (13.6), the transcript and the observed model not recorded (13.9) | 2,416 | 13.2 | 16 / 89, plus the 19 files of §6 | not measured; seam 1 codex + seam 3 |
 | **13.4** | writing roles: `git worktree add/remove` per job, with the refusal to remove a dirty tree; the worktree goes into the attach body. Scratch, the pause gate and the scrub are already in 13.3 | 41 | 13.3 | 5 / 20 | not measured |
 | **13.5** | **claude** worker: OD5's choice, the PreToolUse gate (ceiling, containment, pause), env allowlist (Finding 4.2). Skills, rulebook and the scrub arrive with 13.3 and are reused | 377 | 13.4, OD5's first measurement, OD6 | 14 / 61 | not measured; seam 1 claude |
@@ -1591,6 +1591,136 @@ sessions and their lifecycle remain 13.3 and later. Capability recovery after a
 whole-daemon crash remains bounded by the cloud's existing lease expiry rather
 than by persisting capabilities locally. The slice is committed only on its lane;
 there is no push, main merge, tag, release, deployment, migration or plugin retirement.
+
+### 7.5 Slice 13.2 rejection repair (2026-10-06)
+
+The completion record in §7.4 describes the rejected `e6ff5a3` baseline, not
+acceptance of that baseline. Independent review found four lifecycle defects.
+Repairs retain the cloud as the sole tool-schema/lease authority and do not touch
+the owner command lane, real credentials, providers, configuration or production.
+
+**Invalid incoming claim.** The expanded multiple-client/mission regression first
+failed: a provider containing the synthetic runtime credential returned
+`INVALID_ARGUMENT` but increased cloud requests from **3 to 4** by releasing the
+gone owner's lease. The forwarding boundary's existing local validation now runs
+before inspecting/releasing cached authority. The same regression passed: **zero**
+additional network calls for the invalid claim; the next valid claim still
+releases the original cached capability and the strict seven-exchange storyline
+completes. No provider/schema policy cache was introduced.
+
+**Stop/start overlap.** A process regression holds a real loopback HTTP call,
+stops admission while the old socket/lock remain, and starts a frontend before
+the old owner exits. Red: the frontend had no reply within its **3-second**
+post-exit observation window (the independent baseline probe also measured the
+full **15-second** startup failure). Green: the whole overlap test completed in
+**0.84 seconds**. Startup now allows at most **two** child starts within the
+original **15-second** deadline. Recovery requires our first child to have exited
+and the permanent kernel lock to be free; it does not trust a disk PID, steal a
+partial-startup claim, or replay an MCP call. The second child still acquires the
+normal exclusive claim and losing starters still converge on the winner.
+
+**Capacity shutdown.** A real-socket regression authenticates **64** idle MCP
+connections, confirms the **65th** MCP hello is refused, then sends stop. Red:
+stop was dropped before its frame was read (`invalid daemon frame`). Green: the
+test completed in **0.81 seconds**, stop acknowledged and the daemon exited with
+all idle peers still connected. At capacity the accept thread handles exactly
+**one** control-only connection synchronously, using the same **4096-byte /
+2-second total** hello bound. It cannot admit MCP or grow the worker pool. The
+existing same-UID owned **0700** directory/**0600** socket authentication boundary
+for local control remains unchanged; MCP still additionally checks its credential
+fingerprint. Overflow tricklers can delay admission by their bounded handshake,
+not allocate an unbounded pool or disable authentication.
+
+**Backpressure and absolute drain.** A real daemon/cloud/socket regression returns
+an otherwise valid **3 MiB** result and drains **16 KiB every 100 ms**. Red: the
+daemon still owned its socket beyond the test's **5-second** child-exit deadline
+(the independent baseline probe also measured ownership at **6 seconds**). Two
+initial write approaches failed the same deadline: reducing `SO_SNDTIMEO` after
+each write, then per-send `MSG_DONTWAIT` without descriptor nonblocking. Diagnostic
+instrumentation proved Darwin could keep that single send alive while bytes
+progressed. Explicit **O_NONBLOCK** accepted sockets plus deadline-aware poll on
+both protocol reads and output resolved it: measured frame timeout **2.0004 s**,
+whole regression **2.50 s**. Reads still block at the protocol boundary, and the
+existing **1 MiB input / 4 MiB cloud response** size limits are unchanged.
+
+That run exposed a second concrete Darwin edge: after drain had shut the read
+half, `shutdown(Both)` returned **ENOTCONN (57)** and a later end trailer could
+still be sent after partial JSON. Output now records its first failed frame and
+refuses every queued reply/trailer thereafter, independently of shutdown's return.
+Both halves are shut separately on failure and at the hard drain deadline. The
+regression now verifies incomplete output has **no newline/completion trailer**.
+
+Graceful drain has an absolute **12-second** budget after listener closure
+(**10-second** HTTP exchange plus **2-second** frame); it only joins finished
+workers. At expiry it closes both halves and drops unfinished handles instead of
+blocking on them; returning from the daemon command exits the process. A mutation
+already sent to the cloud may have happened even if its response is interrupted.
+The frontend treats a partial frame/lost daemon as **unknown outcome**, must not
+report success, and reconnects without automatically replaying mutations. This
+bound does not shrink result sizes, lengthen timeouts, or promise rollback.
+
+The extracted drain boundary is separately exercised with a real Unix pair and
+one owned channel-blocked worker held beyond its budget: it returned at
+**12.002 seconds**, closed output, and did not join the unfinished worker. The
+test then explicitly unblocks that worker and observes its completion; no worker
+or provider process is launched by that boundary test. A fast stdio frontend also
+receives the complete **3 MiB** result successfully. From the indexed-copy release
+binaries, overlap, simultaneous automatic starts, concurrent foreground starts,
+slow-progress backpressure and capacity shutdown each passed **10 repetitions**
+(**50/50**); these are not inferred from one suite run.
+
+**Local review.** The code-simplifier and find-bugs checklists covered all nine
+changed files, complete daemon/client/session/protocol code and the surrounding
+credential/HTTP paths. Input surfaces are local JSON frames and runtime files,
+plus cloud JSON/SSE results; no SQL, browser markup, owner SSO flow or provider
+execution was added. Injection, authentication, authorization/mission routing,
+CSRF/browser applicability, races, session state, randomness/credential handling,
+disclosure, resource bounds and error/unknown-outcome logic were checked. Shared
+local validation replaces duplicated policy, the socket reader and writer share
+one poll boundary, and output failure is a single sticky flag rather than a new
+boxed generic writer abstraction. No additional confirmed repair-scope defect remains. The
+unavailable optional challenge helper was not retried, no competing writer or
+helper was spawned, and no mutation sweep was run.
+
+**Final repair gates (darwin/arm64, indexed sources only).** The verification tree
+`/private/tmp/broker-13-2-repair-28B4qx/` was exported exclusively by
+`git checkout-index`. Its Git index has exactly the lane's **417** mode/blob/path
+entries, byte-compared with the lane index; no ignored source dependency was
+copied. An initial raw-index setup lacked the copied objects, so the copy's Git
+objects were populated from its exported files and all entries re-compared.
+Initial clippy runs caught one needless mission borrow and a test-only loop that
+should be `while let`; both were simplified, without lint allowances or skips.
+The complete suite was rerun after those fixes and the hard-drain boundary test.
+
+| Gate | Final result |
+|---|---|
+| `go build ./...` | **0** |
+| `go vet ./...` | **0** |
+| `go test -race ./...` | **0**, all packages passed |
+| `cargo fmt --all --check` | **0** |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | **0** |
+| `cargo deny check` | **0**; advisories, bans, licenses and sources OK; existing duplicate-syn / unused-license warnings remain |
+| Indexed-copy `cargo build --release --locked` | **0** |
+| Indexed-copy `cargo test --release --locked -- --nocapture` | **0**; **556 passed, 0 failed, 2 intentionally ignored** |
+| PTY differential, in the full suite | **1043 equal, 0 different, 0 unsound** |
+| Focused daemon process gate | **0**; **20 passed** |
+| Daemon real-socket unit cases, in the full suite | **7 passed**; hard drain measured **12.0014 s** in the final run |
+| Focused MCP gate | **0**; **28 passed** |
+| Focused help-axis gate | **0**; **2 passed**, **54 legacy nodes / 162 pages, 0 different** |
+| Repeated overlap/startup/backpressure/capacity gates | **50/50 passed** |
+| Original independent invalid-claim probe, repaired expectation | **0**, `INVALID_ARGUMENT` and **zero cloud calls** |
+| Original independent loss/unsafe-path probes, unchanged assertions | **0**; open-stdin loss/recovery and six unsafe-path refusals passed |
+| Tracked-source/index check | **0**, all **417** entries matched |
+
+Logs are ephemeral beside that verification directory with prefix
+`broker-13-2-repair-28B4qx.`; the final complete-suite log is
+`/private/tmp/broker-13-2-repair-28B4qx.rust-complete-final.log`. The two ignored
+cases remain the pre-existing external Bun plugin oracle/suite; no daemon test was
+excluded. Only this daemon lane is committed, with no push, merge, tag, release or
+deployment. The owner command lane is not edited or imported and has no separate
+owner-command suite in this checkout. Linux runtime, real Access/lease behavior,
+provider execution and later slices remain unverified; none was exercised with
+real data or credentials. Whole-daemon lease recovery still relies on cloud expiry.
 
 ## 8. Owner decisions
 

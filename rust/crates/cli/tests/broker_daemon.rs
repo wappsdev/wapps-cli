@@ -257,7 +257,7 @@ struct Peer {
     output: std::sync::mpsc::Receiver<Value>,
 }
 impl Peer {
-    fn new(home: &Home) -> Self {
+    fn start(home: &Home) -> Self {
         let mut process = Process(
             home.command("serve")
                 .stdin(Stdio::piped())
@@ -277,11 +277,14 @@ impl Peer {
                 }
             }
         });
-        let mut peer = Self {
+        Self {
             process,
             input,
             output,
-        };
+        }
+    }
+    fn new(home: &Home) -> Self {
+        let mut peer = Self::start(home);
         peer.send(json!({"jsonrpc":"2.0","id":0,"method":"ping"}));
         assert_eq!(peer.receive()["result"], json!({}));
         peer
@@ -410,6 +413,21 @@ fn multiple_clients_and_missions_release_only_a_gone_owner_before_claim() {
         true
     );
     first.close();
+    assert_eq!(
+        second.call(
+            99,
+            "alpha",
+            "orchestrator_claim",
+            json!({"provider":"fixture-secret"})
+        )["error"],
+        "INVALID_ARGUMENT"
+    );
+    assert_eq!(
+        cloud.requests().len(),
+        3,
+        "invalid claim must not release or contact cloud"
+    );
+    // The next valid claim must still release the original cached capability.
     assert_eq!(
         second.call(
             4,
@@ -741,6 +759,237 @@ fn graceful_shutdown_cancels_a_long_poll_without_waiting_for_its_deadline() {
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(cloud.unanswered().is_empty());
     assert_eq!(cloud.requests().len(), 1);
+}
+
+// Keep a real HTTP exchange in flight until the test allows its response.
+// Drop always unblocks the handler, including assertion-failure cleanup.
+struct HeldCloud {
+    url: String,
+    started: std::sync::mpsc::Receiver<()>,
+    finish: std::sync::mpsc::Sender<()>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl HeldCloud {
+    fn new() -> Self {
+        use std::{io::Read, net::TcpListener, sync::mpsc};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (started_tx, started) = mpsc::channel();
+        let (finish, finished) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (socket, _) = loop {
+                match listener.accept() {
+                    Ok(peer) => break peer,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return,
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut input = BufReader::new(socket);
+            let mut size = 0;
+            loop {
+                let mut line = String::new();
+                input.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    size = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; size];
+            input.read_exact(&mut body).unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["params"]["name"], "work_list");
+            started_tx.send(()).unwrap();
+            let _ = finished.recv_timeout(Duration::from_secs(12));
+            let body = json!({"jsonrpc":"2.0","id":request["id"],"result":{"content":[],"structuredContent":{"items":[]}}}).to_string();
+            let _ = write!(input.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        });
+        Self {
+            url,
+            started,
+            finish,
+            worker: Some(worker),
+        }
+    }
+}
+impl Drop for HeldCloud {
+    fn drop(&mut self) {
+        let _ = self.finish.send(());
+        let _ = self.worker.take().unwrap().join();
+    }
+}
+
+#[test]
+fn stdio_start_during_old_owners_drain_recovers_after_contender_loses() {
+    let cloud = HeldCloud::new();
+    let home = Home::new();
+    fs::write(
+        home.0.join(".config/wapps-broker/client.yaml"),
+        format!("clientId: fixture\nendpoint: {}\n", cloud.url),
+    )
+    .unwrap();
+    let mut daemon = Process(home.command("daemon").spawn().unwrap());
+    home.ready();
+    let mut first = Peer::new(&home);
+    first.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"work_list","arguments":{"missionId":"alpha"}}}));
+    cloud.started.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_eq!(home.control("stop").unwrap()["kind"], "stopping");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while UnixStream::connect(home.socket()).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "listener stops before drain completes"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        home.socket().exists(),
+        "old owner retains socket and lock during drain"
+    );
+    let mut next = Peer::start(&home);
+    next.send(json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
+    assert!(
+        next.output
+            .recv_timeout(Duration::from_millis(500))
+            .is_err(),
+        "no replacement can own the locked runtime"
+    );
+    cloud.finish.send(()).unwrap();
+    assert!(daemon.wait().success());
+    assert_eq!(
+        next.receive()["result"],
+        json!({}),
+        "frontend must start a replacement after the old lock is released"
+    );
+    next.close();
+}
+
+#[test]
+fn supported_three_mib_result_completes_for_a_fast_frontend() {
+    use broker_oracle::cloud::FakeCloud;
+    let mut answer = exchange(json!(1), "alpha", "work_list", json!({}), json!({}));
+    answer.body = json!({"jsonrpc":"2.0","id":1,"result":{"content":[],"structuredContent":{"data":"x".repeat(3 * 1024 * 1024)}}}).to_string();
+    let cloud = FakeCloud::start(vec![answer], Some("fixture-secret".into())).unwrap();
+    let home = Home::new();
+    fs::write(
+        home.0.join(".config/wapps-broker/client.yaml"),
+        format!("clientId: fixture\nendpoint: {}\n", cloud.url()),
+    )
+    .unwrap();
+    let mut peer = Peer::new(&home);
+    let result = peer.call(1, "alpha", "work_list", json!({}));
+    assert_eq!(result["data"].as_str().unwrap().len(), 3 * 1024 * 1024);
+    peer.close();
+    assert!(cloud.unanswered().is_empty());
+}
+
+#[test]
+fn slow_progress_on_a_large_result_cannot_extend_frame_or_shutdown_deadlines() {
+    use broker_oracle::cloud::FakeCloud;
+    use std::{
+        io::Read,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+    let mut answer = exchange(json!(1), "alpha", "work_list", json!({}), json!({}));
+    answer.body = json!({"jsonrpc":"2.0","id":1,"result":{"content":[],"structuredContent":{"data":"x".repeat(3 * 1024 * 1024)}}}).to_string();
+    let cloud = FakeCloud::start(vec![answer], Some("fixture-secret".into())).unwrap();
+    let home = Home::new();
+    fs::write(
+        home.0.join(".config/wapps-broker/client.yaml"),
+        format!("clientId: fixture\nendpoint: {}\n", cloud.url()),
+    )
+    .unwrap();
+    let mut daemon = Process(home.command("daemon").spawn().unwrap());
+    home.ready();
+    let endpoint: url::Url = cloud.url().parse().unwrap();
+    let tuple = json!([endpoint.as_str(), "fixture", "fixture-secret"]).to_string();
+    let credential: String = ring::digest::digest(&ring::digest::SHA256, tuple.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let mut socket = UnixStream::connect(home.socket()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    writeln!(
+        socket,
+        "{}",
+        json!({"kind":"hello","version":1,"session":"a".repeat(64),"credential":credential})
+    )
+    .unwrap();
+    let mut input = BufReader::new(socket);
+    let mut hello = String::new();
+    input.read_line(&mut hello).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&hello).unwrap()["kind"],
+        "ready"
+    );
+    writeln!(input.get_mut(), "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"work_list","arguments":{"missionId":"alpha"}}})).unwrap();
+    let (tx, progress) = std::sync::mpsc::channel();
+    let complete = Arc::new(AtomicBool::new(false));
+    let bytes = Arc::new(AtomicUsize::new(0));
+    let reader_complete = Arc::clone(&complete);
+    let reader_bytes = Arc::clone(&bytes);
+    let mut queued = input.get_ref().try_clone().unwrap();
+    let reader = thread::spawn(move || {
+        let mut buffer = [0; 16384];
+        while let Ok(n) = input.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            reader_bytes.fetch_add(n, Ordering::Relaxed);
+            if buffer[..n].contains(&b'\n') {
+                reader_complete.store(true, Ordering::Relaxed);
+            }
+            let _ = tx.send(());
+            thread::sleep(Duration::from_millis(100));
+        }
+    });
+    progress.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Queue another reply behind the large frame. Neither it nor the private
+    // end trailer may append a complete line after interrupted JSON.
+    writeln!(
+        queued,
+        "{}",
+        json!({"jsonrpc":"2.0","id":2,"method":"ping"})
+    )
+    .unwrap();
+    let started = Instant::now();
+    home.control("stop").unwrap();
+    assert!(
+        daemon.wait().success(),
+        "a progressing reader must not retain ownership indefinitely"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "total frame write deadline must bound drain even while writes progress"
+    );
+    home.stopped();
+    reader.join().unwrap();
+    assert!(
+        !complete.load(Ordering::Relaxed),
+        "interrupted output is not a complete MCP result or success trailer"
+    );
+    assert!(bytes.load(Ordering::Relaxed) < 3 * 1024 * 1024);
+    assert!(
+        cloud.unanswered().is_empty(),
+        "supported 3 MiB cloud result was actually sent"
+    );
 }
 
 #[test]

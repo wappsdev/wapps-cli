@@ -4,7 +4,7 @@ pub mod daemon;
 mod forward;
 use serde_json::{json, Value};
 use std::{
-    io::{BufRead, Read, Write},
+    io::{BufRead, Read},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -52,7 +52,29 @@ fn tool_error(code: &str, message: &str) -> Value {
     json!({"isError":true,"content":[{"type":"text","text":error.to_string()}],"structuredContent":error})
 }
 
-type Output = Arc<Mutex<std::os::unix::net::UnixStream>>;
+// A partial frame poisons this session's output, including queued replies and
+// the end trailer. Darwin can refuse shutdown(Both) after shutdown(Read).
+struct OutputWriter {
+    stream: std::os::unix::net::UnixStream,
+    failed: bool,
+}
+impl OutputWriter {
+    fn new(stream: std::os::unix::net::UnixStream) -> Self {
+        Self {
+            stream,
+            failed: false,
+        }
+    }
+    fn send(&mut self, value: Value) -> Result<(), String> {
+        if self.failed {
+            return Err("daemon output was interrupted; outcome may be unknown".into());
+        }
+        let result = daemon::send(&mut self.stream, value);
+        self.failed = result.is_err();
+        result
+    }
+}
+type Output = Arc<Mutex<OutputWriter>>;
 
 struct Pending {
     id: Value,
@@ -80,9 +102,7 @@ fn reply(output: &Output, id: &Value, result: Value) -> Result<(), String> {
         json!({"jsonrpc":"2.0","id":id,"result":result})
     };
     let mut out = output.lock().map_err(|_| "MCP output lock failed")?;
-    writeln!(out, "{response}")
-        .and_then(|()| out.flush())
-        .map_err(|_| "cannot write MCP stdout".into())
+    out.send(response)
 }
 
 fn valid_id(id: &Value) -> bool {
