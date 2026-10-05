@@ -254,8 +254,9 @@ fn push_escaped(out: &mut String, c: char, delim: char) {
     }
 }
 
-// is_format, the Unicode Cf (format) characters.
-fn is_format(c: char) -> bool {
+// is_format, the Unicode Cf (format) characters. Also the table behind
+// configctx::visible (and its Go twin, agentgate.go isFormat).
+pub(crate) fn is_format(c: char) -> bool {
     matches!(c as u32,
         0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891
         | 0x08E2 | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064

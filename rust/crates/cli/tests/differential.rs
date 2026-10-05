@@ -402,9 +402,10 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // `import-app` added 93: 771. `secrets sync --target=coolify` added 50:
     // 821. `deploy` added 76 (its nine exit codes, the credential tiers and
     // the --wait poll against a fake deploy proxy): 897. The binding prompt's
-    // list of what a sync reads (owner decision B) added 8: 905.
+    // list of what a sync reads (owner decision B) added 8: 905. Its
+    // symlink and terminal-escape hardening added 4: 909.
     assert!(
-        equal >= 905,
+        equal >= 909,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

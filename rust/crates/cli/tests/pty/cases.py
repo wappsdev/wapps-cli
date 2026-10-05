@@ -3500,6 +3500,28 @@ SYNC_READS_CASES = [
 ]
 CASES += SYNC_READS_CASES
 
+# The listing decides "outside" on the RESOLVED path and prints every string
+# through one escaping function (symlink + terminal-escape hardening).
+_ESC_PATH = '"a\\x1b[2K\\rfile ok.env\\nb\\u202ec.env"'
+SYNC_READS_HARDEN_CASES = [
+    # A file symlink inside the root pointing out of it (dangling, so nothing
+    # is read even by mistake): shown with its target and marked.
+    sy("human_sync_bind_prompt_shows_where_a_symlinked_source_points", SYNC, HUMAN, b"n\n",
+       dict(cfg(VALID_CFG + "sources:\n  - type: file\n    path: link.env\n"),
+            links={"link.env": "{CASE}/../wapps-sync-reads-link-target.env"})),
+    # A symlinked DIRECTORY inside the root: the source under it is outside.
+    sy("human_sync_bind_prompt_symlinked_directory_is_outside", SYNC, HUMAN, b"n\n",
+       dict(cfg(VALID_CFG + "sources:\n  - type: file\n    path: sub/x.env\n"),
+            links={"sub": "{CASE}/.."})),
+    # ESC[2K + CR + a forged line + LF + U+202E in a path: printed escaped.
+    sy("human_sync_bind_prompt_escapes_control_characters", SYNC, HUMAN, b"n\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: " + _ESC_PATH + "\n")),
+    # trust-repo's prompt (stdout) prints the same escaped line.
+    ("human_trust_repo_escapes_control_characters", ["secrets", "trust-repo"], HUMAN, None, b"n\n",
+     cfg(VALID_CFG + "sources:\n  - type: file\n    path: " + _ESC_PATH + "\n")),
+]
+CASES += SYNC_READS_HARDEN_CASES
+
 
 # --- `wapps skill` (install / status / uninstall) ------------------------------
 #

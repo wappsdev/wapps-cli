@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"github.com/wappsdev/wapps-cli/internal/agentmode"
@@ -232,22 +234,35 @@ func bindPromptText(repoID string, cfg *config.WappsYAML) string {
 // cloned repository's .wapps.yaml can point sync at ~/.ssh/id_rsa. Pinning a
 // binding is what lets a later sync (or an agent) run without asking, so the
 // human who pins is shown exactly what that sync will read.
+//
+// Containment is decided on the RESOLVED path (realPath of the source and of
+// the root), so a symlink inside the root that points out is marked. When the
+// path resolves somewhere other than where it reads, the resolved target is
+// shown after "->". Every string in the block passes through visible, so a
+// path cannot carry a terminal escape that redraws the prompt.
 func syncReadsBlock(cfg *config.WappsYAML) string {
 	srcs := cfg.ResolvedSources()
 	if len(srcs) == 0 {
 		return ""
 	}
 	root := cfg.ConfigRoot()
+	realRoot := realPath(root)
 	var b strings.Builder
 	b.WriteString("  sync reads:\n")
 	for _, s := range srcs {
-		p := s.Path
+		raw := s.Path
 		if s.Type == "tofu" {
-			p = s.Workdir
+			raw = s.Workdir
 		}
-		p = filepath.Clean(p)
-		b.WriteString("    " + s.Type + " " + p)
-		if !withinRoot(p, root) {
+		p := filepath.Clean(raw)
+		// The kernel resolves the RAW path (an absolute source reaches the
+		// reader uncleaned, and "link/.." is the link target's parent).
+		real := realPath(raw)
+		b.WriteString("    " + visible(s.Type) + " " + visible(p))
+		if real != expectedRealPath(p, root, realRoot) {
+			b.WriteString(" -> " + visible(real))
+		}
+		if !withinRoot(real, realRoot) {
 			b.WriteString(" (outside the config root)")
 		}
 		b.WriteString("\n")
@@ -255,14 +270,129 @@ func syncReadsBlock(cfg *config.WappsYAML) string {
 	return b.String()
 }
 
-// withinRoot reports whether the cleaned path p is root or lies under it.
-// Lexical and component-wise ("/ab" is not under "/a"); symlinks are not
-// resolved, so a link inside the root that points out counts as inside.
+// expectedRealPath is where p would resolve if no symlink below the root
+// were involved: under the resolved root when p is lexically inside it, p
+// itself otherwise. A resolved path that differs from it is shown.
+func expectedRealPath(p, root, realRoot string) string {
+	if !withinRoot(p, root) {
+		return p
+	}
+	return filepath.Join(realRoot, strings.TrimPrefix(p, root))
+}
+
+// withinRoot reports whether the cleaned path p is root or lies under it,
+// component-wise ("/ab" is not under "/a"). It is lexical: callers that need
+// symlinks resolved pass realPath results.
 func withinRoot(p, root string) bool {
 	if root == "/" {
 		return strings.HasPrefix(p, "/")
 	}
 	return p == root || strings.HasPrefix(p, root+"/")
+}
+
+// maxLinkHops bounds the symlinks realPath follows past a missing component
+// (Linux's MAXSYMLINKS), so a link loop ends.
+const maxLinkHops = 40
+
+// realPath resolves every symlink in the absolute path p, the way the kernel
+// does when sync opens it. An existing path is filepath.EvalSymlinks'. A path
+// that does not exist yet is resolved through its longest existing ancestor:
+// the parent is resolved, and the last component is followed when it is a
+// (dangling) symlink or appended when it is absent, so a link to a file that
+// appears later still shows where it points. A relative path, or a link chain
+// longer than maxLinkHops, falls back to the lexical filepath.Clean. The Rust
+// twin (configctx::real_path) is the same walk.
+func realPath(p string) string { return realPathHops(p, 0) }
+
+func realPathHops(p string, hops int) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if hops > maxLinkHops || !strings.HasPrefix(p, "/") {
+		return filepath.Clean(p)
+	}
+	i := strings.LastIndex(p, "/")
+	dir, base := p[:i], p[i+1:]
+	if dir == "" {
+		dir = "/"
+	}
+	d := realPathHops(dir, hops)
+	switch base {
+	case "", ".":
+		return d
+	case "..":
+		return filepath.Dir(d)
+	}
+	c := filepath.Join(d, base)
+	if t, err := os.Readlink(c); err == nil {
+		if !strings.HasPrefix(t, "/") {
+			t = d + "/" + t
+		}
+		return realPathHops(t, hops+1)
+	}
+	return c
+}
+
+// visible renders s for a terminal: printable text is kept, and every
+// control character (C0, DEL, C1), Unicode space other than ' ', and format
+// character (Cf, which holds the bidi overrides) becomes a Go-style escape
+// (\n, \x1b, \u202e, \U000e0041), as do bytes that are not UTF-8 (\xff).
+// A path from a cloned repository's .wapps.yaml cannot then erase or forge a
+// line of the prompt. A backslash is printable and is kept as is. The set is
+// spelled out (not unicode.IsPrint) so the Rust twin (configctx::visible)
+// escapes exactly the same code points.
+func visible(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case r == '\a':
+			b.WriteString(`\a`)
+		case r == '\b':
+			b.WriteString(`\b`)
+		case r == '\f':
+			b.WriteString(`\f`)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r == '\v':
+			b.WriteString(`\v`)
+		case r < ' ' || r == 0x7f:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		case r < 0x80:
+			b.WriteRune(r)
+		case unicode.IsControl(r) || (unicode.IsSpace(r) && r != ' ') || isFormat(r):
+			if r < 0x10000 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				fmt.Fprintf(&b, `\U%08x`, r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// isFormat reports the Unicode Cf (format) characters, the same table as the
+// Rust port's gostrconv::is_format.
+func isFormat(r rune) bool {
+	switch {
+	case r == 0x00AD, r >= 0x0600 && r <= 0x0605, r == 0x061C, r == 0x06DD, r == 0x070F,
+		r >= 0x0890 && r <= 0x0891, r == 0x08E2, r == 0x180E, r >= 0x200B && r <= 0x200F,
+		r >= 0x202A && r <= 0x202E, r >= 0x2060 && r <= 0x2064, r >= 0x2066 && r <= 0x206F,
+		r == 0xFEFF, r >= 0xFFF9 && r <= 0xFFFB, r == 0x110BD, r == 0x110CD,
+		r >= 0x13430 && r <= 0x1343F, r >= 0x1BCA0 && r <= 0x1BCA3,
+		r >= 0x1D173 && r <= 0x1D17A, r == 0xE0001, r >= 0xE0020 && r <= 0xE007F:
+		return true
+	}
+	return false
 }
 
 // stdinIsTTY reports whether an inline question can be asked (package seam:
