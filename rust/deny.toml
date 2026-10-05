@@ -15,13 +15,13 @@
 # gecerse bu kapi otesini sessizce gecirmesin — o an bir KARAR ani olsun.
 
 [graph]
-# Yalnizca native ucluler: bu ikili goreleaser ile linux/darwin x amd64/arm64
-# olarak sevk ediliyor. wasm32 BURADA YOK, cunku CLI wasm'da kosmuyor.
+# Only native triples: exactly the four .goreleaser.yml ships (darwin and
+# linux-musl x arm64/x86_64). No wasm32: the CLI does not run on wasm.
 targets = [
     { triple = "aarch64-apple-darwin" },
     { triple = "x86_64-apple-darwin" },
-    { triple = "x86_64-unknown-linux-gnu" },
-    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-unknown-linux-musl" },
+    { triple = "aarch64-unknown-linux-musl" },
 ]
 all-features = true
 
