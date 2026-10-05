@@ -67,12 +67,13 @@ pub fn sidecar_path(exe: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Puts a copy of the fake at `at`, with its script beside it.
+/// Puts a copy of the fake at `at`, with its script beside it. The copy is
+/// written through [`crate::exe::write_executable`], since it is run at once.
 pub fn install(fake: &Path, at: &Path, config: &PeerConfig) -> io::Result<()> {
     if let Some(parent) = at.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::copy(fake, at)?;
+    crate::exe::write_executable(at, &fs::read(fake)?)?;
     let text = serde_json::to_string_pretty(config).map_err(io::Error::other)?;
     fs::write(sidecar_path(at), text + "\n")
 }
