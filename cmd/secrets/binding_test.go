@@ -1,15 +1,16 @@
 package secrets
 
-// binding_test.go, repo→proje bağlamasının SÖZLEŞMESİNİ pinler. Dört ayrı kural
-// var ve dördü de birbirinden bağımsız olarak kırılabilir:
+// binding_test.go pins the CONTRACT of the repo→project binding. There are
+// four separate rules and each can break independently of the others:
 //
-//   1. Pinsiz + İNSAN + TTY  → satır içi sorulur, "evet" pinler ve devam eder.
-//   2. Pinsiz + AJAN         → asla sorulmaz, fail-closed. Pinin gerçekten iş
-//                              gördüğü tek yer: uydurulmuş bir .wapps.yaml kendi
-//                              başına bir proje talep edemesin.
-//   3. UYUŞMAZLIK            → satır içi ÇÖZÜLMEZ. Yeni bağlama sıradan; var olan
-//                              bir bağlamayı değiştirmek kasıtlı bir karar ister.
-//   4. Monorepo              → aynı repo'daki iki config AYRI parmak izi alır.
+//   1. Unpinned + HUMAN + TTY → asked inline; "yes" pins and continues.
+//   2. Unpinned + AGENT       → never asked, fail-closed. The one place the pin
+//                               really works: a forged .wapps.yaml must not
+//                               claim a project on its own.
+//   3. MISMATCH               → NEVER resolved inline. A new binding is
+//                               ordinary; changing an existing one takes a
+//                               deliberate decision.
+//   4. Monorepo               → two configs in one repo get SEPARATE fingerprints.
 
 import (
 	"os"
@@ -23,12 +24,12 @@ import (
 	"github.com/wappsdev/wapps-cli/internal/config"
 )
 
-// stubBindPrompt, satır içi soruyu sabit bir cevapla değiştirir + çağrıldı mı sayar.
+// stubBindPrompt replaces the inline question with a fixed answer and counts calls.
 func stubBindPrompt(t *testing.T, answer bool) *int {
 	t.Helper()
 	calls := 0
 	prev := bindPrompt
-	bindPrompt = func(string, string) bool { calls++; return answer }
+	bindPrompt = func(string, *config.WappsYAML) bool { calls++; return answer }
 	t.Cleanup(func() { bindPrompt = prev })
 	return &calls
 }
@@ -51,7 +52,7 @@ func TestBinding_UnpinnedHumanTTY_PromptsAndPins(t *testing.T) {
 	if *calls != 1 {
 		t.Fatalf("expected exactly one prompt, got %d", *calls)
 	}
-	// Pin KALICI olmalı: ikinci çağrı bir daha sormamalı.
+	// The pin must PERSIST: a second call must not ask again.
 	if err := checkRepoBinding(false); err != nil {
 		t.Fatalf("second call must use the saved pin, got %v", err)
 	}
@@ -71,10 +72,10 @@ func TestBinding_UnpinnedHumanDeclines_StaysUnpinned(t *testing.T) {
 	}
 }
 
-// Ajan ASLA sorulmaz — sorulsaydı ajan "evet" derdi ve guard hiçbir şey yapmazdı.
+// An agent is NEVER asked; if it were, it would answer "yes" and the guard would do nothing.
 func TestBinding_Agent_NeverPrompts(t *testing.T) {
 	setupStoreProjectUnpinned(t, "")
-	stubTTY(t, true) // TTY olsa BİLE
+	stubTTY(t, true) // EVEN with a TTY
 	calls := stubBindPrompt(t, true)
 
 	err := checkRepoBinding(true)
@@ -86,7 +87,7 @@ func TestBinding_Agent_NeverPrompts(t *testing.T) {
 	}
 }
 
-// TTY yoksa (pipe/script) soramayız — sormuş gibi yapıp pinlemek de olmaz.
+// Without a TTY (pipe/script) we cannot ask, and pinning as if we had is not allowed either.
 func TestBinding_HumanNoTTY_NeverPrompts(t *testing.T) {
 	setupStoreProjectUnpinned(t, "")
 	stubTTY(t, false)
@@ -100,10 +101,10 @@ func TestBinding_HumanNoTTY_NeverPrompts(t *testing.T) {
 	}
 }
 
-// Config PİNLİ OLANDAN BAŞKA bir projeyi talep ediyorsa satır içi çözülmez.
+// A config claiming a project OTHER than the pinned one is not resolved inline.
 func TestBinding_Mismatch_NeverPrompts(t *testing.T) {
 	tmp := setupStoreProjectUnpinned(t, "")
-	// Repo'yu BAŞKA bir projeye pinle, config ise "testproj" diyor.
+	// Pin the repo to ANOTHER project while the config says "testproj".
 	path, err := binding.DefaultPath()
 	if err != nil {
 		t.Fatal(err)
@@ -130,8 +131,8 @@ func TestBinding_Mismatch_NeverPrompts(t *testing.T) {
 	}
 }
 
-// Monorepo: aynı git repo'sundaki iki config AYRI parmak izi almalı, yoksa
-// biri pinlenince diğeri erişilemez olur (infra-tofu'da tam olarak bu oldu).
+// Monorepo: two configs in the same git repo must get SEPARATE fingerprints,
+// or pinning one makes the other unreachable (exactly what happened in infra-tofu).
 func TestRepoIdentity_MonorepoProjectsDoNotCollide(t *testing.T) {
 	repo := t.TempDir()
 	run := func(dir string, args ...string) {
@@ -170,9 +171,9 @@ func TestRepoIdentity_MonorepoProjectsDoNotCollide(t *testing.T) {
 	}
 }
 
-// Worktree'ler ana repo ile AYNI pini paylaşmalı. navlun'un 25 worktree'si var;
-// her biri ayrı kimlik alsaydı 25 kez bağlama sorusu ve ajan tarafında 25 ayrı
-// BINDING_UNPINNED olurdu.
+// Worktrees must share the SAME pin as the main repo. navlun has 25 worktrees;
+// separate identities would mean 25 binding questions and 25 separate
+// BINDING_UNPINNED refusals on the agent side.
 func TestRepoIdentity_WorktreeSharesMainRepoPin(t *testing.T) {
 	main := t.TempDir()
 	git := func(dir string, args ...string) {

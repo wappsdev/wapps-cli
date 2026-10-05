@@ -2089,12 +2089,12 @@ fn run_get(key: &str, config: Option<String>, project: Option<String>) -> Result
     }
 }
 
-// gate, HER secrets verb'unun onunde duran ORTAK kapidir (Go'da
-// secretsPreRunE): once ajan-modu politikasi, sonra depo→proje baglamasi.
+// gate is the SHARED gate in front of EVERY secrets verb (Go's
+// secretsPreRunE): first the agent-mode policy, then the repo→project binding.
 //
-// SecretsCmd'de oldugu icin Go'da hicbir verb bunu unutamaz; burada da tek
-// fonksiyon olmasinin sebebi ayni — bir verb'un kapiyi atlamasi bir SATIRIN
-// unutulmasiyla mumkun olmasin.
+// In Go it lives on SecretsCmd so no verb can forget it; it is one function
+// here for the same reason: skipping the gate must not be one forgotten LINE
+// away.
 fn gate(ctx: &Ctx, policy: &str, agent: bool) -> Result<(), CmdError> {
     agentmode::guard(policy, agent).map_err(CmdError::Cli)?;
     let mut errw = std::io::stderr();
@@ -2103,7 +2103,7 @@ fn gate(ctx: &Ctx, policy: &str, agent: bool) -> Result<(), CmdError> {
         agent,
         agentmode::stdin_is_tty(),
         &mut errw,
-        &|repo, project, w| configctx::bind_prompt(repo, project, w),
+        &|repo, cfg, w| configctx::bind_prompt(repo, cfg, w),
     )
     .map_err(CmdError::Cli)
 }
@@ -2253,7 +2253,7 @@ fn run_tofu(args: &[String]) -> Result<(), CmdError> {
         agent,
         agentmode::stdin_is_tty(),
         &mut errw,
-        &|repo, project, w| configctx::bind_prompt(repo, project, w),
+        &|repo, cfg, w| configctx::bind_prompt(repo, cfg, w),
     )
     .map_err(CmdError::Cli)?;
 

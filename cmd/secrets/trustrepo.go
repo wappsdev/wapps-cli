@@ -27,8 +27,8 @@ human at a terminal can pin.`,
 	},
 }
 
-// runTrustRepo, trust-repo verb'ünün üretim sürücüsüdür: TTY zorunlu, config
-// store-backed olmalı, kullanıcı onayı alınır, sonra bağlama pinlenir.
+// runTrustRepo is the production driver of the trust-repo verb: a TTY is
+// required, the config must load, the user confirms, then the binding is pinned.
 func runTrustRepo(out io.Writer, in io.Reader, isAgent bool) error {
 	if isAgent {
 		return clierr.New(clierr.BindingUnpinned, "trust-repo must run in a human terminal")
@@ -53,9 +53,10 @@ func runTrustRepo(out io.Writer, in io.Reader, isAgent bool) error {
 	return trustRepoCore(cfg, repoID, path, confirm, out)
 }
 
-// trustRepoCore, TTY/onay seam'lerini enjekte edilmiş biçimiyle çekirdek pinleme
-// mantığıdır (test-edilebilir). Çözülen proje/profil/backend gösterilir, onay
-// alınır, bağlama GÜVENİLEN home-dir'de pinlenir.
+// trustRepoCore is the core pinning logic with the TTY/confirm seams injected
+// (testable). It shows the resolved project, profiles, backend and every source
+// a sync would read, asks for confirmation, and pins the binding in the TRUSTED
+// home dir.
 func trustRepoCore(cfg *config.WappsYAML, repoID, bindingPath string, confirm func() bool, out io.Writer) error {
 	fp := binding.Fingerprint(repoID)
 
@@ -71,6 +72,7 @@ func trustRepoCore(cfg *config.WappsYAML, repoID, bindingPath string, confirm fu
 		sort.Strings(names)
 		fmt.Fprintf(out, "  profiles: %s\n", strings.Join(names, ", "))
 	}
+	fmt.Fprint(out, syncReadsBlock(cfg))
 	fmt.Fprintf(out, "Pin this binding? [y/N]: ")
 
 	if !confirm() {
@@ -89,7 +91,7 @@ func trustRepoCore(cfg *config.WappsYAML, repoID, bindingPath string, confirm fu
 	return nil
 }
 
-// shortRepo, uzun bir repo kimliğini görüntü için kısaltır (değer değil).
+// shortRepo shortens a long repo identity for display (not a value).
 func shortRepo(s string) string {
 	if len(s) > 60 {
 		return "…" + s[len(s)-59:]

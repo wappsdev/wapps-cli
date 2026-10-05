@@ -3454,6 +3454,53 @@ SYNC_CASES = [
 CASES += SYNC_CASES
 
 
+# --- the binding prompt lists what a sync will read (owner decision B) --------
+#
+# A `file` source may name any path: a relative "../" or an absolute one is
+# kept on purpose ("secrets-from-anywhere"). Owner decision (B), 2026-10-05:
+# when the binding gate asks a human to bind an unpinned repository, it lists
+# every source a sync will read, resolved against the config root and cleaned,
+# and marks the ones outside it. Pinning is what lets a later sync (or an
+# agent) run unasked, so the list is shown by every verb behind the gate and by
+# trust-repo, not by sync alone.
+SYNC_READS_CASES = [
+    # Inside the root: listed cleaned ("./sub/.." gone), not marked; "y" pins
+    # and the file is read.
+    sy("human_sync_bind_prompt_lists_a_source_inside_the_root", SYNC, HUMAN, b"y\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: ./sub/../sync.env\n", SYNC_FILES)),
+    # A relative "../" source: marked. The behaviour is kept, so after "y" the
+    # read is attempted outside the repository (the file is absent and the
+    # error names where it looked).
+    sy("human_sync_bind_prompt_marks_a_parent_relative_source", SYNC, HUMAN, b"y\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: ../wapps-sync-reads-outside.env\n")),
+    # An absolute source: printed CLEANED (sync opens the same file) and
+    # marked; the human declines and nothing is read.
+    sy("human_sync_bind_prompt_marks_an_absolute_source", SYNC, HUMAN, b"n\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n    path: /nonexistent/./x/../wapps/abs.env\n")),
+    # The root is compared by path COMPONENT: a sibling whose name starts with
+    # the case directory's name is outside, though it shares the string prefix.
+    sy("human_sync_bind_prompt_root_prefix_sibling", SYNC, HUMAN, b"n\n",
+       cfg(VALID_CFG + "sources:\n  - type: file\n"
+           "    path: ../human_sync_bind_prompt_root_prefix_sibling.env\n")),
+    # `--config`: the root is the CONFIG's directory, so "../sync.env" (the
+    # case directory) is outside it, marked, and still read after "y".
+    cf("human_sync_bind_prompt_config_flag_root_is_the_config_dir", SYNC, HUMAN, b"y\n",
+       VALID_CFG + "sources:\n  - type: file\n    path: ../sync.env\n",
+       {"sync.env": SYNC_FILES["sync.env"]}),
+    # A tofu source is listed by its workdir, next to the files.
+    sy("human_sync_bind_prompt_lists_a_tofu_workdir", SYNC, HUMAN, b"n\n",
+       cfg(SYNC_FILE_CFG + "  - type: tofu\n    workdir: /nonexistent/tf\n", SYNC_FILES)),
+    # Not only sync: any verb behind the gate shows the list before pinning.
+    ("human_list_bind_prompt_lists_what_sync_reads", ["secrets", "list"], HUMAN, None, b"n\n",
+     cfg(VALID_CFG + "sources:\n  - type: file\n    path: ../x.env\n")),
+    # trust-repo's own prompt (stdout) lists them too.
+    ("human_trust_repo_lists_what_sync_reads", ["secrets", "trust-repo"], HUMAN, None, b"n\n",
+     cfg(VALID_CFG + "sources:\n  - type: file\n    path: ../up.env\n"
+         "  - type: file\n    path: in.env\n")),
+]
+CASES += SYNC_READS_CASES
+
+
 # --- `wapps skill` (install / status / uninstall) ------------------------------
 #
 # The skill lives under $HOME (user scope: ~/.claude/skills/wapps-secrets,
