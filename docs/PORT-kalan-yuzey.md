@@ -1720,6 +1720,101 @@ one commit in `wappsdev/homebrew-tap`: `git rm Formula/wapps.rb` and add
 `tap_migrations.json` `{"wapps": "wappsdev/tap"}`. Note that GoReleaser pushes
 `Casks/wapps.rb` for a pre-release tag too unless `skip_upload: auto` is set.
 
+### First CI run on the hosted runners · **LANDED**
+
+Branch `lane/cli-ci-fix`. **0 product lines**; only test support changed. The
+first CI run with the Rust jobs (run 37291344603, `main` at `1331d68`) failed in
+`cargo test --release --locked` on both runners while `test` (Go) and `deny`
+passed. Both causes were environmental, both are found and fixed at the cause,
+and the green run on the hosted runners is run 37294310179 (lane head
+`adfc671`).
+
+**1. ubuntu-latest: `Text file busy` (ETXTBSY).** `broker-oracle`'s `mcp.rs`
+could not start the fake it had just copied (`peer::install`, `fs::copy`). On
+Linux, exec(2) refuses a file any process holds open for writing, and a child
+forked by a sibling test thread holds a copy of every descriptor the test
+binary had open until that child execs. So closing (or fsyncing) the file in
+the test process does not help: the descriptor that blocks is the inherited
+one. The diagnostic run 37292847891 hit the same error in a second test
+(`peer.rs`, `each_launch_gets_its_own_numbered_record`), so it is a class, not
+one test.
+
+*Fix:* `broker_oracle::exe::write_executable` writes the bytes through a
+short-lived `/bin/sh` child (`cat > "$1" && chmod 755 "$1"`), so the write
+descriptor exists only in that child, which forks nothing, and no window
+remains. This removes the race instead of retrying through it, and that is
+why the task's suggested remedy (fsync and close, then retry the spawn on
+ETXTBSY) was not used: a retry has to sit at every exec site, and one of them
+is product code (`loginverb::cloudflared_login` runs the shim that
+`tests/loginverb.rs` writes), which should not learn a retry for a test
+artifact. Every place in the workspace that writes a program and then runs it
+now goes through the helper: `peer::install` (all fakes), and the
+`cloudflared` shims of `tests/loginverb.rs` and `tests/loginleak.rs` (the cli
+crate gained `broker-oracle` as a path dev-dependency; no package enters the
+lock). Python-written shims (the probe's `tofu` fixture) are written by a
+single-threaded process before it forks, and `go build` writes the oracle out
+of process, so neither has the race.
+
+*Measured* under OrbStack, `golang:1.26` (Debian 13, arm64), non-root:
+`tests/exe.rs` (4 writer threads x 60 programs while 4 threads spawn `/bin/sh`)
+fails 3 of 3 runs with the old in-process write (3-4 `Text file busy` panics
+per run) and passes 8 of 8 with the helper (0.40 s). On macOS it passes either
+way (macOS does not refuse exec here), so it is a Linux-only proof.
+
+**2. macos-latest: "fake gate did not come up".** First the failure was made
+to say why: every probe now starts its gate through `tests/pty/gateproc.py`,
+which reports whether the gate exited (with its stderr) or was still running,
+and how long it waited. The diagnostic run said: *still running after 10.2 s,
+last connect error `TimeoutError`*. A timeout, not a refusal, on loopback. A
+throwaway diagnostic job on the runner (macOS 26.6.2, image
+`macos-26-arm64/20260907.0351`, Python 3.14.7, application firewall disabled)
+then measured: a plain `socket` listener in a child is up in 0.13 s; an
+`http.server.HTTPServer` child is not up after 34.9 s; `fakegate.py` came up
+after 35.4 s (105 failed connects: refused first, then timeouts).
+
+*Cause:* `HTTPServer.server_bind` calls `socket.getfqdn(host)`, a reverse DNS
+lookup of 127.0.0.1, between bind(2) and listen(2). The runner's resolver
+answers it only after about 35 s of timeouts, and a connect to a port that is
+bound but not yet listening times out on macOS. A dev Mac answers the lookup
+at once, which is why every local run was green. Not a startup timeout, the
+Python version, the port, the bind address or a missing dependency.
+
+*Fix:* `gateproc.Server`, an `HTTPServer` whose `server_bind` binds without the
+lookup (the bound address stands in for `server_name`, which only CGI/WSGI
+environments read); `fakegate.py` and `tlsgate.py` run on it. The
+differential's semantics are unchanged: same routes, same bytes, `EQUAL=1043
+DIFFERENT=0 UNSOUND=0` before and after. *Regression test:*
+`tests/gateup.rs` runs `tests/pty/gateup.py`, which puts a `sitecustomize`
+on the gates' `PYTHONPATH` that turns both reverse lookups into a 60 s sleep
+(the runner's resolver, reproduced locally). With `HTTPServer` it fails with
+the runner's exact signature (still running after 10.2 s, `TimeoutError`);
+with `gateproc.Server` both gates are up in 0.70 s.
+
+**Gates, local (macOS):** `go build ./...` 0, `go test ./...` 0, `cargo fmt
+--all -- --check` 0, `cargo clippy --all-targets -- -D warnings` 0, `cargo
+deny check` 0, `cargo test --release -- --nocapture` 0 (73 test binaries,
+differential `EQUAL=1043 DIFFERENT=0 UNSOUND=0`). **Linux (OrbStack, as
+above):** the whole suite with `--no-fail-fast`, differential `EQUAL=1043
+DIFFERENT=0 UNSOUND=0`; the only two failures were `noderuntime`'s `git
+ls-files`, because the container mounts a linked worktree whose `.git` points
+at a host path it cannot see (a container artifact; the hosted runner checks
+out a full repository and passed it). **Hosted runners:** run 37294310179,
+all four jobs green: `rust (ubuntu-latest)` 10 min 39 s, `rust
+(macos-latest)` 24 min 49 s, `test` and `deny` 32 s each; 73 test binaries ok
+on each runner, differential `EQUAL=1043 DIFFERENT=0 UNSOUND=0` on both.
+
+**What the pricing got wrong: the macOS job's time budget.** The differential
+took 276 s on ubuntu-latest, 368 s locally and **1,009 s on macos-latest**, so
+the macOS job used 25 of its 45 minutes (`timeout-minutes: 45`). It fits, but
+a corpus that grows by half again would not; that is the number to watch.
+
+**Not verified.** The ubuntu job never reached the `cli` crate's tests before
+this slice (cargo stops at the first failing test binary), so whether other
+Linux-only failures were hiding there is answered only by the green run. The
+diagnostic CI job was a temporary commit on the lane branch and is not in
+its history. `macos-latest` is moving to new images; a resolver that stalls
+other lookups would show up in the gate's report, which now says why.
+
 ---
 
 ### Sıra özeti
