@@ -48,7 +48,7 @@ checksum:
 # 2 on it). The tap still holds the old Formula/wapps.rb; the release that
 # first publishes this cask must also delete that formula and add
 # `tap_migrations.json` to the tap (docs/PORT-kalan-yuzey.md, "Release switch"),
-# so `brew upgrade` moves formula installs over to the cask.
+# so `brew update` moves formula installs over to the cask.
 homebrew_casks:
   - name: wapps
     directory: Casks
@@ -61,7 +61,6 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_PAT }}"
     homepage: https://github.com/wappsdev/wapps-cli
     description: "wapps umbrella CLI for infra-tofu monorepo"
-    license: MIT
     commit_author:
       name: wapps-release-bot
       email: bot@wapps.co
