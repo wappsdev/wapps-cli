@@ -59,7 +59,8 @@ kapatmaya calistigi yuzeyin ta kendisi olurdu (log_message zaten susturulmus).
 """
 import json, sys, re, hashlib, base64, time
 from urllib.parse import unquote, urlparse, parse_qs
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from gateproc import Server
 
 # Anahtar -> (status, govde). Degerler TEST dizeleri; gercek sir DEGIL.
 SCRIPT = {}
@@ -1146,4 +1147,4 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     GATE_URL = f"http://127.0.0.1:{sys.argv[1]}"
     SCRIPT.update({k: tuple(v) for k, v in json.loads(sys.argv[2]).items()})
-    HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+    Server(("127.0.0.1", int(sys.argv[1])), H).serve_forever()

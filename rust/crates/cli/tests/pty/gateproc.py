@@ -1,13 +1,29 @@
-"""Starts a fake gate script and waits until it accepts connections.
+"""The fake gates' process: the server they run, and how a probe starts one.
 
-Every probe that needs a local gate (fakegate.py, tlsgate.py) starts it here,
-so the wait and its failure report live in one place. A gate that does not
-come up says WHY: whether the process exited (and with what stderr) or was
+Every probe that needs a local gate (fakegate.py, tlsgate.py) starts it with
+`start`, so the wait and its failure report live in one place. A gate that does
+not come up says WHY: whether the process exited (and with what stderr) or was
 still running when the wait gave up, and how long the wait took.
 """
-import os, socket, subprocess, sys, tempfile, time
+import socket, socketserver, subprocess, sys, tempfile, time
+from http.server import HTTPServer
 
 WAIT_SECONDS = 10.0
+
+
+class Server(HTTPServer):
+    """`HTTPServer` without the reverse DNS lookup in its `server_bind`.
+
+    `HTTPServer.server_bind` calls `socket.getfqdn(host)` between bind(2) and
+    listen(2). On the hosted macOS runner that lookup of 127.0.0.1 took about
+    35 s, and a connect to the bound but not yet listening port timed out, so
+    every probe failed with "fake gate did not come up" (gateup.py reproduces
+    it). `server_name` only feeds CGI/WSGI environments, which no gate has, so
+    the bound address stands in for it."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def free_port():
