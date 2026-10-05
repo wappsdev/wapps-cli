@@ -878,10 +878,10 @@ Order is by dependency, not by size. "TS lines" means plugin lines the slice rep
 |---|---|---|
 | **P11** | slice 11: host classes and the Worker entry to Rust | slice 12 is built on it (platform doc) |
 | **P12** | slice 12: the Worker's MCP endpoint (`mcp_lane` reused), `roles_propose`; `agent_await` for clients with no daemon | under OD3 the daemon forwards `tools/list` and the state tools to it (§3.7). P12 must also settle where `attention` is appended to five answers and who builds `agent_running`'s projection (§3.3, §3.2); the platform doc does not |
-| **P-a** | add `answersQuestionId` to `DISPATCH` (Finding 3.6) | delegated answers (13.6) |
-| **P-b** | the roster grants `read claim report` to `svc:<wapps-broker-agents>`, never `answer` or `administer` (an admin's `POST /v1/roster`, or provision's last step). The per-provider token the earlier revisions asked for is dropped (OD1) | every slice from 13.1 on: the token holds no verbs until granted (`broker.rs:102-103`) |
+| **P-a** | **LANDED 2026-10-05** (wapps-platform `lane/broker-cloud-prereqs`): `answersQuestionId` on `DISPATCH` (Finding 3.6); only the body reader needed it | delegated answers (13.6) |
+| **P-b** | **LANDED 2026-10-05**: provision's step 7 grants; the roster grants `read claim report` to `svc:<wapps-broker-agents>`, never `answer` or `administer` (an admin's `POST /v1/roster`, or provision's last step). The per-provider token the earlier revisions asked for is dropped (OD1) | every slice from 13.1 on: the token holds no verbs until granted (`broker.rs:102-103`) |
 | **live** | `broker.meapps.dev` provisioned with `ACCESS_AUD` set (owner decision §9.1 of the platform doc; provision committed at `cac8ede`, run with `--plan` only) | every slice from 13.1 on talks to it |
-| **P-e** | **OD16 = B, DECIDED 2026-10-05**: a leaseless owner door for filing and moving work, under the `answer` verb | the owner's `file` / `move` and the explorer's move key (OD16) |
+| **P-e** | **OD16 = B, LANDED 2026-10-05** at `POST /v1/missions/:mission/work/owner/file` and `…/work/owner/move` (not `work/file`/`work/move`: `POST work/move` is the lease holder's route); same 500-character title cap as the lease holder's door, so 13.8's `file` must shorten the 57 longer navlun titles (title = intent for all of them). A leaseless owner door for filing and moving work, under the `answer` verb | the owner's `file` / `move` and the explorer's move key (OD16) |
 
 P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec stays local.
 
