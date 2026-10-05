@@ -4684,4 +4684,220 @@ COMPLETION_CASES = [
 ]
 CASES += COMPLETION_CASES
 
+
+# === the update check and the skill auto-refresh (slice 10) =====================
+#
+# Not verbs: two side effects cmd/root.go runs AFTER every command (Execute),
+# before the command's error is reported. Every other case sets
+# WAPPS_NO_UPDATE_CHECK=1 (probe.py), which turns both off; these cases unset
+# it (`""` removes a variable) and point both binaries at the fake GitHub
+# releases endpoint (fakegate.py, /gh) through WAPPS_UPDATE_CHECK_URL. The
+# oracle is built with Version=0.23.0 (the crate's version), so the semver
+# gate is open: a release above 0.23.0 is "new".
+#
+# Every case runs in its own home (HOME={CASE}/home), so the cache file Go
+# writes — `os.UserCacheDir()/wapps/version-check.json`, under
+# ~/Library/Caches on macOS and ~/.cache elsewhere — and the skill source the
+# refresh rewrites land in the `written` snapshot. A freshly written
+# `checked_at` is normalized by probe.py only after it proved to be Go's
+# format, inside the run's window, at Go's local offset for the case's TZ.
+import sys as _sys  # noqa: E402
+_UC_CACHE = ("home/Library/Caches/wapps/version-check.json" if _sys.platform == "darwin"
+             else "home/.cache/wapps/version-check.json")
+_UC_CACHE_BASE = _UC_CACHE[:-len("/wapps/version-check.json")]
+
+
+def _gh(scenario):
+    return {"WAPPS_UPDATE_CHECK_URL": "{GATE}/gh/" + scenario}
+
+
+def _raw(body):
+    return "raw/" + body.hex()
+
+
+# Gates open, a release above ours on the server.
+UC = dict(HUMAN, WAPPS_NO_UPDATE_CHECK="", HOME="{CASE}/home", **_gh("tag/v0.24.0"))
+UC_AGENT = dict(UC, **AGENT)
+del UC_AGENT["WAPPS_AGENT_MODE"]
+V = ["--version"]
+
+
+def uc(name, argv, env=None, files=None, dirs=None, links=None, yaml=None, stdin=None):
+    return (name, argv, env or UC, None, stdin,
+            {"yaml": yaml, "files": files or {}, "dirs": dirs or [], "links": links or {}})
+
+
+def cache(checked_at, latest="v0.25.0"):
+    return {_UC_CACHE: '{"checked_at":"%s","latest_version":"%s"}' % (checked_at, latest)}
+
+
+def ucraw(text):
+    return {_UC_CACHE: text}
+
+
+# A time far ahead: fresh whatever the run's clock says (Go's Sub is
+# negative), so the parser's leniency is measured without racing the clock.
+FUTURE = "2099-01-01T01:00:00Z"
+EXIT_0 = ["--", "/bin/sh", "-c", "exit 0"]
+EXIT_3 = ["--", "/bin/sh", "-c", "exit 3"]
+
+UPDATE_CASES = [
+    # === what the server says, no cache ======================================
+    uc("human_update_new_release", V),
+    uc("human_update_up_to_date", V, dict(UC, **_gh("tag/v0.23.0"))),
+    uc("human_update_server_is_older", V, dict(UC, **_gh("tag/v0.22.9"))),
+    uc("human_update_tag_not_canonical", V, dict(UC, **_gh("tag/v00.024.00"))),
+    uc("human_update_tag_not_a_version", V, dict(UC, **_gh("tag/not-a-version"))),
+    # A tag smuggling terminal escapes: only digits and dots are printed, and
+    # the cache keeps the string with Go's escaping.
+    uc("human_update_tag_smuggles_escapes", V,
+       dict(UC, **_gh(_raw(b'{"tag_name":"v9.9.9\\u001b[2J\\u001b]0;pwned\\u0007"}')))),
+    uc("human_update_tag_with_characters_go_escapes", V,
+       dict(UC, **_gh(_raw(('{"tag_name":"v0.24.0-<&>\\u2028\\t\\u007f \u00e9"}').encode())))),
+    # One U+FFFD per invalid byte, and a surrogate that does not pair, as Go
+    # decodes them (serde_json alone refuses both).
+    uc("human_update_tag_with_invalid_utf8", V,
+       dict(UC, **_gh(_raw(b'{"tag_name":"v0.24.0-\xff\xf0\x9f\x98"}')))),
+    uc("human_update_tag_with_a_lone_surrogate", V,
+       dict(UC, **_gh(_raw(b'{"tag_name":"v0.24.0-\\ud83d"}')))),
+    uc("human_update_tag_null", V, dict(UC, **_gh(_raw(b'{"tag_name":null}')))),
+    uc("human_update_body_null", V, dict(UC, **_gh(_raw(b"null")))),
+    uc("human_update_body_not_json", V, dict(UC, **_gh(_raw(b"<html>rate limited</html>")))),
+    uc("human_update_body_with_trailing_data", V,
+       dict(UC, **_gh(_raw(b'{"tag_name":"v0.24.0"} {"tag_name":"v9.0.0"}')))),
+    uc("human_update_tag_is_a_number", V, dict(UC, **_gh(_raw(b'{"tag_name":24}')))),
+    uc("human_update_server_500", V, dict(UC, **_gh("status/500"))),
+    uc("human_update_server_404", V, dict(UC, **_gh("status/404"))),
+    # Anything but 200 is a failure, a 2xx with a valid body too.
+    uc("human_update_server_201", V, dict(UC, **_gh("status/201"))),
+    # Followed, with both headers on the second request.
+    uc("human_update_redirect_is_followed", V, dict(UC, **_gh("redirect/v0.24.0"))),
+    uc("human_update_server_down", V,
+       dict(UC, WAPPS_UPDATE_CHECK_URL="http://127.0.0.1:1/releases/latest")),
+    # The 2 s client timeout: the answer comes after 3 s and is never seen.
+    uc("human_update_server_slower_than_the_timeout", V,
+       dict(UC, **_gh("slow/3/v0.24.0"))),
+    # An unset endpoint override is the default (the real GitHub), so a bad
+    # one is measured instead: not a URL at all.
+    uc("human_update_endpoint_not_a_url", V, dict(UC, WAPPS_UPDATE_CHECK_URL="::nope")),
+
+    # === the cache ===========================================================
+    uc("human_update_fresh_cache_newer", V, files=cache("{TS:-3600}")),
+    uc("human_update_fresh_cache_current", V, files=cache("{TS:-3600}", "v0.23.0")),
+    uc("human_update_fresh_cache_written_at_plus_three", V,
+       files=cache("{TS:-3600:+03:00}")),
+    uc("human_update_cache_from_the_future", V, files=cache("{TS:+7200}")),
+    uc("human_update_stale_cache_is_refetched", V, files=cache("{TS:-90000}")),
+    # A fresh empty version: no notice and no fetch for a day.
+    uc("human_update_fresh_cache_with_no_version", V, files=cache("{TS:-3600}", "")),
+    uc("human_update_cache_not_json", V, files=ucraw("not json")),
+    uc("human_update_cache_empty", V, files=ucraw("")),
+    uc("human_update_cache_null", V, files=ucraw("null")),
+    uc("human_update_cache_object_without_fields", V, files=ucraw("{}")),
+    uc("human_update_cache_trailing_garbage", V,
+       files=ucraw('{"checked_at":"%s","latest_version":"v0.25.0"} x' % FUTURE)),
+    # Go 1.26's Time.UnmarshalJSON runs time.Parse(RFC3339) with its strict
+    # checks disabled: a one-digit hour and a comma fraction are FRESH...
+    uc("human_update_cache_time_with_a_one_digit_hour", V,
+       files=cache("2099-01-01T1:00:00+03:00")),
+    uc("human_update_cache_time_with_a_comma_fraction", V,
+       files=cache("2099-01-01T01:00:00,5Z")),
+    uc("human_update_cache_time_with_a_24h_offset", V, files=cache("2099-01-01T01:00:00+24:00")),
+    # ...an escape in the time string is NOT unescaped (an error, refetch).
+    uc("human_update_cache_time_is_escaped", V, files=cache("2099\\u002d01-01T01:00:00Z")),
+    uc("human_update_cache_time_lower_case_t", V, files=cache("2099-01-01t01:00:00Z")),
+    uc("human_update_cache_time_feb_29_of_a_common_year", V,
+       files=cache("2099-02-29T01:00:00Z")),
+    uc("human_update_cache_time_is_a_number", V,
+       files=ucraw('{"checked_at":4070912400,"latest_version":"v0.25.0"}')),
+    # encoding/json folds keys, the Kelvin sign and the long s included.
+    uc("human_update_cache_keys_are_folded", V,
+       files=ucraw('{"CHECKED_AT":"%s","latest_ver\u017fion":"v0.25.0"}' % FUTURE)),
+    uc("human_update_cache_key_with_the_kelvin_sign", V,
+       files=ucraw('{"chec\u212aed_at":"%s","latest_version":"v0.25.0"}' % FUTURE)),
+    uc("human_update_cache_version_is_a_number", V,
+       files=ucraw('{"checked_at":"%s","latest_version":25}' % FUTURE)),
+    uc("human_update_cache_later_null_keeps_the_time", V,
+       files=ucraw('{"checked_at":"%s","checked_at":null,"latest_version":"v0.25.0"}' % FUTURE)),
+    uc("human_update_cache_version_with_a_lone_surrogate", V,
+       files=ucraw('{"checked_at":"%s","latest_version":"v0.25.0-\\ud800"}' % FUTURE)),
+    # The cache path is a directory: the read fails, the fetch happens, the
+    # write fails, the notice still prints.
+    uc("human_update_cache_path_is_a_directory", V, dirs=[_UC_CACHE]),
+    # The cache dir cannot be created: same, nothing written.
+    uc("human_update_cache_dir_blocked_by_a_file", V, files={_UC_CACHE_BASE: "x"}),
+
+    # === the gates (cmd/root.go) =============================================
+    uc("human_update_opted_out", V, dict(UC, WAPPS_NO_UPDATE_CHECK="1")),
+    # Agent mode: no notice, and no check at all (no cache written).
+    uc("agent_update_no_notice_no_check", V, UC_AGENT),
+    # No $HOME: Go's UserCacheDir fails and the cache goes to $TMPDIR.
+    uc("human_update_without_home_uses_tmpdir", V,
+       dict(UC, HOME="", TMPDIR="{CASE}/tmp"), dirs=["tmp"]),
+    # The notice comes after the command's output and BEFORE its error.
+    uc("human_update_notice_before_the_error", ["nosuch"]),
+    uc("human_update_after_the_root_page", []),
+    uc("human_update_after_help_command", ["help", "skill"]),
+    # A command that ends in os.Exit gets nothing: `deploy` always (exit 0
+    # here), `secrets exec` when the child fails.
+    uc("human_update_not_after_deploy", D + ["migrator"] + EP, dict(UC, **DP_ENV)),
+    uc("human_update_not_after_a_failing_exec_child", ["secrets", "exec"] + EXIT_3,
+       yaml=VALID_CFG, stdin=b"y\n"),
+    uc("human_update_after_a_succeeding_exec_child", ["secrets", "exec"] + EXIT_0,
+       yaml=VALID_CFG, stdin=b"y\n"),
+
+    # === the zone of the written time ========================================
+    # (TZ unset — the machine's /etc/localtime — is every case above.)
+    uc("human_update_cache_written_in_utc", V, dict(UC, TZ="UTC")),
+    uc("human_update_cache_written_in_istanbul", V, dict(UC, TZ="Europe/Istanbul")),
+    uc("human_update_cache_written_in_kolkata", V, dict(UC, TZ="Asia/Kolkata")),
+    uc("human_update_cache_written_in_new_york", V, dict(UC, TZ="America/New_York")),
+    uc("human_update_cache_written_in_chatham", V, dict(UC, TZ=":Pacific/Chatham")),
+
+    # === the skill auto-refresh ==============================================
+    # After an upgrade the marker is an older binary's: the source is
+    # rewritten in place (the links keep pointing at it). The server says
+    # "up to date" so only the refresh line is measured...
+    uc("human_skill_refresh_after_an_upgrade", V,
+       dict(UC, **_gh("tag/v0.23.0")), files=_SK_STALE_SRC, links=_SK_LINK),
+    # ...and here both, notice first.
+    uc("human_skill_refresh_with_the_update_notice", V, files=_SK_STALE_SRC, links=_SK_LINK),
+    # Agent mode: refreshed all the same, silently.
+    uc("agent_skill_refresh_is_silent", V, UC_AGENT, files=_SK_STALE_SRC, links=_SK_LINK),
+    uc("human_skill_current_marker_is_left_alone", V, files=_SK_CURRENT_SRC, links=_SK_LINK),
+    # No marker: no symlink install (a copy install is the user's to update).
+    uc("human_skill_copy_install_is_not_refreshed", V,
+       files={_SK_USER + "SKILL.md": b"an older skill text\n"}),
+    uc("human_skill_refresh_opted_out", V, dict(UC, WAPPS_NO_UPDATE_CHECK="1"),
+       files=_SK_STALE_SRC, links=_SK_LINK),
+    uc("human_skill_refresh_without_home", V, dict(UC, HOME="", TMPDIR="{CASE}/tmp"),
+       files=_SK_STALE_SRC, links=_SK_LINK, dirs=["tmp"]),
+    # The source cannot be rewritten (a directory where the file goes): no line.
+    uc("human_skill_refresh_fails_quietly", V,
+       files={_SK_SRC + ".fingerprint": "0" * 64}, dirs=[_SK_SRC + "SKILL.md/sub"]),
+    # `wapps skill <leaf>` manages the skill itself: no auto-refresh...
+    uc("human_skill_status_is_not_auto_refreshed", ["skill", "status"],
+       files=_SK_STALE_SRC, links=_SK_LINK),
+    # ...but only once the root's PersistentPreRunE ran: cobra's NoArgs comes
+    # first, so an extra word is an unknown command AND a refresh.
+    uc("human_skill_status_extra_word_is_refreshed", ["skill", "status", "extra"],
+       files=_SK_STALE_SRC, links=_SK_LINK),
+    # The mutual exclusion is in PersistentPreRunE, after the skill is
+    # recorded: refused, not refreshed.
+    uc("agent_skill_install_both_identity_flags_is_not_refreshed",
+       CFG_SUB + P + ["skill", "install"], UC_AGENT,
+       files=dict(_SK_STALE_SRC, **{"sub/.wapps.yaml": VALID_CFG}), links=_SK_LINK),
+    # NoArgs before the mutual exclusion (finding 3 of the completion slice,
+    # fixed here for `skill`).
+    uc("agent_skill_status_extra_word_before_both_identity_flags",
+       CFG_SUB + P + ["skill", "status", "extra"], UC_AGENT,
+       files=dict(_SK_STALE_SRC, **{"sub/.wapps.yaml": VALID_CFG}), links=_SK_LINK),
+    # The family page and the help command never reach PersistentPreRunE.
+    uc("human_skill_family_page_is_refreshed", ["skill"], files=_SK_STALE_SRC, links=_SK_LINK),
+    uc("human_skill_refresh_before_the_error", ["nosuch"],
+       dict(UC, **_gh("tag/v0.23.0")), files=_SK_STALE_SRC, links=_SK_LINK),
+]
+CASES += UPDATE_CASES
+ARM_WAIVERS["nosuch"] = ARM_WAIVERS.get("nosuch", {})
+
 _armcheck()

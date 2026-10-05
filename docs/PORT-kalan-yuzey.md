@@ -1442,7 +1442,7 @@ driven) and zsh other than 5.9. The descriptions shown next to the words
 
 ---
 
-### Dilim 10 — `updatecheck` + skill auto-refresh (çapraz kesen)
+### Dilim 10 — `updatecheck` + skill auto-refresh (çapraz kesen) · **LANDED**
 
 | | |
 |---|---|
@@ -1453,6 +1453,97 @@ driven) and zsh other than 5.9. The descriptions shown next to the words
 | differential vakası | **Bugünkü korpusla ÖLÇÜLEMEZ.** `probe.py` her vakaya `WAPPS_NO_UPDATE_CHECK=1` veriyor ve yerel yapıda `Version="dev"` semver değil. Ölçmek için korpusun bu iki kapıyı AÇAN ayrı bir alt kümesi gerekiyor + GitHub API'si için bir sahte sunucu |
 | kapı | Yeni bir korpus alt kümesi + `cargo test` |
 | not | **Bu dilimin atlanması sessiz bir farktır.** Bugün Rust ikilisi yeni sürümü hiç haber vermiyor ve `brew upgrade` sonrası skill'i hiç tazelemiyor; hiçbir test bunu söylemiyor |
+
+**What landed (measured).**
+
+| | |
+|---|---|
+| surface | Not a verb: the two side effects Go's `Execute` runs after every command and BEFORE the command's error is reported — the "newer release" notice (`maybeNotifyUpdate`) and the skill auto-refresh (`maybeAutoRefreshSkill`). `main.rs` runs both after `run()` returns, unless the verb left through `CmdError::Exit` (Go called `os.Exit` there: `secrets exec`/`tofu`/`dr bootstrap` with a failing child, and `deploy` ALWAYS — its RunE ends in an unconditional `os.Exit`, so `deploy`'s success now leaves through `Exit(0)` too) |
+| new modules | `updatecheck.rs` (Go's `internal/updatecheck`: semver, the cache read with encoding/json's rules, the fetch, the cache write, `human_notices_enabled`), `gozone.rs` (Go's `time.Local`: the TZif reader and the POSIX footer rule) |
+| extended | `gotime.rs` (`rfc3339nano_json` = Go's `Time.MarshalJSON`, `parse_rfc3339` = Go's `time.Parse(RFC3339)`, `days_from_civil`), `skill.rs` (`auto_refresh` = Go's `AutoRefresh`), `main.rs` (the two gates, `SKILL_CMD_INVOKED` = Go's `skillCmdInvoked`, `skill <leaf>`'s NoArgs moved before the root's mutual exclusion) |
+| Go change | `cmd/root.go`: `WAPPS_UPDATE_CHECK_URL` (set and non-empty) replaces the GitHub endpoint, in both binaries. The way a test can stand in for the server: the default is HTTPS to api.github.com, which a fake can only answer with a certificate the Go binary trusts, and Go on darwin verifies through the platform verifier, which (per Go's documentation; not measured here) does not read `SSL_CERT_FILE`. Whatever the server answers, only digits and dots reach the terminal. The file's Turkish comments were translated (the slice touches it) |
+| the crate question (§6 item 4) | **No new crate** (Cargo.lock 100 → 100, `cargo deny check` exit 0). Reading the time is a fixed format and was done by hand. WRITING it is not: Go writes `time.Now()` in the LOCAL zone (`2026-10-05T14:33:20.123456+03:00` here, `…Z` under TZ=UTC), so writing Go's bytes needs Go's offset, found Go's way — TZ unset → `/etc/localtime`, TZ="" or "UTC" → UTC with no file, a name looked up in four zoneinfo directories, an absolute path read as is, anything unfound → UTC, and NO POSIX rule strings from TZ (libc would parse `XYZ-3`; Go says UTC). Current tzdata is "slim", so today's offsets mostly live in the TZif footer rule, which had to be ported too (Go's `tzset`). Options measured: a date crate (chrono pulls iana-time-zone and platform crates; `time` refuses the local offset in a multi-threaded process), libc's `localtime_r` (unsafe FFI, which this crate has none of, and libc's TZ semantics differ from Go's as above), or the literal port. The port is `gozone.rs`, 442 lines with comments, compared live (below) |
+| the live oracle | `tests/updatecheck.rs` + `tests/testdata/ucoracle/main.go`: a Go program (inside the module, so it imports the REAL `internal/updatecheck`; under `testdata`, so `go build/vet/test ./...` skip it) answers the same vectors the Rust side computes. Live rather than frozen because half the comparison is an offset read from the system's zoneinfo, which a tzdata update would make stale. **Semver** 31 inputs + 7 comparisons. **RFC 3339 parse** 61 raw values (Go 1.26's `Time.UnmarshalJSON` runs `time.Parse(RFC3339)` with its strict checks disabled — finding 1). **The written time** 32 TZ values × 28 instants = **896** comparisons (the machine's zone, `""`, `UTC`, `:UTC`, `:`, northern/southern DST, `+05:30`/`+05:45`/`+12:45`/`-03:30`, footer-only zones like Tehran, footer rules with negative or >24 h transition times like Nuuk and Troll, `Etc/GMT±n`, `EST5EDT`, an unknown name, a POSIX string, a missing absolute path, a path with and without the colon, `../../../../etc/localtime`; instants one second either side of the 2026 DST switches, 2099/2100 past every last transition, the 32-bit edge, a local year outside [0, 9999] where Go's MarshalJSON fails). **MaybeNotify end to end** under an injected clock: **63** scenarios (server answers, the 24 h edge to the nanosecond — exactly 24 h is stale, 1 ns less is fresh —, future and offset caches, 27 malformed or odd cache files, bodies past the 1 MiB cap, the 2 s timeout, dev/main/pre-release builds), each comparing the notice, the number of requests and the cache file's bytes. All 4 tests: 0 differ |
+| differential cases | **74** (`UPDATE_CASES`, the subset the plan asked for: gates OPEN — `WAPPS_NO_UPDATE_CHECK` unset, `WAPPS_UPDATE_CHECK_URL` at the fake endpoint, the oracle at Version 0.23.0). Server: new release, up to date, older, non-canonical tag, not a version, terminal escapes in the tag, characters Go escapes, invalid UTF-8, a lone surrogate, `null` tag and body, not JSON, trailing data, tag a number, 500/404/201, a redirect, server down, slower than the timeout, an endpoint that is not a URL (21). Cache: fresh newer/current/at +03:00/from the future, stale, fresh with no version, not JSON, empty, `null`, `{}`, trailing garbage, the parser's leniency (one-digit hour, comma fraction, +24:00 offset), an escaped time, lower-case `t`, Feb 29 of a common year, time a number, folded keys (upper case, the Kelvin sign, the long s), version a number, a later `null` keeping the time, a lone surrogate in the version, the cache path a directory, the cache dir blocked (25). Gates: opted out, agent mode (no notice AND no check), no `$HOME` (the cache goes to `$TMPDIR`), the notice before an error, after the root page and the help command, none after `deploy` (exit 0) or a failing `exec` child, present after a succeeding one (9). The zone of the written time: UTC, Istanbul, Kolkata, New York, `:Pacific/Chatham`, plus the machine's own in every other case (5). Skill refresh: after an upgrade, with the notice (order), silent in agent mode, current marker, copy install, opted out, no `$HOME`, a failing rewrite, `skill status` (not refreshed), `skill status extra` (refreshed: NoArgs precedes PersistentPreRunE), both identity flags on `skill install` (refused, not refreshed), `skill status extra` with both flags (NoArgs first), the family page, before an error (14) |
+| harness | `fakegate.py` gained `/gh/` (tag, status, raw bytes, slow, redirect), and like GitHub it answers 400 unless the request carries `User-Agent: wapps-cli` and GitHub's v3 Accept header — so every case that prints a notice also proves the headers, the redirected request included. `probe.py`: `{TS:<delta>[:<offset>]}` seeds a cache time relative to now; a seed the binary left alone is recorded as `seed-unchanged` (its bytes differ between the two runs); a freshly written `checked_at` becomes `{CHECKED_AT}` ONLY after it proved to be Go's RFC3339Nano shape (no trailing fraction zeros, `Z` for zero), inside the run's own time window, at the offset Go's Local has for the case's TZ — otherwise it stays raw and the case reads DIFFERENT. Every case has its own `$HOME`, so the cache under `~/Library/Caches` (`~/.cache` on Linux) and the skill source land in the `written` snapshot |
+| gate | `cargo test --release` (differential `EQUAL=1043 DIFFERENT=0 UNSOUND=0` = 969 + 74; the floor raised from 969 to 1043; help axis 54 nodes, 162 pages, 0 differ; the differential 366 s), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all -- --check`, `cargo deny check`, `go build ./...`, `go vet ./cmd/... ./internal/...`, `go test ./...` |
+| red before green | the live-oracle tests did not compile before the port (the modules did not exist). The 74 corpus cases against the pre-slice Rust binary (built from `main`): **EQUAL=13 DIFFERENT=61**. The 13 are the "nothing happens" controls (server 500/404/201, down, slow, not JSON, tag a number, a bad endpoint, a fresh current or empty cache, opted out, agent mode, after `deploy`), which a binary that never checks matches by construction; their teeth are the mutations below (e) and (f). The first green run of the port was 74 EQUAL |
+| mutation proofs | each applied by a script that copies the file back, touches it and compares it byte for byte with its backup. Live-oracle tests: (a) no footer rule → zone test red; (b) TZ unset read as UTC → zone + notify red; (c) a strict two-digit hour → parse + notify red; (d) fraction zeros kept → zone + notify red; (e) a 24 h TTL inclusive → notify red (the exact-24h scenario); (f) no Kelvin fold → notify red; (g) Rust's `from_utf8_lossy` → notify red; (h) the time unescaped before parsing → parse red; (i) the whole body read instead of the first value → notify red; (j) a 30 s timeout → notify red; (k) the cache written in UTC → notify red; (l) serde's unquote → notify red; (m) no Accept header → notify red. Corpus (74 cases each): (n) no redirects → 1 DIFFERENT; (o) the error reported before the notice → 3; (p) `deploy`'s exit 0 running the hooks → 1; (q) the skill recorded before NoArgs → 2; (r) the notice in agent mode → 4; (s) no refresh in agent mode → 2; (t) the Linux cache dir on macOS → 56 |
+
+**Findings.**
+
+1. *Go 1.26 reads the cache's time leniently.* `Time.UnmarshalJSON` tries a
+   strict RFC 3339 fast path, then falls back to `time.Parse(RFC3339)`, whose
+   strict checks are disabled (`case true: return t, nil`, go.dev/issue/54580).
+   So `2099-01-01T1:00:00+03:00` (one-digit hour), `…,5Z` (comma fraction) and
+   `…+24:00` are valid times and the cache is FRESH; three corpus cases pin it.
+   And the time string is NOT unescaped (go.dev/issue/47353): `2099\u002d01…`
+   is an error, while an escaped KEY (`checked\u005fat`) matches.
+2. *The cache is not at `~/.cache` on macOS.* The plan named
+   `~/.cache/wapps/version-check.json`; Go uses `os.UserCacheDir()`, which is
+   `$HOME/Library/Caches` on darwin, `$XDG_CACHE_HOME` (absolute only) or
+   `$HOME/.cache` elsewhere, and when that fails Go falls back to `$TMPDIR`
+   (or `/tmp`). Ported per OS; only darwin was measured here.
+3. *The written time is LOCAL, so byte equality needs Go's zone lookup* (the
+   crate row above). A port that wrote `Z` would be readable by Go but would
+   rewrite the file with different bytes on every alternation between the two
+   binaries; mutation (k) and the corpus zone cases catch it.
+4. *Nothing runs after `deploy`, even on success.* Go's RunE ends in
+   `os.Exit(runDeploy(...))`, so the notice and the refresh never follow a
+   deploy. Rust's deploy returned `Ok(())` on exit 0 and would have run them;
+   it now leaves through `CmdError::Exit(0)`. Mutation (p).
+5. *`skill <leaf> extra` was refused in the wrong order* (finding 3 of the
+   `completion` follow-up named it). cobra's NoArgs runs before the root's
+   PersistentPreRunE, and that order also decides the refresh: an extra word
+   is an unknown command AND gets refreshed, both identity flags are refused
+   and do NOT. Fixed for `skill`; `projects list extra` with both flags still
+   diverges (not in this slice).
+6. *Go's JSON decoding is not serde's, in three ways this file can hit:* one
+   U+FFFD per invalid UTF-8 byte (Rust's lossy decoder folds a broken
+   sequence into one), a surrogate that does not pair becomes U+FFFD (serde
+   refuses the string), and key folding includes the Kelvin sign and the long
+   s. `updatecheck.rs` has `go_lossy`, `go_unquote` and `go_fold` for them;
+   mutations (f), (g), (l).
+7. *Go's JSON decoder stops at the end of the first value.* A body that holds
+   the release object and then anything (or stalls) is a success for Go, so
+   the port reads exactly one value (within the 1 MiB cap) instead of the
+   whole body; mutation (i).
+8. *A test was able to touch the developer's real skill.* `tests/rootmount.rs`
+   runs both binaries with the inherited `$HOME` and no opt-out; the
+   auto-refresh runs in agent mode too, so the Go oracle could already rewrite
+   `~/.config/wapps/skills` (and now the Rust binary as well). It now sets
+   `WAPPS_NO_UPDATE_CHECK=1`.
+9. *A local Rust build is a "release" to the check.* Go's local builds carry
+   `Version="dev"`, which ParseSemver rejects, so developers are never asked;
+   the Rust binary always carries Cargo.toml's version (slice 9: kept equal to
+   the tag), so a `cargo build` checks like a release. Equal against the
+   oracle as the corpus builds it (both at 0.23.0); a difference only between
+   unreleased builds. Not changed: there is no Rust equivalent of an unset
+   ldflag, and inventing one is a release-train question (§6 item 6).
+
+**What the pricing got wrong.** "Probably no crate" held, but the unmeasured
+part was the expensive part: reading and formatting the time is 186 lines in
+`gotime.rs`, finding the offset Go writes is a 442-line port of Go's zone
+lookup. "A new corpus subset" was 74 cases plus
+a live Go oracle with 1 058 comparisons, and the harness needed time seeds,
+`seed-unchanged`, a verified timestamp normalization and a fake endpoint that
+checks headers. And the Go side had to change (the endpoint override), which
+the plan did not foresee.
+
+**Known divergences, not in the corpus.** A cache KEY holding a lone
+surrogate escape (serde refuses the key, Go folds it to U+FFFD and decodes
+on: Rust refetches where Go may read a fresh cache). Go's last-resort zone
+source, `$GOROOT/lib/time/zoneinfo.zip`, is not ported (it only answers for a
+zone missing from every system directory; Rust says UTC). Go's http client
+honours `HTTPS_PROXY`/`NO_PROXY`, `ureq` as configured here does not — the
+same gap as every other HTTP call in the port.
+
+**Not measured.** stderr not a terminal while stdin is one (the pty harness
+gives all three streams a pty; the gate is `human_notices_enabled`, a
+one-line port). Linux: `$XDG_CACHE_HOME` and `~/.cache` (macOS only here).
+More than 10 redirects (Go's limit; `ureq` is set to 10, the error paths were
+not compared). Two binaries writing the cache at once (both write atomically
+through a temp file). The real GitHub endpoint (never contacted by a test).
 
 ---
 
@@ -1469,7 +1560,7 @@ driven) and zsh other than 5.9. The descriptions shown next to the words
 | 7 | `deploy` · LANDED | 582 | none | 76 (actual) |
 | 8 | `skill` · LANDED | 539 (AutoRefresh is slice 10) | none | 43 (actual) |
 | 9 | yardım düzeni · LANDED, `completion` follow-up LANDED | (cobra) | `clap_complete` (+1) for `completion` | 43 + 14 (actual) + 162 help pages + 40 Tab lines |
-| 10 | updatecheck + auto-refresh | 256+ | ölçülmedi | yeni korpus alt kümesi |
+| 10 | updatecheck + auto-refresh · LANDED | 256 + root.go's two gates | none (Go's zone lookup ported by hand, `gozone.rs`) | 74 (actual) + 4 live-oracle tests (1 058 comparisons) |
 
 Dilim 1–8 toplamı **4077 satır Go** (172+60+634+70+582+1438+582+539) ve
 **133–171 yeni differential vakası**; korpus 435'ten **568–606**'ya çıkar. Dilim 9 ve 10 satır sayısıyla değil, karar ve
@@ -1504,6 +1595,11 @@ Bunlar tahminle doldurulmadı; ölçülmediği için ölçülmemiş olarak yazı
    içindeki `time.Time` alanının Rust'ta hangi araçla üretileceği ve bunun
    yeni bir crate gerektirip gerektirmediği ölçülmedi. Go'nun yazdığı biçimi
    okumadım.
+   *Measured since, in slice 10:* no crate. Go writes the field as
+   RFC3339Nano in the LOCAL zone; reading it is a fixed format (by hand),
+   writing Go's bytes needs Go's zone lookup, ported by hand (`gozone.rs`) and
+   compared live with Go over 32 TZ values × 28 instants. The file is under
+   `~/Library/Caches` on macOS, not `~/.cache`.
 
 5. **`cargo deny` sonucu hiçbir aday için.** §4.2'nin tablosu boş, çünkü bir
    aday crate ağaca girmeden `cargo deny check` koşulamaz. Bu belge o kararı

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Bir ikiliyi tum vakalarda pty altinda kosturur ve sonucu JSON dokerler."""
-import hashlib, json, os, shutil, socket, subprocess, sys, time
+"""Runs a binary under a pty over every case and dumps the results as JSON."""
+import calendar, datetime, hashlib, json, os, re, shutil, socket, subprocess, sys, time
+from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
 from cases import CASES, GATE_SCRIPT, FIXTURE_FILES
@@ -11,6 +12,62 @@ def bindpath_for(cfg):
 
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+
+# --- the update check's cache file (`<cache dir>/wapps/version-check.json`) ---
+#
+# Its `checked_at` is the binary's own clock, so two runs never write the same
+# bytes. It is replaced by `{CHECKED_AT}` ONLY after it proved to be what Go
+# writes: Go's RFC3339Nano shape (no trailing fraction zeros, `Z` for a zero
+# offset), an instant inside the run's own window, and the offset Go's Local
+# has at that instant for the case's TZ. A timestamp that fails any of these
+# stays raw, so the two runs differ and the case reads DIFFERENT.
+_TS = re.compile(r"\{TS:(-?\+?\d+)(?::([+-]\d\d:\d\d))?\}")
+_CHECKED_AT = re.compile(rb'^\{"checked_at":"([^"]*)",')
+_GO_TIME = re.compile(r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d{0,8}[1-9])?"
+                      r"(Z|[+-]\d\d:\d\d)$")
+
+
+def _zone(tz):
+    """Go's Local for a TZ value (None: unset), as a ZoneInfo; None is UTC.
+    Only the values the corpus uses: unset, a zone name, `UTC`."""
+    if tz is None:
+        with open("/etc/localtime", "rb") as f:
+            return ZoneInfo.from_file(f)
+    tz = tz[1:] if tz.startswith(":") else tz
+    return None if tz in ("", "UTC") else ZoneInfo(tz)
+
+
+def _offset(tz, t):
+    z = _zone(tz)
+    return 0 if z is None else int(datetime.datetime.fromtimestamp(t, z).utcoffset().total_seconds())
+
+
+def _ts(content, now):
+    """`{TS:<delta>}` -> now+delta as RFC 3339 in UTC; `{TS:<delta>:+03:00}`
+    the same instant at that offset. For seeding fresh/stale caches."""
+    def one(m):
+        t = now + int(m.group(1))
+        z = m.group(2)
+        off = 0 if not z else (1 if z[0] == "+" else -1) * (int(z[1:3]) * 3600 + int(z[4:6]) * 60)
+        wall = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t + off))
+        return wall + (z or "Z")
+    return _TS.sub(one, content)
+
+
+def _norm_checked_at(body, tz, t0, t1):
+    m = _CHECKED_AT.match(body)
+    if not m:
+        return body
+    g = _GO_TIME.match(m.group(1).decode("ascii", "replace"))
+    if not g:
+        return body
+    y, mo, d, hh, mm, ss = map(int, g.groups()[:6])
+    z = g.group(8)
+    off = 0 if z == "Z" else (1 if z[0] == "+" else -1) * (int(z[1:3]) * 3600 + int(z[4:6]) * 60)
+    inst = calendar.timegm((y, mo, d, hh, mm, ss)) - off + float("0" + (g.group(7) or ""))
+    if not (t0 - 1 <= inst <= t1 + 1) or _offset(tz, inst) != off:
+        return body
+    return body.replace(m.group(1), b"{CHECKED_AT}", 1)
 
 def main():
     binary = sys.argv[1]
@@ -167,6 +224,7 @@ def main():
             # saparsa ve olcum kosuma gore degisirdi. workdir'de .wapps.yaml
             # YOK, yani "config yok" dali DETERMINISTIK olarak olculuyor.
             casedir = workdir
+            ts_seeded = {}
             if cfgseed is not None:
                 # Vaka dizini HER kosumda sifirdan kuruluyor ki iki ikili AYNI
                 # baslangic durumunu gorsun (apply idempotens vakalari icin sart).
@@ -178,6 +236,13 @@ def main():
                     with open(os.path.join(casedir, ".wapps.yaml"), "w") as f:
                         f.write(seed_yaml)
                 for rel, content in (cfgseed.get("files") or {}).items():
+                    # `{TS:...}`: a time relative to now (a cache's
+                    # `checked_at`). Such a seed is not the same bytes in the
+                    # two runs, so it is recorded below as `seed-unchanged`
+                    # when the binary left it alone.
+                    if isinstance(content, str) and "{TS:" in content:
+                        content = _ts(content, int(time.time()))
+                        ts_seeded[rel] = content.encode()
                     fp = os.path.join(casedir, rel)
                     os.makedirs(os.path.dirname(fp), exist_ok=True)
                     # BAYT icerik BINARY yazilir. `dr restore` fikstuleri
@@ -237,8 +302,10 @@ def main():
                     with os.fdopen(fd, "w") as f:
                         f.write(content)
 
+            t0 = time.time()
             out, err, code = run([binary] + argv, env, cwd=casedir,
                                  stdin_data=stdin_data)
+            t1 = time.time()
             # The fake gate's root printed in full is normalized back to
             # `{GATE}`: its port differs per binary. `wapps deploy` prints the
             # endpoint it resolved ("Deploying ... via <ep>"), and the PATH
@@ -300,8 +367,14 @@ def main():
                         if os.path.islink(fp):
                             written[rel] = ["symlink", os.readlink(fp)]
                             continue
-                        written[rel] = [open(fp, "rb").read().hex(),
-                                        oct(os.stat(fp).st_mode & 0o777)]
+                        body = open(fp, "rb").read()
+                        mode = oct(os.stat(fp).st_mode & 0o777)
+                        if ts_seeded.get(rel) == body:
+                            written[rel] = ["seed-unchanged", mode]
+                            continue
+                        if rel.endswith("wapps/version-check.json"):
+                            body = _norm_checked_at(body, env.get("TZ"), t0, t1)
+                        written[rel] = [body.hex(), mode]
             # The SESSION CACHE is part of the contract too: what `wapps
             # login` wrote (bytes AND modes — the file carries a bearer token
             # and must be 0600 under 0700 dirs), and that a read-only verb

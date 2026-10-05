@@ -1,7 +1,8 @@
-// wapps ikilisinin giris noktasi. Adim 6 dilimi: `secrets get`.
+// The wapps binary's entry point.
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use wapps::agentmode;
 use wapps::applyverb;
 use wapps::binding;
@@ -39,10 +40,24 @@ use wapps::store;
 use wapps::storevalues;
 use wapps::syncverb;
 use wapps::trustrepo;
+use wapps::updatecheck;
+
+// SKILL_CMD_INVOKED is Go's skillCmdInvoked: set where the root's
+// PersistentPreRunE would run for a `skill` leaf, so the auto-refresh after
+// the command stays quiet for the verbs that manage the skill themselves.
+static SKILL_CMD_INVOKED: AtomicBool = AtomicBool::new(false);
 
 fn main() -> ExitCode {
     let agent = agentmode::is_agent();
-    match run() {
+    let res = run();
+    // Go's Execute: the two side notices run after the command, whatever it
+    // returned, and BEFORE its error is reported — so the notice sits between
+    // the command's output and the error. A verb that leaves through
+    // CmdError::Exit called os.Exit in Go, and nothing runs after that.
+    if !matches!(res, Err(CmdError::Exit(_))) {
+        after_command(SKILL_CMD_INVOKED.load(Ordering::Relaxed));
+    }
+    match res {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let mut err_out = std::io::stderr();
@@ -51,6 +66,33 @@ fn main() -> ExitCode {
             // that owns its code (deploy, a mirrored child) carries it here.
             ExitCode::from(e.exit_code())
         }
+    }
+}
+
+// after_command is cmd/root.go's maybeNotifyUpdate + maybeAutoRefreshSkill.
+//
+// WAPPS_NO_UPDATE_CHECK (any non-empty value) turns both off. The update
+// notice is for a human at a terminal only (stderr a TTY, not agent mode).
+// The skill refresh RUNS in agent mode and without a terminal too (CI gets
+// the current skill), only its confirmation line is for humans; it stays off
+// for `wapps skill ...`, which manages the skill explicitly.
+fn after_command(skill_cmd_invoked: bool) {
+    let no_update_check = std::env::var_os("WAPPS_NO_UPDATE_CHECK").is_some_and(|v| !v.is_empty());
+    let stderr_tty = || rustix::termios::isatty(std::io::stderr());
+    let mut err = std::io::stderr();
+    if updatecheck::human_notices_enabled(no_update_check, stderr_tty(), agentmode::is_agent()) {
+        updatecheck::notify_from_env(&mut err);
+    }
+    if no_update_check || skill_cmd_invoked {
+        return;
+    }
+    if skill::auto_refresh()
+        && updatecheck::human_notices_enabled(false, stderr_tty(), agentmode::is_agent())
+    {
+        let _ = writeln!(
+            err,
+            "✓ wapps-secrets skill refreshed to match the new wapps version."
+        );
     }
 }
 
@@ -201,6 +243,26 @@ fn run() -> Result<(), CmdError> {
     if let Some(("completion", cm)) = matches.subcommand() {
         if let Some((shell, sm)) = cm.subcommand() {
             completion::no_args(shell, sm).map_err(CmdError::Plain)?;
+        }
+    }
+
+    // `skill <leaf>`: cobra's NoArgs too, then the root's PersistentPreRunE,
+    // whose first act is to record the skill invocation (Go: skillCmdInvoked)
+    // before anything in it can fail. So `skill status extra` is an unknown
+    // command and DOES get the auto-refresh; `skill status` with both identity
+    // flags is the mutual exclusion and does not.
+    if let Some(("skill", sm)) = matches.subcommand() {
+        if let Some((leaf, lm)) = sm.subcommand() {
+            if let Some(extra) = lm
+                .get_many::<String>("extra")
+                .and_then(|mut v| v.next().cloned())
+            {
+                return Err(CmdError::Plain(format!(
+                    "unknown command {} for \"wapps skill {leaf}\"",
+                    go_quote(&extra)
+                )));
+            }
+            SKILL_CMD_INVOKED.store(true, Ordering::Relaxed);
         }
     }
 
@@ -2642,7 +2704,9 @@ fn service_creds_present() -> bool {
 // only decide which `.wapps.yaml` the credential fallback reads — exactly
 // Go's StoreValues: `--config`, a registered `--project`, else ./.wapps.yaml
 // (an unregistered `--project` is inert). The verb writes every line itself
-// and owns its exit code (0..8), which leaves through CmdError::Exit.
+// and owns its exit code (0..8), which leaves through CmdError::Exit — 0
+// included, because Go's RunE ends in an unconditional os.Exit: nothing runs
+// after a deploy, not even the update notice.
 fn run_deploy(
     config: Option<String>,
     project: Option<String>,
@@ -2681,10 +2745,7 @@ fn run_deploy(
         &env,
         &store,
     );
-    match code {
-        deployverb::EXIT_OK => Ok(()),
-        code => Err(CmdError::Exit(code)),
-    }
+    Err(CmdError::Exit(code))
 }
 
 // --- `wapps skill` ---------------------------------------------------------------
@@ -2697,16 +2758,7 @@ fn run_skill(sm: &clap::ArgMatches) -> Result<(), CmdError> {
     let Some((leaf, lm)) = sm.subcommand() else {
         unreachable!("cobra_preflight prints a family's page")
     };
-    // cobra.NoArgs: an extra argument is an "unknown command".
-    if let Some(extra) = lm
-        .get_many::<String>("extra")
-        .and_then(|mut v| v.next().cloned())
-    {
-        return Err(CmdError::Plain(format!(
-            "unknown command {} for \"wapps skill {leaf}\"",
-            go_quote(&extra)
-        )));
-    }
+    // cobra.NoArgs was checked in run(), before the mutual exclusion.
     let flag = |name: &str| lm.try_get_one::<bool>(name).ok().flatten() == Some(&true);
     let opts = skill::Options::from_flags(
         flag("local"),

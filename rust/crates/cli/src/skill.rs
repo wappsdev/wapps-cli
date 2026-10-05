@@ -1,5 +1,6 @@
 // skill, the `wapps skill` family: install, status and uninstall of the
-// "wapps-secrets" Claude Code skill that ships inside the binary.
+// "wapps-secrets" Claude Code skill that ships inside the binary, and the
+// auto-refresh main runs after every other command.
 //
 // ORACLE: internal/skill/skill.go and cmd/skill/skill.go.
 //
@@ -194,6 +195,24 @@ fn materialize() -> Result<String, String> {
     }
     let _ = write_file(&join(&dir, FINGERPRINT_FILE), fingerprint().as_bytes());
     Ok(dir)
+}
+
+/// auto_refresh, Go's AutoRefresh: after an upgrade, bring an existing
+/// SYMLINK install up to date in place by re-materializing the source the
+/// links point at. Only the fingerprint marker decides: no marker means no
+/// symlink install (copy installs are the user's to update), an equal marker
+/// means current. True when it refreshed; every failure is false.
+pub fn auto_refresh() -> bool {
+    let Ok(dir) = source_dir() else {
+        return false;
+    };
+    let Ok(marker) = std::fs::read(join(&dir, FINGERPRINT_FILE)) else {
+        return false;
+    };
+    if marker == fingerprint().as_bytes() {
+        return false;
+    }
+    materialize().is_ok()
 }
 
 fn parent(p: &str) -> &str {

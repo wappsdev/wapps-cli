@@ -98,7 +98,7 @@ for name in sorted(go):
     if g.get("written") != r.get("written"):
         def decw(w):
             if w is None: return None
-            return {k: (tuple(v) if v[0] in ("symlink", "emptydir") else
+            return {k: (tuple(v) if v[0] in ("symlink", "emptydir", "seed-unchanged") else
                         (bytes.fromhex(v[0]).decode("utf-8", "replace"), v[1]))
                     for k, v in w.items()}
         print(f"   written GO: {decw(g.get('written'))!r}")
