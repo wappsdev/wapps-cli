@@ -1650,21 +1650,53 @@ step.
 5. *GoReleaser's Rust builder is labelled experimental* in 2.17.1, and
    `release.yml` installs `goreleaser` `latest`. Not pinned here (it was not
    pinned before either).
+6. *On Linux the live zone oracle read a zone the port never reads.*
+   `the_written_time_is_go_s_json_in_every_zone` failed at `TZ=EST5EDT`: Rust
+   `…T11:33:20Z`, Go `…T07:33:20-04:00`. Debian 13's tzdata 2026c no longer
+   ships `EST5EDT` (it is in `tzdata-legacy`), so Go fell through to its last
+   resort, `$GOROOT/lib/time/zoneinfo.zip` — which `go run` finds because the
+   toolchain is installed, and which slice 10 recorded as deliberately not
+   ported. The oracle now runs with `go run -trimpath` (runtime.GOROOT() is
+   then empty, measured: `""` against `/opt/homebrew/Cellar/go/1.26.5/libexec`),
+   i.e. as a released Go binary runs on a user's machine. Red on Linux before,
+   green on Linux and macOS after; a test-harness change, no product code.
+   The other Go oracles (`differential.rs`, `helpaxis.rs`, `completion.rs`)
+   still build without it; none of their zone cases hit a legacy zone today.
+7. *Two Linux failures that are the harness's, not CI's.* Run as root, the
+   container failed `applyverb::a_failing_target_leaves_the_earlier_ones_written`
+   (root ignores the `0o500` directory the test relies on; GitHub's runner is
+   a non-root user, and the non-root run passed it). Run from a copy without
+   `.git`, both `noderuntime` tests failed at `git ls-files`; from a git
+   checkout, as CI has, they pass.
 
 **Gates**, each run on its own, exit codes read on their own: `go build ./...` 0,
 `go vet ./cmd/... ./internal/...` 0, `go test ./...` 0, `cargo fmt --all --
 --check` 0, `cargo clippy --all-targets -- -D warnings` 0, `cargo deny check`
 0, `cargo test --release -- --nocapture` 0 (differential `EQUAL=1043
-DIFFERENT=0 UNSOUND=0`, unchanged — no Rust or Go source changed; help axis 54
-nodes, 162 pages, 0 differ; Tab parity 40 lines, 9 under the recorded bash
-divergence, 0 differ; 59 test binaries ok; the differential 699 s with other
-lanes compiling), `goreleaser check` 0, `actionlint` 0.
+DIFFERENT=0 UNSOUND=0`, unchanged — no product source changed, only the zone
+oracle's `go run` flag (finding 6); help axis 54 nodes, 162 pages, 0 differ;
+Tab parity 40 lines, 9 under the recorded bash divergence, 0 differ; zone
+oracle 896 compared; 59 test binaries ok; the differential 699 s on the first
+run, with other lanes compiling), `goreleaser check` 0, `actionlint` 0. All
+re-run after finding 6's change.
+
+**The first Linux run of the Rust suite.** Every earlier measurement in this
+document is macOS, and the new `ubuntu-latest` leg of the `rust` job would
+have been the first Linux run, so it was run here first: `golang:1.26`
+(Debian 13, arm64, Go 1.26.8, bash 5.2.37, zsh 5.9) under OrbStack, as a
+non-root user, `cargo test --release --locked --no-fail-fast` with
+`CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` (the
+LTO build was starved by other containers on this host; same code, cheaper
+link). Differential `EQUAL=1043 DIFFERENT=0 UNSOUND=0`; help axis 54 nodes,
+162 pages, 0 differ; Tab parity 40 lines, 9 under the recorded bash
+divergence, 0 differ — so bash 5.2 (only 3.2 had been driven) agrees too.
+59 test binaries, three failures, findings 6 and 7. After the fix,
+`--test updatecheck --test noderuntime` on Linux: 4 + 9 passed, `zones=32
+instants=28 compared=896`, `notify scenarios=63 differ=0`.
 
 **Not verified.** CI itself: the workflows were linted, not run (nothing was
-pushed); in particular the Rust suite has **never run on Linux** (every
-measurement in this document is macOS; slice 10 already listed `$XDG_CACHE_HOME`
-and the Tab drivers' bash 4/5 as unmeasured), so the new `ubuntu-latest` leg
-of the `rust` job is the first Linux run and may surface real divergences.
+pushed), so the GitHub runners (ubuntu-latest amd64, macos-latest) were not
+exercised — the Linux run above is arm64 Debian 13, not the runner's Ubuntu.
 The darwin x86_64 binary was built and archived but not run (no Intel Mac);
 the linux binaries ran under OrbStack containers only for `--version`,
 `completion` and an offline `whoami`; no HTTPS call was made from a Linux

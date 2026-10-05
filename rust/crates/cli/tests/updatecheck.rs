@@ -32,13 +32,24 @@ fn repo_root() -> PathBuf {
 
 // oracle runs the Go program once over `vectors` with TZ set to `tz` (None:
 // unset) and returns one answer per vector.
+//
+// `-trimpath` empties runtime.GOROOT(), which turns off Go's last-resort zone
+// source ($GOROOT/lib/time/zoneinfo.zip), the one gozone.rs does not port. A
+// `go run` binary otherwise finds the local toolchain's zip, which a released
+// binary on a user's machine does not: on Debian 13 (tzdata 2026c, EST5EDT
+// moved to tzdata-legacy) the oracle answered EST5EDT from the zip while the
+// port said UTC.
 fn oracle(tz: Option<&str>, vectors: &[Value]) -> Vec<Value> {
     let mut cmd = Command::new("go");
-    cmd.args(["run", "./rust/crates/cli/tests/testdata/ucoracle"])
-        .current_dir(repo_root())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args([
+        "run",
+        "-trimpath",
+        "./rust/crates/cli/tests/testdata/ucoracle",
+    ])
+    .current_dir(repo_root())
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     match tz {
         Some(v) => cmd.env("TZ", v),
         None => cmd.env_remove("TZ"),
