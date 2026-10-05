@@ -38,13 +38,75 @@ impl From<clierr::Error> for CmdError {
     }
 }
 
-/// build, komut agacini kurar.
+/// build, the command tree as the dispatch parses it.
 pub fn build() -> Command {
+    cobra_shape(tree())
+}
+
+// cobra_shape gives every node cobra's parsing surface for help: a `-h/--help`
+// bool the dispatch reads (clap's own help flag would print clap's page and
+// stop parsing at once; cobra parses every flag first, so `--help --bogus` is
+// an unknown flag), and on every family node a hidden positional, because
+// cobra lets a family take stray words (`wapps secrets nosuchverb` prints the
+// family's help; on the root it is "unknown command"). `tofu` keeps clap's
+// help flag disabled and reads `-h`/`--help` itself, as Go's
+// DisableFlagParsing command does.
+fn cobra_shape(mut cmd: Command) -> Command {
+    if !cmd.is_disable_help_flag_set() {
+        cmd = cmd.disable_help_flag(true).arg(
+            Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(ArgAction::SetTrue),
+        );
+    }
+    if cmd.has_subcommands() {
+        cmd = cmd.arg(Arg::new("args").num_args(0..).hide(true));
+    }
+    let names: Vec<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    for name in names {
+        cmd = cmd.mut_subcommand(name, cobra_shape);
+    }
+    cmd
+}
+
+const ROOT_LONG: &str = "wapps is the umbrella CLI for the wappsdev estate.
+
+It wraps:
+  - the secrets gate (server-side decryption; values never touch git)
+  - Tofu (wapps tofu — project secrets injected as TF_VAR_*)
+  - Coolify v4 REST API (gap shim for the SierraJC Tofu provider)
+  - deploys through the company deploy-proxy
+  - doctor (end-to-end dependency + access check)";
+
+// tree, the command tree with cobra's texts (Short, Long, Use, flag usages)
+// byte for byte; cobrahelp renders it.
+fn tree() -> Command {
     Command::new("wapps")
         .about("wapps umbrella CLI — secrets, Tofu, Coolify and deploys for the wappsdev estate")
+        .long_about(ROOT_LONG)
         .subcommand_required(false)
         .arg_required_else_help(false)
         .disable_help_subcommand(true)
+        .disable_version_flag(true)
+        .arg(
+            Arg::new("version")
+                .long("version")
+                .action(ArgAction::SetTrue),
+        )
+        // cobra's help command, mounted on the root only.
+        .subcommand(
+            Command::new("help")
+                .about("Help about any command")
+                .long_about(
+                    "Help provides help for any command in the application.\nSimply type wapps help [path to command] for full details.",
+                )
+                .override_usage("help [command]")
+                .arg(Arg::new("topic").num_args(0..).hide(true)),
+        )
         .arg(
             Arg::new("verbose")
                 .short('v')
@@ -76,7 +138,7 @@ pub fn build() -> Command {
                 //
                 // Ret artik main.rs'te, dispatch'ten once — cunku `tofu` bu
                 // reddi ALMIYOR (bkz. orasi).
-                .help("Registered project name; resolves to that project's .wapps.yaml"),
+                .help("Registered project name (see ~/.config/wapps/projects.yaml); resolves to that project's .wapps.yaml"),
         )
         .subcommand(
             Command::new("secrets")
@@ -84,6 +146,7 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("set")
                         .about("Write a secret value into the store (interactive, no echo)")
+.override_usage("set <KEY>")
                         // Arite ELLE kontrol ediliyor (cobra ExactArgs(1) gibi).
                         .arg(Arg::new("key").num_args(0..).help("Secret key name"))
                         .arg(
@@ -96,6 +159,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("exec")
                         .about("Run a command with the project's secrets injected as env vars")
+.long_about(LONG_SECRETS_EXEC)
+.override_usage("exec -- <command> [args...]")
                         // trailing_var_arg + allow_hyphen_values: `exec -- pnpm dev`
                         // sonrasindaki HER SEY cocuga ait. Aksi halde clap
                         // `--watch` gibi bir cocuk bayragini KENDI bayragi
@@ -119,16 +184,18 @@ pub fn build() -> Command {
                             Arg::new("intent")
                                 .long("intent")
                                 .value_name("string")
-                                .help("freshness intent: dev (tolerate cache) | deploy (fresh-or-fail)"),
+                                .help("freshness intent: dev (tolerate cache) | deploy (fresh-or-fail) (default \"dev\")"),
                         ),
                 )
                 .subcommand(
                     Command::new("apply")
-                        .about("Write every declared consumption target from the store"),
+                        .about("Write every declared consumption target from the store")
+.long_about(LONG_SECRETS_APPLY),
                 )
                 .subcommand(
                     Command::new("get")
                         .about("Print a single secret value (TTY only; refused in agent mode)")
+.override_usage("get <key>")
                         // Arite KONTROLU elle yapiliyor (cobra'nin ExactArgs(1)'i
                         // gibi), clap'e birakilmiyor: clap'in kendi metni
                         // ("unexpected argument ... found") sahadaki ikilinin
@@ -148,6 +215,7 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("status")
                         .about("Machine-readable gate/session state (safe in every mode)")
+.long_about(LONG_SECRETS_STATUS)
                         .arg(
                             Arg::new("json")
                                 .long("json")
@@ -159,6 +227,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("rm")
                         .about("Remove a key from the store (irreversible; refused in agent mode)")
+.long_about(LONG_SECRETS_RM)
+.override_usage("rm <KEY>")
                         // Arite ELLE (cobra ExactArgs(1)).
                         .arg(Arg::new("key").num_args(0..).help("Secret key name"))
                         .arg(
@@ -178,7 +248,7 @@ pub fn build() -> Command {
                         .about("Show / set / lint the gate's access policy (admin)")
                         .subcommand(
                             Command::new("show")
-                                .about("Fetch the active policy version + rules (admin verb, write-AUD session)")
+                                .about("GET /v1/policy — active version + rules (admin verb, write-AUD session)")
                                 .arg(
                                     Arg::new("json")
                                         .long("json")
@@ -189,7 +259,9 @@ pub fn build() -> Command {
                         )
                         .subcommand(
                             Command::new("set")
-                                .about("Lint + diff + CAS write of a policy file (version = current+1)")
+                                .about("Lint + diff + CAS PUT /v1/policy (version = current+1)")
+.long_about(LONG_SECRETS_POLICY_SET)
+.override_usage("set <file>")
                                 // Arite ELLE (cobra ExactArgs(1)).
                                 .arg(Arg::new("file").num_args(0..).help("Policy file path"))
                                 .arg(
@@ -202,12 +274,15 @@ pub fn build() -> Command {
                         .subcommand(
                             Command::new("lint")
                                 .about("Offline schema validation + overlap analysis (warnings only)")
+.override_usage("lint <file>")
                                 .arg(Arg::new("file").num_args(0..).help("Policy file path")),
                         ),
                 )
                 .subcommand(
                     Command::new("rotate-plan")
                         .about("What must be rotated after an offboard, derived from the audit ledger")
+.long_about(LONG_SECRETS_ROTATE_PLAN)
+.override_usage("rotate-plan --identity <principal>")
                         .arg(
                             Arg::new("identity")
                                 .long("identity")
@@ -270,7 +345,7 @@ pub fn build() -> Command {
                                 .value_name("string")
                                 .allow_hyphen_values(true)
                                 .default_value("https://coolify.meapps.dev/api/v1")
-                                .help("Coolify API base URL"),
+                                .help("Coolify API base URL (default \"https://coolify.meapps.dev/api/v1\")"),
                         )
                         .arg(
                             Arg::new("dry-run")
@@ -304,12 +379,14 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("import-env")
                         .about("Bulk import KEY=VALUE pairs from an env file into the store")
+.override_usage("import-env <file>")
                         // Arite ELLE (cobra ExactArgs(1)).
                         .arg(Arg::new("file").num_args(0..).help("Env file path")),
                 )
                 .subcommand(
                     Command::new("env")
                         .about("Emit the project's secrets as .envrc-style export lines")
+.long_about(LONG_SECRETS_ENV)
                         .arg(
                             Arg::new("write")
                                 .long("write")
@@ -328,6 +405,7 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("trust-repo")
                         .about("Pin this repo to its project so an agent cannot target another (TTY only)")
+.long_about(LONG_SECRETS_TRUST_REPO)
                         // cobra'da trustRepoCmd'in Args'i YOK -> ArbitraryArgs:
                         // fazladan arguman SESSIZCE yok sayiliyor. Olculdu.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
@@ -335,6 +413,7 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("init")
                         .about("Scaffold .wapps.yaml for a fresh repo")
+.long_about(LONG_SECRETS_INIT)
                         .arg(
                             Arg::new("force")
                                 .long("force")
@@ -357,6 +436,7 @@ pub fn build() -> Command {
         .subcommand(
             Command::new("doctor")
                 .about("Check all dependencies + access (onboarding preflight)")
+.long_about(LONG_DOCTOR)
                 .arg(
                     Arg::new("for")
                         .long("for")
@@ -378,6 +458,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("skip")
                         .about("Recorded admin SKIP of a rotation worklist key (resolves NEEDS_TRIAGE)")
+.long_about(LONG_ROTATE_SKIP)
+.override_usage("skip <run-id> <project>/<key> --reason <why>")
                         // Arite ELLE (cobra ExactArgs(2)).
                         .arg(Arg::new("args").num_args(0..).help("Run id and <project>/<key>"))
                         .arg(
@@ -408,6 +490,8 @@ pub fn build() -> Command {
         .subcommand(
             Command::new("tofu")
                 .about("Run tofu with the project's secrets injected as TF_VAR_*")
+.long_about(LONG_TOFU)
+.override_usage("tofu [args...]")
                 .trailing_var_arg(true)
                 .allow_hyphen_values(true)
                 .disable_help_flag(true)
@@ -434,9 +518,12 @@ pub fn build() -> Command {
         .subcommand(
             Command::new("dr")
                 .about("Disaster recovery against the B2 ciphertext replica")
+.long_about(LONG_DR)
                 .subcommand(
                     Command::new("verify")
                         .about("Structural integrity check of the B2 replica snapshot (read-only)")
+.long_about(LONG_DR_VERIFY)
+.override_usage("verify --snapshot <dir>")
                         .arg(
                             Arg::new("snapshot")
                                 .long("snapshot")
@@ -448,6 +535,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("restore")
                         .about("TTY-only DR ceremony: Shamir shares + snapshot → 0600 env file")
+.long_about(LONG_DR_RESTORE)
+.override_usage("restore --project <p> --snapshot <dir> --share <file> --share <file> --out <env-file>")
                         .arg(
                             Arg::new("snapshot")
                                 .long("snapshot")
@@ -476,7 +565,7 @@ pub fn build() -> Command {
                         .arg(
                             Arg::new("share")
                                 .long("share")
-                                .value_name("string")
+                                .value_name("stringArray")
                                 .action(ArgAction::Append)
                                 .help("MASTER_KEK Shamir share file, hex (repeat ≥2; assembled key NEVER persisted)"),
                         )
@@ -485,17 +574,18 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("split")
                         .about("TTY-only: split the store's MASTER_KEK into N-of-M Shamir shares for offline custody")
+.long_about(LONG_DR_SPLIT)
                         .arg(
                             Arg::new("parts")
                                 .long("parts")
                                 .value_name("int")
-                                .help("total Shamir shares to create"),
+                                .help("total Shamir shares to create (default 3)"),
                         )
                         .arg(
                             Arg::new("threshold")
                                 .long("threshold")
                                 .value_name("int")
-                                .help("shares required to reconstruct"),
+                                .help("shares required to reconstruct (default 2)"),
                         )
                         .arg(
                             Arg::new("out-dir")
@@ -514,14 +604,15 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("combine")
                         .about("TTY-only: reconstruct MASTER_KEK from >=threshold Shamir shares (to re-set the Worker secret)")
+.long_about(LONG_DR_COMBINE)
                         // StringArrayVar: `--share` TEKRARLANABILIR ve sira
                         // KORUNUR. clap'te bunun karsiligi Append.
                         .arg(
                             Arg::new("share")
                                 .long("share")
-                                .value_name("string")
+                                .value_name("stringArray")
                                 .action(ArgAction::Append)
-                                .help("hex Shamir share file (repeat >= threshold)"),
+                                .help("hex Shamir share file (repeat ≥ threshold)"),
                         )
                         .arg(
                             Arg::new("out")
@@ -551,6 +642,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("bootstrap")
                         .about("TTY-only: prompt for bootstrap tokens (no echo) and run a command with them injected")
+.long_about(LONG_DR_BOOTSTRAP)
+.override_usage("bootstrap [--var NAME]... -- <command> [args...]")
                         .trailing_var_arg(true)
                         .allow_hyphen_values(true)
                         .arg(Arg::new("argv").num_args(0..).help("Command and arguments"))
@@ -558,7 +651,7 @@ pub fn build() -> Command {
                         .arg(
                             Arg::new("var")
                                 .long("var")
-                                .value_name("string")
+                                .value_name("stringArray")
                                 .action(ArgAction::Append)
                                 .help("extra env var NAME to prompt and inject (repeatable; skipped if already set)"),
                         )
@@ -582,6 +675,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("accept-epoch-reset")
                         .about("TTY-only ceremony: verify the audit head against the paper envelope, then lower the epoch pin")
+.long_about(LONG_DR_ACCEPT_EPOCH_RESET)
+.override_usage("accept-epoch-reset --project <p>")
                         .arg(
                             Arg::new("project")
                                 .long("project")
@@ -607,6 +702,7 @@ pub fn build() -> Command {
         .subcommand(
             Command::new("login")
                 .about("Log in to the secrets gate via CF Access SSO (TTY only)")
+.long_about(LONG_LOGIN)
                 .arg(
                     Arg::new("check")
                         .long("check")
@@ -642,6 +738,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("exchange")
                         .about("Exchange a CF Access service token for a scoped token (≤10 min)")
+.long_about(LONG_TOKEN_EXCHANGE)
+.override_usage("exchange --project <p> --key K [--key K2] [--verb read]")
                         // `allow_hyphen_values`: pflag'de BOSLUKLA ayrilmis bir
                         // uzun bayrak SONRAKI jetonu KOSULSUZ deger sayiyor —
                         // `-` ile baslasa bile. Olculdu: `--ttl -5`,
@@ -666,7 +764,7 @@ pub fn build() -> Command {
                         .arg(
                             Arg::new("key")
                                 .long("key")
-                                .value_name("string")
+                                .value_name("stringArray")
                                 .action(ArgAction::Append)
                                 .allow_hyphen_values(true)
                                 .help("exact key name in scope (repeatable)"),
@@ -679,11 +777,11 @@ pub fn build() -> Command {
                         .arg(
                             Arg::new("verb")
                                 .long("verb")
-                                .value_name("string")
+                                .value_name("stringArray")
                                 .action(ArgAction::Append)
                                 .default_value("read")
                                 .allow_hyphen_values(true)
-                                .help("verb in scope (read|write|rotate)"),
+                                .help("verb in scope (read|write|rotate) (default [read])"),
                         )
                         // `--ttl` cobra'da bir `IntVar`, yani deger
                         // AYRISTIRICIDA cozuluyor ve bozuk bir deger RunE'ye
@@ -730,14 +828,14 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("deploy-app-git")
                         .about("Create Coolify Application from a private GitHub repo (Coolify builds on the target server)")
-                        .arg(pflag_value("base-dir", "string", "Build context base directory"))
+                        .arg(pflag_value("base-dir", "string", "Build context base directory (default \"/\")"))
                         .arg(pflag_value("build-arg", "strings", "Docker build arg KEY=VALUE (repeatable). Stored as is_build_time env var."))
-                        .arg(pflag_value("build-pack", "string", "Build pack: dockerfile, nixpacks, static"))
-                        .arg(pflag_value("dockerfile", "string", "Dockerfile path relative to base-dir"))
-                        .arg(pflag_value("git-branch", "string", "Git branch"))
+                        .arg(pflag_value("build-pack", "string", "Build pack: dockerfile, nixpacks, static (default \"dockerfile\")"))
+                        .arg(pflag_value("dockerfile", "string", "Dockerfile path relative to base-dir (default \"Dockerfile\")"))
+                        .arg(pflag_value("git-branch", "string", "Git branch (default \"main\")"))
                         .arg(pflag_value("git-repo", "string", "GitHub org/repo (e.g. wappsdev/vaulter-api)"))
                         .arg(pflag_value("github-app-uuid", "string", "Coolify GitHub App source UUID"))
-                        .arg(pflag_bool("instant-deploy", "Trigger initial build immediately on create"))
+                        .arg(pflag_bool("instant-deploy", "Trigger initial build immediately on create (default true)"))
                         .arg(pflag_value("name", "string", "Application name"))
                         .arg(pflag_value("ports", "string", "Exposed ports (comma-separated)"))
                         .arg(pflag_value("project-uuid", "string", "Coolify project UUID"))
@@ -749,7 +847,7 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("import-app")
                         .about("List Coolify apps on a server → emit Tofu import commands + HCL stubs")
-                        .arg(pflag_value("output-dir", "string", "Where to write imports.sh + apps.tf"))
+                        .arg(pflag_value("output-dir", "string", "Where to write imports.sh + apps.tf (default \"./.outputs/import\")"))
                         .arg(pflag_value("server-uuid", "string", "Filter by server UUID (empty = all)"))
                         // importAppCmd has no Args -> ArbitraryArgs.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
@@ -761,7 +859,7 @@ pub fn build() -> Command {
                         .arg(pflag_value("label", "strings", "Label (repeatable, e.g. --label 'traefik.enable=true')"))
                         .arg(pflag_bool(
                             "strip-cert-resolver",
-                            "Strip certresolver=letsencrypt labels (file-based Origin Cert pattern)",
+                            "Strip certresolver=letsencrypt labels (file-based Origin Cert pattern) (default true)",
                         ))
                         // setLabelsCmd has no Args -> ArbitraryArgs.
                         .arg(Arg::new("ignored").num_args(0..).hide(true)),
@@ -795,6 +893,8 @@ pub fn build() -> Command {
                 .subcommand(
                     Command::new("rm")
                         .about("Remove a project and ALL its data (admin; irreversible; refused in agent mode)")
+.long_about(LONG_PROJECTS_RM)
+.override_usage("rm <PROJECT>")
                         .arg(Arg::new("project").num_args(0..).help("Project name"))
                         .arg(
                             Arg::new("yes")
@@ -866,6 +966,7 @@ fn skill_command() -> Command {
 fn deploy_command() -> Command {
     Command::new("deploy")
         .about("Deploy a service through the company-deploy-proxy")
+        .override_usage("deploy <service>")
         .long_about(DEPLOY_LONG)
         .arg(Arg::new("service").num_args(0..).hide(true))
         .arg(pflag_value(
@@ -880,17 +981,17 @@ fn deploy_command() -> Command {
         .arg(pflag_value(
             "poll-interval",
             "int",
-            "Seconds between status polls under --wait",
+            "Seconds between status polls under --wait (default 15)",
         ))
         .arg(pflag_value(
             "repo",
             "string",
-            "Logical repo whose scoped token + app subset to use",
+            "Logical repo whose scoped token + app subset to use (default \"vaulter\")",
         ))
         .arg(pflag_value(
             "timeout",
             "int",
-            "Seconds to wait with --wait before timing out (must stay < 90m)",
+            "Seconds to wait with --wait before timing out (must stay < 90m) (default 1200)",
         ))
         .arg(pflag_bool(
             "wait",
@@ -1107,3 +1208,231 @@ Non-destructive unless coolify_sync.delete_unmanaged: true.
   wapps secrets sync --target=coolify --app <uuid> --force  # single-app apply
   wapps secrets sync --target=coolify --all-apps            # multi-app dry-run
   wapps secrets sync --target=coolify --all-apps --force    # multi-app apply";
+
+// cobra Long texts, byte for byte from the Go commands (cmd/...).
+
+const LONG_DOCTOR: &str = "Verify the local environment can run wapps commands.
+
+Default mode runs the full battery of checks (CLI tools, R2 env, Coolify
+API reachability, git remote). Use --for to scope:
+
+  --for tofu     check ONLY the env required by 'wapps secrets sync' against
+                 a Tofu project (AWS_*, TF_VAR_state_passphrase, tofu binary).
+                 Useful before the first sync in a freshly-bootstrapped repo.";
+
+const LONG_DR: &str = "Disaster recovery against the NON-Cloudflare, append-only B2 replica.
+The replica holds ONLY ciphertext + metadata — MASTER_KEK never reaches B2, so the
+replica alone yields nothing. dr verify is a structural integrity check; dr restore
+is the true-disaster TTY ceremony (Shamir shares + snapshot → plaintext env files).";
+
+const LONG_DR_ACCEPT_EPOCH_RESET: &str =
+    "accept-epoch-reset is the ONLY legitimate way to lower a project's local epoch
+pin (rollback tripwire, internal/store/epochpin.go). It exists for ONE scenario:
+the store was LEGITIMATELY rebuilt (F5) and clients must re-accept it.
+
+The ceremony:
+  1. fetches the LIVE audit-chain head from the gate,
+  2. asks you to TYPE the first 12 hex chars of the head hash FROM THE PAPER
+     ENVELOPE (typing the paper value IS the out-of-band verification),
+  3. on mismatch it HARD-ABORTS — store substitution is assumed; open an incident,
+  4. on match it performs ONE pin-lowering read tagged X-Wapps-Intent: epoch-reset.
+
+REFUSED in agent mode. The accept flag is never available on exec/apply/get.";
+
+const LONG_DR_BOOTSTRAP: &str =
+    "Bootstrap/DR runbook verb for when the store itself is unreachable (e.g. a
+bricked Worker — flow F3). REFUSED in agent mode: bootstrap tokens must never
+cross an AI transcript.
+
+For every bootstrap env var (backend contract + provisioning tokens + --var):
+  - already set in your environment  -> inherited, NOT prompted
+  - constant (AWS_REGION=auto)       -> injected as-is, NEVER prompted
+  - otherwise                        -> no-echo TTY prompt (Enter = skip)
+
+The command then runs with the values injected as process env, through the
+same output scrubber as 'wapps secrets exec' — an apply that echoes a token
+prints ***. Nothing is ever written to disk, the store, or shell history.
+
+  wapps dr bootstrap -- tofu apply
+  wapps dr bootstrap --var TF_VAR_extra_token -- tofu apply -target=module.gate
+
+On success it prints the differentiated burn checklist: burn ceremony/
+temp tokens NOW, burn a rotated-out token only AFTER its successor is in the
+store, and do NOT burn standing tokens self-hosted in the store.";
+
+const LONG_DR_COMBINE: &str =
+    "combine reads >=threshold hex share files and reconstructs the MASTER_KEK (64-hex),
+writing it 0600 to --out (NEVER stdout). Use it to re-provision the store after a loss:
+
+  wapps dr combine --share s1.hex --share s2.hex --out master.hex
+  npx wrangler secret put MASTER_KEK < master.hex   # re-set the Worker secret
+  rm master.hex
+
+Refused in agent mode.";
+
+const LONG_DR_RESTORE: &str = "TRUE-disaster restore. TTY-ONLY — REFUSED under agent mode.
+Reconstructs MASTER_KEK from ANY 2-of-3 Shamir share files (hex), verifies the
+snapshot chain, derives the project KEK, unwraps every DEK, opens every blob and
+writes a 0600 env file. The assembled MASTER_KEK
+and the plaintext values are NEVER printed and never persisted beyond --out.
+Works with zero Cloudflare availability.";
+
+const LONG_DR_SPLIT: &str =
+    "split TAKES the store's MASTER_KEK (64-hex) and writes {--parts} Shamir share
+files (hex, 0600) such that ANY {--threshold} reconstruct it (dr combine) and fewer
+reveal NOTHING. Move each share to a SEPARATE offline place (paper safe / YubiKey /
+trusted person).
+
+MASTER_KEK source (NEVER printed, NEVER echoed):
+  default        no-echo TTY prompt — paste the 64-hex value; input stays hidden
+  --master-hex   supply the 64-hex value explicitly (argv is visible via ps/shell
+                 history — prefer the prompt)
+
+Refused in agent mode — the MASTER_KEK must never reach an AI transcript.";
+
+const LONG_DR_VERIFY: &str =
+    "Verify the ciphertext replica: for every project, current pointer → manifest
+hash chain, manifest schema, and every referenced blob's content address. Uses NO
+secrets and NO Cloudflare — runnable against an air-gapped snapshot copy.
+(Live-B2 lag comparison alerts run in the Worker's nightly reconcile.)";
+
+const LONG_LOGIN: &str = "login runs the CF Access SSO for the secrets gate via cloudflared
+(edge token transfer — the CF Access CLI flow rejects a localhost callback), then
+caches the returned app token 0600 at ~/.config/wapps/session/<gate-host>.json.
+Every store call then presents it as the cf-access-token header.
+
+Agent/CI contexts never run login: CI uses a CF Access service token via
+CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (no browser, no session file).
+
+--write runs the SSO against the WRITE (admin) Access application instead. The
+edge protects <gate>/v1/admin with a separate, short-lived app (15 min + WebAuthn)
+that issues a different AUD; control-plane verbs (secrets policy, projects rm,
+rotate-plan) need it and the read session cannot stand in. The two sessions are
+cached separately, so logging in for admin does not evict the read session.
+
+--check prints the current session subject + remaining TTL (never token bytes).";
+
+const LONG_PROJECTS_RM: &str = "Remove a project and all of its data from the store.
+
+This deletes every key, manifest and blob under the project. It needs the
+global `admin` verb and a write-AUD session — a per-key `delete` grant is NOT
+enough. The append-only pointer-event trail is KEPT: it is the tamper-evident
+record that the project existed, and deleting it would forge a clean history.";
+
+const LONG_ROTATE_SKIP: &str =
+    "Mark a value-rotation worklist key as SKIPPED with a recorded admin attestation.
+
+A key that carries no rotation metadata is flagged NEEDS_TRIAGE and BLOCKS run
+completion — it is never swallowed. An admin resolves it here by writing a SKIP
+row (canonical attestation, no secret values) recording WHY the key needs no
+value rotation (e.g. the value is a public constant, or it rotates at its
+origin). Once written, the run reaches terminal.
+
+This is a control-plane admin op: authorization is enforced by the Worker admin
+API (write-AUD session + admin verb). The engine transition (internal/rotation
+RunLedger.SkipKey) is implemented and tested; the CLI↔live-ledger wiring lands
+with the rotation executor.";
+
+const LONG_SECRETS_APPLY: &str =
+    "Fetch the project's secrets once and write every target declared in
+.wapps.yaml's 'targets:' block atomically. Idempotent: if a target file on
+disk already matches what would be written, the file is left alone (mtime
+unchanged). Errors if no targets are declared — use
+'wapps secrets env --write <file>' for one-off writes.
+
+Safe to call from npm 'predev' / 'prebuild' scripts so '.env.local' always
+matches the store.";
+
+const LONG_SECRETS_ENV: &str = "Emit the project's secrets as 'export KEY=VALUE' lines.
+
+By default writes to stdout (printable). Use --write <file> to write to a
+file silently (AI-safe path — no secret value reaches stdout, terminal,
+or LLM transcript).
+
+Keys are emitted under the name they are stored with. --prefix prepends
+something to every key; it is idempotent, so a key that already starts with
+the prefix is emitted unchanged.";
+
+const LONG_SECRETS_EXEC: &str =
+    "Decrypt secrets and exec the given command with each secret exported
+as an env var. wapps forwards the subprocess's stdout and stderr THROUGH A
+STREAMING SCRUBBER that redacts any injected secret value to ***, then
+exits with the subprocess's exit code.
+
+AI-safe contract: wapps itself prints no secret values — only the
+subprocess does, and even that output is scrubbed of injected values. Use this
+from agent contexts that need credentialed commands without putting values in
+the agent transcript.
+
+  wapps secrets exec -- pnpm dev
+  wapps secrets exec -- ./scripts/deploy.sh";
+
+const LONG_SECRETS_INIT: &str = "Initialize wapps secrets in the current repo.
+
+Creates a single file — .wapps.yaml — naming the project this repo reads from
+in the secrets gate. Nothing encrypted is written to the repo: values live
+server-side and are fetched on demand.
+
+An existing .wapps.yaml is never overwritten unless --force is passed.
+
+After init: 'wapps login', then 'wapps secrets trust-repo' to pin this repo to
+the project, then 'wapps secrets set <KEY>'.";
+
+const LONG_SECRETS_POLICY_SET: &str = "policy set validates <file> offline (schema + lint), fetches
+the current policy for the version CAS, prints the rule diff old→new, asks for a
+TTY confirm, then PUTs with version = current+1. A concurrent admin edit loses
+the CAS (412 POLICY_CONFLICT) — refetch with policy show and retry.";
+
+const LONG_SECRETS_RM: &str = "Remove a key from the store.
+
+Deletion is irreversible and needs its own `delete` grant in policy.json —
+a `write` grant is NOT enough. Use this when the thing a secret pointed at is
+gone (deleted service account, retired provider) and the entry is now orphaned.";
+
+const LONG_SECRETS_ROTATE_PLAN: &str =
+    "rotate-plan queries the gate's hash-chained audit ledger (GET
+/v1/admin/rotate-plan, admin verb + write-AUD session) for every (project, key)
+the identity read, wrote, imported, synced or rotation-wrote — the precise
+rotate set for offboarding.
+
+  --identity        human:<email> | service:<common_name>
+  --since           RFC3339 lower bound (optional)
+  --assume-policy   ALSO union every key the identity's policy rules COULD read
+                    (paranoid superset when audit coverage is doubted)
+
+Execute the resulting worklist with wapps secrets rotate.";
+
+const LONG_SECRETS_STATUS: &str =
+    "Report {online, session_valid, session_expires_in, epoch_pin}. status is SAFE
+in every mode and every network state — it never touches plaintext and never fails
+hard; it is the first command an agent runs when anything else errors.";
+
+const LONG_SECRETS_TRUST_REPO: &str =
+    "A .wapps.yaml names a project, but a repo file is attacker-writable
+content (confused-deputy seam). trust-repo pins the (repo → project) binding in
+the TRUSTED home dir (~/.config/wapps/repo-pins.json), NOT in the repo. An agent
+hitting an unpinned store-backed binding is refused (BINDING_UNPINNED); only a
+human at a terminal can pin.";
+
+const LONG_TOFU: &str = "Resolve the project from the current directory's .wapps.yaml, inject its
+secrets as env vars (VERBATIM — the store holds TF_VAR_* / AWS_* names directly),
+and run tofu with the given args. Secrets never touch disk; the child's stdout/
+stderr pass through the same scrubber as 'secrets exec' (injected values -> ***).
+
+  wapps tofu init
+  wapps tofu plan -target=module.gate
+  wapps tofu apply
+
+Equivalent to (but cleaner than):
+  wapps secrets exec -- tofu <args...>
+
+Project resolution is cwd-based (run it from the project's .wapps.yaml dir, as you
+would tofu). AI-safe: wapps prints no secret values — safe from agent/CI
+contexts (a fresh CI container authenticates with a CF Access service-token pair).";
+
+const LONG_TOKEN_EXCHANGE: &str = "token exchange swaps the pipeline's CF Access service-token pair
+(CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET) for a short-TTL machine token
+scoped to {project, keys[], verbs[]} ⊆ the service's policy rows, via
+POST /v1/token. The minted token is printed to stdout for the pipeline step to
+capture; subsequent calls present it via WAPPS_MACHINE_TOKEN. Optional layer —
+service tokens may also use the data plane directly.";

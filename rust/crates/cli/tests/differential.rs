@@ -117,10 +117,20 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     let pty_dir = pty_dir();
 
     // Oracle'i kaynaktan derle — sahadaki sozlesme Go'nun BUGUNKU davranisi.
+    // Built as the release builds it: `cmd.Version` from the ldflag, set to
+    // the Rust crate's version (the owner's rule: Cargo.toml's version is the
+    // tag's), so `--version` is compared and not merely "dev" against a semver.
+    // The update check this would arm stays off: probe.py sets
+    // WAPPS_NO_UPDATE_CHECK=1 for every case.
     let go_bin = work.join("wapps-go");
     run(
         Command::new("go")
             .arg("build")
+            .arg("-ldflags")
+            .arg(format!(
+                "-X github.com/wappsdev/wapps-cli/cmd.Version={}",
+                env!("CARGO_PKG_VERSION")
+            ))
             .arg("-o")
             .arg(&go_bin)
             .arg("./main.go")
@@ -383,10 +393,11 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // DIFFERENT=0 UNSOUND=0" tek basina okunabilir bir kanittir, ve UNSOUND
     // artik EQUAL'e SAYILMADIGI icin bir zaman asimi bu satiri sessizce
     // suslemez — esigi DUSURUR.
-    for line in report
-        .lines()
-        .filter(|l| l.starts_with("EQUAL=") || l.starts_with("UYARI:"))
-    {
+    for line in report.lines().filter(|l| {
+        l.starts_with("EQUAL=")
+            || l.starts_with("UYARI:")
+            || l.starts_with("COMPLETION_LINE_REMOVED=")
+    }) {
         println!("{line}");
     }
     let equal: usize = report
@@ -402,9 +413,12 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // `import-app` added 93: 771. `secrets sync --target=coolify` added 50:
     // 821. `deploy` added 76 (its nine exit codes, the credential tiers and
     // the --wait poll against a fake deploy proxy): 897. The binding prompt's
-    // list of what a sync reads (owner decision B) added 8: 905.
+    // list of what a sync reads (owner decision B) added 8: 905. The help
+    // layout (slice 9: bare `wapps`, `--version`, the help command and flag,
+    // unknown words, cobra's Find) added 42 and brought the long-excluded
+    // `agent_unknown_subcommand` back: 948.
     assert!(
-        equal >= 905,
+        equal >= 948,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

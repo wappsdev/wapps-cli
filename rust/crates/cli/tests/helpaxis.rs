@@ -1,0 +1,187 @@
+// The help axis: every node of the Go binary's command tree, its `--help`
+// bytes compared with the Rust binary's, node by node.
+//
+// Why a separate comparison and not pty cases: help does not depend on the
+// mode (agent or human) or on any identity arm, so it has none of the axes the
+// pty corpus is built around; what it has is breadth (one page per node). The
+// tree is not listed here: it is WALKED out of the oracle's own help ("Available
+// Commands:"), so a node added to Go appears here without anyone writing it down.
+//
+// Three forms are compared for every node: `<path> --help`, `<path> -h` and
+// `help <path>` (cobra's help command reaches the same page).
+//
+// One recorded exception: `completion`. Its port waits for the owner (see
+// docs/PORT-kalan-yuzey.md, slice 9), so its subtree is not walked and its one
+// listing line is removed from the root's page before comparing. The removal
+// asserts the line was there, so it cannot outlive the port silently.
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+const COMPLETION_LINE: &str =
+    "  completion  Generate the autocompletion script for the specified shell\n";
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("repo root")
+        .to_path_buf()
+}
+
+fn scratch() -> PathBuf {
+    let d = std::env::temp_dir().join(format!("wapps-helpaxis-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("scratch");
+    assert!(
+        !d.starts_with(repo_root()),
+        "scratch inside the repo: {}",
+        d.display()
+    );
+    d
+}
+
+// go_oracle builds the Go binary the way the release does: the version comes
+// from the ldflag, here set to the Rust crate's version (the owner's rule:
+// Cargo.toml's version is the tag's).
+fn go_oracle(work: &Path) -> PathBuf {
+    let bin = work.join("wapps-go-helpaxis");
+    let out = Command::new("go")
+        .arg("build")
+        .arg("-ldflags")
+        .arg(format!(
+            "-X github.com/wappsdev/wapps-cli/cmd.Version={}",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .arg("-o")
+        .arg(&bin)
+        .arg("./main.go")
+        .current_dir(repo_root())
+        .output()
+        .expect("go build could not run");
+    assert!(
+        out.status.success(),
+        "go build (oracle) failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    bin
+}
+
+fn run(bin: &Path, work: &Path, args: &[String]) -> Output {
+    Command::new(bin)
+        .args(args)
+        .current_dir(work)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", work)
+        .env("WAPPS_NO_UPDATE_CHECK", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("binary could not run")
+}
+
+// children reads the subcommand names out of a cobra help page.
+fn children(page: &str) -> Vec<String> {
+    let Some(start) = page.find("Available Commands:\n") else {
+        return Vec::new();
+    };
+    page[start + "Available Commands:\n".len()..]
+        .lines()
+        .take_while(|l| l.starts_with("  "))
+        .map(|l| l.split_whitespace().next().unwrap().to_string())
+        .collect()
+}
+
+// walk visits the tree under `path` as the binary's own help describes it.
+fn walk(bin: &Path, work: &Path, path: Vec<String>, out: &mut Vec<Vec<String>>) {
+    let mut args = path.clone();
+    args.push("--help".into());
+    let page = String::from_utf8_lossy(&run(bin, work, &args).stdout).to_string();
+    out.push(path.clone());
+    for child in children(&page) {
+        if path.is_empty() && child == "completion" {
+            continue;
+        }
+        let mut next = path.clone();
+        next.push(child);
+        walk(bin, work, next, out);
+    }
+}
+
+fn shown(o: &Output) -> String {
+    format!(
+        "exit {:?}\n--- stdout\n{}--- stderr\n{}",
+        o.status.code(),
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
+}
+
+#[test]
+fn every_help_page_matches_the_oracle() {
+    let work = scratch();
+    let go = go_oracle(&work);
+    let rs = PathBuf::from(env!("CARGO_BIN_EXE_wapps"));
+
+    let mut go_nodes = Vec::new();
+    walk(&go, &work, Vec::new(), &mut go_nodes);
+    let mut rs_nodes = Vec::new();
+    walk(&rs, &work, Vec::new(), &mut rs_nodes);
+    // The same tree, not merely the same pages for Go's nodes: a node only
+    // Rust lists would otherwise go unseen.
+    assert_eq!(
+        go_nodes.iter().map(|p| p.join(" ")).collect::<Vec<_>>(),
+        rs_nodes.iter().map(|p| p.join(" ")).collect::<Vec<_>>(),
+        "the two binaries list different command trees"
+    );
+    // Floor: the walk must really reach the tree (49 nodes measured when this
+    // test landed: Go's 54 minus the 5 of `completion`).
+    assert!(go_nodes.len() >= 49, "walked only {} nodes", go_nodes.len());
+
+    let mut diffs = Vec::new();
+    let mut compared = 0;
+    for path in &go_nodes {
+        let forms: [Vec<String>; 3] = [
+            path.iter().cloned().chain(["--help".to_string()]).collect(),
+            path.iter().cloned().chain(["-h".to_string()]).collect(),
+            ["help".to_string()]
+                .into_iter()
+                .chain(path.iter().cloned())
+                .collect(),
+        ];
+        for args in forms {
+            let mut g = run(&go, &work, &args);
+            let r = run(&rs, &work, &args);
+            if path.is_empty() {
+                let page = String::from_utf8(g.stdout).unwrap();
+                assert_eq!(
+                    page.matches(COMPLETION_LINE).count(),
+                    1,
+                    "the oracle's root page no longer lists `completion` once; \
+                     drop this exception: {args:?}"
+                );
+                g.stdout = page.replacen(COMPLETION_LINE, "", 1).into_bytes();
+            }
+            compared += 1;
+            if g.stdout != r.stdout || g.stderr != r.stderr || g.status.code() != r.status.code() {
+                diffs.push(format!(
+                    "=== wapps {}\n### GO\n{}### RS\n{}",
+                    args.join(" "),
+                    shown(&g),
+                    shown(&r)
+                ));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&work);
+    println!(
+        "help axis: {} nodes, {compared} pages compared, {} differ",
+        go_nodes.len(),
+        diffs.len()
+    );
+    assert!(
+        diffs.is_empty(),
+        "{} of {} help pages differ:\n{}",
+        diffs.len(),
+        compared,
+        diffs.join("\n")
+    );
+}
