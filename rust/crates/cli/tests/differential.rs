@@ -393,11 +393,10 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // DIFFERENT=0 UNSOUND=0" tek basina okunabilir bir kanittir, ve UNSOUND
     // artik EQUAL'e SAYILMADIGI icin bir zaman asimi bu satiri sessizce
     // suslemez — esigi DUSURUR.
-    for line in report.lines().filter(|l| {
-        l.starts_with("EQUAL=")
-            || l.starts_with("UYARI:")
-            || l.starts_with("COMPLETION_LINE_REMOVED=")
-    }) {
+    for line in report
+        .lines()
+        .filter(|l| l.starts_with("EQUAL=") || l.starts_with("UYARI:"))
+    {
         println!("{line}");
     }
     let equal: usize = report
@@ -418,9 +417,11 @@ fn go_and_rust_agree_byte_for_byte_under_a_pty() {
     // project lines of both prompts added 3: 912. The help layout (slice 9:
     // bare `wapps`, `--version`, the help command and flag, unknown words,
     // cobra's Find) added 42 and brought the long-excluded
-    // `agent_unknown_subcommand` back: 955.
+    // `agent_unknown_subcommand` back: 955. `completion` (its family page,
+    // NoArgs on each shell, the bool flag, the mutual exclusion, the `comp`
+    // suggestion) added 14: 969.
     assert!(
-        equal >= 955,
+        equal >= 969,
         "differential yalnizca {equal} vaka gezdi:\n{report}"
     );
     let _ = std::fs::remove_dir_all(&work);

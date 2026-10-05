@@ -88,3 +88,27 @@ serde_yaml_ng = "0.10"
 # ikilide zaten bir kripto kutuphanesi varken ikinciyi tasimak, iki ayri
 # denetim yuzeyi demek olurdu.
 ring = "0.17"
+# clap_complete: `wapps completion <shell>` (owner decision 2026-10-05,
+# docs/PORT-kalan-yuzey.md §4.2: keep completion, generate it with
+# clap_complete, install it from the Homebrew formula). Measured the same way
+# as serde_yaml_ng above (base: 99 crates, `cargo deny check` = 0):
+#
+#   candidate                   crate delta   deny check   result
+#   clap_complete 4.6.11        +1            0            CHOSEN: from the clap
+#                                                          maintainers, generates
+#                                                          the four shells cobra
+#                                                          offers from the same
+#                                                          clap tree the parser
+#                                                          uses, so a new verb is
+#                                                          in the next script
+#   (embedded cobra scripts)    0             -            REJECTED by the owner:
+#                                                          frozen bytes go stale
+#                                                          as verbs are added
+#
+# Only the stable, ahead-of-time generators are used. The `unstable-dynamic`
+# feature (the binary answering each Tab, as cobra's `__complete` does) is NOT
+# enabled: its API is explicitly unstable, and it offers flags on an empty word
+# too, so it would not close the bash divergence the static script has (slice
+# record in the doc). No default features; the +1 is clap_complete alone (its
+# one dependency without that feature, clap, was already in the graph).
+clap_complete = "4"

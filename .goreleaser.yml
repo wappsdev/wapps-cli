@@ -51,8 +51,14 @@ brews:
     commit_author:
       name: wapps-release-bot
       email: bot@wapps.co
+    # Tab completion (owner decision 2026-10-05, docs/PORT-kalan-yuzey.md
+    # §4.2): the scripts are generated at install time from the binary just
+    # installed (`wapps completion bash|zsh|fish`), so they always describe
+    # that binary's commands; Homebrew puts them where its bash-completion,
+    # zsh site-functions and fish vendor_completions directories expect them.
     install: |
       bin.install "wapps"
+      generate_completions_from_executable(bin/"wapps", "completion", shells: [:bash, :zsh, :fish])
     caveats: |
       Enable the AI-safe "wapps-secrets" skill so coding agents (Claude Code,
       Cursor, Aider) use apply-only secret commands and never read your .env:
