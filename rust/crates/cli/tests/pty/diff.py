@@ -25,6 +25,29 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cases import EXCLUDED as skip
 eq = neq = 0
 bad = []
+
+# `completion` is the one command of the oracle the port does not have yet: it
+# waits for an owner decision (docs/PORT-kalan-yuzey.md, slice 9). Its single
+# listing line in the root's page is removed from the ORACLE's output before
+# comparing — that line and nothing else (a pty writes it with CRLF). Counted
+# and printed, so the exception is visible on every run and drops out the day
+# the command is ported.
+COMPLETION_LINE = b"  completion  Generate the autocompletion script for the specified shell"
+completion_normalized = 0
+
+
+def _drop_completion(v):
+    global completion_normalized
+    for f in ("stdout_hex", "stderr_hex"):
+        raw = bytes.fromhex(v[f])
+        for eol in (b"\r\n", b"\n"):
+            line = COMPLETION_LINE + eol
+            if line in raw:
+                assert raw.count(line) == 1, "completion listed twice"
+                raw = raw.replace(line, b"")
+                completion_normalized += 1
+                break
+        v[f] = raw.hex()
 # UNSOUND vakalarin ADLARI. Sayim BULGU degil VAKA uzerinden yapilir: bir
 # timeout iki bulgu uretir (GO ve RS) ama bir tek vaka bozar.
 unsound = set()
@@ -46,6 +69,7 @@ def _is_vacuum(v):
 for name in sorted(go):
     if name in skip: continue
     g, r = go[name], rs.get(name)
+    _drop_completion(g)
     if r is None:
         print(f"MISSING  {name}"); neq += 1; continue
     # Negatif cikis kodu = timeout'ta oldurulmus. Iki taraf da oyleyse
@@ -116,6 +140,7 @@ for name in sorted(go):
         print(f"   epochs.json RS: {dec(r.get('pinfile_hex'))!r}")
 for line in bad:
     print(line)
+print(f"\nCOMPLETION_LINE_REMOVED={completion_normalized} (oracle only; completion awaits the owner)")
 print(f"\nEQUAL={eq} DIFFERENT={neq} UNSOUND={len(unsound)}")
 if unsound:
     print(f"UYARI: {len(unsound)} vaka SAGLAM DEGIL ve EQUAL'e SAYILMADI — "

@@ -1,36 +1,36 @@
-// `--help` ciktisinda ic-spesifikasyon referansi YASAK — ve yasak bir
-// konvansiyon degil, bir MEKANIZMA: bu test onu tutuyor.
+// Internal spec references are FORBIDDEN in `--help` output — and the ban is
+// not a convention but a MECHANISM: this test holds it.
 //
-// Bu, Go tarafindaki cmd/helptext_test.go'nun portudur. Neden port edildigi
-// somut: clap'in derive'i `///` doc yorumlarini yardim metnine cevirir, yani
-// Rust'ta `///` yazmak bir spec referansini sessizce kullanicinin yuzune
-// basabilir. Bu estate ayni kiri iki release boyunca ELLE temizledi ve temizligi
-// koruyan bir test YOKTU.
+// This is the port of the Go side's cmd/helptext_test.go. Why it was ported is
+// concrete: clap's derive turns `///` doc comments into help text, so writing
+// `///` in Rust can silently put a spec reference in front of the user. This
+// estate cleaned the same dirt BY HAND for two releases and there was NO test
+// guarding the cleanup.
 //
-// Neden SPEC referansi yasak: SPEC bu depoda YOK. "(§7.1)" bir kullanici icin
-// olu bir isaret — acamayacagi bir belgeye yapilan referans.
+// Why spec references are forbidden: the SPEC is NOT in this repo. "(§7.1)" is
+// a dead pointer for a user — a reference to a document they cannot open.
 use clap::{Arg, Command, CommandFactory, Parser};
 
-// spec_ref_patterns, yasak biciler. Go tarafindaki uc desenin AYNISI.
+// spec_ref_hits, the forbidden forms. The SAME three patterns as the Go side.
 fn spec_ref_hits(line: &str) -> Vec<&'static str> {
     let mut hits = Vec::new();
-    // "§7.4", "(§2.1/§2.3)", "bkz. §6" — bolum isaretinin KENDISI.
+    // "§7.4", "(§2.1/§2.3)", "see §6" — the section sign ITSELF.
     if line.contains('§') {
         hits.push("section sign (§)");
     }
     let lower = line.to_lowercase();
-    // § olmadan yazilmis hali: "SPEC 7.5", "specification 3.10".
+    // Written without §: "SPEC 7.5", "specification 3.10".
     if has_word_then_number(&lower, &["spec", "specification"]) {
         hits.push("spec + number");
     }
-    // "section 7.4", "sections 2.1" — duz Ingilizce karsiligi.
+    // "section 7.4", "sections 2.1" — the plain English form.
     if has_word_then_dotted_number(&lower, &["section", "sections"]) {
         hits.push("section + number");
     }
     hits
 }
 
-// has_word_then_number, "<kelime> <sayi>" (nokta ayrik olabilir) arar.
+// has_word_then_number looks for "<word> <number>" (a dot may separate them).
 fn has_word_then_number(hay: &str, words: &[&str]) -> bool {
     words.iter().any(|w| {
         hay.match_indices(w).any(|(i, _)| {
@@ -41,8 +41,8 @@ fn has_word_then_number(hay: &str, words: &[&str]) -> bool {
     })
 }
 
-// has_word_then_dotted_number, "section 7.4" gibi NOKTALI sayi ister; "section 6"
-// tek basina bir spec referansi sayilmaz (Go tarafiyla ayni siki kural).
+// has_word_then_dotted_number wants a DOTTED number like "section 7.4";
+// "section 6" alone is not a spec reference (the same strict rule as Go's).
 fn has_word_then_dotted_number(hay: &str, words: &[&str]) -> bool {
     words.iter().any(|w| {
         hay.match_indices(w).any(|(i, _)| {
@@ -60,25 +60,31 @@ fn has_word_then_dotted_number(hay: &str, words: &[&str]) -> bool {
     })
 }
 
-// walk, agacin TAMAMINI (kok dahil, her derinlikte) doner. Elle yazilmis bir
-// liste DEGIL: Go tarafindaki temizlik tam da elle liste yuzunden iki kez eksik
-// kaldi.
-fn walk(cmd: &Command) -> Vec<Command> {
-    let mut out = vec![cmd.clone()];
+// walk returns the path of every command in the tree (the root's is empty),
+// at every depth. Not a hand-written list: the Go-side cleanup stayed
+// incomplete twice precisely because of a hand-written list.
+fn walk(cmd: &Command, path: Vec<String>, out: &mut Vec<Vec<String>>) {
+    out.push(path.clone());
     for sub in cmd.get_subcommands() {
-        out.extend(walk(sub));
+        let mut next = path.clone();
+        next.push(sub.get_name().to_string());
+        walk(sub, next, out);
     }
-    out
 }
 
+// violations scans the page the binary PRINTS: cobra's layout rendered by
+// cobrahelp (Short, Long, Use, every flag usage, the subcommand listing), not
+// clap's own help, which `wapps` no longer prints.
 fn violations(root: &Command) -> Vec<String> {
+    let mut paths = Vec::new();
+    walk(root, Vec::new(), &mut paths);
     let mut found = Vec::new();
-    for mut c in walk(root) {
-        let path = c.get_name().to_string();
-        let help = c.render_long_help().to_string();
-        for line in help.lines() {
+    for path in paths {
+        let chain = wapps::cobrahelp::chain(root, &path).expect("walked path");
+        let name = chain[chain.len() - 1].get_name().to_string();
+        for line in wapps::cobrahelp::help_page(&chain).lines() {
             for hit in spec_ref_hits(line) {
-                found.push(format!("{path}: {hit}: {}", line.trim()));
+                found.push(format!("{name}: {hit}: {}", line.trim()));
             }
         }
     }
@@ -86,8 +92,8 @@ fn violations(root: &Command) -> Vec<String> {
     found
 }
 
-// ASIL KORUMA: bugunku agacin hicbir komutunun yardim metni bir spec referansi
-// icermiyor, ve bir daha iceremez.
+// THE GUARD: no command of today's tree prints a spec reference on its help
+// page, and none can again.
 #[test]
 fn help_text_carries_no_spec_references() {
     let v = violations(&wapps::cli::build());
@@ -99,30 +105,23 @@ fn help_text_carries_no_spec_references() {
     );
 }
 
-// Gezinti GERCEKTEN agacin derinine iniyor mu? Bos/sig gezen bir koruma sessizce
-// hicbir seyi korumaz.
+// Does the walk REALLY reach the depth of the tree? A guard that walks an
+// empty or shallow tree silently guards nothing.
 #[test]
 fn walk_reaches_whole_tree() {
-    let names: Vec<String> = walk(&wapps::cli::build())
-        .iter()
-        .map(|c| c.get_name().to_string())
-        .collect();
-    for want in ["wapps", "secrets", "get"] {
+    let mut paths = Vec::new();
+    walk(&wapps::cli::build(), Vec::new(), &mut paths);
+    let names: Vec<String> = paths.iter().map(|p| p.join(" ")).collect();
+    for want in ["", "secrets", "secrets get", "secrets policy set"] {
         assert!(
             names.contains(&want.to_string()),
-            "walk never reached {want}; saw {names:?}"
+            "walk never reached {want:?}; saw {names:?}"
         );
     }
-    // 2. seviyeye ULASTIGININ iddiasi (kontrol listesi degil).
-    assert!(
-        names.len() >= 3,
-        "walk visited only {} commands",
-        names.len()
-    );
 }
 
-// Koruma BOS DEGIL: sentetik bir agacta, iki seviye derinde ve bir bayrak
-// aciklamasinda gizlenmis referanslar yakalaniyor mu?
+// The guard is NOT empty: in a synthetic tree, are references hidden two
+// levels deep and in a flag's description caught?
 #[test]
 fn detector_catches_hidden_references() {
     let leaf = Command::new("leaf")
@@ -143,9 +142,9 @@ fn detector_catches_hidden_references() {
     }
 }
 
-// clap DERIVE vektoru: `///` doc yorumu yardim metnine DONUSUYOR. Bu test onu
-// somut olarak gosteriyor — yani `///` yasagi bir uslup tercihi degil, bu
-// detektorun gercekten kapattigi bir delik.
+// The clap DERIVE vector: a `///` doc comment BECOMES help text. This test
+// shows it concretely — the `///` ban is not a style preference but a hole
+// this detector really closes.
 #[derive(Parser)]
 #[command(name = "derivecanary")]
 struct DeriveCanary {
@@ -161,10 +160,10 @@ fn doc_comments_leak_into_help_and_are_caught() {
     let rendered = cmd.clone().render_long_help().to_string();
     assert!(
         rendered.contains("§4.11"),
-        "/// yardim metnine girmedi: {rendered}"
+        "/// did not reach the help text: {rendered}"
     );
     assert!(
         !violations(&cmd).is_empty(),
-        "detektor `///` uzerinden gelen spec referansini kacirdi"
+        "the detector missed the spec reference that came through `///`"
     );
 }

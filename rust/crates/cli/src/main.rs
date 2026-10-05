@@ -7,6 +7,7 @@ use wapps::applyverb;
 use wapps::binding;
 use wapps::cli::{self, CmdError};
 use wapps::clierr::{Code, Error};
+use wapps::cobrahelp;
 use wapps::configctx::{self, Ctx};
 use wapps::confirm;
 use wapps::coolifysync;
@@ -110,17 +111,11 @@ fn shadowed_project(leaf: &clap::ArgMatches, root: &Option<String>) -> Option<St
 }
 
 fn run() -> Result<(), CmdError> {
+    // clap's help and version flags are disabled on every node (cli::build):
+    // help, `--version` and the families' pages are cobra's, below.
     let matches = match cli::build().try_get_matches() {
         Ok(m) => m,
         Err(e) => {
-            // --help / --version clap'in "hata"si olarak gelir ama cikis 0'dir.
-            if matches!(
-                e.kind(),
-                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-            ) {
-                let _ = e.print();
-                std::process::exit(0);
-            }
             return Err(cli::clap_error_to_cmd_error(&e));
         }
     };
@@ -157,12 +152,24 @@ fn run() -> Result<(), CmdError> {
         _ => None,
     };
 
-    // `deploy`: pflag's value errors, then cobra's ExactArgs(1). Both run
-    // before the root's PersistentPreRunE, so before the mutual exclusion
-    // below; the corpus pins both orders.
-    let deploy_opts = match matches.subcommand() {
-        Some(("deploy", dm)) => {
-            let mut opts = deployverb::parse_flags(dm).map_err(CmdError::Plain)?;
+    // `deploy`: pflag's value errors, then (after the help flag) cobra's
+    // ExactArgs(1). Both run before the root's PersistentPreRunE, so before
+    // the mutual exclusion below; the corpus pins both orders.
+    let deploy_flags = match matches.subcommand() {
+        Some(("deploy", dm)) => Some(deployverb::parse_flags(dm).map_err(CmdError::Plain)?),
+        _ => None,
+    };
+
+    // cobra's own steps, in its order: an unknown word on the root (Find),
+    // then the help flag, `--version`, and a family's page — all before the
+    // root's PersistentPreRunE (the mutual exclusion below) and before any
+    // verb's argument checks.
+    if cobra_preflight(&matches)? {
+        return Ok(());
+    }
+
+    let deploy_opts = match (matches.subcommand(), deploy_flags) {
+        (Some(("deploy", dm)), Some(mut opts)) => {
             let args: Vec<String> = dm
                 .get_many::<String>("service")
                 .map(|v| v.cloned().collect())
@@ -302,15 +309,7 @@ fn run() -> Result<(), CmdError> {
                     }
                     run_policy_lint(&files[0])
                 }
-                _ => {
-                    let _ = cli::build()
-                        .find_subcommand_mut("secrets")
-                        .unwrap()
-                        .find_subcommand_mut("policy")
-                        .unwrap()
-                        .print_help();
-                    std::process::exit(0);
-                }
+                _ => unreachable!("cobra_preflight prints a family's page"),
             },
             Some(("rotate-plan", rpm)) => run_rotate_plan(
                 rpm.get_one::<String>("identity")
@@ -381,13 +380,7 @@ fn run() -> Result<(), CmdError> {
                 }
                 run_get(&keys[0], config, project)
             }
-            _ => {
-                let _ = cli::build()
-                    .find_subcommand_mut("secrets")
-                    .unwrap()
-                    .print_help();
-                std::process::exit(0);
-            }
+            _ => unreachable!("cobra_preflight prints a family's page"),
         },
         Some(("doctor", dm)) => run_doctor(
             dm.get_one::<String>("for")
@@ -415,13 +408,7 @@ fn run() -> Result<(), CmdError> {
                         .unwrap_or_default(),
                 )
             }
-            _ => {
-                let _ = cli::build()
-                    .find_subcommand_mut("rotate")
-                    .unwrap()
-                    .print_help();
-                std::process::exit(0);
-            }
+            _ => unreachable!("cobra_preflight prints a family's page"),
         },
         Some(("tofu", tm)) => {
             let args: Vec<String> = tm
@@ -485,10 +472,7 @@ fn run() -> Result<(), CmdError> {
             Some(("accept-epoch-reset", am)) => {
                 run_dr_accept_epoch_reset(shadowed_project(am, &project))
             }
-            _ => {
-                let _ = cli::build().find_subcommand_mut("dr").unwrap().print_help();
-                std::process::exit(0);
-            }
+            _ => unreachable!("cobra_preflight prints a family's page"),
         },
         Some(("whoami", _)) => run_whoami(),
         Some(("skill", sm)) => run_skill(sm),
@@ -504,27 +488,23 @@ fn run() -> Result<(), CmdError> {
                     .unwrap_or_default(),
                 em.get_one::<String>("ttl").cloned(),
             ),
-            _ => {
-                let _ = cli::build()
-                    .find_subcommand_mut("token")
-                    .unwrap()
-                    .print_help();
-                std::process::exit(0);
-            }
+            _ => unreachable!("cobra_preflight prints a family's page"),
         },
         Some(("deploy", _)) => match deploy_opts {
             Some(opts) => run_deploy(config, project, &opts),
-            None => Ok(()),
+            None => unreachable!("deploy's options are parsed above"),
         },
+        Some(("help", hm)) => {
+            let topic: Vec<String> = hm
+                .get_many::<String>("topic")
+                .map(|v| v.cloned().collect())
+                .unwrap_or_default();
+            run_help(&topic);
+            Ok(())
+        }
         Some(("coolify", _)) => match coolify_leaf {
             Some(leaf) => coolifyverb::run(leaf, &mut std::io::stdout()).map_err(CmdError::Plain),
-            None => {
-                let _ = cli::build()
-                    .find_subcommand_mut("coolify")
-                    .unwrap()
-                    .print_help();
-                std::process::exit(0);
-            }
+            None => unreachable!("cobra_preflight prints a family's page"),
         },
         Some(("projects", pm)) => match pm.subcommand() {
             Some(("list", lm)) => {
@@ -555,19 +535,94 @@ fn run() -> Result<(), CmdError> {
                 }
                 run_projects_rm(&names[0], rm.get_flag("yes"))
             }
-            _ => {
-                let _ = cli::build()
-                    .find_subcommand_mut("projects")
-                    .unwrap()
-                    .print_help();
-                std::process::exit(0);
-            }
+            _ => unreachable!("cobra_preflight prints a family's page"),
         },
-        _ => {
-            let _ = cli::build().print_help();
-            std::process::exit(0);
-        }
+        _ => unreachable!("cobra_preflight prints a family's page"),
     }
+}
+
+// cobra_preflight runs cobra's steps that come before any command's own code
+// and reports whether one of them answered (help or version printed).
+//
+//   1. Find (cobrahelp::find, NOT clap's matching): the command cobra
+//      resolves the argv to. A word on the root that names no command is an
+//      error, with cobra's suggestions.
+//   2. The help flag, set anywhere: cobra parses every flag against the
+//      command it found.
+//   3. `--version`: the root's flag only; for any other found command it is
+//      the unknown flag cobra reports.
+//   4. A family (no Run): its page, whatever words follow it.
+//
+// Find can stop short of clap's match (see cobrahelp::find); it then stops on
+// a family or the root, so one of the four steps answers. It can also go
+// FURTHER than clap, in one place: an empty word before a command name
+// (`wapps secrets "" get`). stripFlags skips it and Go runs `get` with it as
+// an argument; clap takes it as the family's stray word. Not ported: the
+// family clap stopped on prints its page (a recorded divergence).
+fn cobra_preflight(matches: &clap::ArgMatches) -> Result<bool, CmdError> {
+    let root = cli::build();
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let found = cobrahelp::find(&root, &argv);
+    if let Some(word) = found.unknown {
+        return Err(CmdError::Plain(cobrahelp::unknown_command(&root, &word)));
+    }
+    let chain = cobrahelp::chain(&root, &found.path).expect("find walks the tree");
+    let mut levels = vec![matches];
+    let mut clap_path = Vec::new();
+    while let Some((name, m)) = levels[levels.len() - 1].subcommand() {
+        clap_path.push(name.to_string());
+        levels.push(m);
+    }
+    let help = levels
+        .iter()
+        .any(|m| m.try_get_one::<bool>("help").ok().flatten() == Some(&true));
+    if help {
+        print!("{}", cobrahelp::help_page(&chain));
+        return Ok(true);
+    }
+    if matches.get_flag("version") {
+        if !found.path.is_empty() {
+            return Err(CmdError::Plain("unknown flag: --version".to_string()));
+        }
+        print!("{}", cobrahelp::version_line(&root));
+        return Ok(true);
+    }
+    if chain[chain.len() - 1].has_subcommands() {
+        print!("{}", cobrahelp::help_page(&chain));
+        return Ok(true);
+    }
+    let clap_chain = cobrahelp::chain(&root, &clap_path).expect("clap matched this path");
+    if clap_chain[clap_chain.len() - 1].has_subcommands() {
+        print!("{}", cobrahelp::help_page(&clap_chain));
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+// run_help, cobra's help command: the page of the command the words name. A
+// word the root does not know is an "Unknown help topic", then the root's
+// usage, both on stderr and with exit 0; past the root, an unknown word stops
+// the walk and the page is the last command reached (cobra's Find).
+fn run_help(topic: &[String]) {
+    let root = cli::build();
+    let mut path = Vec::new();
+    for word in topic.iter().filter(|w| !w.is_empty()) {
+        let at = cobrahelp::chain(&root, &path).expect("walked path");
+        if at[at.len() - 1].find_subcommand(word).is_none() {
+            if path.is_empty() {
+                eprint!(
+                    "{}{}",
+                    cobrahelp::unknown_help_topic(topic),
+                    cobrahelp::usage_string(&[&root], false)
+                );
+                return;
+            }
+            break;
+        }
+        path.push(word.clone());
+    }
+    let chain = cobrahelp::chain(&root, &path).expect("walked path");
+    print!("{}", cobrahelp::help_page(&chain));
 }
 
 // run_list, `wapps secrets list` — anahtar ADLARI, deger asla.
@@ -2238,11 +2293,10 @@ fn exec_core(
 // oncesinde tam olarak bu oluyordu. Olcusu human_tofu_injects_values_verbatim.
 fn run_tofu(args: &[String]) -> Result<(), CmdError> {
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
-        let _ = cli::build()
-            .find_subcommand_mut("tofu")
-            .unwrap()
-            .print_help();
-        std::process::exit(0);
+        let root = cli::build();
+        let chain = cobrahelp::chain(&root, &["tofu".to_string()]).expect("tofu");
+        print!("{}", cobrahelp::help_page(&chain));
+        return Ok(());
     }
     let agent = agentmode::is_agent();
     agentmode::guard(agentmode::POLICY_ALLOW, agent).map_err(CmdError::Cli)?;
@@ -2619,11 +2673,7 @@ fn run_deploy(
 // is still refused, by the root, above.
 fn run_skill(sm: &clap::ArgMatches) -> Result<(), CmdError> {
     let Some((leaf, lm)) = sm.subcommand() else {
-        let _ = cli::build()
-            .find_subcommand_mut("skill")
-            .unwrap()
-            .print_help();
-        std::process::exit(0);
+        unreachable!("cobra_preflight prints a family's page")
     };
     // cobra.NoArgs: an extra argument is an "unknown command".
     if let Some(extra) = lm

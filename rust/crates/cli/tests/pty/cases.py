@@ -118,14 +118,9 @@ def h(name, key): return (f"human_{name}", P + ["secrets", "get", key], HUMAN)
 def a(name, key): return (f"agent_{name}", P + ["secrets", "get", key], AGENT)
 def hp(name, key, pins): return (f"human_{name}", P + ["secrets", "get", key], HUMAN, pins)
 
-# DIFFERENTIAL DISI BIRAKILAN IKI VAKA — sessizce atlanmiyor, BURADA yaziliyor:
-#
-#  agent_unknown_subcommand: `wapps secrets nosuchverb`. cobra, alt komutu olan
-#      ve kendi Run'i olmayan bir komutta YARDIMI basip 0 ile cikiyor. Rust
-#      tarafi zarf basip 1 ile cikiyor. Bunu esitlemek `secrets`in 14 alt
-#      komutunun tamamini ve cobra'nin yardim duzenini port etmek demek — bu
-#      dilimin kapsami `secrets get`, tum CLI degil. ACIK bir ayrisma olarak
-#      raporlaniyor.
+# DIFFERENTIAL DISI BIRAKILAN VAKA — sessizce atlanmiyor, BURADA yaziliyor.
+# (`agent_unknown_subcommand` was the second one: slice 9 ported cobra's help
+# layout and the case is measured now, with its arms, in HELP_CASES below.)
 #
 #  human_gate_down: tasima hatasi metni. Go, net/http'nin hata dizesini
 #      ("Post \"...\": dial tcp ...: connect: connection refused") mesaja
@@ -133,7 +128,7 @@ def hp(name, key, pins): return (f"human_{name}", P + ["secrets", "get", key], H
 #      ("secrets gate unreachable: "), kurtarma satiri ve cikis kodu EŞIT;
 #      ayrisan tek sey isletim sistemi seviyesindeki ayrinti. Go'nun hata
 #      dizesini elle taklit etmek sahte bir sadakat olurdu.
-EXCLUDED = {"agent_unknown_subcommand", "human_gate_down"}
+EXCLUDED = {"human_gate_down"}
 
 CASES = [
     # --- ajan modu: ZARF yolu (tek satir JSON, stderr) ---
@@ -555,11 +550,6 @@ CASES += EXEC_APPLY_CASES + SCRUB_CASES + APPLY_WRITE_CASES + CONFIG_CASES
 #
 # OLCULEMEYEN IKI SEY, ayrica EXCLUDED'da degil cunku vaka olarak HIC
 # EKLENMEDILER — sessiz birakmamak icin burada yaziliyorlar:
-#
-#  * `wapps projects` (ciplak, alt komutsuz): cobra kendi yardim duzenini
-#    basip 0 ile cikiyor, clap kendi duzenini. Esitlemek cobra'nin yardim
-#    olusturucusunu port etmek demek — `agent_unknown_subcommand` ile AYNI
-#    sinif, ayni sebeple disarida.
 #
 #  * `rm`in EOF (girdisiz) onay dali: bir pty ASLA EOF vermiyor, yani her iki
 #    ikili de okumada bloklanip 30 sn sonra oldurulmus olarak (-9) donuyor.
@@ -3179,6 +3169,15 @@ ARM_WAIVERS = {
         "proj": "run_rotate_plan — Ctx::resolve YOK",
         "cfg": "ayni sebep",
     },
+    # A mistyped root word fails in cobra's Find, before any flag or config is
+    # looked at; the four arms of that path are measured on `nosuch`. This
+    # word exists for its suggestion ("Did you mean this?").
+    "secre": {
+        "proj": "unknown root word: Find fails before identity flags are read; "
+                "the arm is measured on `nosuch`",
+        "cfg": "same reason",
+        "rooted": "same reason",
+    },
     "rotate skip": {
         "proj": "run_rotate_skip(run_id, target, reason) — proje adi "
                 "ARGUMANDAN geliyor (`<proje>/<anahtar>`), bayraktan degil",
@@ -4549,5 +4548,97 @@ DEPLOY_CASES = [
     ("human_deploy_wait_edge_block_mid_poll", D + ["w-edge"] + W + EP, DH),
 ]
 CASES += DEPLOY_CASES
+
+
+# === help layout, --version, unknown words (slice 9) ===========================
+#
+# cobra answers these before any command's own code: an unknown word on the
+# root fails in Find; then the help flag (on any level), `--version` (the
+# root's only), and a family's page (no Run) — all BEFORE the root's
+# PersistentPreRunE, so `--config` + `--project` together is not refused there.
+# `help` is a runnable command: the mutual exclusion does fire for it.
+#
+# The root's page lists `completion` in Go; that command waits for an owner
+# decision, so diff.py removes its one listing line from the oracle's output
+# (and counts how often it did).
+HELP_CASES = [
+    # --- bare `wapps`: the root's page, exit 0, in every arm ---
+    ("human_bare_wapps", [], HUMAN),
+    ("agent_bare_wapps", [], AGENT),
+    ("agent_bare_wapps_project_flag", P, AGENT),
+    ("agent_bare_wapps_config_flag", CFG_SUB, AGENT, None, None, _sub()),
+    ("human_bare_wapps_rooted", [], HUMAN, None, None, cfg(VALID_CFG)),
+    ("agent_bare_wapps_both_identity_flags_print_help", CFG_SUB + P, AGENT, None,
+     None, _sub()),
+    # --- --version ---
+    ("human_version", ["--version"], HUMAN),
+    ("agent_version", ["--version"], AGENT),
+    ("agent_version_both_identity_flags", CFG_SUB + P + ["--version"], AGENT, None,
+     None, _sub()),
+    # --version with a subcommand: the found command has no such flag.
+    ("agent_version_before_a_subcommand_is_an_unknown_flag",
+     ["--version", "secrets", "list"], AGENT),
+    # The help flag wins over --version, as cobra checks it first.
+    ("agent_version_and_help_print_help", ["--version", "--help"], AGENT),
+    # --- a family with a stray word prints the family's page ---
+    # (`agent_unknown_subcommand`, the `proj` arm, is the original case above.)
+    ("human_unknown_subcommand", P + ["secrets", "nosuchverb"], HUMAN),
+    ("agent_unknown_subcommand_config_flag", CFG_SUB + ["secrets", "nosuchverb"], AGENT,
+     None, None, _sub()),
+    ("agent_unknown_subcommand_rooted", ["secrets", "nosuchverb"], AGENT, None, None,
+     cfg(VALID_CFG)),
+    ("agent_unknown_subcommand_bare", ["secrets", "nosuchverb"], AGENT),
+    # An unknown flag is a parse error before the page.
+    ("agent_unknown_subcommand_unknown_flag", ["secrets", "nosuchverb", "--bogus"], AGENT),
+    # --- an unknown word on the root ---
+    ("human_root_unknown_command", ["nosuch"], HUMAN),
+    ("agent_root_unknown_command", ["nosuch"], AGENT),
+    ("agent_root_unknown_command_project_flag", P + ["nosuch"], AGENT),
+    ("agent_root_unknown_command_config_flag", CFG_SUB + ["nosuch"], AGENT, None, None,
+     _sub()),
+    ("agent_root_unknown_command_rooted", ["nosuch"], AGENT, None, None, cfg(VALID_CFG)),
+    # Find fails before the help flag is looked at.
+    ("agent_root_unknown_command_with_help_flag", ["nosuch", "--help"], AGENT),
+    ("human_root_unknown_command_suggests", ["secre"], HUMAN),
+    ("agent_root_unknown_command_suggests", ["secre"], AGENT),
+    # --- the help command ---
+    ("agent_help_command_names_a_page", ["help", "secrets", "get"], AGENT),
+    ("human_help_command_bare_is_the_root_page", ["help"], HUMAN),
+    ("agent_help_command_project_flag", P + ["help", "secrets"], AGENT),
+    ("agent_help_command_config_flag", CFG_SUB + ["help", "dr", "restore"], AGENT, None,
+     None, _sub()),
+    ("agent_help_command_rooted", ["help", "deploy"], AGENT, None, None, cfg(VALID_CFG)),
+    # Past the root an unknown word stops the walk: the last command's page.
+    ("agent_help_command_stops_at_an_unknown_word", ["help", "secrets", "nosuch"], AGENT),
+    # On the root it is an unknown topic, then the root's usage, on stderr, exit 0.
+    ("human_help_command_unknown_topic", ["help", "nosuch", "x`y"], HUMAN),
+    # `help` is runnable, so the root's PersistentPreRunE runs and refuses the pair.
+    ("agent_help_command_both_identity_flags_are_rejected", CFG_SUB + P + ["help"],
+     AGENT, None, None, _sub()),
+    # --- the help flag against a verb's own checks ---
+    # cobra parses every flag first: an unknown flag beats the help flag.
+    ("agent_help_flag_then_unknown_flag", ["secrets", "get", "--help", "--bogus"], AGENT),
+    # cobra's Find runs BEFORE the help and version flags exist, so it takes
+    # them as flags with a value: `-h secrets get` leaves `get` on the root
+    # (unknown command), `secrets -h get` stops on `secrets` (its page),
+    # `--version whoami` is the version, `-h tofu` the root's page.
+    ("agent_help_flag_before_the_subcommand_takes_it_as_a_value",
+     ["-h", "secrets", "get"], AGENT),
+    ("agent_help_flag_between_family_and_leaf_is_the_family_page",
+     ["secrets", "-h", "get"], AGENT),
+    ("agent_version_takes_the_next_word_as_a_value", ["--version", "whoami"], AGENT),
+    ("agent_help_flag_before_tofu_is_the_root_page", ["-h", "tofu"], AGENT),
+    # The help flag comes before ExactArgs(1) / NoArgs.
+    ("agent_deploy_help_without_a_service", ["deploy", "--help"], AGENT),
+    ("agent_projects_list_help_with_an_extra_word", ["projects", "list", "extra", "--help"],
+     AGENT),
+    # ...and before the root's mutual exclusion.
+    ("agent_help_flag_both_identity_flags", CFG_SUB + P + ["secrets", "list", "-h"], AGENT,
+     None, None, _sub()),
+    # tofu reads -h itself (DisableFlagParsing): its page, and a bare tofu too.
+    ("human_tofu_help_flag", ["tofu", "--help"], HUMAN),
+    ("agent_bare_tofu_prints_its_page", ["tofu"], AGENT),
+]
+CASES += HELP_CASES
 
 _armcheck()
