@@ -1,29 +1,33 @@
-# wapps-cli'nin Rust agaci.
+# The Rust tree of wapps-cli.
 #
-# NEDEN BU DEPODA, wapps-platform'un workspace'inde DEGIL:
-# Kok Cargo.toml (wapps-platform) o workspace'in ne oldugunu acikca yaziyor —
-# "iki AYRI deponun (wapps-cli ve services/memory) PAYLASACAGI kodu tutuyor ve
-# bugun ikisine de ait degil". Bir CLI ikilisi paylasilan kod DEGIL; wapps-cli'nin
-# urunudur. Uc somut sonuc:
+# WHY IN THIS REPOSITORY, NOT IN wapps-platform's WORKSPACE:
+# The root Cargo.toml (wapps-platform) states plainly what that workspace is:
+# it "holds the code two SEPARATE repositories (wapps-cli and services/memory)
+# will SHARE, and today belongs to neither". A CLI binary is not shared code; it
+# is wapps-cli's product. Three concrete consequences:
 #
-#  1. Release train. `wapps` ikilisi .goreleaser.yml ile BU depodan, bu deponun
-#     etiketlerinden cikiyor ve Homebrew tap'ine oradan gidiyor. Kaynak
-#     wapps-platform'da olsaydi bir CLI surumu kesmek ikinci bir depoda commit
-#     gerektirirdi — kok Cargo.toml'un adiyla uyardigi eslesmemis release train
-#     sorunu, ters yonden.
-#  2. Differential. Adim 6'nin kapisi Go ve Rust ikililerinin AYNI pty'de
-#     karsilastirilmasi. Oracle (Go) burada; ikisini bir arada tutmak testi tek
-#     `cargo test`e indiriyor, capraz-depo checkout'a degil.
-#  3. Bagimlilik yok. `wapps-core` chunk/freshness/search/curation/js tasiyor —
-#     memory alanina ait modiller. `secrets get` bunlarin HICBIRINI kullanmiyor,
-#     yani bu dilim iki agaci birbirine baglamiyor. Ortak kod dogdugunda
-#     wapps-core'a bagimlilik ayri ve acik bir karar olarak verilir.
+#  1. Release train. The `wapps` binary ships from THIS repository through
+#     .goreleaser.yml, from this repository's tags, and goes to the Homebrew tap
+#     from here. With the source in wapps-platform, cutting a CLI release would
+#     need a commit in a second repository: the mismatched release train the
+#     root Cargo.toml warns about by name, from the other side.
+#  2. Differential. Step 6's gate compares the Go and Rust binaries in the SAME
+#     pty. The oracle (Go) lives here; keeping both together makes the test one
+#     `cargo test`, not a cross-repository checkout.
+#  3. No dependency. `wapps-core` carries chunk/freshness/search/curation/js,
+#     modules of the memory domain. `secrets get` uses NONE of them, so this
+#     slice does not tie the two trees together. When shared code appears, a
+#     dependency on wapps-core is a separate and explicit decision.
 #
-# Yani bu, kok Cargo.toml ile CELISMIYOR; onu uyguluyor.
+# So this does not CONTRADICT the root Cargo.toml; it applies it.
+#
+# Members: `crates/cli` is the product. `crates/broker-oracle` is test support
+# only (the broker daemon's oracle harness, docs/broker-daemon-port.md slice
+# 13.0): never shipped, no external crate of its own beyond serde/serde_json.
 
 [workspace]
 resolver = "2"
-members = ["crates/cli"]
+members = ["crates/cli", "crates/broker-oracle"]
 
 [profile.release]
 lto = true
