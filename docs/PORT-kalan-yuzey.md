@@ -1400,6 +1400,25 @@ close 1.
    the parent's empty word (`wapps help <Tab>` offered `-c -h -p -v`, from the
    mirror's `help help`). That node stays bare, so `wapps help help -<Tab>`
    offers nothing where cobra offers the help command's flags (not compared).
+5. *`goreleaser check` fails, and only an owner decision fixes it.* GoReleaser
+   2.17.1 exits 2 on this file and on `main`'s (repair round, re-measured on
+   both): `brews` is deprecated, "configuration is valid, but uses deprecated
+   properties". goreleaser check has no flag that accepts a deprecation, so the
+   only way to exit 0 is to replace `brews` (a Formula) with `homebrew_casks`
+   (a Cask). That is a distribution change, not part of this slice. 2.17.1's
+   schema for `homebrew_casks` has `generate_completions_from_executable`
+   (`executable`, `args`, `shell_parameter_format`, `shells`) and Homebrew
+   7.0.7's Cask DSL has the stanza, so a migration would keep completion. It
+   would also change things a formula does not do: a cask has no `test`
+   block; an unsigned binary installed by a cask gets the quarantine
+   attribute (GoReleaser's docs suggest an `xattr` post-install hook); and
+   existing formula installs need a `tap_migrations` entry or a reinstall.
+   **Open, for the owner.** Re-measured in the repair round:
+   `release --snapshot --clean --skip=before,publish,validate` exit 0, the
+   formula line present in all four `define_method(:install)` blocks,
+   `ruby -c` Syntax OK. `brew ruby` with Homebrew's
+   `Utils::ShellCompletion` against the snapshot's darwin_arm64 binary exit 0:
+   `bash`/`zsh`/`fish`, 16 093 / 7 712 / 9 601 bytes.
 
 **What the pricing got wrong.** §4.2 said `clap_complete` leaves a permanent
 divergence in the differential. For the bytes, yes; for what Tab offers, 40
