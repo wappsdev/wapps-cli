@@ -997,7 +997,10 @@ fn tree() -> Command {
         .subcommand(
             Command::new("broker")
                 .about("Local broker bridge")
-                .subcommand(Command::new("serve").about("Serve the broker over stdio MCP")),
+                .subcommand(Command::new("serve").about("Serve the broker over stdio MCP"))
+                .subcommand(Command::new("daemon").about("Run the local broker daemon")
+                    .arg(Arg::new("stop").long("stop").action(ArgAction::SetTrue).help("Gracefully stop the local daemon"))
+                    .arg(Arg::new("detached").long("detached").hide(true).conflicts_with("stop").action(ArgAction::SetTrue))),
         )
 }
 

@@ -58,6 +58,23 @@ impl Home {
 }
 impl Drop for Home {
     fn drop(&mut self) {
+        use std::{
+            io::Write,
+            os::unix::net::UnixStream,
+            time::{Duration, Instant},
+        };
+        let socket = self.0.join(".agent-broker/daemon/broker.sock");
+        if let Ok(mut stream) = UnixStream::connect(&socket) {
+            let _ = writeln!(stream, "{{\"kind\":\"stop\"}}");
+            let deadline = Instant::now() + Duration::from_secs(12);
+            while socket.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !socket.exists(),
+                "fixture daemon must stop before home removal"
+            );
+        }
         let _ = fs::remove_dir_all(&self.0);
     }
 }

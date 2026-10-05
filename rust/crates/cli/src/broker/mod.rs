@@ -1,5 +1,6 @@
 //! Local stdio MCP bridge; cloud state and ownership remain authoritative.
 mod config;
+pub mod daemon;
 mod forward;
 use serde_json::{json, Value};
 use std::{
@@ -51,7 +52,7 @@ fn tool_error(code: &str, message: &str) -> Value {
     json!({"isError":true,"content":[{"type":"text","text":error.to_string()}],"structuredContent":error})
 }
 
-type Output = Arc<Mutex<std::io::Stdout>>;
+type Output = Arc<Mutex<std::os::unix::net::UnixStream>>;
 
 struct Pending {
     id: Value,
@@ -89,10 +90,17 @@ fn valid_id(id: &Value) -> bool {
 }
 
 pub fn serve() -> Result<(), String> {
-    let config = Arc::new(config::Config::load()?);
-    let output = Arc::new(Mutex::new(std::io::stdout()));
+    daemon::serve()
+}
+
+fn serve_connection(
+    config: &Arc<config::Config>,
+    input: &mut impl BufRead,
+    output: &Output,
+    session: Arc<daemon::Session>,
+) -> Result<(), String> {
     let mut pending = Vec::<Pending>::new();
-    let outcome = serve_frames(&config, &output, &mut pending);
+    let outcome = serve_frames(config, input, output, &mut pending, session);
     // EOF, oversize frames and output failure all terminate the outstanding polls.
     // A synchronous HTTP exchange can take at most its ten-second timeout.
     for call in &pending {
@@ -114,14 +122,15 @@ pub fn serve() -> Result<(), String> {
 
 fn serve_frames(
     config: &Arc<config::Config>,
+    input: &mut impl BufRead,
     output: &Output,
     pending: &mut Vec<Pending>,
+    session: Arc<daemon::Session>,
 ) -> Result<(), String> {
     let tools = catalog();
-    let mut input = std::io::stdin().lock();
     loop {
         let mut line = Vec::new();
-        let count = (&mut input)
+        let count = (&mut *input)
             .take(MAX_FRAME + 1)
             .read_until(b'\n', &mut line)
             .map_err(|_| "cannot read MCP stdin")?;
@@ -216,9 +225,9 @@ fn serve_frames(
                     let output = Arc::clone(output);
                     let worker_id = id.clone();
                     let name = name.to_owned();
+                    let session = Arc::clone(&session);
                     let thread = std::thread::spawn(move || {
-                        let result =
-                            forward::call(&config, &worker_id, &name, args, &worker_cancel);
+                        let result = session.call(&config, &worker_id, &name, args, &worker_cancel);
                         reply(&output, &worker_id, result)
                     });
                     pending.push(Pending {

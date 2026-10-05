@@ -892,7 +892,7 @@ P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec 
 | **R0** | **The Rust binary ships. Being handled:** owner decision 2026-10-05, the Rust `wapps` replaces the Go binary in the Homebrew release when the CLI port is done. That release slice is running on `wapps-cli` `lane/cli-s10` (worktree `.worktrees/cli-s10`, no commit of its own yet; the branch is at `c8c7daf`). What it has to change was measured here: `.goreleaser.yml`'s `builds:` has one entry, `main: ./main.go`, and `.github/workflows/{ci,release}.yml` mention `cargo` **0** times. The version rule already exists (`before` hook `sh rust/check-version.sh {{ .Version }}`, `PORT-kalan-yuzey.md` §4.3). `goreleaser check` failing on the deprecated `brews` is a separate open owner decision (`64549cb`) | — | `lane/cli-s10` | — | the existing differential |
 | **13.0** | **LANDED 2026-10-05** (§7.2): oracle harness: fake `claude`/`codex` recorders, fake cloud from recorded fixtures, MCP transcript runner, hermetic skill roots (Finding 0.1). Section 6 says it exists before any slice, so every slice below depends on it. Lives in `rust/crates/broker-oracle` | 0 | — | Finding 0.1 | harness only: 44 tests run by `cargo test` (39, plus 5 from the pre-merge security repair), 2 ignored oracle runs |
 | **13.1** | Implemented on `lane/broker-daemon-13-1` (§7.3): `wapps broker serve`, stdio MCP, enrollment (cwd → project, **not mission**), a 0600 Access credential, and 24 current Worker tool schemas with per-call `missionId` routing. The observe/rewrite classes preserve cloud answers without quota merge; claim does not resume; await polls with bounded deadlines; reads are redacted. `agent_submit`, `agent_cancel`, `agent_attach`, `agent_report` honestly refuse `ACTION_UNAVAILABLE`. No handoff tools; no mission creation by listing | 501 | **13.0**, P12, P-b, live | 8 files / 26 tests | ≥ 51 (seam 2) |
-| **13.2** | the daemon: `wapps broker daemon`, unix socket, `O_EXCL` claim, detached spawn, idle exit, session tracking (gone-owner release) | 745 | 13.1 | 6 / 26 | not measured; inventory 26 |
+| **13.2** | the daemon: `wapps broker daemon`, unix socket, `O_EXCL` claim, detached spawn, idle exit, session tracking (gone-owner release) | 745 | 13.1 | 6 / 26 | 22 lifecycle tests (17 process + 5 unit); measured record in §7.4 |
 | **13.3** | execution core + **codex** worker: `agent_submit` → routing (an explicit provider, review independence, continuity, the sole declared side; never a directive) → `POST …/jobs` → `POST …/jobs/attach` with the job id as run id, whose answer is the worker's task (Finding 4.3b) → spawn → progress heartbeat < 5 min → finish; `agent_cancel`; role spawn spec (OD7); **prompt delivery** (skills, repository rulebook, scratch, pause sections), which the codex seam compares byte for byte; **the scrub on every note, output and error that leaves the machine** (§4.5, OD15); the owner-pause classifier that stops a codex job; **the quota reading** into daemon memory, because it decides which codex events are notes (§7.1). Read-only roles only. Five declared stubs: writing roles refused (13.4), `handBack` refused (13.6), the transcript and the observed model not recorded (13.9) | 2,416 | 13.2 | 16 / 89, plus the 19 files of §6 | not measured; seam 1 codex + seam 3 |
 | **13.4** | writing roles: `git worktree add/remove` per job, with the refusal to remove a dirty tree; the worktree goes into the attach body. Scratch, the pause gate and the scrub are already in 13.3 | 41 | 13.3 | 5 / 20 | not measured |
 | **13.5** | **claude** worker: OD5's choice, the PreToolUse gate (ceiling, containment, pause), env allowlist (Finding 4.2). Skills, rulebook and the scrub arrive with 13.3 and are reused | 377 | 13.4, OD5's first measurement, OD6 | 14 / 61 | not measured; seam 1 claude |
@@ -1466,7 +1466,131 @@ or independent Sol verification stage was started by this repair; that stage is 
 The pre-existing untracked `docs/preparation/` directories were not edited or staged.
 
 No deployment, release, main merge, push, installation, migration, or real
-plugin/data/config write is part of this slice. Slice 13.2 has not been started.
+plugin/data/config write is part of that slice. At that point 13.2 had not started;
+the later implementation is recorded below.
+
+### 7.4 Slice 13.2: measured local daemon lifecycle completion (2026-10-05)
+
+**Scope.** `wapps broker serve` is now a stdio client of the local daemon;
+`wapps broker daemon` runs it in the foreground and `wapps broker daemon --stop`
+requests graceful shutdown. SIGINT and SIGTERM use the same drain path. No worker
+is launched: submit/cancel/attach/report still return `ACTION_UNAVAILABLE`, as in
+13.1. No owner-command module, plugin installation, user configuration, enrollment,
+cloud data, deployment, release, or main branch is changed by this slice.
+
+**Ownership and authentication.** The runtime is under
+`$HOME/.agent-broker/daemon`, a nonsymlink, same-UID **0700** directory, below an
+owned state directory that is not group/world-writable. `broker.sock` is an owned
+**0600** Unix socket. Those OS permissions are the local-client authentication
+boundary; the connection also checks a versioned hello and a SHA-256 fingerprint
+of the independently loaded endpoint/client/credential tuple. Changing that tuple
+requires stopping and restarting the daemon; an old daemon is not silently reused
+with a new credential. The frontend still validates its enrolled cwd on every entry.
+Neither a mission nor a task/job selector is bound to the daemon or connection.
+
+A permanent **0600** regular `lock` file carries an exclusive kernel lock. Only
+its holder may create the **O_EXCL** `owner.json` record or recover stale paths.
+The record's PID is diagnostic, never read as authority and never signalled. An
+empty/truncated record therefore does not make a still-starting owner look dead.
+The lock inode is deliberately retained after shutdown; unlinking it would split
+waiters across different locks. Socket/record cleanup checks inode identity, and
+recovery refuses non-socket paths, symlinks and hardlinked lock files. Losing a
+start race cannot unlink the winner's socket.
+
+**Process and framing bounds.** A missing daemon is spawned using the absolute
+current executable, no shell, cleared environment except HOME, null standard
+streams and `setsid` in the child after exec. Startup waits at most **15 seconds**;
+its only kill-on-timeout target is the `Child` handle it created, never a disk PID.
+The accepted socket explicitly becomes blocking on both Linux and BSD/macOS (BSD
+inherits the listener's nonblocking mode). There are at most **64** connections,
+a **4096-byte / 2-second total** hello budget, **2-second** socket write deadlines,
+and the unchanged MCP **1 MiB / 16 in-flight calls per client** bounds. A peer
+trickling hello bytes cannot extend the handshake deadline. Private readiness/end
+frames never reach MCP stdout. Daemon loss fails the client even while its host
+keeps stdin open; uncertain mutations are never transparently replayed.
+
+An empty daemon exits after **10 minutes**, measured with a monotonic clock from
+the last connection's completion. Tests run the same loop with a 100-ms idle
+period, not a new environment variable or production timing knob. Shutdown stops
+accepting, wakes readers, cancels polls and joins outstanding exchanges before
+releasing ownership. Synchronous cloud I/O still has 13.1's **10-second** deadline;
+shutdown does not undo a cloud write already sent.
+
+**Sessions and gone owners.** Connections use cryptographically random session
+IDs and reference counts. Capabilities observed in successful claims are retained
+only in memory, keyed by mission, alongside their owning session(s). As in the
+plugin, a subsequent claim releases a cached lease only when none of its owners
+can still speak. A live owner is not released when another client asks to claim a
+mission. Claims/releases are serialized; ordinary reads and long polls are not.
+A confirmed release or the cloud's four definitive stale-lease refusals clears the
+cached authority before a fresh claim. Transport/protocol failures are not retried
+or treated as successful release. Internal release requests use a numeric ID, so
+no reserved string can accidentally match a valid runtime credential. If the
+daemon itself dies before it has observed a claim response, cloud lease expiry is
+still the recovery mechanism; no capability journal is introduced.
+
+**Measured tests and review.** There are **17** process-level lifecycle tests and
+**5** real-socket unit tests. They cover foreground/detached startup, session and
+process-group detachment, concurrent foreground and automatic starters, locked
+partial startup, dead-owner recovery, non-socket/symlink refusal, permissions,
+credential mismatch, refused hello, reconnect, shared sessions, idle exit,
+abrupt stdio death, multiple clients/missions, gone-owner release with a strict
+fake cloud, stale capabilities, graceful stop/signals and cancellation of an
+in-flight 55-second poll. The two startup race tests also passed **20 repetitions
+each (40/40)** from the tracked-source release build. The existing **28 MCP**
+contract tests run through the daemon unchanged apart from fixture cleanup.
+Every test uses an isolated HOME, fake credentials and loopback cloud; the fixture
+stops its daemon before deleting its home. No real credential or model session was
+used.
+
+The code-simplifier and find-bugs checklists were applied locally. The output sink
+was simplified to the actual Unix stream instead of a boxed writer abstraction.
+Red tests reproduced the missing daemon/release, missing signal drain, stale-lease
+claim blockage, trickled-handshake deadline extension and a runtime-credential /
+internal-request-ID collision before the corresponding implementation or repair.
+The first full release run found the help-axis allowlist missing the new daemon
+node; that exact Rust-only node was added, without relaxing any legacy comparison.
+No full mutation sweep or competing review agent was launched; independent Sol
+review remains the subsequent workflow stage.
+
+**Verification record.** The clean copy was populated only with `git checkout-index`
+from the lane's staged files. Its initial full run correctly failed the repository
+scanner: that test uses `git ls-files`, and a filesystem copy alone has no index.
+The verification copy was then initialized as an isolated Git repository, with
+exactly the original **417** indexed paths; every mode/blob/path entry matched the
+lane index, including all six daemon source/test modules. The scanner passed
+without changing it or skipping it. `libc` was already present through rustix/ring;
+making it direct for portable `sigaction` changes **101 → 101** lockfile package
+entries and adds no new package or policy exception.
+
+Each gate's exit was captured separately:
+
+| Gate | Result |
+|---|---|
+| `go build ./...` | **0** |
+| `go vet ./...` | **0** |
+| `go test ./...` | **0**, all packages passed |
+| `cargo fmt --manifest-path rust/Cargo.toml --all --check` | **0** |
+| `cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings` | **0** |
+| `cargo deny --manifest-path rust/Cargo.toml check` | **0**; advisories, bans, licenses and sources OK; existing unused-license allowances and duplicate `syn` warnings remain |
+| Tracked-source-only `cargo build --release --locked` | **0** |
+| Final indexed-copy `cargo test --release --locked -- --nocapture` | **0**; **551 passed, 0 failed, 2 intentionally ignored** |
+| Final PTY differential, inside that full suite | **1043 equal, 0 different, 0 unsound** |
+| Final help axis, inside that full suite | **54 legacy nodes / 162 pages, 0 different**; only the three exact Rust-only broker nodes are outside the Go oracle |
+| Tracked-source/index verification | **0**; all **417** mode/blob/path entries matched; no ignored source borrowed |
+| Process cleanup after the final suite | **0** lane test daemons remaining |
+
+The earlier worktree full suite passed **550** tests before the final internal-ID
+regression was added; it is not substituted for the final **551-test** indexed-copy
+run. The two intentionally ignored tests are the pre-existing external Bun-plugin
+oracle and suite runs, not daemon tests. No new test exclusion was added.
+
+**Limits.** These are local macOS/arm64 measurements, not a hosted Linux runtime
+run or a real-cloud/model execution. Workers, transcript handling, provider
+sessions and their lifecycle remain 13.3 and later. Capability recovery after a
+whole-daemon crash remains bounded by the cloud's existing lease expiry rather
+than by persisting capabilities locally. The slice is committed only on its lane;
+there is no push, main merge, tag, release, deployment, migration or plugin retirement.
 
 ## 8. Owner decisions
 

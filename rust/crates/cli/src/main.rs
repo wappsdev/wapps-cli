@@ -221,6 +221,21 @@ fn run() -> Result<(), CmdError> {
     }
 
     if let Some(("broker", bm)) = matches.subcommand() {
+        if let Some(("daemon", dm)) = bm.subcommand() {
+            let result = if dm.get_flag("stop") {
+                wapps::broker::daemon::stop()
+            } else {
+                wapps::broker::daemon::run(dm.get_flag("detached"))
+            };
+            let code = match result {
+                Ok(()) => 0,
+                Err(problem) => {
+                    eprintln!("broker: {problem}");
+                    1
+                }
+            };
+            return Err(CmdError::Exit(code));
+        }
         if let Some(("serve", _)) = bm.subcommand() {
             // MCP owns stdout. Never run auto-refresh or spawn a post-command helper.
             let code = match wapps::broker::serve() {

@@ -673,6 +673,7 @@ dependencies = [
  "broker-oracle",
  "clap",
  "clap_complete",
+ "libc",
  "ring",
  "rustix",
  "rustls",
