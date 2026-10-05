@@ -891,7 +891,7 @@ P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec 
 |---|---|---:|---|---|---|
 | **R0** | **The Rust binary ships. Being handled:** owner decision 2026-10-05, the Rust `wapps` replaces the Go binary in the Homebrew release when the CLI port is done. That release slice is running on `wapps-cli` `lane/cli-s10` (worktree `.worktrees/cli-s10`, no commit of its own yet; the branch is at `c8c7daf`). What it has to change was measured here: `.goreleaser.yml`'s `builds:` has one entry, `main: ./main.go`, and `.github/workflows/{ci,release}.yml` mention `cargo` **0** times. The version rule already exists (`before` hook `sh rust/check-version.sh {{ .Version }}`, `PORT-kalan-yuzey.md` §4.3). `goreleaser check` failing on the deprecated `brews` is a separate open owner decision (`64549cb`) | — | `lane/cli-s10` | — | the existing differential |
 | **13.0** | **LANDED 2026-10-05** (§7.2): oracle harness: fake `claude`/`codex` recorders, fake cloud from recorded fixtures, MCP transcript runner, hermetic skill roots (Finding 0.1). Section 6 says it exists before any slice, so every slice below depends on it. Lives in `rust/crates/broker-oracle` | 0 | — | Finding 0.1 | harness only: 44 tests run by `cargo test` (39, plus 5 from the pre-merge security repair), 2 ignored oracle runs |
-| **13.1** | `wapps broker serve`: stdio MCP, enrollment (cwd → project), the Access service token (OD2: a 0600 file), `tools/list` (the Worker's list with 3 entries replaced and the 2 handoff tools removed: 24 tools) and the 13 verbatim tools forwarded to the Worker MCP, the observe and rewrite classes without the quota merge, `orchestrator_claim` without resume, the `agent_await` cursor loop (OD4), read redaction (§3.7). `agent_submit`, `agent_cancel`, `agent_attach`, `agent_report` answer `ACTION_UNAVAILABLE`; `roles_list` is the Worker's answer | 501 | **13.0**, P12, P-b, live | 8 files / 26 tests | ≥ 51 (seam 2) |
+| **13.1** | Implemented on `lane/broker-daemon-13-1` (§7.3): `wapps broker serve`, stdio MCP, enrollment (cwd → project, **not mission**), a 0600 Access credential, and 24 current Worker tool schemas with per-call `missionId` routing. The observe/rewrite classes preserve cloud answers without quota merge; claim does not resume; await polls with bounded deadlines; reads are redacted. `agent_submit`, `agent_cancel`, `agent_attach`, `agent_report` honestly refuse `ACTION_UNAVAILABLE`. No handoff tools; no mission creation by listing | 501 | **13.0**, P12, P-b, live | 8 files / 26 tests | ≥ 51 (seam 2) |
 | **13.2** | the daemon: `wapps broker daemon`, unix socket, `O_EXCL` claim, detached spawn, idle exit, session tracking (gone-owner release) | 745 | 13.1 | 6 / 26 | not measured; inventory 26 |
 | **13.3** | execution core + **codex** worker: `agent_submit` → routing (an explicit provider, review independence, continuity, the sole declared side; never a directive) → `POST …/jobs` → `POST …/jobs/attach` with the job id as run id, whose answer is the worker's task (Finding 4.3b) → spawn → progress heartbeat < 5 min → finish; `agent_cancel`; role spawn spec (OD7); **prompt delivery** (skills, repository rulebook, scratch, pause sections), which the codex seam compares byte for byte; **the scrub on every note, output and error that leaves the machine** (§4.5, OD15); the owner-pause classifier that stops a codex job; **the quota reading** into daemon memory, because it decides which codex events are notes (§7.1). Read-only roles only. Five declared stubs: writing roles refused (13.4), `handBack` refused (13.6), the transcript and the observed model not recorded (13.9) | 2,416 | 13.2 | 16 / 89, plus the 19 files of §6 | not measured; seam 1 codex + seam 3 |
 | **13.4** | writing roles: `git worktree add/remove` per job, with the refusal to remove a dirty tree; the worktree goes into the attach body. Scratch, the pause gate and the scrub are already in 13.3 | 41 | 13.3 | 5 / 20 | not measured |
@@ -1270,6 +1270,203 @@ pause kill, no quiet timeout, no `isError` from codex; 13.3 and 13.5 add the scr
 cases need.
 
 ---
+
+### 7.3 Slice 13.1: stdio bridge and the per-call mission contract (2026-10-05)
+
+The implementation is in `rust/crates/cli/src/broker/{mod,config,forward}.rs` and
+`wapps broker serve`. This is the stdio bridge, **not** the persistent daemon (13.2),
+provider execution (13.3–13.6), installation (13.7), or enrollment writer (13.8).
+It reads enrollment without changing it and launches no worker or helper process.
+
+**Contract clarification: project is not mission.** Enrollment answers whether cwd
+belongs to a local project. Every one of the 24 tools instead requires a **per-call**
+`missionId`; the same stdio connection and project may address any number of missions.
+The bridge validates the mission as `^[a-z0-9][a-z0-9._-]{0,127}$`, constructs
+`POST /v1/missions/<missionId>/mcp` with URL path-segment APIs, and removes only
+`missionId` from the Worker's arguments. `agent_await` additionally consumes its local
+`waitMs`. In particular, it does **not** remove `workItemId`, `jobId`, question ids,
+lease authority or any other cloud field. Job and work identifiers stay JSON data;
+the Worker validates its schemas and encodes job path segments itself. There is no
+ambient mission, project-to-single-mission mapping, fallback mission, or retry in a
+different mission after a refusal.
+
+**P12 is settled by the current Worker, not by the old plugin schema.** The checked-in
+`cloud-tools.json` is the 24-tool list extracted from the platform's frozen
+`services/broker/test/frozen/mcp-transcript.json`, SHA256
+`baf3ad7479f88a37ff924fba56e2dec6b6c0b0793f37a8fa3822a3c05f1e8abd`.
+The test holds the complete same frozen transcript. Its hash was compared with the
+read-only platform checkout during this slice. The actual implementation in
+`crates/workers/src/broker_mcp.rs` appends attention and builds `agent_running` from
+mission jobs and work; the bridge preserves those results. It does not reconstruct
+attention, invent a quota digest, or resume work on claim. `provider` on claim is the
+Worker's required argument. The four execution tools (`agent_submit`, `agent_cancel`,
+`agent_attach`, `agent_report`) advertise their unavailability and answer
+`ACTION_UNAVAILABLE` without calling HTTP. Until their execution slices implement
+the local inputs, they retain the current cloud schemas rather than advertising
+unimplemented plugin shapes. The handoff tools are absent. Listing uses this frozen
+catalog and never chooses, registers, or creates a mission.
+
+**Authorization remains in the cloud.** Only the configured Access service-token
+headers are sent. There is no owner SSO fallback. Relay remains `work_relay_answer`;
+answer, accept and confirm are not MCP tools. The bridge never treats a relay as human
+confirmation. Cloud isolation is source-backed: `broker_handlers.rs` obtains the
+`MISSIONS` stub by mission name; `mission_lane/methods.rs` looks up jobs and work in
+that object's SQL and refuses missing ids (`unknown_job`, `unknown_work_item`). The
+bridge tests replay those NOT_FOUND envelopes for a task/job addressed through the
+wrong mission and assert that no request escapes to the original mission. **That is
+a bridge routing/refusal test, not a fresh live-cloud authorization test.** Neither
+the Worker checkout nor deployed cloud was changed or run by this slice.
+
+**Runtime files.** `HOME/.agent-broker/projects.json` is a version-1 map from local
+project ids to `{root}`. Roots are canonicalized (relative roots resolve from
+`.agent-broker`); overlapping roots and roots containing broker state/config are
+refused. `HOME/.config/wapps-broker/client.yaml` contains `clientId` and optionally
+`endpoint` (default `https://broker.meapps.dev`), never the credential. Only HTTPS
+origins, or numeric loopback HTTP for the hermetic peer, are accepted. Metadata
+resolved inside an enrolled root is refused. `agents.secret` is opened with
+`NOFOLLOW | CLOEXEC | NONBLOCK`; the opened descriptor must be a regular file,
+owned by the effective uid, mode exactly 0600, link count one, at most 4096 bytes.
+Only a trailing CR/LF is trimmed. No environment credential, command-line credential,
+real secret retrieval, secret logging, or project-local credential fallback exists.
+
+**Boundaries and measured limits.**
+
+- Stdio is newline-delimited JSON-RPC 2.0. Malformed JSON and invalid requests get
+  generic errors without echoing input, and the next frame can still succeed.
+  Unknown methods and unknown tools have distinct protocol errors. Notifications
+  never execute a tool. An input frame over **1 MiB** terminates the session.
+- At most **16** tool calls may be in flight. A seventeenth gets `SERVER_BUSY`;
+  ping and cancellation still work. Duplicate in-flight ids are refused. Replies
+  are serialized on stdout; diagnostics alone use stderr. EOF cancels pending polls.
+- `agent_await` preserves the supplied digest, polls every **2 seconds**, and waits
+  at most **55 seconds** (at most **28 HTTP exchanges**). No digest or `waitMs: 0`
+  makes one immediate exchange. A 30-ms wait, a changed second poll after 2 seconds,
+  cancellation between polls, and a stalled HTTP response with a 50-ms await budget
+  are exercised. Time accounting is monotonic. Errors are not retried.
+- HTTP has a **10-second** total timeout, reduced to the await budget remaining;
+  response bodies are limited to **4 MiB**. JSON and SSE are accepted; wrong ids,
+  duplicate answers, malformed bodies, and unsupported content types are refused.
+  Redirects and environment proxies are disabled. Cancellation during synchronous
+  network I/O may wait for that exchange's deadline; it does not undo a cloud write.
+- ureq 2 does not bound libc DNS. The bridge therefore resolves its one origin once
+  at startup with a **10-second deadline**, pins those addresses for this process,
+  and preserves hostname-based TLS verification. Restart the bridge to pick up a DNS
+  change. A deterministic delayed resolver test proves deadline failure; a timed-out
+  resolver thread holds no credential and the failed bridge process exits.
+- The runtime credential is rejected in decoded caller input (including mission
+  routing and escaped JSON strings), and scrubbed from every cloud answer. Read tools
+  also redact capability/token/secret-like fields in both structured and JSON text
+  results. The public numeric `fencingToken` remains readable; a successful claim's
+  newly issued capability must remain available to its caller.
+
+**Evidence and deliberate divergences.** The takeover baseline failed to compile
+(`super::tool_error` missing). After restoring that helper, all nine inherited MCP
+tests failed at startup because completion's `no_args` queried an undefined clap
+`extra` argument. Removing that completion-only check exposed an overbroad redaction
+of the public fencing token. Red-first tests additionally caught malformed-frame
+termination, missing cancellation, id leakage, oversized credential truncation,
+malformed cloud results, escaped-credential egress and credential-as-mission egress.
+
+The bridge suite now has **23 integration tests**, plus the bounded-DNS unit test.
+It replays **36** exact available-cloud success/refusal results and exercises both
+frozen input outcomes of each unavailable execution tool (**8 explicit refusals**).
+Two frozen refusals reject `missionId` as an unknown cloud field; that is now required
+local routing metadata, so those exact requests cannot be replayed. The frozen await
+refusal similarly rejects `waitMs`, now a local field. Missing/invalid mission and
+wait metadata, local protocol methods, and the await cases are tested separately;
+these are declared differences, not silently weakened comparisons. More than the
+51-case floor is exercised across the table-driven transcripts and boundary tests.
+The Go parity tests keep all legacy bytes/candidates except the exact new `broker`
+root help row in 11 measured PTY cases, the two new help-tree nodes, and `broker` at
+the two root completion positions in each shell. The initial full release run and
+initial PTY run failed on these differences (PTY: 1032 equal, 11 different, 0 unsound).
+
+Review used the code-simplifier and find-bugs checklists. The unused inherited
+`tools.json` was removed only after byte-comparing it with `cloud-tools.json`; the
+catalog content is retained once. The optional external challenge helper was refused
+before takeover and remains **unavailable, WARN-only**; it was not retried or bypassed.
+The review covered every changed source/test hunk, both catalog/fixture JSON values,
+the manifest/lock change, and this plan. Inputs are stdin JSON, enrollment/client files,
+the credential descriptor and HTTP responses. The bridge has no SQL, browser surface,
+custom cryptography or child process. Injection, header/URL construction, ownership,
+mission routing, cancellation races, input/output bounds and secret disclosure were
+checked; the concrete disclosure findings above were fixed and regression-tested.
+Live Access grants, live cross-mission calls and other operating systems remain
+unverified here, rather than being inferred from the fake peer.
+
+**Final gates (worktree root, darwin/arm64).** Each command completed; none is inferred
+from another command's result:
+
+| Gate | Command | Exit / observation |
+|---|---|---|
+| Go build | `go build -o rust/target/broker-slice-go .` | 0 |
+| Go vet | `go vet ./...` | 0 |
+| Go tests | `go test ./... -race -timeout 20m` | 0 |
+| Rust format | `cargo fmt --manifest-path rust/Cargo.toml --all -- --check` | 0 |
+| Rust lint | `cargo clippy --manifest-path rust/Cargo.toml --all-targets --locked -- -D warnings` | 0; the new test module was moved after production items after an initial lint failure |
+| Dependency policy | `cargo deny --manifest-path rust/Cargo.toml check` | 0; three unused license allowances and duplicate `syn` versions remain warnings |
+| Complete release suite | `cargo test --manifest-path rust/Cargo.toml --release --locked` | 0; **524 passed, 0 failed, 2 intentionally ignored plugin-oracle runs**; includes the PTY differential |
+| MCP bridge | release suite and clean-copy `--test broker_mcp` | 0; **23 passed** in both; bounded-DNS unit test also passed in the full suite |
+| Tracked-source-only build | `git checkout-index --all --prefix=<worktree>/rust/target/slice-13-1-source/`, then `cargo build --manifest-path rust/target/slice-13-1-source/rust/Cargo.toml --release --locked` | 0; new modules and JSON inputs are indexed, not borrowed ignored files |
+| Clean-copy MCP tests | `cargo test --manifest-path rust/target/slice-13-1-source/rust/Cargo.toml --release --locked --test broker_mcp` | 0; 23 passed |
+
+The first root-row normalization run failed because the unknown-help-topic case emits
+its page on **stderr**, not stdout. The exception now names that stream explicitly;
+the retained probes re-compared **1043 equal, 0 different, 0 unsound**, and the complete
+release suite was then run again to exit 0. The separate run excluding only the long
+PTY test also passed (523 tests); it was not used as a substitute for the full gate.
+
+**Follow-up: malformed cloud envelopes after `991a608`.** Sol's committed-source
+probe (`rust/target/sol-13-1-verification/malformed-envelope.log`) demonstrated that
+HTTP 200 `result: {}` and `error: {}` escaped to stdio. The shared JSON/SSE decoder
+had checked only `is_object`. It now validates the advertised **MCP 2025-06-18**
+wire shapes: required `content` array, all five content variants and their required
+fields, typed optional result/resource/annotation fields, and an integer JSON-RPC
+error code with a string message. It retains the original JSON rather than dropping
+extension properties or defaulting missing content to an empty array. This checks
+protocol shapes, not the Worker's application output schemas; no dependency was added.
+
+Both HTTP transports have **50 malformed-envelope cases** through the release stdio
+binary. Before the repair, **49** in each table escaped `CLOUD_PROTOCOL`; the conflicting
+result/error control was already refused. A separate malformed `changed: false`
+result caused a second HTTP request. The red run exited **101** (4 passed, 3 failed).
+These cases now produce sanitized `CLOUD_PROTOCOL` tool errors without another request.
+Valid empty content, text, image, audio, text/blob resources, resource links, structured
+output, frozen tool refusals, RPC errors and extension properties remain accepted.
+
+The review caught a second wire-shape collision: the reply writer and await poller
+mistook a tool result's allowed `error` extension for a JSON-RPC error. Red regressions
+exited **101** (5 passed, 2 failed). They now use the validated required `content` field
+to distinguish tool results from the bridge's RPC-error wrappers. The existing await
+poll test includes this extension, and both transports retain it as result data.
+A further test checks that valid RPC errors retain their code/message/data shape while
+scrubbing the synthetic credential and read-restricted fields. Mission, work-item and
+job selection, credential sourcing, HTTP limits and the redaction policy are unchanged.
+
+Repair evidence is under `rust/target/sol-13-1-verification/` (local, untracked build
+output): `repair-red.log`, `repair-extension-red.log`, `repair-mcp.log`,
+`repair-fmt.log`, `repair-clippy.log`, `repair-deny.log`, `repair-release.log` and
+`repair-release-final.log`. The targeted release suite passed **28 tests, exit 0**.
+Format and clippy (`--all-targets --locked --offline -- -D warnings`) exited **0**;
+dependency policy (`cargo deny --offline --locked check`) exited **0**, with the same
+unused-license and duplicate-syn warnings. Offline mode uses the cached advisory
+database; it is not a fresh advisory fetch. The first complete release run exited
+**0** (**528 passed, 2 intentionally ignored**); it began before the last
+extension/sanitization changes, so it was not treated as final proof. The final
+`cargo test --manifest-path rust/Cargo.toml --release --locked --offline -- --nocapture`
+exited **0**: **529 passed, 0 failed, 2 intentionally ignored plugin-oracle runs**, and
+PTY **1043 equal, 0 different, 0 unsound**. No test exclusion or mutation sweep was used.
+
+The code-simplifier and find-bugs checklists were applied to the complete repair diff
+and the surrounding decoder, reply and polling paths. The collision above was fixed;
+no other repair-scope finding remains. The added code is bounded by the existing
+response limit and introduces no new I/O, authorization, state or cryptography. The
+external challenge helper remains unavailable and was not retried. No mutation sweep
+or independent Sol verification stage was started by this repair; that stage is next.
+The pre-existing untracked `docs/preparation/` directories were not edited or staged.
+
+No deployment, release, main merge, push, installation, migration, or real
+plugin/data/config write is part of this slice. Slice 13.2 has not been started.
 
 ## 8. Owner decisions
 

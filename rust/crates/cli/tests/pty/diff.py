@@ -30,6 +30,31 @@ bad = []
 # timeout iki bulgu uretir (GO ve RS) ama bir tek vaka bozar.
 unsound = set()
 
+# Slice 13.1 is Rust-only. These measured root-page cases gain exactly one
+# command row; compare every other byte, exit code and side effect unchanged.
+BROKER_ROOT_PAGES = {
+    "agent_bare_wapps",
+    "agent_bare_wapps_both_identity_flags_print_help",
+    "agent_bare_wapps_config_flag",
+    "agent_bare_wapps_project_flag",
+    "agent_help_flag_before_tofu_is_the_root_page",
+    "agent_version_and_help_print_help",
+    "human_bare_wapps",
+    "human_bare_wapps_rooted",
+    "human_help_command_bare_is_the_root_page",
+    "human_help_command_unknown_topic",
+    "human_update_after_the_root_page",
+}
+BROKER_ROW = b"  broker      Local broker bridge\n"
+for name in BROKER_ROOT_PAGES:
+    if name not in rs:
+        continue  # The ordinary comparison reports missing cases.
+    stream = "stderr_hex" if name == "human_help_command_unknown_topic" else "stdout_hex"
+    output = bytes.fromhex(rs[name][stream])
+    if output.count(BROKER_ROW) != 1:
+        raise AssertionError(f"{name}: expected exactly one Rust-only broker row")
+    rs[name][stream] = output.replace(BROKER_ROW, b"").hex()
+
 
 def _is_vacuum(v):
     """Vaka HICBIR SEY gozlemlemiyor mu?"""

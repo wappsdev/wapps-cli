@@ -263,13 +263,18 @@ fn tab_offers_the_same_words_as_the_oracle() {
                 !g.is_empty(),
                 "the oracle offers nothing for {shell} {line:?}"
             );
-            let expected = if *shell == "bash" && line.ends_with(' ') {
+            let mut expected: BTreeSet<String> = if *shell == "bash" && line.ends_with(' ') {
                 divergent += 1;
                 let flags = go.tab(&work, &cwd, shell, &format!("{line}-"));
                 g.union(&flags).cloned().collect()
             } else {
                 g.clone()
             };
+            // Slice 13.1 adds a Rust-only family; keep every legacy candidate
+            // exact and require the new family only at the two root positions.
+            if matches!(*line, "wapps " | "wapps help ") {
+                expected.insert("broker".into());
+            }
             compared += 1;
             println!("{shell} {line:?}: {}", shown(&r));
             if r != expected {

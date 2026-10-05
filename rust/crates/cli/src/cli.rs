@@ -994,6 +994,11 @@ fn tree() -> Command {
         .subcommand(skill_command())
         .subcommand(deploy_command())
         .subcommand(completion_command())
+        .subcommand(
+            Command::new("broker")
+                .about("Local broker bridge")
+                .subcommand(Command::new("serve").about("Serve the broker over stdio MCP")),
+        )
 }
 
 // skill_command, `wapps skill`: Go's Short/Long texts byte for byte (pinned

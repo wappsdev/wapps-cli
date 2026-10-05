@@ -1,0 +1,2415 @@
+{
+ "initialize": {
+  "status": 200,
+  "contentType": "text/event-stream",
+  "messages": [
+   {
+    "result": {
+     "protocolVersion": "2025-06-18",
+     "capabilities": {
+      "tools": {
+       "listChanged": true
+      }
+     },
+     "serverInfo": {
+      "name": "wapps-broker",
+      "version": "0.1.0"
+     },
+     "instructions": "This endpoint answers for exactly one broker mission: \"mcp-transcript\". The mission is part of the URL, not a tool argument. Writes present the lease's authority ({capability, fencingToken}) that orchestrator_claim answered; a worker's reports present the job's own ({jobId, capability}). agent_await never waits: poll it. A refusal is the broker's envelope (error, message, recovery, retryable, details) in structuredContent, with isError."
+    },
+    "jsonrpc": "2.0",
+    "id": 1
+   }
+  ]
+ },
+ "notifications/initialized": {
+  "status": 202,
+  "contentType": "text/plain;charset=UTF-8",
+  "messages": []
+ },
+ "tools/list": {
+  "status": 200,
+  "contentType": "text/event-stream",
+  "messages": [
+   {
+    "result": {
+     "tools": [
+      {
+       "name": "orchestrator_claim",
+       "title": "Claim this mission's lease",
+       "description": "Take the mission's lease for your provider. Answers the authority (capability and fencing token) every write presents, and the heartbeat deadline. Another holder's live lease is a CONFLICT naming its owner.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "provider": {
+          "type": "string",
+          "enum": [
+           "claude",
+           "codex"
+          ]
+         }
+        },
+        "required": [
+         "provider"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "orchestrator_heartbeat",
+       "title": "Renew the lease",
+       "description": "Renew the lease you hold before its heartbeat deadline, presenting its capability and fencing token.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "capability": {
+          "type": "string",
+          "minLength": 1
+         },
+         "fencingToken": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+         }
+        },
+        "required": [
+         "capability",
+         "fencingToken"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "orchestrator_release",
+       "title": "Release the lease",
+       "description": "Give the lease up, presenting its capability and fencing token. The next claim starts a new epoch.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "capability": {
+          "type": "string",
+          "minLength": 1
+         },
+         "fencingToken": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+         }
+        },
+        "required": [
+         "capability",
+         "fencingToken"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "orchestrator_status",
+       "title": "Read the lease and what is owed",
+       "description": "Who holds the mission's lease and until when, with the attention block: what is waiting on the orchestrator.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "roles_list",
+       "title": "List the declared roles",
+       "description": "Every declared role side (role, provider, tools): the ceilings a dispatch may name.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "roles_propose",
+       "title": "Check proposed roles without declaring them",
+       "description": "Judge proposed role sides by the registry's own rules (name, tool vocabulary, at least one tool) and write nothing. Declaring is an administrator's act over POST /v1/roles.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "roles": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "role": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 64
+            },
+            "provider": {
+             "type": "string",
+             "enum": [
+              "claude",
+              "codex"
+             ]
+            },
+            "tools": {
+             "type": "array",
+             "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+             },
+             "maxItems": 32
+            }
+           },
+           "required": [
+            "role",
+            "provider",
+            "tools"
+           ],
+           "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 50
+         }
+        },
+        "required": [
+         "roles"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_add",
+       "title": "File work items",
+       "description": "File one to 500 work items (title, intent, optional parent, horizon and discoveredFrom) under the lease. Answers their ids in order.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "items": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "title": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 500
+            },
+            "intent": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 100000
+            },
+            "parentId": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 128
+            },
+            "horizon": {
+             "type": "string",
+             "enum": [
+              "now",
+              "next",
+              "later",
+              "someday"
+             ]
+            },
+            "discoveredFrom": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 128
+            }
+           },
+           "required": [
+            "title",
+            "intent"
+           ],
+           "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 500
+         }
+        },
+        "required": [
+         "authority",
+         "items"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_adopt",
+       "title": "Adopt a completed job's decomposition",
+       "description": "File the items a completed job proposed, each a part of its work item or a follow-on, under the lease.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "items": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "title": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 500
+            },
+            "intent": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 100000
+            },
+            "relation": {
+             "type": "string",
+             "enum": [
+              "part",
+              "follow_on"
+             ]
+            },
+            "horizon": {
+             "type": "string",
+             "enum": [
+              "now",
+              "next",
+              "later",
+              "someday"
+             ]
+            }
+           },
+           "required": [
+            "title",
+            "intent",
+            "relation"
+           ],
+           "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 500
+         }
+        },
+        "required": [
+         "authority",
+         "jobId",
+         "items"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_list",
+       "title": "Read the work list",
+       "description": "Every work item with its derived state (horizon, readiness, blockers, open questions, job counts) and the list's progress.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_close",
+       "title": "Close a work item",
+       "description": "Close a work item as delivered, dropped or superseded, under the lease.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "workItemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "reason": {
+          "type": "string",
+          "enum": [
+           "delivered",
+           "dropped",
+           "superseded"
+          ]
+         }
+        },
+        "required": [
+         "authority",
+         "workItemId",
+         "reason"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_move",
+       "title": "Move work items between horizons",
+       "description": "Place work items on a horizon (now, next, later, someday), under the lease.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "moves": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "workItemId": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 128
+            },
+            "horizon": {
+             "type": "string",
+             "enum": [
+              "now",
+              "next",
+              "later",
+              "someday"
+             ]
+            }
+           },
+           "required": [
+            "workItemId",
+            "horizon"
+           ],
+           "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 500
+         }
+        },
+        "required": [
+         "authority",
+         "moves"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_ask",
+       "title": "Ask the owner a question",
+       "description": "Raise a question on a work item, with an optional proposal the owner can accept as it stands, under the lease.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "workItemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+         },
+         "proposal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+         }
+        },
+        "required": [
+         "authority",
+         "workItemId",
+         "question"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_relay_answer",
+       "title": "Relay an answer to a question",
+       "description": "Carry an answer you obtained to an open question; the owner confirms it before it counts.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "questionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "answer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+         }
+        },
+        "required": [
+         "authority",
+         "questionId",
+         "answer"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_withdraw",
+       "title": "Withdraw a question",
+       "description": "Take back a question you raised, with a reason. Withdrawing is not answering.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "questionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+         }
+        },
+        "required": [
+         "authority",
+         "questionId",
+         "reason"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "work_delegate",
+       "title": "Delegate a question to a provider",
+       "description": "Hand an open question to a provider to answer, under the lease.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "questionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "provider": {
+          "type": "string",
+          "enum": [
+           "claude",
+           "codex"
+          ]
+         }
+        },
+        "required": [
+         "authority",
+         "questionId",
+         "provider"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_submit",
+       "title": "Dispatch a job",
+       "description": "Dispatch a job on a declared role side. Answers the job id and, on creation only, the job's capability, with the attention block. The Worker records the job; a daemon runs it.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "laneId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "dispatchKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+         },
+         "base": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+         },
+         "head": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+         },
+         "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000
+         },
+         "workerProvider": {
+          "type": "string",
+          "enum": [
+           "claude",
+           "codex"
+          ]
+         },
+         "workItemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "reviewsJobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "resumesJobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "answersQuestionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         }
+        },
+        "required": [
+         "authority",
+         "laneId",
+         "role",
+         "dispatchKey",
+         "base",
+         "head",
+         "task",
+         "workerProvider"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_attach",
+       "title": "Attach a run to a job",
+       "description": "Bind a provider run (and optionally its worktree) to a job, presenting the job's own authority. Answers the job's brief.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           }
+          },
+          "required": [
+           "jobId",
+           "capability"
+          ],
+          "additionalProperties": false
+         },
+         "providerRunId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+         },
+         "worktree": {
+          "type": "object",
+          "properties": {
+           "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+           },
+           "branch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+           }
+          },
+          "required": [
+           "path",
+           "branch"
+          ],
+          "additionalProperties": false
+         }
+        },
+        "required": [
+         "authority",
+         "providerRunId"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_report",
+       "title": "Report a job's end",
+       "description": "Settle a job as completed, failed, timed_out or cancelled, with its output or error, presenting the job's own authority.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           }
+          },
+          "required": [
+           "jobId",
+           "capability"
+          ],
+          "additionalProperties": false
+         },
+         "status": {
+          "type": "string",
+          "enum": [
+           "completed",
+           "failed",
+           "timed_out",
+           "cancelled"
+          ]
+         },
+         "output": {
+          "type": "string",
+          "maxLength": 200000
+         },
+         "error": {
+          "type": "string",
+          "maxLength": 20000
+         }
+        },
+        "required": [
+         "authority",
+         "status"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_list",
+       "title": "List the jobs",
+       "description": "Every job of the mission with its state, and the mission's digest.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_running",
+       "title": "What is running now",
+       "description": "The jobs whose worker is live (reserved or running), each with its work item's title, its last progress line and when it started, with the attention block.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_await",
+       "title": "Has anything changed",
+       "description": "Answers at once whether the mission changed since the digest you last saw, with the attention block. It never waits: poll it (the wapps daemon polls every two seconds up to 55).",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "sinceDigest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+         }
+        },
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_status",
+       "title": "Read one job",
+       "description": "One job and its progress lines, with the attention block.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         }
+        },
+        "required": [
+         "jobId"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_result",
+       "title": "Read a job's result",
+       "description": "A settled job's result. Reading it marks it read, which is what discharges it from the attention block.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         }
+        },
+        "required": [
+         "jobId"
+        ],
+        "additionalProperties": false
+       }
+      },
+      {
+       "name": "agent_cancel",
+       "title": "Cancel a job",
+       "description": "Cancel a job under the lease. The Worker records it; the process is stopped by whoever runs it.",
+       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+         "authority": {
+          "type": "object",
+          "properties": {
+           "capability": {
+            "type": "string",
+            "minLength": 1
+           },
+           "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+           }
+          },
+          "required": [
+           "capability",
+           "fencingToken"
+          ],
+          "additionalProperties": false
+         },
+         "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         }
+        },
+        "required": [
+         "authority",
+         "jobId"
+        ],
+        "additionalProperties": false
+       }
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 2
+   }
+  ]
+ },
+ "orchestrator_claim refusal": {
+  "args": {
+   "provider": "gemini"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"provider: Invalid option: expected one of \\\"claude\\\"|\\\"codex\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"provider\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "provider: Invalid option: expected one of \"claude\"|\"codex\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "provider"
+    }
+   },
+   "isError": true
+  }
+ },
+ "orchestrator_claim success": {
+  "args": {
+   "provider": "claude"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"authority\":{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":1},\"heartbeatDeadline\":1900000300000}"
+    }
+   ],
+   "structuredContent": {
+    "authority": {
+     "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+     "fencingToken": 1
+    },
+    "heartbeatDeadline": 1900000300000
+   }
+  }
+ },
+ "orchestrator_heartbeat refusal": {
+  "args": {
+   "capability": "not-the-capability",
+   "fencingToken": 1
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"FORBIDDEN\",\"message\":\"the presented lease capability is not this lease's\",\"recovery\":\"this identity may not do this; if it is a lease refusal, claim the mission again before writing\",\"retryable\":false,\"details\":{\"refusal\":\"invalid_lease_capability\",\"mission\":\"mcp-transcript\",\"owner\":{\"id\":\"human:owner@wapps.co\",\"provider\":\"claude\"}}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "FORBIDDEN",
+    "message": "the presented lease capability is not this lease's",
+    "recovery": "this identity may not do this; if it is a lease refusal, claim the mission again before writing",
+    "retryable": false,
+    "details": {
+     "refusal": "invalid_lease_capability",
+     "mission": "mcp-transcript",
+     "owner": {
+      "id": "human:owner@wapps.co",
+      "provider": "claude"
+     }
+    }
+   },
+   "isError": true
+  }
+ },
+ "orchestrator_heartbeat success": {
+  "args": {
+   "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+   "fencingToken": 1
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"fencingToken\":1,\"heartbeatDeadline\":1900000360000}"
+    }
+   ],
+   "structuredContent": {
+    "fencingToken": 1,
+    "heartbeatDeadline": 1900000360000
+   }
+  }
+ },
+ "orchestrator_status success": {
+  "args": {},
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"missionId\":\"mcp-transcript\",\"state\":\"held\",\"owner\":{\"id\":\"human:owner@wapps.co\",\"provider\":\"claude\"},\"fencingToken\":1,\"claimedAt\":1900000000000,\"heartbeatDeadline\":1900000360000,\"everClaimed\":true,\"closedReason\":null,\"attention\":{\"digest\":\"811c9dc5\"}}"
+    }
+   ],
+   "structuredContent": {
+    "missionId": "mcp-transcript",
+    "state": "held",
+    "owner": {
+     "id": "human:owner@wapps.co",
+     "provider": "claude"
+    },
+    "fencingToken": 1,
+    "claimedAt": 1900000000000,
+    "heartbeatDeadline": 1900000360000,
+    "everClaimed": true,
+    "closedReason": null,
+    "attention": {
+     "digest": "811c9dc5"
+    }
+   }
+  }
+ },
+ "orchestrator_status refusal": {
+  "args": {
+   "missionId": "mcp-transcript"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"missionId\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "body: Unrecognized key: \"missionId\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "body"
+    }
+   },
+   "isError": true
+  }
+ },
+ "roles_list success": {
+  "args": {},
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"roles\":[{\"role\":\"builder\",\"provider\":\"claude\",\"tools\":[\"read\",\"grep\",\"bash\",\"write\",\"edit\"],\"declaredBy\":\"human:owner@wapps.co\",\"declaredAt\":1900000000000}]}"
+    }
+   ],
+   "structuredContent": {
+    "roles": [
+     {
+      "role": "builder",
+      "provider": "claude",
+      "tools": [
+       "read",
+       "grep",
+       "bash",
+       "write",
+       "edit"
+      ],
+      "declaredBy": "human:owner@wapps.co",
+      "declaredAt": 1900000000000
+     }
+    ]
+   }
+  }
+ },
+ "roles_list refusal": {
+  "args": {
+   "missionId": "mcp-transcript"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"missionId\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "body: Unrecognized key: \"missionId\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "body"
+    }
+   },
+   "isError": true
+  }
+ },
+ "roles_propose success": {
+  "args": {
+   "roles": [
+    {
+     "role": "scout",
+     "provider": "codex",
+     "tools": [
+      "grep",
+      "read"
+     ]
+    },
+    {
+     "role": "Scout",
+     "provider": "claude",
+     "tools": [
+      "read"
+     ]
+    }
+   ]
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"ok\":false,\"review\":[{\"role\":\"scout\",\"provider\":\"codex\",\"ok\":true,\"tools\":[\"read\",\"grep\"]},{\"role\":\"Scout\",\"provider\":\"claude\",\"ok\":false,\"refusal\":\"bad_role_name\",\"message\":\"Scout is not a role name; it is a path segment on the worker's machine and a key here\",\"missing\":[]}]}"
+    }
+   ],
+   "structuredContent": {
+    "ok": false,
+    "review": [
+     {
+      "role": "scout",
+      "provider": "codex",
+      "ok": true,
+      "tools": [
+       "read",
+       "grep"
+      ]
+     },
+     {
+      "role": "Scout",
+      "provider": "claude",
+      "ok": false,
+      "refusal": "bad_role_name",
+      "message": "Scout is not a role name; it is a path segment on the worker's machine and a key here",
+      "missing": []
+     }
+    ]
+   }
+  }
+ },
+ "roles_propose refusal": {
+  "args": {
+   "roles": []
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"roles: Too small: expected array to have >=1 items\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"roles\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "roles: Too small: expected array to have >=1 items",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "roles"
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_add success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "items": [
+    {
+     "title": "Ship the endpoint",
+     "intent": "MCP over the routes"
+    },
+    {
+     "title": "Drop it",
+     "intent": "a second item"
+    }
+   ]
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"workItemIds\":[\"00000000-0000-4000-8000-000000000001\",\"00000000-0000-4000-8000-000000000002\"]}"
+    }
+   ],
+   "structuredContent": {
+    "workItemIds": [
+     "00000000-0000-4000-8000-000000000001",
+     "00000000-0000-4000-8000-000000000002"
+    ]
+   }
+  }
+ },
+ "work_add refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "items": []
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"items: Too small: expected array to have >=1 items\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"items\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "items: Too small: expected array to have >=1 items",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "items"
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_list success": {
+  "args": {},
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"items\":[{\"id\":\"00000000-0000-4000-8000-000000000001\",\"parentId\":null,\"horizon\":null,\"discoveredFrom\":null,\"title\":\"Ship the endpoint\",\"intent\":\"MCP over the routes\",\"position\":1,\"createdAt\":1900000060000,\"closedAt\":null,\"closedReason\":null,\"sourceJobId\":null,\"openQuestions\":[],\"effectiveHorizon\":null,\"ready\":true,\"blockedBy\":null,\"children\":{\"total\":0,\"closed\":0},\"subtree\":{\"items\":0,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}},{\"id\":\"00000000-0000-4000-8000-000000000002\",\"parentId\":null,\"horizon\":null,\"discoveredFrom\":null,\"title\":\"Drop it\",\"intent\":\"a second item\",\"position\":2,\"createdAt\":1900000060000,\"closedAt\":null,\"closedReason\":null,\"sourceJobId\":null,\"openQuestions\":[],\"effectiveHorizon\":null,\"ready\":true,\"blockedBy\":null,\"children\":{\"total\":0,\"closed\":0},\"subtree\":{\"items\":0,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}}],\"progress\":{\"now\":0,\"next\":0,\"later\":0,\"someday\":0,\"unplaced\":2,\"delivered\":0}}"
+    }
+   ],
+   "structuredContent": {
+    "items": [
+     {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "parentId": null,
+      "horizon": null,
+      "discoveredFrom": null,
+      "title": "Ship the endpoint",
+      "intent": "MCP over the routes",
+      "position": 1,
+      "createdAt": 1900000060000,
+      "closedAt": null,
+      "closedReason": null,
+      "sourceJobId": null,
+      "openQuestions": [],
+      "effectiveHorizon": null,
+      "ready": true,
+      "blockedBy": null,
+      "children": {
+       "total": 0,
+       "closed": 0
+      },
+      "subtree": {
+       "items": 0,
+       "closedItems": 0
+      },
+      "jobs": {
+       "total": 0,
+       "live": 0
+      }
+     },
+     {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "parentId": null,
+      "horizon": null,
+      "discoveredFrom": null,
+      "title": "Drop it",
+      "intent": "a second item",
+      "position": 2,
+      "createdAt": 1900000060000,
+      "closedAt": null,
+      "closedReason": null,
+      "sourceJobId": null,
+      "openQuestions": [],
+      "effectiveHorizon": null,
+      "ready": true,
+      "blockedBy": null,
+      "children": {
+       "total": 0,
+       "closed": 0
+      },
+      "subtree": {
+       "items": 0,
+       "closedItems": 0
+      },
+      "jobs": {
+       "total": 0,
+       "live": 0
+      }
+     }
+    ],
+    "progress": {
+     "now": 0,
+     "next": 0,
+     "later": 0,
+     "someday": 0,
+     "unplaced": 2,
+     "delivered": 0
+    }
+   }
+  }
+ },
+ "work_list refusal": {
+  "args": {
+   "verbose": true
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"verbose\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "body: Unrecognized key: \"verbose\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "body"
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_move success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "moves": [
+    {
+     "workItemId": "00000000-0000-4000-8000-000000000001",
+     "horizon": "now"
+    },
+    {
+     "workItemId": "00000000-0000-4000-8000-000000000002",
+     "horizon": "now"
+    }
+   ]
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"moved\":[{\"id\":\"00000000-0000-4000-8000-000000000001\",\"horizon\":\"now\",\"detachedFrom\":null},{\"id\":\"00000000-0000-4000-8000-000000000002\",\"horizon\":\"now\",\"detachedFrom\":null}]}"
+    }
+   ],
+   "structuredContent": {
+    "moved": [
+     {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "horizon": "now",
+      "detachedFrom": null
+     },
+     {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "horizon": "now",
+      "detachedFrom": null
+     }
+    ]
+   }
+  }
+ },
+ "work_move refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "moves": [
+    {
+     "workItemId": "00000000-0000-4000-8000-000000000001",
+     "horizon": "tomorrow"
+    }
+   ]
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"moves.0.horizon: Invalid option: expected one of \\\"now\\\"|\\\"next\\\"|\\\"later\\\"|\\\"someday\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"moves.0.horizon\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "moves.0.horizon: Invalid option: expected one of \"now\"|\"next\"|\"later\"|\"someday\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "moves.0.horizon"
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_ask success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "workItemId": "00000000-0000-4000-8000-000000000001",
+   "question": "Which transport?",
+   "proposal": "Memory's"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"questionId\":\"00000000-0000-4000-8000-000000000003\"}"
+    }
+   ],
+   "structuredContent": {
+    "questionId": "00000000-0000-4000-8000-000000000003"
+   }
+  }
+ },
+ "work_ask refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "workItemId": "no-such-item",
+   "question": "?"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"NOT_FOUND\",\"message\":\"no work item no-such-item in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/work; nothing was asked\",\"retryable\":false,\"details\":{\"refusal\":\"question_item_unknown\",\"mission\":\"mcp-transcript\",\"missing\":[\"no-such-item\"]}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "NOT_FOUND",
+    "message": "no work item no-such-item in this mission",
+    "recovery": "check the id against GET /v1/missions/<mission>/work; nothing was asked",
+    "retryable": false,
+    "details": {
+     "refusal": "question_item_unknown",
+     "mission": "mcp-transcript",
+     "missing": [
+      "no-such-item"
+     ]
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_relay_answer success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "questionId": "00000000-0000-4000-8000-000000000003",
+   "answer": "Memory's, reused"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"questionId\":\"00000000-0000-4000-8000-000000000003\",\"answeredBy\":\"relay\",\"confirmationRequiredBeforeRelease\":true}"
+    }
+   ],
+   "structuredContent": {
+    "questionId": "00000000-0000-4000-8000-000000000003",
+    "answeredBy": "relay",
+    "confirmationRequiredBeforeRelease": true
+   }
+  }
+ },
+ "work_relay_answer refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "questionId": "no-such-question",
+   "answer": "x"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"NOT_FOUND\",\"message\":\"no question no-such-question in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/work/questions; nothing was changed\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_question\",\"mission\":\"mcp-transcript\",\"missing\":[\"no-such-question\"]}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "NOT_FOUND",
+    "message": "no question no-such-question in this mission",
+    "recovery": "check the id against GET /v1/missions/<mission>/work/questions; nothing was changed",
+    "retryable": false,
+    "details": {
+     "refusal": "unknown_question",
+     "mission": "mcp-transcript",
+     "missing": [
+      "no-such-question"
+     ]
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_delegate success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "questionId": "00000000-0000-4000-8000-000000000004",
+   "provider": "codex"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"questionId\":\"00000000-0000-4000-8000-000000000004\",\"delegatedTo\":\"codex\"}"
+    }
+   ],
+   "structuredContent": {
+    "questionId": "00000000-0000-4000-8000-000000000004",
+    "delegatedTo": "codex"
+   }
+  }
+ },
+ "work_delegate refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "questionId": "00000000-0000-4000-8000-000000000004",
+   "provider": "gemini"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"provider: Invalid option: expected one of \\\"claude\\\"|\\\"codex\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"provider\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "provider: Invalid option: expected one of \"claude\"|\"codex\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "provider"
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_withdraw success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "questionId": "00000000-0000-4000-8000-000000000004",
+   "reason": "the daemon polls"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"questionId\":\"00000000-0000-4000-8000-000000000004\",\"withdrawn\":true}"
+    }
+   ],
+   "structuredContent": {
+    "questionId": "00000000-0000-4000-8000-000000000004",
+    "withdrawn": true
+   }
+  }
+ },
+ "work_withdraw refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "questionId": "00000000-0000-4000-8000-000000000004",
+   "reason": ""
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"reason: Too small: expected string to have >=1 characters\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"reason\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "reason: Too small: expected string to have >=1 characters",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "reason"
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_submit success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "laneId": "lane-1",
+   "role": "builder",
+   "dispatchKey": "k-1",
+   "base": "main",
+   "head": "abc123",
+   "task": "Build the endpoint",
+   "workerProvider": "claude",
+   "workItemId": "00000000-0000-4000-8000-000000000001"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"created\":true,\"state\":\"reserved\",\"capability\":\"Z-pt8HP2efx_AoUIiw6RFJcanSCjJqksrzK1OLs-wUQ\",\"attention\":{\"digest\":\"5c949aa2\",\"answeredNotActed\":[{\"questionId\":\"00000000-0000-4000-8000-000000000003\",\"item\":\"Ship the endpoint\",\"answeredAgoMs\":0}],\"unwatched\":[{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"role\":\"builder\",\"runningMs\":0}]}}"
+    }
+   ],
+   "structuredContent": {
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "created": true,
+    "state": "reserved",
+    "capability": "Z-pt8HP2efx_AoUIiw6RFJcanSCjJqksrzK1OLs-wUQ",
+    "attention": {
+     "digest": "5c949aa2",
+     "answeredNotActed": [
+      {
+       "questionId": "00000000-0000-4000-8000-000000000003",
+       "item": "Ship the endpoint",
+       "answeredAgoMs": 0
+      }
+     ],
+     "unwatched": [
+      {
+       "jobId": "00000000-0000-4000-8000-000000000005",
+       "role": "builder",
+       "runningMs": 0
+      }
+     ]
+    }
+   }
+  }
+ },
+ "agent_submit refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "laneId": "lane-1",
+   "role": "nobody",
+   "dispatchKey": "k-2",
+   "base": "main",
+   "head": "abc123",
+   "task": "Build the endpoint",
+   "workerProvider": "claude",
+   "workItemId": "00000000-0000-4000-8000-000000000001"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"NOT_FOUND\",\"message\":\"no role nobody is declared on this broker; a ceiling is declared before it is used, never in the dispatch that benefits from it\",\"recovery\":\"declare the role first with POST /v1/roles (it takes administer), or check the name against GET /v1/roles; nothing was dispatched\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_role\",\"mission\":\"mcp-transcript\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "NOT_FOUND",
+    "message": "no role nobody is declared on this broker; a ceiling is declared before it is used, never in the dispatch that benefits from it",
+    "recovery": "declare the role first with POST /v1/roles (it takes administer), or check the name against GET /v1/roles; nothing was dispatched",
+    "retryable": false,
+    "details": {
+     "refusal": "unknown_role",
+     "mission": "mcp-transcript"
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_attach success": {
+  "args": {
+   "authority": {
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "capability": "Z-pt8HP2efx_AoUIiw6RFJcanSCjJqksrzK1OLs-wUQ"
+   },
+   "providerRunId": "run-1"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"ok\":true,\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"task\":\"Build the endpoint\",\"role\":\"builder\",\"laneId\":\"lane-1\",\"base\":\"main\",\"head\":\"abc123\",\"workItemId\":\"00000000-0000-4000-8000-000000000001\",\"reviewsJobId\":null,\"answersQuestionId\":null,\"deadline\":1900000360000,\"resumeFrom\":null}"
+    }
+   ],
+   "structuredContent": {
+    "ok": true,
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "task": "Build the endpoint",
+    "role": "builder",
+    "laneId": "lane-1",
+    "base": "main",
+    "head": "abc123",
+    "workItemId": "00000000-0000-4000-8000-000000000001",
+    "reviewsJobId": null,
+    "answersQuestionId": null,
+    "deadline": 1900000360000,
+    "resumeFrom": null
+   }
+  }
+ },
+ "agent_attach refusal": {
+  "args": {
+   "authority": {
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "capability": "wrong"
+   },
+   "providerRunId": "run-1"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000005 is running, not reserved\",\"recovery\":\"read GET /v1/missions/<mission>/jobs/<job> for the state it is in; take a job up with .../jobs/attach before reporting on it\",\"retryable\":false,\"details\":{\"refusal\":\"wrong_job_state\",\"mission\":\"mcp-transcript\",\"missing\":[\"00000000-0000-4000-8000-000000000005\"]}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "job 00000000-0000-4000-8000-000000000005 is running, not reserved",
+    "recovery": "read GET /v1/missions/<mission>/jobs/<job> for the state it is in; take a job up with .../jobs/attach before reporting on it",
+    "retryable": false,
+    "details": {
+     "refusal": "wrong_job_state",
+     "mission": "mcp-transcript",
+     "missing": [
+      "00000000-0000-4000-8000-000000000005"
+     ]
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_status success": {
+  "args": {
+   "jobId": "00000000-0000-4000-8000-000000000005"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"job\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"running\",\"dispatchKey\":\"k-1\",\"laneId\":\"lane-1\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"claude\",\"workItemId\":\"00000000-0000-4000-8000-000000000001\",\"reviewsJobId\":null,\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":null,\"review\":null,\"providerRunId\":\"run-1\",\"dispatchedAt\":1900000060000,\"startedAt\":1900000060000,\"settledAt\":null,\"resultStatus\":null,\"resultReadAt\":null,\"lastSeenAt\":null,\"lastLine\":null},\"progress\":[],\"attention\":{\"digest\":\"23d09645\",\"answeredNotActed\":[{\"questionId\":\"00000000-0000-4000-8000-000000000003\",\"item\":\"Ship the endpoint\",\"answeredAgoMs\":30000}],\"unwatched\":[{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"role\":\"builder\",\"runningMs\":30000}]}}"
+    }
+   ],
+   "structuredContent": {
+    "job": {
+     "jobId": "00000000-0000-4000-8000-000000000005",
+     "state": "running",
+     "dispatchKey": "k-1",
+     "laneId": "lane-1",
+     "role": "builder",
+     "base": "main",
+     "head": "abc123",
+     "workerProvider": "claude",
+     "dispatchedBy": "claude",
+     "workItemId": "00000000-0000-4000-8000-000000000001",
+     "reviewsJobId": null,
+     "resumesJobId": null,
+     "answersQuestionId": null,
+     "reviewVerdict": null,
+     "review": null,
+     "providerRunId": "run-1",
+     "dispatchedAt": 1900000060000,
+     "startedAt": 1900000060000,
+     "settledAt": null,
+     "resultStatus": null,
+     "resultReadAt": null,
+     "lastSeenAt": null,
+     "lastLine": null
+    },
+    "progress": [],
+    "attention": {
+     "digest": "23d09645",
+     "answeredNotActed": [
+      {
+       "questionId": "00000000-0000-4000-8000-000000000003",
+       "item": "Ship the endpoint",
+       "answeredAgoMs": 30000
+      }
+     ],
+     "unwatched": [
+      {
+       "jobId": "00000000-0000-4000-8000-000000000005",
+       "role": "builder",
+       "runningMs": 30000
+      }
+     ]
+    }
+   }
+  }
+ },
+ "agent_status refusal": {
+  "args": {
+   "jobId": "no-such-job"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"NOT_FOUND\",\"message\":\"no job no-such-job in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/jobs; nothing was changed\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_job\",\"mission\":\"mcp-transcript\",\"missing\":[\"no-such-job\"]}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "NOT_FOUND",
+    "message": "no job no-such-job in this mission",
+    "recovery": "check the id against GET /v1/missions/<mission>/jobs; nothing was changed",
+    "retryable": false,
+    "details": {
+     "refusal": "unknown_job",
+     "mission": "mcp-transcript",
+     "missing": [
+      "no-such-job"
+     ]
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_list success": {
+  "args": {},
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"jobs\":[{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"running\",\"dispatchKey\":\"k-1\",\"laneId\":\"lane-1\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"claude\",\"workItemId\":\"00000000-0000-4000-8000-000000000001\",\"reviewsJobId\":null,\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":null,\"review\":null,\"providerRunId\":\"run-1\",\"dispatchedAt\":1900000060000,\"startedAt\":1900000060000,\"settledAt\":null,\"resultStatus\":null,\"resultReadAt\":null,\"lastSeenAt\":null,\"lastLine\":null}],\"digest\":\"23d09645\"}"
+    }
+   ],
+   "structuredContent": {
+    "jobs": [
+     {
+      "jobId": "00000000-0000-4000-8000-000000000005",
+      "state": "running",
+      "dispatchKey": "k-1",
+      "laneId": "lane-1",
+      "role": "builder",
+      "base": "main",
+      "head": "abc123",
+      "workerProvider": "claude",
+      "dispatchedBy": "claude",
+      "workItemId": "00000000-0000-4000-8000-000000000001",
+      "reviewsJobId": null,
+      "resumesJobId": null,
+      "answersQuestionId": null,
+      "reviewVerdict": null,
+      "review": null,
+      "providerRunId": "run-1",
+      "dispatchedAt": 1900000060000,
+      "startedAt": 1900000060000,
+      "settledAt": null,
+      "resultStatus": null,
+      "resultReadAt": null,
+      "lastSeenAt": null,
+      "lastLine": null
+     }
+    ],
+    "digest": "23d09645"
+   }
+  }
+ },
+ "agent_list refusal": {
+  "args": {
+   "state": "running"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"state\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "body: Unrecognized key: \"state\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "body"
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_report success": {
+  "args": {
+   "authority": {
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "capability": "Z-pt8HP2efx_AoUIiw6RFJcanSCjJqksrzK1OLs-wUQ"
+   },
+   "status": "completed",
+   "output": "built"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"completed\",\"subject\":null}"
+    }
+   ],
+   "structuredContent": {
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "state": "completed",
+    "subject": null
+   }
+  }
+ },
+ "agent_report refusal": {
+  "args": {
+   "authority": {
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "capability": "Z-pt8HP2efx_AoUIiw6RFJcanSCjJqksrzK1OLs-wUQ"
+   },
+   "status": "orphaned"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"status: Invalid option: expected one of \\\"completed\\\"|\\\"failed\\\"|\\\"timed_out\\\"|\\\"cancelled\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"status\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "status: Invalid option: expected one of \"completed\"|\"failed\"|\"timed_out\"|\"cancelled\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "status"
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_result success": {
+  "args": {
+   "jobId": "00000000-0000-4000-8000-000000000005"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"ok\":true,\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"completed\",\"status\":\"completed\",\"output\":\"built\",\"error\":null,\"readAt\":1900000090000}"
+    }
+   ],
+   "structuredContent": {
+    "ok": true,
+    "jobId": "00000000-0000-4000-8000-000000000005",
+    "state": "completed",
+    "status": "completed",
+    "output": "built",
+    "error": null,
+    "readAt": 1900000090000
+   }
+  }
+ },
+ "agent_result refusal": {
+  "args": {
+   "jobId": "no-such-job"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"NOT_FOUND\",\"message\":\"no job no-such-job in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/jobs; nothing was changed\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_job\",\"mission\":\"mcp-transcript\",\"missing\":[\"no-such-job\"]}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "NOT_FOUND",
+    "message": "no job no-such-job in this mission",
+    "recovery": "check the id against GET /v1/missions/<mission>/jobs; nothing was changed",
+    "retryable": false,
+    "details": {
+     "refusal": "unknown_job",
+     "mission": "mcp-transcript",
+     "missing": [
+      "no-such-job"
+     ]
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_adopt success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "jobId": "00000000-0000-4000-8000-000000000005",
+   "items": [
+    {
+     "title": "Document it",
+     "intent": "the pricing doc",
+     "relation": "follow_on"
+    }
+   ]
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"workItemIds\":[\"00000000-0000-4000-8000-000000000006\"]}"
+    }
+   ],
+   "structuredContent": {
+    "workItemIds": [
+     "00000000-0000-4000-8000-000000000006"
+    ]
+   }
+  }
+ },
+ "work_adopt refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "jobId": "00000000-0000-4000-8000-000000000005",
+   "items": [
+    {
+     "title": "Again",
+     "intent": "twice",
+     "relation": "follow_on"
+    }
+   ]
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000005's decomposition was already adopted\",\"recovery\":\"this job's decomposition was already adopted: read GET /v1/missions/<mission>/work to see what came in, and file anything further with POST /v1/missions/<mission>/work — nothing was filed\",\"retryable\":false,\"details\":{\"refusal\":\"adopt_already\",\"mission\":\"mcp-transcript\",\"missing\":[\"00000000-0000-4000-8000-000000000006\"]}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "job 00000000-0000-4000-8000-000000000005's decomposition was already adopted",
+    "recovery": "this job's decomposition was already adopted: read GET /v1/missions/<mission>/work to see what came in, and file anything further with POST /v1/missions/<mission>/work — nothing was filed",
+    "retryable": false,
+    "details": {
+     "refusal": "adopt_already",
+     "mission": "mcp-transcript",
+     "missing": [
+      "00000000-0000-4000-8000-000000000006"
+     ]
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_running success": {
+  "args": {},
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"running\":[{\"jobId\":\"00000000-0000-4000-8000-000000000007\",\"role\":\"builder\",\"provider\":\"claude\",\"item\":\"Drop it\",\"state\":\"reserved\",\"dispatchedAt\":1900000090000,\"startedAt\":null,\"lastSeenAt\":null,\"lastLine\":null}],\"attention\":{\"digest\":\"e3a5f991\",\"answeredNotActed\":[{\"questionId\":\"00000000-0000-4000-8000-000000000003\",\"item\":\"Ship the endpoint\",\"answeredAgoMs\":30000}],\"unwatched\":[{\"jobId\":\"00000000-0000-4000-8000-000000000007\",\"role\":\"builder\",\"runningMs\":0}]}}"
+    }
+   ],
+   "structuredContent": {
+    "running": [
+     {
+      "jobId": "00000000-0000-4000-8000-000000000007",
+      "role": "builder",
+      "provider": "claude",
+      "item": "Drop it",
+      "state": "reserved",
+      "dispatchedAt": 1900000090000,
+      "startedAt": null,
+      "lastSeenAt": null,
+      "lastLine": null
+     }
+    ],
+    "attention": {
+     "digest": "e3a5f991",
+     "answeredNotActed": [
+      {
+       "questionId": "00000000-0000-4000-8000-000000000003",
+       "item": "Ship the endpoint",
+       "answeredAgoMs": 30000
+      }
+     ],
+     "unwatched": [
+      {
+       "jobId": "00000000-0000-4000-8000-000000000007",
+       "role": "builder",
+       "runningMs": 0
+      }
+     ]
+    }
+   }
+  }
+ },
+ "agent_running refusal": {
+  "args": {
+   "all": true
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"all\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "body: Unrecognized key: \"all\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "body"
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_cancel success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "jobId": "00000000-0000-4000-8000-000000000007"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"jobId\":\"00000000-0000-4000-8000-000000000007\",\"state\":\"cancelled\"}"
+    }
+   ],
+   "structuredContent": {
+    "jobId": "00000000-0000-4000-8000-000000000007",
+    "state": "cancelled"
+   }
+  }
+ },
+ "agent_cancel refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "jobId": "no-such-job"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"NOT_FOUND\",\"message\":\"no job no-such-job in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/jobs; nothing was changed\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_job\",\"mission\":\"mcp-transcript\",\"missing\":[\"no-such-job\"]}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "NOT_FOUND",
+    "message": "no job no-such-job in this mission",
+    "recovery": "check the id against GET /v1/missions/<mission>/jobs; nothing was changed",
+    "retryable": false,
+    "details": {
+     "refusal": "unknown_job",
+     "mission": "mcp-transcript",
+     "missing": [
+      "no-such-job"
+     ]
+    }
+   },
+   "isError": true
+  }
+ },
+ "agent_await success": {
+  "args": {
+   "sinceDigest": "811c9dc5"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"changed\":true,\"attention\":{\"digest\":\"decd8fda\",\"answeredNotActed\":[{\"questionId\":\"00000000-0000-4000-8000-000000000003\",\"item\":\"Ship the endpoint\",\"answeredAgoMs\":30000}]}}"
+    }
+   ],
+   "structuredContent": {
+    "changed": true,
+    "attention": {
+     "digest": "decd8fda",
+     "answeredNotActed": [
+      {
+       "questionId": "00000000-0000-4000-8000-000000000003",
+       "item": "Ship the endpoint",
+       "answeredAgoMs": 30000
+      }
+     ]
+    }
+   }
+  }
+ },
+ "agent_await refusal": {
+  "args": {
+   "waitMs": 1000
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"waitMs\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "body: Unrecognized key: \"waitMs\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "body"
+    }
+   },
+   "isError": true
+  }
+ },
+ "work_close success": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "workItemId": "00000000-0000-4000-8000-000000000002",
+   "reason": "dropped"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"closed\":[\"00000000-0000-4000-8000-000000000002\"],\"reason\":\"dropped\"}"
+    }
+   ],
+   "structuredContent": {
+    "closed": [
+     "00000000-0000-4000-8000-000000000002"
+    ],
+    "reason": "dropped"
+   }
+  }
+ },
+ "work_close refusal": {
+  "args": {
+   "authority": {
+    "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+    "fencingToken": 1
+   },
+   "workItemId": "00000000-0000-4000-8000-000000000002",
+   "reason": "finished"
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"reason: Invalid option: expected one of \\\"delivered\\\"|\\\"dropped\\\"|\\\"superseded\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"reason\"}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "INVALID_ARGUMENT",
+    "message": "reason: Invalid option: expected one of \"delivered\"|\"dropped\"|\"superseded\"",
+    "recovery": "fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs",
+    "retryable": false,
+    "details": {
+     "field": "reason"
+    }
+   },
+   "isError": true
+  }
+ },
+ "orchestrator_release success": {
+  "args": {
+   "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+   "fencingToken": 1
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"released\":true,\"fencingToken\":1}"
+    }
+   ],
+   "structuredContent": {
+    "released": true,
+    "fencingToken": 1
+   }
+  }
+ },
+ "orchestrator_release refusal": {
+  "args": {
+   "capability": "B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ",
+   "fencingToken": 1
+  },
+  "result": {
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"error\":\"FORBIDDEN\",\"message\":\"this mission has no live lease\",\"recovery\":\"this identity may not do this; if it is a lease refusal, claim the mission again before writing\",\"retryable\":false,\"details\":{\"refusal\":\"no_live_lease\",\"mission\":\"mcp-transcript\",\"owner\":null}}"
+    }
+   ],
+   "structuredContent": {
+    "error": "FORBIDDEN",
+    "message": "this mission has no live lease",
+    "recovery": "this identity may not do this; if it is a lease refusal, claim the mission again before writing",
+    "retryable": false,
+    "details": {
+     "refusal": "no_live_lease",
+     "mission": "mcp-transcript",
+     "owner": null
+    }
+   },
+   "isError": true
+  }
+ }
+}

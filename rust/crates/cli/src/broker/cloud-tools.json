@@ -1,0 +1,944 @@
+{
+  "tools": [
+    {
+      "name": "orchestrator_claim",
+      "title": "Claim this mission's lease",
+      "description": "Take the mission's lease for your provider. Answers the authority (capability and fencing token) every write presents, and the heartbeat deadline. Another holder's live lease is a CONFLICT naming its owner.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "orchestrator_heartbeat",
+      "title": "Renew the lease",
+      "description": "Renew the lease you hold before its heartbeat deadline, presenting its capability and fencing token.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "capability",
+          "fencingToken"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "orchestrator_release",
+      "title": "Release the lease",
+      "description": "Give the lease up, presenting its capability and fencing token. The next claim starts a new epoch.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fencingToken": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "capability",
+          "fencingToken"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "orchestrator_status",
+      "title": "Read the lease and what is owed",
+      "description": "Who holds the mission's lease and until when, with the attention block: what is waiting on the orchestrator.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "roles_list",
+      "title": "List the declared roles",
+      "description": "Every declared role side (role, provider, tools): the ceilings a dispatch may name.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "roles_propose",
+      "title": "Check proposed roles without declaring them",
+      "description": "Judge proposed role sides by the registry's own rules (name, tool vocabulary, at least one tool) and write nothing. Declaring is an administrator's act over POST /v1/roles.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ]
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "maxItems": 32
+                }
+              },
+              "required": [
+                "role",
+                "provider",
+                "tools"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "roles"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_add",
+      "title": "File work items",
+      "description": "File one to 500 work items (title, intent, optional parent, horizon and discoveredFrom) under the lease. Answers their ids in order.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "intent": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100000
+                },
+                "parentId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "horizon": {
+                  "type": "string",
+                  "enum": [
+                    "now",
+                    "next",
+                    "later",
+                    "someday"
+                  ]
+                },
+                "discoveredFrom": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "title",
+                "intent"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 500
+          }
+        },
+        "required": [
+          "authority",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_adopt",
+      "title": "Adopt a completed job's decomposition",
+      "description": "File the items a completed job proposed, each a part of its work item or a follow-on, under the lease.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "intent": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100000
+                },
+                "relation": {
+                  "type": "string",
+                  "enum": [
+                    "part",
+                    "follow_on"
+                  ]
+                },
+                "horizon": {
+                  "type": "string",
+                  "enum": [
+                    "now",
+                    "next",
+                    "later",
+                    "someday"
+                  ]
+                }
+              },
+              "required": [
+                "title",
+                "intent",
+                "relation"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 500
+          }
+        },
+        "required": [
+          "authority",
+          "jobId",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_list",
+      "title": "Read the work list",
+      "description": "Every work item with its derived state (horizon, readiness, blockers, open questions, job counts) and the list's progress.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_close",
+      "title": "Close a work item",
+      "description": "Close a work item as delivered, dropped or superseded, under the lease.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "delivered",
+              "dropped",
+              "superseded"
+            ]
+          }
+        },
+        "required": [
+          "authority",
+          "workItemId",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_move",
+      "title": "Move work items between horizons",
+      "description": "Place work items on a horizon (now, next, later, someday), under the lease.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "moves": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workItemId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "horizon": {
+                  "type": "string",
+                  "enum": [
+                    "now",
+                    "next",
+                    "later",
+                    "someday"
+                  ]
+                }
+              },
+              "required": [
+                "workItemId",
+                "horizon"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 500
+          }
+        },
+        "required": [
+          "authority",
+          "moves"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_ask",
+      "title": "Ask the owner a question",
+      "description": "Raise a question on a work item, with an optional proposal the owner can accept as it stands, under the lease.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "proposal": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "required": [
+          "authority",
+          "workItemId",
+          "question"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_relay_answer",
+      "title": "Relay an answer to a question",
+      "description": "Carry an answer you obtained to an open question; the owner confirms it before it counts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "questionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
+        },
+        "required": [
+          "authority",
+          "questionId",
+          "answer"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_withdraw",
+      "title": "Withdraw a question",
+      "description": "Take back a question you raised, with a reason. Withdrawing is not answering.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "questionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "authority",
+          "questionId",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "work_delegate",
+      "title": "Delegate a question to a provider",
+      "description": "Hand an open question to a provider to answer, under the lease.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "questionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          }
+        },
+        "required": [
+          "authority",
+          "questionId",
+          "provider"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_submit",
+      "title": "Dispatch a job",
+      "description": "Dispatch a job on a declared role side. Answers the job id and, on creation only, the job's capability, with the attention block. The Worker records the job; a daemon runs it.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "laneId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "dispatchKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "base": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "head": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200000
+          },
+          "workerProvider": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "workItemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reviewsJobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "resumesJobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "answersQuestionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "authority",
+          "laneId",
+          "role",
+          "dispatchKey",
+          "base",
+          "head",
+          "task",
+          "workerProvider"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_attach",
+      "title": "Attach a run to a job",
+      "description": "Bind a provider run (and optionally its worktree) to a job, presenting the job's own authority. Answers the job's brief.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "jobId",
+              "capability"
+            ],
+            "additionalProperties": false
+          },
+          "providerRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "worktree": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "branch": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "required": [
+              "path",
+              "branch"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "authority",
+          "providerRunId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_report",
+      "title": "Report a job's end",
+      "description": "Settle a job as completed, failed, timed_out or cancelled, with its output or error, presenting the job's own authority.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "jobId",
+              "capability"
+            ],
+            "additionalProperties": false
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed",
+              "timed_out",
+              "cancelled"
+            ]
+          },
+          "output": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "error": {
+            "type": "string",
+            "maxLength": 20000
+          }
+        },
+        "required": [
+          "authority",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_list",
+      "title": "List the jobs",
+      "description": "Every job of the mission with its state, and the mission's digest.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_running",
+      "title": "What is running now",
+      "description": "The jobs whose worker is live (reserved or running), each with its work item's title, its last progress line and when it started, with the attention block.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_await",
+      "title": "Has anything changed",
+      "description": "Answers at once whether the mission changed since the digest you last saw, with the attention block. It never waits: poll it (the wapps daemon polls every two seconds up to 55).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sinceDigest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_status",
+      "title": "Read one job",
+      "description": "One job and its progress lines, with the attention block.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_result",
+      "title": "Read a job's result",
+      "description": "A settled job's result. Reading it marks it read, which is what discharges it from the attention block.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "agent_cancel",
+      "title": "Cancel a job",
+      "description": "Cancel a job under the lease. The Worker records it; the process is stopped by whoever runs it.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "authority": {
+            "type": "object",
+            "properties": {
+              "capability": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fencingToken": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "capability",
+              "fencingToken"
+            ],
+            "additionalProperties": false
+          },
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "authority",
+          "jobId"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

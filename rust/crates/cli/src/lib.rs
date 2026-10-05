@@ -2,6 +2,7 @@ pub mod agentmode;
 pub mod applyverb;
 pub mod atomicfile;
 pub mod binding;
+pub mod broker;
 pub mod cli;
 pub mod clierr;
 pub mod cobrahelp;

@@ -681,6 +681,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "ureq",
+ "url",
  "webpki-roots 0.26.11",
 ]
 

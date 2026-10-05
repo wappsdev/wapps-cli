@@ -220,6 +220,20 @@ fn run() -> Result<(), CmdError> {
         return Ok(());
     }
 
+    if let Some(("broker", bm)) = matches.subcommand() {
+        if let Some(("serve", _)) = bm.subcommand() {
+            // MCP owns stdout. Never run auto-refresh or spawn a post-command helper.
+            let code = match wapps::broker::serve() {
+                Ok(()) => 0,
+                Err(problem) => {
+                    eprintln!("broker: {problem}");
+                    1
+                }
+            };
+            return Err(CmdError::Exit(code));
+        }
+    }
+
     let deploy_opts = match (matches.subcommand(), deploy_flags) {
         (Some(("deploy", dm)), Some(mut opts)) => {
             let args: Vec<String> = dm
