@@ -115,14 +115,35 @@ fn every_help_page_matches_the_oracle() {
     walk(&go, &work, Vec::new(), &mut go_nodes);
     let mut rs_nodes = Vec::new();
     walk(&rs, &work, Vec::new(), &mut rs_nodes);
-    // Slice 13.1's two Rust-only nodes are explicit, not a blanket allowance
-    // for any extra command. Every legacy node still compares byte-for-byte.
+    // Slices 13.1 and 13.8's Rust-only nodes are explicit, not a blanket
+    // allowance for extra commands. Legacy nodes still compare byte-for-byte.
     let added: Vec<_> = rs_nodes
         .iter()
         .filter(|p| !go_nodes.contains(p))
         .map(|p| p.join(" "))
         .collect();
-    assert_eq!(added, ["broker", "broker serve"]);
+    assert_eq!(
+        added,
+        [
+            "broker",
+            "broker accept",
+            "broker answer",
+            "broker confirm",
+            "broker file",
+            "broker list",
+            "broker move",
+            "broker project",
+            "broker project enroll",
+            "broker project pause",
+            "broker project role",
+            "broker project role apply",
+            "broker project unpause",
+            "broker questions",
+            "broker relayed",
+            "broker running",
+            "broker serve",
+        ]
+    );
     rs_nodes.retain(|p| go_nodes.contains(p));
     assert_eq!(
         go_nodes.iter().map(|p| p.join(" ")).collect::<Vec<_>>(),

@@ -997,7 +997,8 @@ fn tree() -> Command {
         .subcommand(
             Command::new("broker")
                 .about("Local broker bridge")
-                .subcommand(Command::new("serve").about("Serve the broker over stdio MCP")),
+                .subcommand(Command::new("serve").about("Serve the broker over stdio MCP"))
+                .subcommands(crate::broker::owner::commands()),
         )
 }
 

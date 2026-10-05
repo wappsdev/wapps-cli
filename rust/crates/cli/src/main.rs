@@ -221,6 +221,18 @@ fn run() -> Result<(), CmdError> {
     }
 
     if let Some(("broker", bm)) = matches.subcommand() {
+        if let Some((name, args)) = bm.subcommand() {
+            if wapps::broker::owner::handles(name) {
+                let code = match wapps::broker::owner::run(name, args) {
+                    Ok(()) => 0,
+                    Err(problem) => {
+                        eprintln!("broker: {problem}");
+                        1
+                    }
+                };
+                return Err(CmdError::Exit(code));
+            }
+        }
         if let Some(("serve", _)) = bm.subcommand() {
             // MCP owns stdout. Never run auto-refresh or spawn a post-command helper.
             let code = match wapps::broker::serve() {

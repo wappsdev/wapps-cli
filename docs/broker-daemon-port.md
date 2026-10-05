@@ -881,7 +881,7 @@ Order is by dependency, not by size. "TS lines" means plugin lines the slice rep
 | **P-a** | **LANDED 2026-10-05** (wapps-platform `lane/broker-cloud-prereqs`): `answersQuestionId` on `DISPATCH` (Finding 3.6); only the body reader needed it | delegated answers (13.6) |
 | **P-b** | **LANDED 2026-10-05**: provision's step 7 grants; the roster grants `read claim report` to `svc:<wapps-broker-agents>`, never `answer` or `administer` (an admin's `POST /v1/roster`, or provision's last step). The per-provider token the earlier revisions asked for is dropped (OD1) | every slice from 13.1 on: the token holds no verbs until granted (`broker.rs:102-103`) |
 | **live** | `broker.meapps.dev` provisioned with `ACCESS_AUD` set (owner decision §9.1 of the platform doc; provision committed at `cac8ede`, run with `--plan` only) | every slice from 13.1 on talks to it |
-| **P-e** | **OD16 = B, LANDED 2026-10-05** at `POST /v1/missions/:mission/work/owner/file` and `…/work/owner/move` (not `work/file`/`work/move`: `POST work/move` is the lease holder's route); same 500-character title cap as the lease holder's door, so 13.8's `file` must shorten the 57 longer navlun titles (title = intent for all of them). A leaseless owner door for filing and moving work, under the `answer` verb | the owner's `file` / `move` and the explorer's move key (OD16) |
+| **P-e** | **OD16 = B, LANDED 2026-10-05** at `POST /v1/missions/:mission/work/owner/file` and `…/work/owner/move` (not `work/file`/`work/move`: `POST work/move` is the lease holder's route); same 500-character title cap as the lease holder's door, so 13.8's `file` requires an explicit short title for the 57 longer navlun titles while retaining their full text as intent (title = intent for all of them). A leaseless owner door for filing and moving work, under the `answer` verb | the owner's `file` / `move` and the explorer's move key (OD16) |
 
 P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec stays local.
 
@@ -898,7 +898,7 @@ P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec 
 | **13.5** | **claude** worker: OD5's choice, the PreToolUse gate (ceiling, containment, pause), env allowlist (Finding 4.2). Skills, rulebook and the scrub arrive with 13.3 and are reused | 377 | 13.4, OD5's first measurement, OD6 | 14 / 61 | not measured; seam 1 claude |
 | **13.6** | the quota list merged into the five attention answers and folded into the digest (§3.3), resume at claim, native hand-back lane (OD12), delegated answers | 231 | 13.5, P-a | 12 / 40 | not measured |
 | **13.7** | `wapps broker install`: Claude Code user MCP config + PreToolUse hook (`wapps broker hook`), Codex `config.toml` `[mcp_servers]`, each entry declaring its orchestrator's provider (OD1); the rewritten `agent-broker` skill, without its handoff section, shipped through `wapps skill` | 56 (+ 513 lines of SKILL.md prose to rewrite) | 13.5, R0, OD13, OD14 | 2 / 9 | not measured |
-| **13.8** | owner CLI (OD9), with the owner's SSO principal: `wapps broker list questions running accept answer confirm relayed` and `wapps broker project enroll pause unpause role apply`. `relayed` lists the answers waiting for `confirm`, which the owner's confirm flow needs (§5). Not ported: `watch` (13.10), `show` and `done` (reads the explorer covers), `await` and `await-job` (an orchestrator's wait, which `agent_await` serves), `history` (open (c) in the cloud), `delegate` (a `claim` route, the orchestrator's), `route` (directives, open in the cloud), `file` and `move` arrive with P-e (OD16 = B) and join 13.8 then | up to 617: `work.ts` prelude 211 + the seven commands' bodies 81 (`slices.py --owner`), `project.ts` 253, `bin/` 39, `cli/commands.ts` 33 | 13.1 | 2 / 17 | not measured |
+| **13.8** | **PARTIAL on `lane/broker-owner-13-8` (§7.4)**: cloud owner commands including P-e's `file`/`move` and local-root enrollment implemented; pause/unpause, role apply, and enrollment's harness installation remain dependent on execution/install contracts. Owner cloud CLI (OD9), with the human SSO principal: `wapps broker list questions running accept answer confirm relayed file move`; local-root enrollment: `wapps broker project enroll`. The other project nodes explicitly refuse unfinished actions. `relayed` lists the answers waiting for `confirm`, which the owner's confirm flow needs (§5). Not ported here: `watch` (13.10), `show` and `done` (reads the explorer covers), `await` and `await-job` (an orchestrator's wait, which `agent_await` serves), `history` (open (c) in the cloud), `delegate` (a `claim` route, the orchestrator's), `route` (directives, open in the cloud) | up to 617: `work.ts` prelude 211 + the seven commands' bodies 81 (`slices.py --owner`), `project.ts` 253, `bin/` 39, `cli/commands.ts` 33 | 13.1, P-e | 2 / 17 | 14 hermetic owner tests; seven frozen-cloud read/question cases; full release suite 543 passed, 2 ignored (§7.4). Remaining project execution/install functions are not measured |
 | **13.9** | **the local transcript store** (OD8): the daemon appends one scrubbed line per provider event (`scrubForTranscript`: the 5 patterns and the 8,192 truncation, which is right for a transcript row) to `<state>/<id>/transcripts/<job>.jsonl`, after a header line with what the cloud has no column for: the dispatched model and effort, the observed model, the worktree, the codex thread id, handed back or not. Reads: the page after a sequence number, and the newest N with the count left out (`jobTranscript`, `latestJobTranscript`). One file per job, no SQLite: every read is one job's, and no crate is added. No retention, as today: navlun's reached 614 MB of payload in 527,526 rows (§2.3) | 109 | 13.3 | `transcript.test.ts` / 19 | not measured; seam 1: the oracle's `job_transcript` rows against the lines, per scripted event |
 | **13.10** | **`wapps broker explore`** (OD8): the mission's work items, each item's jobs, and what each did. From the cloud: `GET …/work` (items, progress), `GET …/jobs`, `GET …/attention`, `GET …/work/questions` (unconfirmed relays filtered here). Locally: each job's transcript and header (13.9). Writes with the owner's SSO principal: `answer`, `confirm`. Three declared changes: (1) the open job's report comes from the local transcript's result line, not from `GET …/jobs/:job/result`, which marks the result read (`methods.rs:2616-2623`) and would discharge the orchestrator's `settledUnread`; the plugin read it without marking (`work.ts:344-349`); (2) a job with no local transcript (another machine's daemon, a native job) shows its cloud row and progress only; (3) no quota line (daemon memory, OD8) and the move key arrives with P-e (OD16 = B) | 2,725: `src/view/*` 2,481 + `work.ts` `watch` 244 | 13.8, 13.9 | 3 / 117 | not measured |
 | **13.11** | **replay of open work** (OD10): see below | 0 | 13.1, P-b, live | — | 4 missions' counts, 26 parent links, 1 question |
@@ -1467,6 +1467,146 @@ The pre-existing untracked `docs/preparation/` directories were not edited or st
 
 No deployment, release, main merge, push, installation, migration, or real
 plugin/data/config write is part of this slice. Slice 13.2 has not been started.
+
+### 7.4 Slice 13.8: human owner commands (2026-10-05, partial)
+
+This lane adds `src/broker/owner/{mod,http,project}.rs`, the owner command wiring,
+and `tests/broker_owner.rs` on `lane/broker-owner-13-8`. It preserves `broker serve`
+and changes no daemon or execution code. The single-writer takeover retained the
+staged/unstaged owner implementation and consolidated this record; inherited
+differences were not evidence of another writer. Reference contracts were read from
+plugin `c6d7e09` (`scripts/work.ts`, `scripts/project.ts`) and platform `18d0f6b`
+(`body.rs`, `broker_handlers.rs`, `mission_lane/methods.rs`); no code ran in either
+reference checkout and no live cloud was contacted.
+
+**Supported now.** Every cloud command requires an explicit `--mission <id>`;
+there is no cwd-derived mission, remembered mission, or wrong-mission retry.
+Mission syntax is the same as 13.1. Question, parent and work-item IDs stay JSON
+values, are length-checked, and refuse surrounding whitespace/control characters
+rather than letting the backend trim them into a different selection.
+
+- `list`, `questions`, `running`, `relayed` read the mission's work, questions and
+  jobs over HTTP. Output is pretty JSON retaining the cloud fields, not the old
+  plugin's terminal tree. `running` includes reserved/running jobs, not settled
+  jobs or invented local quota; it does not read results or discharge unread state.
+  `questions` selects open questions, including proposal text/digest; `relayed`
+  selects unconfirmed relays. Both accept an exact
+  `--work-item` filter.
+- `answer <question> <text>`, `accept <question> <digest>`, and `confirm <question>`
+  first resolve the exact question in the selected mission. Optional
+  `--work-item` must match. Stale proposal digests and inappropriate question
+  states are refused before a write; the cloud still authorizes and revalidates
+  the mutation. Confirmation never synthesizes an answer. The conversational
+  `work_relay_answer` MCP path remains unchanged and never gains owner authority.
+- `file <intent> [--title <short-title>] [--horizon now|next|later|someday]` posts to
+  `work/owner/file`. `--parent <id>` selects a part and conflicts with a horizon.
+  `move <horizon> <item-id>...` posts to `work/owner/move`, never the lease-holder's
+  `work/move`; moves carry at most 500 exact IDs. The backend remains authoritative
+  about mission membership, closed work and detachment. Acknowledgements must cover
+  the requested items
+  and horizons; malformed success responses report an unknown outcome, not success.
+- Filing never truncates a title or intent. The full supplied intent is sent in
+  `intent`; intent over the 500 UTF-16-unit title cap requires an explicit short
+  `--title`. The intent cap is 100,000 units. The backend's existing trimmed-string
+  schema still applies; this is not a claim to preserve surrounding whitespace
+  in cloud storage, nor an automatic shortening/migration of old work.
+- `project enroll <id> <root>` writes only the version-1 local root registry read
+  by 13.1. It validates canonical directory roots, reserved/invalid IDs, overlap,
+  and existing enrollment; it uses an exclusive lock and atomic 0600 file write.
+  Repeating the same enrollment leaves its bytes unchanged. It does not create a
+  mission, role table, harness installation or runtime pause state.
+
+**Authority and transport.** Cloud calls load only the endpoint-keyed human SSO
+session that the existing login command writes. Login remains an explicit human
+step (`WAPPS_SECRETS_GATE=https://broker.meapps.dev wapps login`). Neither the
+key-independent session environment override nor `agents.secret` is a source for
+owner requests. The token is sent only as `CF-Access-Token`, never service-agent
+headers, and no lease is obtained. Human-terminal detection disallows
+`WAPPS_AGENT_MODE=0`. The local registry write is human-terminal-only, not a cloud
+operation: it neither requires nor pretends to validate an SSO session. Local
+JWT shape/expiry/email checks are not authentication: Access verifies the token
+and the Worker grants/refuses the owner's verb. HTTPS is mandatory except numeric
+loopback test peers. DNS/request deadlines and a 4 MiB response cap apply. No
+redirect, proxy-from-environment, retry, refresh helper or daemon is launched.
+HTTP refusals retain their status and parsed, credential-redacted reason/recovery;
+malformed/HTML refusal bodies are not echoed. Success and refusal output scrub the
+loaded credential, its JWT segments and credential-named fields. JSON serialization
+escapes terminal control characters. Tests use unsigned synthetic app tokens in
+hermetic PTYs only.
+
+**Real remaining dependencies.** This is **partial**, not a completed 13.8 claim.
+`project pause` and `unpause` fail explicitly with no marker write until slice
+13.3's execution pause enforcement (and 13.5's human-command gate) is present.
+`project role apply` fails explicitly until the local spawn-spec/role installation
+contract exists (OD7, execution and
+installation slices). Cloud role tool ceilings alone cannot install provider
+prompts, model/effort, skills or generated harness files. The source enrollment also
+initializes roles and installs harnesses: that remains dependent on 13.7 and the
+13.3 local spawn-spec consumer. Role apply must regenerate that installed harness.
+Enrollment's root-only success message expressly excludes those operations. No
+success stub substitutes for any of these dependencies.
+
+**Evidence and review.** The earlier resumed-lane record reported a rerun of ten
+inherited owner tests to exit 0 and three additional red tests to exit 101:
+refusal details were discarded, empty/mismatched work acknowledgements reported
+success, and trim-changing IDs reached HTTP. Their repairs passed the focused
+suite. Those historical runs are retained as history, not takeover gate evidence.
+The current `broker_owner.rs` contains 14 hermetic PTY/HTTP tests. A frozen-cloud
+differential replays seven owner read/write cases against 13.0's recorded public HTTP
+values, including the public acknowledgements without an internal `ok` field. Its
+question preflight rows restore the recorded questions to their pre-write state;
+this is declared fixture reconstruction, not a live-cloud run or equality with the
+plugin's terminal bytes.
+
+The takeover reproduced the help-axis failure with the original exact
+`[broker, broker serve]` allowance (exit 101). The replacement enumerates only the
+17 actually registered Rust-only nodes, including `broker serve`, the owner command
+families and their project descendants. Green help-axis verification then passed
+both tests: **54 legacy nodes, 162 help pages, 0 differences**. No wildcard or
+unrelated parity exception was added.
+
+The code-simplifier and find-bugs checklists covered all owner source, tests and
+wiring: command input, URL/header injection, SSO/agent separation, mission/task
+binding, state transitions, enrollment locking/path checks, bounded HTTP reads and
+credential disclosure. The takeover repeated simplification and security review of
+all three owner modules, `broker_owner.rs`, the complete help-axis test, the owner
+wiring hunks in `broker/mod.rs`, `cli.rs` and `main.rs`, and this consolidated plan.
+No additional significant finding or useful source refactor was identified. Inputs
+are CLI strings, local endpoint/session/enrollment files and HTTP JSON. Injection,
+authentication/authorization, session expiry, disclosure, bounds, state transitions
+and enrollment lock/path handling were reviewed; SQL injection, XSS and custom
+cryptography are not applicable to this subset. Cloud admission remains authoritative
+across the read/write race; enrollment assumes the human's trusted HOME rather than
+claiming resistance to a concurrent same-user filesystem attacker. No SQL, browser
+surface, custom cryptography or production child process is added. External challenge
+remains unavailable (WARN-only); it was not retried or bypassed. Live Access grants,
+real enrollment, actual pause/role
+execution and non-darwin platforms remain unverified. No mutation sweep or verifier
+agent was launched.
+
+**Fresh takeover verification (darwin/arm64, Rust 1.98.0, Go 1.26.5).** Each gate
+was captured separately; inherited results are not used as proof. Go commands use
+`go -C <owner-worktree>`; Cargo commands use that worktree's absolute manifest.
+
+| Gate | Command / observation | Exit |
+|---|---|---|
+| Help red | Original exact two-node allowance; owner additions rejected at `helpaxis.rs:125` | 101, expected |
+| Help green | `cargo test --manifest-path rust/Cargo.toml --release --locked --offline --test helpaxis -- --nocapture`; 2 passed, 162 legacy pages identical | 0 |
+| Go build | `go build -o /tmp/broker-owner-takeover-go .` | 0 |
+| Go vet | `go vet ./...` | 0 |
+| Go tests | `go test ./... -race -count=1 -timeout 20m` | 0 |
+| Format | `cargo fmt --manifest-path rust/Cargo.toml --all -- --check` | 0 |
+| Clippy | `cargo clippy --manifest-path rust/Cargo.toml --all-targets --locked --offline -- -D warnings` | 0 |
+| Dependency policy | `cargo deny --manifest-path rust/Cargo.toml --offline --locked check`; three unused license allowances and duplicate `syn` remain warnings | 0 |
+| Complete release suite | `cargo test --manifest-path rust/Cargo.toml --release --locked --offline -- --nocapture`; **543 passed, 0 failed, 2 intentionally ignored whole-plugin runs**, including the full PTY differential, 14 owner and 28 MCP tests | 0 |
+| Git-indexed build | Explicit owned-file staging and `git checkout-index --all --prefix=/tmp/broker-owner-takeover-indexed.UCWuNw/`; `cargo build --manifest-path <snapshot>/rust/Cargo.toml --release --locked --offline` | 0 |
+| Git-indexed owner/MCP/help tests | `cargo test --manifest-path <snapshot>/rust/Cargo.toml --release --locked --offline --test broker_owner --test broker_mcp --test helpaxis -- --nocapture`; **14 owner, 28 MCP, 2 help passed** | 0 |
+
+Local evidence logs are `/tmp/broker-owner-takeover-{help-red,help-green,go-build,
+go-vet,go-test,fmt,clippy,deny,release,indexed-build,indexed-tests}.log`.
+Only synthetic homes, tokens and loopback peers were used. No real enrollment or
+user configuration mutation, worker spawn, release, tag, deploy, plugin retirement,
+migration, push or main merge is part of this lane.
 
 ## 8. Owner decisions
 
