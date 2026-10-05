@@ -32,7 +32,8 @@ Measurement record:
 | plugin test suite | `bun test` (bun 1.4.0) in a scratch copy: **585 pass, 0 fail, 107 files, 63.7 s** |
 | plugin MCP transcript | recorded live from `bun src/main.ts` in a scratch copy (§3.1) |
 | claude spawn seam | recorded with a fake `claude` binary in the scratch copy (§4.2) |
-| scripts | `docs/broker-daemon-port.measure/` in this branch: `slices.py`, `schema_diff.py`, `tools_list.ts`, `od7.py`, `od10.py`, `od15_probe.ts`, `stores.sh`, `scrub_probe.ts` (§0) |
+| scripts | `docs/broker-daemon-port.measure/` in this branch: `slices.py`, `schema_diff.py`, `tools_list.ts`, `od7.py`, `od10.py`, `od15_probe.ts`, `stores.sh`, `scrub_probe.ts` (§0); `cloud_fixture.py` (13.0) |
+| slice 13.0 | **LANDED 2026-10-05**, `rust/crates/broker-oracle` (§7.2) |
 
 **`wapps-platform` `main` moved while this was being measured.** The task text was
 written against `7cf2d20`. At 06:32 `57b8bbb` merged ("broker L5 slice 9b - the 37
@@ -99,6 +100,7 @@ other run in this document.
 | `od15_probe.ts` | `bun od15_probe.ts <plugin src>` (in a scratch copy) | how many of the replayed texts (open items' title and intent, open questions) the plugin's `scrubText` would change, and how many work-item texts an unanchored `ASSIGNMENT` would match; counts only | OD15 |
 | `stores.sh` | `sh stores.sh` | the read-only census of every `broker.sqlite` and the job split by provider | §2.3 |
 | `scrub_probe.ts` | `bun scrub_probe.ts <plugin src>` (in a scratch copy) | what `redact` and the scrub do to a note, an output and a command line | §4.5 |
+| `cloud_fixture.py` | `python3 cloud_fixture.py <wapps-platform> <out.json>` | writes the fake cloud's fixture from the platform's frozen surface transcript (127 HTTP exchanges over 37 routes) with its source commit and sha256 | §7.2 (13.0) |
 
 `slices.py` was also run with `skills.ts` and `rulebook.ts` moved back to 13.5, where
 this document first had them: it reported exactly the two edges a reviewer found by
@@ -888,7 +890,7 @@ P-c (spawn-spec columns in the cloud) is gone: OD7 is decided A, the spawn spec 
 | # | slice | TS lines (§7.1) | depends on | behaviour inventory | cases |
 |---|---|---:|---|---|---|
 | **R0** | **The Rust binary ships. Being handled:** owner decision 2026-10-05, the Rust `wapps` replaces the Go binary in the Homebrew release when the CLI port is done. That release slice is running on `wapps-cli` `lane/cli-s10` (worktree `.worktrees/cli-s10`, no commit of its own yet; the branch is at `c8c7daf`). What it has to change was measured here: `.goreleaser.yml`'s `builds:` has one entry, `main: ./main.go`, and `.github/workflows/{ci,release}.yml` mention `cargo` **0** times. The version rule already exists (`before` hook `sh rust/check-version.sh {{ .Version }}`, `PORT-kalan-yuzey.md` §4.3). `goreleaser check` failing on the deprecated `brews` is a separate open owner decision (`64549cb`) | — | `lane/cli-s10` | — | the existing differential |
-| **13.0** | oracle harness: fake `claude`/`codex` recorders, fake cloud from recorded fixtures, MCP transcript runner, hermetic skill roots (Finding 0.1). Section 6 says it exists before any slice, so every slice below depends on it | 0 | — | Finding 0.1 | harness only |
+| **13.0** | **LANDED 2026-10-05** (§7.2): oracle harness: fake `claude`/`codex` recorders, fake cloud from recorded fixtures, MCP transcript runner, hermetic skill roots (Finding 0.1). Section 6 says it exists before any slice, so every slice below depends on it. Lives in `rust/crates/broker-oracle` | 0 | — | Finding 0.1 | harness only: 39 tests run by `cargo test`, 2 ignored oracle runs |
 | **13.1** | `wapps broker serve`: stdio MCP, enrollment (cwd → project), the Access service token (OD2: a 0600 file), `tools/list` (the Worker's list with 3 entries replaced and the 2 handoff tools removed: 24 tools) and the 13 verbatim tools forwarded to the Worker MCP, the observe and rewrite classes without the quota merge, `orchestrator_claim` without resume, the `agent_await` cursor loop (OD4), read redaction (§3.7). `agent_submit`, `agent_cancel`, `agent_attach`, `agent_report` answer `ACTION_UNAVAILABLE`; `roles_list` is the Worker's answer | 501 | **13.0**, P12, P-b, live | 8 files / 26 tests | ≥ 51 (seam 2) |
 | **13.2** | the daemon: `wapps broker daemon`, unix socket, `O_EXCL` claim, detached spawn, idle exit, session tracking (gone-owner release) | 745 | 13.1 | 6 / 26 | not measured; inventory 26 |
 | **13.3** | execution core + **codex** worker: `agent_submit` → routing (an explicit provider, review independence, continuity, the sole declared side; never a directive) → `POST …/jobs` → `POST …/jobs/attach` with the job id as run id, whose answer is the worker's task (Finding 4.3b) → spawn → progress heartbeat < 5 min → finish; `agent_cancel`; role spawn spec (OD7); **prompt delivery** (skills, repository rulebook, scratch, pause sections), which the codex seam compares byte for byte; **the scrub on every note, output and error that leaves the machine** (§4.5, OD15); the owner-pause classifier that stops a codex job; **the quota reading** into daemon memory, because it decides which codex events are notes (§7.1). Read-only roles only. Five declared stubs: writing roles refused (13.4), `handBack` refused (13.6), the transcript and the observed model not recorded (13.9) | 2,416 | 13.2 | 16 / 89, plus the 19 files of §6 | not measured; seam 1 codex + seam 3 |
@@ -1105,6 +1107,129 @@ end to end. Codex goes first even though claude ran **1,002 of 1,050** jobs. Cod
 is a published protocol (MCP), while claude's needs OD5's first measurement and, under
 OD5-B, a private one.
 
+### 7.2 Slice 13.0 LANDED (2026-10-05): the oracle harness
+
+Branch `lane/broker-daemon-13-0`. **0 product lines.** Plugin oracle `c6d7e09` (clean
+before and after; `git status` empty, `state/fixture/worktrees` still 156).
+
+**Where it lives, and why there.** `rust/crates/broker-oracle`, a workspace member of its
+own (`publish = false`, version `0.0.0`), not a module of `crates/cli`. The CLI port's
+slice 10 and the release switch run on `lane/cli-s10` inside `rust/crates/cli` and
+`.goreleaser.yml`; this lane touches neither. The only shared files are
+`rust/Cargo.toml` (one `members` entry, and its header comment translated) and
+`rust/Cargo.lock` (the crate's own entry). **0 external crates added**: its dependencies
+are `serde` and `serde_json`, already in the lock, and the fake cloud speaks HTTP/1.1 over
+`std::net`. The lock holds 101 packages, 100 of them external, as before. Note for the
+release lane: a workspace-wide `cargo build --release` now also builds the harness's
+`broker-oracle-fake` binary; building with `-p wapps` does not.
+
+**What it is** (1,662 lines of source, 1,106 of tests):
+
+| module | seam | what it does |
+|---|---|---|
+| `peer` + bin `broker-oracle-fake` | 1 | The fake `claude` and `codex`. One binary, copied to where the system under test looks (first on `PATH` as `codex`; over the Agent SDK's bundled `claude`). Its script sits in a sidecar file next to the copy, never in an environment variable, because the worker's environment is the thing observed (codex passes only an allowlist). Records per launch `launch {kind, program, argv, cwd, env names}`, then `in`/`out` lines with the frames' bytes as they crossed the pipe, then `end eof\|idle\|eof-before …\|timeout-before …`. Environment values are never recorded. Answers from `expect`/`send` steps, `{{path}}` filled from the last matched frame |
+| `cloud` | 3 (and the Worker side of 2) | The fake cloud. Answers a request with the first unconsumed recorded exchange of the same method, path and body (bodies compared as JSON), byte for byte; anything else gets `501 ORACLE_UNMATCHED`. Records method, path, header names, whether both Access headers were sent, the body, which exchange answered, and whether the token secret appeared anywhere but its own header. Sequential, `Connection: close`, so the record's order is the requests' order |
+| `mcp` | 2 | The transcript runner. Drives a stdio MCP server one request at a time (§3.1's recording showed the plugin answering pipelined requests out of order), with `capture` into later arguments and `until` polling that keeps only the final exchange. Writes `in`/`out` lines |
+| `normalize`, `compare` | all | Text rules applied to a whole recording: literal paths (longest first), uuids numbered by first occurrence, and JSON keys at both escaping levels (`"k":` and `\"k\":`), a string value numbered, a number replaced. `first_difference` names the first differing line |
+| `hermetic` | Finding 0.1 | A home holding exactly the declared skills (plain names under `.claude/skills`, `plugin:name` under `.claude/plugins/cache/oracle/<plugin>/0.0.0/skills`, the layout `roles/skills.ts` enumerates), with fixed bytes; a git project with a two-file rulebook (`CLAUDE.md` with an `@docs/RULES.md` include), committed with a fixed identity and date and no global or system git config: commit id identical on every machine |
+| `plugin` | the oracle | Copies the plugin to `/tmp/bo-<tag>-<pid>/plugin` (no `state/`, no bundled `claude`), installs the fakes, builds the hermetic home (enrollment, role table, prompts, skills) and project, runs `bun src/main.ts` with only `HOME`, `PATH` (fake bin, bun's directory, `/usr/bin:/bin`), `TMPDIR` and `AGENT_BROKER_LAUNCHER_PROVIDER`, stops the detached daemon afterwards, and normalizes. The scenario is `fixtures/plugin/scenario.json`; it pins the plugin commit |
+
+**The cloud fixture.** `fixtures/cloud/surface-transcript.json` (114,224 bytes) is cut by
+`docs/broker-daemon-port.measure/cloud_fixture.py` from the platform's
+`services/broker/test/frozen/surface-transcript.json` (last changed `84c7e44`, sha256
+`26eb925f…`; `wapps-platform` `main` is `bf00df3` now): the 37 routes played through the
+real route table and frozen from the live Worker, the oracle the platform holds its own
+Rust Worker to since 9b. Of its 131 cases, 4 are Durable Object alarms and are dropped,
+leaving **127 HTTP exchanges over 37 routes**. Replaying the whole storyline against the
+fake returns all 127 answers byte for byte (a `cargo test` case). **What it is not yet:**
+the storyline runs as `human:adnan@wapps.co` in 105 of 127 cases, and its ids and
+capabilities come from the platform's counters. A daemon slice whose requests follow a
+different storyline needs exchanges recorded for that storyline from the platform's
+workers lane (§6), in the same format. The fake serves any such list; none was recorded here.
+
+**Proved on the plugin** (`tests/plugin_oracle.rs`, ignored by default; it needs `bun` and
+`BROKER_ORACLE_PLUGIN`). One scenario: `initialize`, `notifications/initialized`,
+`tools/list`, `ping`, `orchestrator_claim`, `orchestrator_status`, `roles_list`,
+`work_list`, `work_list` without `missionId` (a schema refusal), `agent_await`, then a
+codex `agent_submit` and a claude `agent_submit` of one read-only fixture role, each polled
+with `agent_status` until settled and read with `agent_result`, `agent_list`,
+`orchestrator_release`. Both workers ran through the plugin's own runtime and adapters
+against the fakes. Recorded, then recorded again in a second temp root:
+
+| file | bytes | lines | two runs |
+|---|---:|---:|---|
+| `mcp-transcript.txt` | 22,883 | 35 | byte-equal after normalization |
+| `codex-1.txt` (the codex launch) | 3,008 | 12 | byte-equal |
+| `claude-1.txt` (the claude launch) | 3,591 | 9 | byte-equal |
+
+Both runs together take about 15 s (14.4 s measured). The recordings are committed under
+`fixtures/plugin/recorded/` and a third run compared equal to them. `cargo test` checks,
+without bun, that they hold no machine detail (no `/tmp/`, `/private/`, `/Users/`, real
+home or raw uuid) and that the `tools/list` answer has the 26 tools.
+
+**The normalization is 4 rule kinds and 8 keys, and each key was found by a run that
+failed without it**: the temp root (both `/tmp` and `/private/tmp`), uuids, and
+`capability`, `attachCapability`, `digest`, `waitedMs`, `settledAgoMs`, `at`, `lastSeen`
+and `request_id` (the Agent SDK's control request id is random). The comparison can fail,
+measured twice: one byte changed in a committed recording (`--model sonnet` → `opus`) fails
+the golden comparison at `claude-1.txt` line 1; the `lastSeen` rule removed fails the
+two-run check at `mcp-transcript.txt` line 11. Both were restored and compared with
+`cmp`.
+
+**Finding 0.1, closed and measured** (`tests/plugin_suite.rs`, ignored by default; the
+plugin's `bun test` twice in one scratch copy, about 130 s):
+
+| home | pass | fail | unresolved skill | time |
+|---|---:|---:|---:|---:|
+| empty, isolated | 568 | 17 | 17 | 61.3 s |
+| hermetic (the 6 skills the 9 role tables declare) | 584 | 1 | 0 | 62.5 s |
+
+The control reproduces the 17 of §0 exactly (one earlier run showed 18: the 18th was a
+timing flake, `alive after 200ms of talking under a 60ms silence limit`, which passed on the
+next run). Under the hermetic home **one** test still fails, and it is declared by name in
+the harness: `provider-contract.test.ts:92` asserts that the prompt contains *"NO PRODUCTION
+CODE WITHOUT A FAILING TEST FIRST"*, a sentence of the owner's **installed**
+`superpowers:test-driven-development`. That is a test of what is installed on the machine,
+Finding 0.1 itself; the fixture could pass it only by copying the owner's file, and does
+not (Finding 0.1b). No test in either run launched the bundled `claude` (0 launches
+recorded by the fake in its place).
+
+**What the recordings say that this document did not.**
+
+- **13.0-a. A refused tool call is an `isError: true` result, not a JSON-RPC error.** §3.1
+  said a refusal reaches the client as a JSON-RPC error. Recorded: the schema refusal
+  answers `{"content":[{"type":"text","text":"Input validation error: Invalid arguments
+  for tool work_list: missionId: …"}],"isError":true}`, and a handler refusal
+  (`orchestrator_release` while the codex job is `review_pending`) answers `"active work
+  must terminate before release"` the same way. 13.1's seam-2 floor ("refused by schema",
+  51 cases) is held to this shape, and §3.5 item 12 is a divergence against it.
+- **13.0-b. `tools/list` is 15,624 bytes** (the line; the `result` object 15,590), not §3.1's
+  16,966, with the same 26 tools. §3.1 does not record how it counted; not reconciled.
+- **13.0-c. Workers' environments under a controlled daemon environment.** The daemon was
+  given 4 names. The codex worker received 3 (`HOME PATH TMPDIR`: the 9-name allowlist
+  intersected with what exists). The claude worker received 8: all 4, the daemon's
+  `AGENT_BROKER_DAEMON`, and 3 the Agent SDK adds (`CLAUDE_AGENT_SDK_VERSION`,
+  `CLAUDE_CODE_ENTRYPOINT`, `NoDefaultCurrentDirectoryInExePath`). Finding 4.2 holds: the
+  claude worker gets the daemon's whole environment.
+- **13.0-d. The same read-only role settles differently per provider**: the codex job
+  `review_pending`, the claude job `completed`, same task and scenario. Recorded, not
+  explained; 13.3's codex seam inherits it as oracle behaviour.
+- **13.0-e. The claude argv names skills as tools**: `--allowedTools
+  Read,Grep,Skill,Skill(superpowers:test-driven-development)`. §4.2's recording had a role
+  without skills. An input to OD5's measurement in 13.5.
+- **13.0-f. The plugin's MCP client to codex opens with `protocolVersion` `2025-11-25`**,
+  while the plugin's own server answers `2025-06-18`.
+- **13.0-g. The plugin's suite leaves 6 detached daemons per pair of runs**, each alive
+  until its 10-minute idle exit. The harness stops them; the oracle runs leave none (their
+  daemon is stopped by pid from `broker.daemon.json`).
+
+**Not measured in 13.0.** No Rust daemon exists, so no seam ran with a Rust side; the
+fakes and the runner were exercised against themselves, the plugin and the platform's
+fixture. Only darwin/arm64. The fake cloud maps no Access principal (it records whether
+both headers came). The worker scripts cover one happy path per provider: no cancel, no
+pause kill, no quiet timeout, no `isError` from codex; 13.3 and 13.5 add the scripts their
+cases need.
+
 ---
 
 ## 8. Owner decisions
@@ -1157,6 +1282,11 @@ decided the same day. OD16 came out of measuring OD9 and OD10; the owner decided
 18. **OD10** 57 of navlun's 203 open items have titles over the cloud's 500 (up to 1,528), all with title = intent, filed by `agent-broker work file` after the MCP cap existed. The replay cuts the title losslessly. Navlun's open question fits `work_ask`.
 19. **OD16** The owner's `file` and `move` were a leaseless door; in the cloud only the lease holder writes the work list. Open.
 20. **OD15** An unanchored `ASSIGNMENT` matches 13 of 452 replayed work-item texts; the plugin's patterns change 0 of 454.
+21. **0.1b** (13.0) Under a hermetic home 584 of 585 plugin tests pass; the one left asserts a sentence of the owner's installed skill (`provider-contract.test.ts:92`) and is declared, not fixed.
+22. **13.0-a** A refused tool call, by schema or by handler, is an `isError: true` result, not a JSON-RPC error (§3.1 said otherwise).
+23. **13.0-b** The recorded `tools/list` is 15,624 bytes, not 16,966.
+24. **13.0-d** The same read-only role settles `review_pending` on codex and `completed` on claude.
+25. **13.0-g** The plugin's suite leaves 6 detached daemons per pair of runs.
 
 ---
 
@@ -1165,6 +1295,7 @@ decided the same day. OD16 came out of measuring OD9 and OD10; the owner decided
 1. **No request reached a running cloud broker.** Every cloud statement comes from
    reading `57b8bbb`'s source and frozen ledgers. Finding 3.6 is read, not run.
 2. **The codex seam was read, not recorded.** Only claude's spawn was recorded (§4.2).
+   Since 13.0 (§7.2) both are recorded, through the plugin's runtime, and committed.
 3. **Whether `claude --agents` honours `effort` and `skills`.** That is OD5's deciding
    fact. It is 13.5's first measurement.
 4. **The cost of OD4's polling** in Workers / Durable Object requests.

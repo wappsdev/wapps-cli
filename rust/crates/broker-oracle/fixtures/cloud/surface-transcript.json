@@ -1,0 +1,2170 @@
+{
+ "provenance": {
+  "source": "wapps-platform/services/broker/test/frozen/surface-transcript.json",
+  "commit": "84c7e447d0faeeb5bee3444a2da258576ba9ceb6",
+  "sha256": "26eb925fe33e2dc495c1a2ebfca5c6b6bb186c96cc937187d122dfe6b2f833fa",
+  "cases": 131,
+  "dropped_alarm_cases": 4
+ },
+ "exchanges": [
+  {
+   "id": "health-empty",
+   "says": "an empty catalog is a count of zero, and the surface is declared",
+   "route": "GET /v1/health",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/health",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"service\":\"wapps-broker\",\"plane\":\"control\",\"missions\":{\"known\":0,\"why\":\"a Durable Object namespace cannot be enumerated, so this is a count of RECORDED missions (the D1 catalog), not a census of the namespace. Every mission route requires a record, so an unrecorded mission cannot be reached either.\"},\"surface\":[{\"method\":\"GET\",\"path\":\"/v1/health\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/missions\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/missions\",\"verb\":\"claim\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/roles\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/roles\",\"verb\":\"administer\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/roster\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/roster\",\"verb\":\"administer\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/roster/revoke\",\"verb\":\"administer\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/lease\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/lease/ledger\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/lease\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/lease/renew\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/lease/release\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/work\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/move\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/close\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/jobs\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/cancel\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/attach\",\"verb\":\"report\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/progress\",\"verb\":\"report\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/finish\",\"verb\":\"report\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/jobs/:job\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/jobs/:job/result\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/adopt\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/work/questions\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/delegate\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/relay\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/withdraw\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/answer\",\"verb\":\"answer\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/accept\",\"verb\":\"answer\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/confirm\",\"verb\":\"answer\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/handoff\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/handoff/takeover\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/attention\",\"verb\":\"read\",\"scope\":\"mission\"}]}\n"
+  },
+  {
+   "id": "missions-empty",
+   "says": "an empty catalog is an empty list, not a 404",
+   "route": "GET /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"missions\":[]}\n"
+  },
+  {
+   "id": "missions-register",
+   "says": "a registration is 201",
+   "route": "POST /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions",
+    "body": "{\"missionId\":\"tx-lease\",\"repo\":\"wapps/broker\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"created\":true,\"mission\":{\"missionId\":\"tx-lease\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"}}\n"
+  },
+  {
+   "id": "missions-register-again",
+   "says": "the same id and repo again",
+   "route": "POST /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions",
+    "body": "{\"missionId\":\"tx-lease\",\"repo\":\"wapps/broker\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"created\":false,\"mission\":{\"missionId\":\"tx-lease\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"}}\n"
+  },
+  {
+   "id": "missions-register-other-repo",
+   "says": "the same id under another repo is refused",
+   "route": "POST /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions",
+    "body": "{\"missionId\":\"tx-lease\",\"repo\":\"wapps/other\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"mission tx-lease is already registered to repo wapps/broker, not wapps/other\",\"recovery\":\"use a mission id that is not taken, or send the repo it is recorded under; nothing was changed\",\"retryable\":false,\"details\":{\"field\":\"repo\",\"registered\":\"wapps/broker\"}}\n"
+  },
+  {
+   "id": "missions-register-uppercase",
+   "says": "an uppercase id fails the body's pattern",
+   "route": "POST /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions",
+    "body": "{\"missionId\":\"Tx-Upper\",\"repo\":\"wapps/broker\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"missionId: must be lowercase; it is both a URL segment and a Durable Object name\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"missionId\"}}\n"
+  },
+  {
+   "id": "missions-register-tx-work",
+   "says": "the storyline's other missions",
+   "route": "POST /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions",
+    "body": "{\"missionId\":\"tx-work\",\"repo\":\"wapps/broker\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"created\":true,\"mission\":{\"missionId\":\"tx-work\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"}}\n"
+  },
+  {
+   "id": "missions-register-tx-ask",
+   "says": "the storyline's other missions",
+   "route": "POST /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions",
+    "body": "{\"missionId\":\"tx-ask\",\"repo\":\"wapps/broker\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"created\":true,\"mission\":{\"missionId\":\"tx-ask\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"}}\n"
+  },
+  {
+   "id": "missions-register-tx-hand",
+   "says": "the storyline's other missions",
+   "route": "POST /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions",
+    "body": "{\"missionId\":\"tx-hand\",\"repo\":\"wapps/broker\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"created\":true,\"mission\":{\"missionId\":\"tx-hand\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"}}\n"
+  },
+  {
+   "id": "missions-list",
+   "says": "the catalog, newest first",
+   "route": "GET /v1/missions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"missions\":[{\"missionId\":\"tx-ask\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"},{\"missionId\":\"tx-hand\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"},{\"missionId\":\"tx-lease\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"},{\"missionId\":\"tx-work\",\"repo\":\"wapps/broker\",\"registeredAt\":1900000000000,\"registeredBy\":\"human:adnan@wapps.co\"}]}\n"
+  },
+  {
+   "id": "roles-empty",
+   "says": "an empty role book is an empty list",
+   "route": "GET /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/roles",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"roles\":[]}\n"
+  },
+  {
+   "id": "roles-declare-builder-claude",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"builder\",\"provider\":\"claude\",\"tools\":[\"read\",\"write\",\"edit\",\"bash\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"builder\",\"provider\":\"claude\",\"tools\":[\"read\",\"bash\",\"write\",\"edit\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-builder-codex",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"builder\",\"provider\":\"codex\",\"tools\":[\"read\",\"write\",\"edit\",\"bash\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"builder\",\"provider\":\"codex\",\"tools\":[\"read\",\"bash\",\"write\",\"edit\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-reviewer-claude",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"reviewer\",\"provider\":\"claude\",\"tools\":[\"read\",\"grep\",\"bash\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"reviewer\",\"provider\":\"claude\",\"tools\":[\"read\",\"grep\",\"bash\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-reviewer-codex",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"reviewer\",\"provider\":\"codex\",\"tools\":[\"read\",\"grep\",\"bash\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"reviewer\",\"provider\":\"codex\",\"tools\":[\"read\",\"grep\",\"bash\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-planner-claude",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"planner\",\"provider\":\"claude\",\"tools\":[\"read\",\"grep\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"planner\",\"provider\":\"claude\",\"tools\":[\"read\",\"grep\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-planner-codex",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"planner\",\"provider\":\"codex\",\"tools\":[\"read\",\"grep\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"planner\",\"provider\":\"codex\",\"tools\":[\"read\",\"grep\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-answerer-claude",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"answerer\",\"provider\":\"claude\",\"tools\":[\"read\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"answerer\",\"provider\":\"claude\",\"tools\":[\"read\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-answerer-codex",
+   "says": "a declared side",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"answerer\",\"provider\":\"codex\",\"tools\":[\"read\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"role\":\"answerer\",\"provider\":\"codex\",\"tools\":[\"read\"],\"replaced\":[]}\n"
+  },
+  {
+   "id": "roles-declare-unknown-tool",
+   "says": "a tool the book does not know",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"builder\",\"provider\":\"claude\",\"tools\":[\"read\",\"Write\"]}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"Write is not a tool this estate knows; a declaration it cannot read is not a declaration\",\"recovery\":\"the tools this estate knows are read, grep, find, ls, bash, write and edit, in lowercase; check the spelling against GET /v1/roles for a side that already works. Nothing was declared\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_tool\",\"missing\":[\"Write\"]}}\n"
+  },
+  {
+   "id": "roles-declare-bad-name",
+   "says": "a role name the book refuses",
+   "route": "POST /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roles",
+    "body": "{\"role\":\"Builder/../etc\",\"provider\":\"claude\",\"tools\":[\"read\"]}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"Builder/../etc is not a role name; it is a path segment on the worker's machine and a key here\",\"recovery\":\"write the role name in lowercase kebab-case (a-z, digits, hyphens): it is a path segment on the worker's machine and a key here; nothing was declared\",\"retryable\":false,\"details\":{\"refusal\":\"bad_role_name\"}}\n"
+  },
+  {
+   "id": "roles-list",
+   "says": "the role book",
+   "route": "GET /v1/roles",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/roles",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"roles\":[{\"role\":\"answerer\",\"provider\":\"claude\",\"tools\":[\"read\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000},{\"role\":\"answerer\",\"provider\":\"codex\",\"tools\":[\"read\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000},{\"role\":\"builder\",\"provider\":\"claude\",\"tools\":[\"read\",\"bash\",\"write\",\"edit\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000},{\"role\":\"builder\",\"provider\":\"codex\",\"tools\":[\"read\",\"bash\",\"write\",\"edit\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000},{\"role\":\"planner\",\"provider\":\"claude\",\"tools\":[\"read\",\"grep\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000},{\"role\":\"planner\",\"provider\":\"codex\",\"tools\":[\"read\",\"grep\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000},{\"role\":\"reviewer\",\"provider\":\"claude\",\"tools\":[\"read\",\"grep\",\"bash\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000},{\"role\":\"reviewer\",\"provider\":\"codex\",\"tools\":[\"read\",\"grep\",\"bash\"],\"declaredBy\":\"human:adnan@wapps.co\",\"declaredAt\":1900000000000}]}\n"
+  },
+  {
+   "id": "roster-empty",
+   "says": "an empty roster",
+   "route": "GET /v1/roster",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/roster",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"roster\":[]}\n"
+  },
+  {
+   "id": "roster-grant",
+   "says": "a grant is 201",
+   "route": "POST /v1/roster",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roster",
+    "body": "{\"principal\":\"svc:executord-mac\",\"verbs\":[\"report\"]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"created\":true,\"principal\":\"svc:executord-mac\",\"verbs\":[\"report\"],\"grantedBy\":\"human:adnan@wapps.co\",\"grantedAt\":1900000000000,\"replaced\":[]}\n"
+  },
+  {
+   "id": "roster-grant-no-verbs",
+   "says": "a grant of nothing",
+   "route": "POST /v1/roster",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roster",
+    "body": "{\"principal\":\"svc:empty\",\"verbs\":[]}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"a grant with no verbs would grant nothing\",\"recovery\":\"send at least one verb, or take the standing away on purpose with POST /v1/roster/revoke\",\"retryable\":false,\"details\":{\"refusal\":\"no_verbs\"}}\n"
+  },
+  {
+   "id": "roster-grant-bad-principal",
+   "says": "a principal the gate could never produce",
+   "route": "POST /v1/roster",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roster",
+    "body": "{\"principal\":\"not a principal\",\"verbs\":[\"read\"]}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"not a principal is not a principal id; no Access token can ever produce it\",\"recovery\":\"write a principal id, not a bare email: \\\"human:adnan@wapps.co\\\", \\\"svc:executord-mac\\\" — it must be the id an Access token produces\",\"retryable\":false,\"details\":{\"refusal\":\"bad_principal\"}}\n"
+  },
+  {
+   "id": "roster-revoke",
+   "says": "a revoke",
+   "route": "POST /v1/roster/revoke",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roster/revoke",
+    "body": "{\"principal\":\"svc:executord-mac\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"principal\":\"svc:executord-mac\",\"revoked\":[\"report\"]}\n"
+  },
+  {
+   "id": "roster-revoke-unknown",
+   "says": "revoking someone the roster never held",
+   "route": "POST /v1/roster/revoke",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/roster/revoke",
+    "body": "{\"principal\":\"svc:nobody\"}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"svc:nobody holds nothing on this broker\",\"recovery\":\"check the principal id against GET /v1/roster; nothing was revoked\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_principal\"}}\n"
+  },
+  {
+   "id": "roster-list",
+   "says": "the roster after",
+   "route": "GET /v1/roster",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/roster",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"roster\":[]}\n"
+  },
+  {
+   "id": "health-registered",
+   "says": "the count comes from the catalog",
+   "route": "GET /v1/health",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/health",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"service\":\"wapps-broker\",\"plane\":\"control\",\"missions\":{\"known\":4,\"why\":\"a Durable Object namespace cannot be enumerated, so this is a count of RECORDED missions (the D1 catalog), not a census of the namespace. Every mission route requires a record, so an unrecorded mission cannot be reached either.\"},\"surface\":[{\"method\":\"GET\",\"path\":\"/v1/health\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/missions\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/missions\",\"verb\":\"claim\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/roles\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/roles\",\"verb\":\"administer\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/roster\",\"verb\":\"read\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/roster\",\"verb\":\"administer\",\"scope\":\"estate\"},{\"method\":\"POST\",\"path\":\"/v1/roster/revoke\",\"verb\":\"administer\",\"scope\":\"estate\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/lease\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/lease/ledger\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/lease\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/lease/renew\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/lease/release\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/work\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/move\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/close\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/jobs\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/cancel\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/attach\",\"verb\":\"report\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/progress\",\"verb\":\"report\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/jobs/finish\",\"verb\":\"report\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/jobs/:job\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/jobs/:job/result\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/adopt\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/work/questions\",\"verb\":\"read\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/delegate\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/relay\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/withdraw\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/answer\",\"verb\":\"answer\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/accept\",\"verb\":\"answer\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/work/questions/confirm\",\"verb\":\"answer\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/handoff\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"POST\",\"path\":\"/v1/missions/:mission/handoff/takeover\",\"verb\":\"claim\",\"scope\":\"mission\"},{\"method\":\"GET\",\"path\":\"/v1/missions/:mission/attention\",\"verb\":\"read\",\"scope\":\"mission\"}]}\n"
+  },
+  {
+   "id": "lease-unregistered",
+   "says": "a mission route on an unregistered mission",
+   "route": "GET /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-nowhere/lease",
+    "body": null
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no mission tx-nowhere is registered with wapps-broker\",\"recovery\":\"register it first with POST /v1/missions, or check the id against GET /v1/missions; nothing was created\",\"retryable\":false,\"details\":{\"mission\":\"tx-nowhere\"}}\n"
+  },
+  {
+   "id": "lease-unclaimed",
+   "says": "a lease nobody ever held",
+   "route": "GET /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"missionId\":\"tx-lease\",\"state\":\"unclaimed\",\"owner\":null,\"fencingToken\":0,\"claimedAt\":null,\"heartbeatDeadline\":null,\"everClaimed\":false,\"closedReason\":null}\n"
+  },
+  {
+   "id": "ledger-empty",
+   "says": "an empty ledger is 200",
+   "route": "GET /v1/missions/:mission/lease/ledger",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-lease/lease/ledger",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"events\":[]}\n"
+  },
+  {
+   "id": "lease-claim",
+   "says": "a claim is 201 with the first token",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": "{\"provider\":\"claude\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"authority\":{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":1},\"heartbeatDeadline\":1900000301000}\n"
+  },
+  {
+   "id": "lease-claim-contested",
+   "says": "a contested claim may be waited out",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "svc:codex-orchestrator",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": "{\"provider\":\"codex\"}"
+   },
+   "status": 409,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": "2"
+   },
+   "body": "{\"error\":\"CONFLICT\",\"message\":\"mission is already claimed by human:adnan@wapps.co until 1900000301000\",\"recovery\":\"another orchestrator holds this mission; stand by and re-claim after its lease window, or read the lease to see who holds it\",\"retryable\":true,\"details\":{\"refusal\":\"already_claimed\",\"mission\":\"tx-lease\",\"owner\":{\"id\":\"human:adnan@wapps.co\",\"provider\":\"claude\"}}}\n"
+  },
+  {
+   "id": "lease-claim-unknown-provider",
+   "says": "an unknown provider",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": "{\"provider\":\"gpt-9\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"provider: Invalid option: expected one of \\\"claude\\\"|\\\"codex\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"provider\"}}\n"
+  },
+  {
+   "id": "lease-claim-owner-in-body",
+   "says": "an ownerId in the body is refused, not ignored",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": "{\"provider\":\"claude\",\"ownerId\":\"svc:impostor\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"ownerId\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}\n"
+  },
+  {
+   "id": "lease-claim-malformed",
+   "says": "a body that is not JSON",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": "{"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"the request body is not JSON\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}\n"
+  },
+  {
+   "id": "lease-renew",
+   "says": "a renewal moves the deadline",
+   "route": "POST /v1/missions/:mission/lease/renew",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease/renew",
+    "body": "{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":1}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"fencingToken\":1,\"heartbeatDeadline\":1900000302000}\n"
+  },
+  {
+   "id": "lease-renew-stale",
+   "says": "a token from a later epoch",
+   "route": "POST /v1/missions/:mission/lease/renew",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease/renew",
+    "body": "{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":2}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"fencing token 2 is not the current one (1)\",\"recovery\":\"this identity may not do this; if it is a lease refusal, claim the mission again before writing\",\"retryable\":false,\"details\":{\"refusal\":\"stale_fencing_token\",\"mission\":\"tx-lease\",\"owner\":{\"id\":\"human:adnan@wapps.co\",\"provider\":\"claude\"}}}\n"
+  },
+  {
+   "id": "lease-renew-wrong-capability",
+   "says": "the wrong secret",
+   "route": "POST /v1/missions/:mission/lease/renew",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease/renew",
+    "body": "{\"capability\":\"not-the-secret\",\"fencingToken\":1}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"the presented lease capability is not this lease's\",\"recovery\":\"this identity may not do this; if it is a lease refusal, claim the mission again before writing\",\"retryable\":false,\"details\":{\"refusal\":\"invalid_lease_capability\",\"mission\":\"tx-lease\",\"owner\":{\"id\":\"human:adnan@wapps.co\",\"provider\":\"claude\"}}}\n"
+  },
+  {
+   "id": "lease-status-held",
+   "says": "a held lease",
+   "route": "GET /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"missionId\":\"tx-lease\",\"state\":\"held\",\"owner\":{\"id\":\"human:adnan@wapps.co\",\"provider\":\"claude\"},\"fencingToken\":1,\"claimedAt\":1900000001000,\"heartbeatDeadline\":1900000302000,\"everClaimed\":true,\"closedReason\":null}\n"
+  },
+  {
+   "id": "lease-release",
+   "says": "a release",
+   "route": "POST /v1/missions/:mission/lease/release",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease/release",
+    "body": "{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":1}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"released\":true,\"fencingToken\":1}\n"
+  },
+  {
+   "id": "lease-release-again",
+   "says": "a second release has no live lease",
+   "route": "POST /v1/missions/:mission/lease/release",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease/release",
+    "body": "{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":1}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"this mission has no live lease\",\"recovery\":\"this identity may not do this; if it is a lease refusal, claim the mission again before writing\",\"retryable\":false,\"details\":{\"refusal\":\"no_live_lease\",\"mission\":\"tx-lease\",\"owner\":null}}\n"
+  },
+  {
+   "id": "lease-claim-after-release",
+   "says": "the next epoch",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": "{\"provider\":\"codex\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"authority\":{\"capability\":\"x0rNUNNW2VzfYuVo627xdPd6_YADhgmMD5IVmBueIaQ\",\"fencingToken\":2},\"heartbeatDeadline\":1900000304000}\n"
+  },
+  {
+   "id": "lease-status-expired",
+   "says": "the expiry, read back",
+   "route": "GET /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-lease/lease",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"missionId\":\"tx-lease\",\"state\":\"unclaimed\",\"owner\":null,\"fencingToken\":2,\"claimedAt\":1900000004000,\"heartbeatDeadline\":null,\"everClaimed\":true,\"closedReason\":\"expired\"}\n"
+  },
+  {
+   "id": "ledger-after",
+   "says": "claim, release, claim, expire",
+   "route": "GET /v1/missions/:mission/lease/ledger",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-lease/lease/ledger",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"events\":[{\"seq\":1,\"at\":1900000001000,\"kind\":\"CLAIM\",\"ownerId\":\"human:adnan@wapps.co\",\"fencingToken\":1,\"provider\":\"claude\",\"silentSince\":null},{\"seq\":2,\"at\":1900000003000,\"kind\":\"RELEASE\",\"ownerId\":\"human:adnan@wapps.co\",\"fencingToken\":1,\"provider\":null,\"silentSince\":null},{\"seq\":3,\"at\":1900000004000,\"kind\":\"CLAIM\",\"ownerId\":\"human:adnan@wapps.co\",\"fencingToken\":2,\"provider\":\"codex\",\"silentSince\":null},{\"seq\":4,\"at\":1900000304000,\"kind\":\"EXPIRE\",\"ownerId\":\"human:adnan@wapps.co\",\"fencingToken\":2,\"provider\":null,\"silentSince\":1900000004000}]}\n"
+  },
+  {
+   "id": "work-claim",
+   "says": "the work mission's lease",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/lease",
+    "body": "{\"provider\":\"codex\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"heartbeatDeadline\":1900000900000}\n"
+  },
+  {
+   "id": "work-add",
+   "says": "three items, one on now",
+   "route": "POST /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"items\":[{\"title\":\"the gate\",\"intent\":\"split it\",\"horizon\":\"now\"},{\"title\":\"the ledger 🚀\",\"intent\":\"freeze it\",\"horizon\":\"next\"},{\"title\":\"someday\",\"intent\":\"maybe\"}]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"workItemIds\":[\"00000000-0000-4000-8000-000000000001\",\"00000000-0000-4000-8000-000000000002\",\"00000000-0000-4000-8000-000000000003\"]}\n"
+  },
+  {
+   "id": "work-add-part",
+   "says": "a part under the gate",
+   "route": "POST /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"items\":[{\"title\":\"a part\",\"intent\":\"x\",\"parentId\":\"00000000-0000-4000-8000-000000000001\"}]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"workItemIds\":[\"00000000-0000-4000-8000-000000000004\"]}\n"
+  },
+  {
+   "id": "work-add-unknown-parent",
+   "says": "a parent that does not exist",
+   "route": "POST /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"items\":[{\"title\":\"x\",\"intent\":\"y\",\"parentId\":\"not-an-item\"}]}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no work item not-an-item in this mission\",\"recovery\":\"file the whole first, then file this under it; check the id against GET /v1/missions/<mission>/work — nothing was filed\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_parent\",\"mission\":\"tx-work\",\"missing\":[\"not-an-item\"]}}\n"
+  },
+  {
+   "id": "work-add-empty",
+   "says": "an empty batch fails the body",
+   "route": "POST /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"items\":[]}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"items: Too small: expected array to have >=1 items\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"items\"}}\n"
+  },
+  {
+   "id": "work-add-stale",
+   "says": "a stale token",
+   "route": "POST /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":2},\"items\":[{\"title\":\"x\",\"intent\":\"y\"}]}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"fencing token 2 is not the current one (1)\",\"recovery\":\"this identity may not do this; if it is a lease refusal, claim the mission again before writing\",\"retryable\":false,\"details\":{\"refusal\":\"stale_fencing_token\",\"mission\":\"tx-work\",\"owner\":{\"id\":\"human:adnan@wapps.co\",\"provider\":\"codex\"}}}\n"
+  },
+  {
+   "id": "work-move",
+   "says": "the ledger item moves to now",
+   "route": "POST /v1/missions/:mission/work/move",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/move",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"moves\":[{\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"horizon\":\"now\"}]}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"moved\":[{\"id\":\"00000000-0000-4000-8000-000000000002\",\"horizon\":\"now\",\"detachedFrom\":null}]}\n"
+  },
+  {
+   "id": "work-move-unknown",
+   "says": "an unknown item",
+   "route": "POST /v1/missions/:mission/work/move",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/move",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"moves\":[{\"workItemId\":\"not-an-item\",\"horizon\":\"now\"}]}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no work item not-an-item in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/work; nothing was changed\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_work_item\",\"mission\":\"tx-work\",\"missing\":[\"not-an-item\"]}}\n"
+  },
+  {
+   "id": "work-close-open-parts",
+   "says": "delivered with an open part",
+   "route": "POST /v1/missions/:mission/work/close",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/close",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"workItemId\":\"00000000-0000-4000-8000-000000000001\",\"reason\":\"delivered\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"work item 00000000-0000-4000-8000-000000000001 still has 1 open part(s): a part\",\"recovery\":\"deliver the parts named in details.missing, or move them off this horizon with POST /v1/missions/<mission>/work/move (which detaches them); or close this one as dropped or superseded\",\"retryable\":false,\"details\":{\"refusal\":\"open_parts\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000004\"]}}\n"
+  },
+  {
+   "id": "work-close",
+   "says": "dropped",
+   "route": "POST /v1/missions/:mission/work/close",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/close",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"workItemId\":\"00000000-0000-4000-8000-000000000003\",\"reason\":\"dropped\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"closed\":[\"00000000-0000-4000-8000-000000000003\"],\"reason\":\"dropped\"}\n"
+  },
+  {
+   "id": "work-close-bad-reason",
+   "says": "a reason outside the closed set",
+   "route": "POST /v1/missions/:mission/work/close",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/close",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"workItemId\":\"00000000-0000-4000-8000-000000000003\",\"reason\":\"finished\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"reason: Invalid option: expected one of \\\"delivered\\\"|\\\"dropped\\\"|\\\"superseded\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"reason\"}}\n"
+  },
+  {
+   "id": "work-list",
+   "says": "the work list",
+   "route": "GET /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-work/work",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"items\":[{\"id\":\"00000000-0000-4000-8000-000000000001\",\"parentId\":null,\"horizon\":\"now\",\"discoveredFrom\":null,\"title\":\"the gate\",\"intent\":\"split it\",\"position\":1,\"createdAt\":1900000600000,\"closedAt\":null,\"closedReason\":null,\"sourceJobId\":null,\"openQuestions\":[],\"effectiveHorizon\":\"now\",\"ready\":true,\"blockedBy\":null,\"children\":{\"total\":1,\"closed\":0},\"subtree\":{\"items\":1,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}},{\"id\":\"00000000-0000-4000-8000-000000000002\",\"parentId\":null,\"horizon\":\"now\",\"discoveredFrom\":null,\"title\":\"the ledger 🚀\",\"intent\":\"freeze it\",\"position\":2,\"createdAt\":1900000600000,\"closedAt\":null,\"closedReason\":null,\"sourceJobId\":null,\"openQuestions\":[],\"effectiveHorizon\":\"now\",\"ready\":true,\"blockedBy\":null,\"children\":{\"total\":0,\"closed\":0},\"subtree\":{\"items\":0,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}},{\"id\":\"00000000-0000-4000-8000-000000000003\",\"parentId\":null,\"horizon\":null,\"discoveredFrom\":null,\"title\":\"someday\",\"intent\":\"maybe\",\"position\":3,\"createdAt\":1900000600000,\"closedAt\":1900000600000,\"closedReason\":\"dropped\",\"sourceJobId\":null,\"openQuestions\":[],\"effectiveHorizon\":null,\"ready\":false,\"blockedBy\":null,\"children\":{\"total\":0,\"closed\":0},\"subtree\":{\"items\":0,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}},{\"id\":\"00000000-0000-4000-8000-000000000004\",\"parentId\":\"00000000-0000-4000-8000-000000000001\",\"horizon\":null,\"discoveredFrom\":null,\"title\":\"a part\",\"intent\":\"x\",\"position\":4,\"createdAt\":1900000600000,\"closedAt\":null,\"closedReason\":null,\"sourceJobId\":null,\"openQuestions\":[],\"effectiveHorizon\":\"now\",\"ready\":true,\"blockedBy\":null,\"children\":{\"total\":0,\"closed\":0},\"subtree\":{\"items\":0,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}}],\"progress\":{\"now\":2,\"next\":0,\"later\":0,\"someday\":0,\"unplaced\":0,\"delivered\":0}}\n"
+  },
+  {
+   "id": "jobs-dispatch",
+   "says": "a dispatch is 201 with the capability; a claude build under a codex lease owes a review",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-1\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"created\":true,\"state\":\"reserved\",\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\"}\n"
+  },
+  {
+   "id": "jobs-dispatch-replay",
+   "says": "the same key again is 200 without the capability",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-1\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"created\":false,\"state\":\"reserved\",\"capability\":null}\n"
+  },
+  {
+   "id": "jobs-dispatch-undeclared-role",
+   "says": "a role nobody declared",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"wizard\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-2\"}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no role wizard is declared on this broker; a ceiling is declared before it is used, never in the dispatch that benefits from it\",\"recovery\":\"declare the role first with POST /v1/roles (it takes administer), or check the name against GET /v1/roles; nothing was dispatched\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_role\",\"mission\":\"tx-work\"}}\n"
+  },
+  {
+   "id": "jobs-dispatch-unknown-item",
+   "says": "an item that does not exist",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-3\",\"workItemId\":\"not-an-item\"}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no work item not-an-item in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/work; nothing was dispatched\",\"retryable\":false,\"details\":{\"refusal\":\"item_unknown\",\"mission\":\"tx-work\",\"missing\":[\"not-an-item\"]}}\n"
+  },
+  {
+   "id": "jobs-attach-wrong-capability",
+   "says": "the wrong job secret",
+   "route": "POST /v1/missions/:mission/jobs/attach",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/attach",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"capability\":\"not-it\"},\"providerRunId\":\"run-1\"}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"the presented capability is not job 00000000-0000-4000-8000-000000000005's\",\"recovery\":\"present the capability POST /v1/missions/<mission>/jobs handed back when this job was created; it is issued once and never re-issued\",\"retryable\":false,\"details\":{\"refusal\":\"invalid_job_capability\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000005\"]}}\n"
+  },
+  {
+   "id": "jobs-attach",
+   "says": "the worker attaches and gets the brief",
+   "route": "POST /v1/missions/:mission/jobs/attach",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/attach",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\"},\"providerRunId\":\"run-1\",\"worktree\":{\"path\":\"/tmp/wt\",\"branch\":\"lane/a\"}}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"ok\":true,\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"task\":\"do it\",\"role\":\"builder\",\"laneId\":\"lane-a\",\"base\":\"main\",\"head\":\"abc123\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"answersQuestionId\":null,\"deadline\":1900000960000,\"resumeFrom\":null}\n"
+  },
+  {
+   "id": "jobs-attach-again",
+   "says": "attaching a running job again",
+   "route": "POST /v1/missions/:mission/jobs/attach",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/attach",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\"},\"providerRunId\":\"run-1\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000005 is running, not reserved\",\"recovery\":\"read GET /v1/missions/<mission>/jobs/<job> for the state it is in; take a job up with .../jobs/attach before reporting on it\",\"retryable\":false,\"details\":{\"refusal\":\"wrong_job_state\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000005\"]}}\n"
+  },
+  {
+   "id": "jobs-progress",
+   "says": "a progress note",
+   "route": "POST /v1/missions/:mission/jobs/progress",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/progress",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\"},\"note\":\"halfway  there\\tand  going\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"deadline\":1900000960000}\n"
+  },
+  {
+   "id": "jobs-finish",
+   "says": "completed",
+   "route": "POST /v1/missions/:mission/jobs/finish",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/finish",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\"},\"status\":\"completed\",\"output\":\"built it\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"review_pending\",\"subject\":null}\n"
+  },
+  {
+   "id": "jobs-finish-again",
+   "says": "a settled job",
+   "route": "POST /v1/missions/:mission/jobs/finish",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/finish",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\"},\"status\":\"completed\",\"output\":\"again\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000005 is review_pending, not running\",\"recovery\":\"read GET /v1/missions/<mission>/jobs/<job> for the state it is in; take a job up with .../jobs/attach before reporting on it\",\"retryable\":false,\"details\":{\"refusal\":\"wrong_job_state\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000005\"]}}\n"
+  },
+  {
+   "id": "jobs-list",
+   "says": "the job list and its digest",
+   "route": "GET /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobs\":[{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"review_pending\",\"dispatchKey\":\"k-1\",\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"codex\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":null,\"review\":null,\"providerRunId\":\"run-1\",\"dispatchedAt\":1900000660000,\"startedAt\":1900000660000,\"settledAt\":null,\"resultStatus\":\"completed\",\"resultReadAt\":null,\"lastSeenAt\":1900000720000,\"lastLine\":\"parked: waiting on a review verdict\"}],\"digest\":\"f6984354\"}\n"
+  },
+  {
+   "id": "jobs-read",
+   "says": "one job",
+   "route": "GET /v1/missions/:mission/jobs/:job",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-work/jobs/00000000-0000-4000-8000-000000000005",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"job\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"review_pending\",\"dispatchKey\":\"k-1\",\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"codex\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":null,\"review\":null,\"providerRunId\":\"run-1\",\"dispatchedAt\":1900000660000,\"startedAt\":1900000660000,\"settledAt\":null,\"resultStatus\":\"completed\",\"resultReadAt\":null,\"lastSeenAt\":1900000720000,\"lastLine\":\"parked: waiting on a review verdict\"},\"progress\":[{\"at\":1900000660000,\"text\":\"halfway there and going\"},{\"at\":1900000720000,\"text\":\"parked: waiting on a review verdict\"}]}\n"
+  },
+  {
+   "id": "jobs-read-unknown",
+   "says": "a job that does not exist",
+   "route": "GET /v1/missions/:mission/jobs/:job",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-work/jobs/not-a-job",
+    "body": null
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no job not-a-job in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/jobs; nothing was changed\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_job\",\"mission\":\"tx-work\",\"missing\":[\"not-a-job\"]}}\n"
+  },
+  {
+   "id": "jobs-result",
+   "says": "the result, read once",
+   "route": "GET /v1/missions/:mission/jobs/:job/result",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-work/jobs/00000000-0000-4000-8000-000000000005/result",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"ok\":true,\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"review_pending\",\"status\":\"completed\",\"output\":\"built it\",\"error\":null,\"readAt\":1900000720000}\n"
+  },
+  {
+   "id": "jobs-dispatch-review",
+   "says": "a review of the claude build",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"reviewer\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-5\",\"reviewsJobId\":\"00000000-0000-4000-8000-000000000005\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"created\":true,\"state\":\"reserved\",\"capability\":\"pyqtMLM2uTy_QsVIy07RVNda3WDjZuls73L1ePt-AYQ\"}\n"
+  },
+  {
+   "id": "jobs-attach-review",
+   "says": "the reviewer attaches",
+   "route": "POST /v1/missions/:mission/jobs/attach",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/attach",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"capability\":\"pyqtMLM2uTy_QsVIy07RVNda3WDjZuls73L1ePt-AYQ\"},\"providerRunId\":\"run-2\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"ok\":true,\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"task\":\"do it\\n\\nFinish with your verdict on its own final line: the word VERDICT in capitals, a colon, then either PASS or REJECT in capitals. Nothing else on that line. That line is read literally by the broker, in that exact form, whatever language the rest of your review is written in. A translated or reworded verdict cannot be read, and the work you reviewed stays parked as though you never ruled.\",\"role\":\"reviewer\",\"laneId\":\"lane-a\",\"base\":\"main\",\"head\":\"abc123\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":\"00000000-0000-4000-8000-000000000005\",\"answersQuestionId\":null,\"deadline\":1900001080000,\"resumeFrom\":null}\n"
+  },
+  {
+   "id": "jobs-dispatch-review-contended",
+   "says": "a second review while one runs",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"reviewer\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-6\",\"reviewsJobId\":\"00000000-0000-4000-8000-000000000005\"}"
+   },
+   "status": 409,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": "2"
+   },
+   "body": "{\"error\":\"CONFLICT\",\"message\":\"job 00000000-0000-4000-8000-000000000006 already holds the review of 00000000-0000-4000-8000-000000000005\",\"recovery\":\"another reviewer holds this artifact; wait for it to rule and re-send the same body — a reviewer that dies without a readable verdict frees the slot\",\"retryable\":true,\"details\":{\"refusal\":\"review_taken\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000006\"]}}\n"
+  },
+  {
+   "id": "jobs-dispatch-review-own-item",
+   "says": "a review that names its own item",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"reviewer\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-7\",\"reviewsJobId\":\"00000000-0000-4000-8000-000000000005\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"a job answers a question, rules on another job, or serves an item — never two; one dispatch, one bind\",\"recovery\":\"send ONE of answersQuestionId, reviewsJobId and workItemId, whichever names what this job is for; details.missing lists the ones you sent. An answer job serves the QUESTION, not the item it parks; a review serves whatever its SUBJECT served, and the broker reads that off the subject's own row rather than taking your word for it — so drop workItemId and read it back from GET /v1/missions/<mission>/jobs/<job>. Nothing was dispatched\",\"retryable\":false,\"details\":{\"refusal\":\"one_bind_only\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000005\",\"00000000-0000-4000-8000-000000000002\"]}}\n"
+  },
+  {
+   "id": "jobs-finish-review",
+   "says": "the verdict",
+   "route": "POST /v1/missions/:mission/jobs/finish",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/finish",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"capability\":\"pyqtMLM2uTy_QsVIy07RVNda3WDjZuls73L1ePt-AYQ\"},\"status\":\"completed\",\"output\":\"VERDICT: PASS\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"state\":\"completed\",\"subject\":{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"completed\"}}\n"
+  },
+  {
+   "id": "work-adopt",
+   "says": "the build proposes a part and a follow-on",
+   "route": "POST /v1/missions/:mission/work/adopt",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/adopt",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"items\":[{\"title\":\"adopted part\",\"intent\":\"x\",\"relation\":\"part\"},{\"title\":\"adopted follow\",\"intent\":\"y\",\"relation\":\"follow_on\",\"horizon\":\"later\"}]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"workItemIds\":[\"00000000-0000-4000-8000-000000000007\",\"00000000-0000-4000-8000-000000000008\"]}\n"
+  },
+  {
+   "id": "work-adopt-from-review",
+   "says": "a review proposes nothing",
+   "route": "POST /v1/missions/:mission/work/adopt",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/adopt",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"items\":[{\"title\":\"x\",\"intent\":\"y\",\"relation\":\"part\"}]}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000006 is a review and proposes no decomposition\",\"recovery\":\"a review rules on work; it does not propose the breakdown of it. Adopt from the job that did the work, or file the items with POST /v1/missions/<mission>/work\",\"retryable\":false,\"details\":{\"refusal\":\"adopt_source_is_review\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000006\"]}}\n"
+  },
+  {
+   "id": "work-adopt-unknown-job",
+   "says": "an unknown job",
+   "route": "POST /v1/missions/:mission/work/adopt",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/adopt",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"jobId\":\"not-a-job\",\"items\":[{\"title\":\"x\",\"intent\":\"y\",\"relation\":\"part\"}]}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no job not-a-job in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/jobs; nothing was filed\",\"retryable\":false,\"details\":{\"refusal\":\"adopt_source_unknown\",\"mission\":\"tx-work\",\"missing\":[\"not-a-job\"]}}\n"
+  },
+  {
+   "id": "jobs-cancel-settled",
+   "says": "cancelling a settled job",
+   "route": "POST /v1/missions/:mission/jobs/cancel",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/cancel",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"jobId\":\"00000000-0000-4000-8000-000000000005\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000005 settled as completed and takes no more writes\",\"recovery\":\"STOP WORKING ON THIS JOB. It was called off or already ended; nothing you report will be recorded. Read GET /v1/missions/<mission>/jobs/<job> to see how it ended\",\"retryable\":false,\"details\":{\"refusal\":\"job_settled\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000005\"]}}\n"
+  },
+  {
+   "id": "work-adopt-again",
+   "says": "a job's proposal is adopted once",
+   "route": "POST /v1/missions/:mission/work/adopt",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work/adopt",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"items\":[{\"title\":\"x\",\"intent\":\"y\",\"relation\":\"part\"}]}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000005's decomposition was already adopted\",\"recovery\":\"this job's decomposition was already adopted: read GET /v1/missions/<mission>/work to see what came in, and file anything further with POST /v1/missions/<mission>/work — nothing was filed\",\"retryable\":false,\"details\":{\"refusal\":\"adopt_already\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000007\"]}}\n"
+  },
+  {
+   "id": "jobs-dispatch-to-cancel",
+   "says": "a job to cancel",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-8\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000009\",\"created\":true,\"state\":\"reserved\",\"capability\":\"x0rNUNNW2VzfYuVo627xdPd6_YADhgmMD5IVmBueIaQ\"}\n"
+  },
+  {
+   "id": "jobs-attach-to-cancel",
+   "says": "attached",
+   "route": "POST /v1/missions/:mission/jobs/attach",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/attach",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000009\",\"capability\":\"x0rNUNNW2VzfYuVo627xdPd6_YADhgmMD5IVmBueIaQ\"},\"providerRunId\":\"run-3\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"ok\":true,\"jobId\":\"00000000-0000-4000-8000-000000000009\",\"task\":\"do it\",\"role\":\"builder\",\"laneId\":\"lane-a\",\"base\":\"main\",\"head\":\"abc123\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"answersQuestionId\":null,\"deadline\":1900001200000,\"resumeFrom\":null}\n"
+  },
+  {
+   "id": "jobs-cancel",
+   "says": "cancelled",
+   "route": "POST /v1/missions/:mission/jobs/cancel",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/cancel",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"jobId\":\"00000000-0000-4000-8000-000000000009\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-000000000009\",\"state\":\"cancelled\"}\n"
+  },
+  {
+   "id": "jobs-progress-after-cancel",
+   "says": "the cancelled worker is told to stop",
+   "route": "POST /v1/missions/:mission/jobs/progress",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/progress",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-000000000009\",\"capability\":\"x0rNUNNW2VzfYuVo627xdPd6_YADhgmMD5IVmBueIaQ\"},\"note\":\"still going\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"job 00000000-0000-4000-8000-000000000009 settled as cancelled and takes no more writes\",\"recovery\":\"STOP WORKING ON THIS JOB. It was called off or already ended; nothing you report will be recorded. Read GET /v1/missions/<mission>/jobs/<job> to see how it ended\",\"retryable\":false,\"details\":{\"refusal\":\"job_settled\",\"mission\":\"tx-work\",\"missing\":[\"00000000-0000-4000-8000-000000000009\"]}}\n"
+  },
+  {
+   "id": "jobs-dispatch-silent",
+   "says": "a job whose worker goes silent",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"task\":\"do it\",\"workerProvider\":\"claude\",\"dispatchKey\":\"k-9\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobId\":\"00000000-0000-4000-8000-00000000000a\",\"created\":true,\"state\":\"reserved\",\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\"}\n"
+  },
+  {
+   "id": "jobs-attach-silent",
+   "says": "attached, with a deadline",
+   "route": "POST /v1/missions/:mission/jobs/attach",
+   "principal": "svc:executord-mac",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/jobs/attach",
+    "body": "{\"authority\":{\"jobId\":\"00000000-0000-4000-8000-00000000000a\",\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\"},\"providerRunId\":\"run-4\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"ok\":true,\"jobId\":\"00000000-0000-4000-8000-00000000000a\",\"task\":\"do it\",\"role\":\"builder\",\"laneId\":\"lane-a\",\"base\":\"main\",\"head\":\"abc123\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"answersQuestionId\":null,\"deadline\":1900001260000,\"resumeFrom\":null}\n"
+  },
+  {
+   "id": "jobs-list-after-alarm",
+   "says": "the orphan, read back",
+   "route": "GET /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-work/jobs",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"jobs\":[{\"jobId\":\"00000000-0000-4000-8000-000000000005\",\"state\":\"completed\",\"dispatchKey\":\"k-1\",\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"codex\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":null,\"review\":{\"by\":\"00000000-0000-4000-8000-000000000006\",\"verdict\":\"pass\",\"passed\":true},\"providerRunId\":\"run-1\",\"dispatchedAt\":1900000660000,\"startedAt\":1900000660000,\"settledAt\":1900000780000,\"resultStatus\":\"completed\",\"resultReadAt\":1900000720000,\"lastSeenAt\":1900000720000,\"lastLine\":\"parked: waiting on a review verdict\"},{\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"state\":\"completed\",\"dispatchKey\":\"k-5\",\"laneId\":\"lane-a\",\"role\":\"reviewer\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"codex\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":\"00000000-0000-4000-8000-000000000005\",\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":\"pass\",\"review\":null,\"providerRunId\":\"run-2\",\"dispatchedAt\":1900000780000,\"startedAt\":1900000780000,\"settledAt\":1900000780000,\"resultStatus\":\"completed\",\"resultReadAt\":null,\"lastSeenAt\":null,\"lastLine\":null},{\"jobId\":\"00000000-0000-4000-8000-000000000009\",\"state\":\"cancelled\",\"dispatchKey\":\"k-8\",\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"codex\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":null,\"review\":null,\"providerRunId\":\"run-3\",\"dispatchedAt\":1900000900000,\"startedAt\":1900000900000,\"settledAt\":1900000900000,\"resultStatus\":null,\"resultReadAt\":null,\"lastSeenAt\":1900000900000,\"lastLine\":\"stopped: the orchestrator called this job off\"},{\"jobId\":\"00000000-0000-4000-8000-00000000000a\",\"state\":\"orphaned\",\"dispatchKey\":\"k-9\",\"laneId\":\"lane-a\",\"role\":\"builder\",\"base\":\"main\",\"head\":\"abc123\",\"workerProvider\":\"claude\",\"dispatchedBy\":\"codex\",\"workItemId\":\"00000000-0000-4000-8000-000000000002\",\"reviewsJobId\":null,\"resumesJobId\":null,\"answersQuestionId\":null,\"reviewVerdict\":null,\"review\":null,\"providerRunId\":\"run-4\",\"dispatchedAt\":1900000960000,\"startedAt\":1900000960000,\"settledAt\":1900001260000,\"resultStatus\":null,\"resultReadAt\":null,\"lastSeenAt\":1900001260000,\"lastLine\":\"stopped: nothing has spoken for this job inside its window\"}],\"digest\":\"d1406873\"}\n"
+  },
+  {
+   "id": "work-add-after-expiry",
+   "says": "the expired lease guards the work list",
+   "route": "POST /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-work/work",
+    "body": "{\"authority\":{\"capability\":\"J6otsDO2Obw_wkXIS85R1FfaXeBj5mnsb_J1-Hv-gQQ\",\"fencingToken\":1},\"items\":[{\"title\":\"x\",\"intent\":\"y\"}]}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"this lease expired; the mission may have changed hands since\",\"recovery\":\"this identity may not do this; if it is a lease refusal, claim the mission again before writing\",\"retryable\":false,\"details\":{\"refusal\":\"lease_expired\",\"mission\":\"tx-work\",\"owner\":null}}\n"
+  },
+  {
+   "id": "attention-work",
+   "says": "what the work mission is waiting on",
+   "route": "GET /v1/missions/:mission/attention",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-work/attention",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"attention\":{\"awaitingReview\":[],\"openQuestions\":[],\"answeredNotActed\":[],\"stalled\":[],\"settledUnread\":[{\"jobId\":\"00000000-0000-4000-8000-000000000006\",\"role\":\"reviewer\",\"state\":\"completed\",\"settledAgoMs\":1020000}],\"unwatched\":[],\"roundDrained\":null,\"quiet\":false},\"digest\":\"d1406873\",\"changed\":false}\n"
+  },
+  {
+   "id": "ask-claim",
+   "says": "the question mission's lease",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/lease",
+    "body": "{\"provider\":\"claude\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"heartbeatDeadline\":1900002700000}\n"
+  },
+  {
+   "id": "ask-add",
+   "says": "two items",
+   "route": "POST /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"items\":[{\"title\":\"split the gate\",\"intent\":\"because\",\"horizon\":\"now\"},{\"title\":\"the other\",\"intent\":\"x\",\"horizon\":\"now\"}]}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"workItemIds\":[\"00000000-0000-4000-8000-00000000000b\",\"00000000-0000-4000-8000-00000000000c\"]}\n"
+  },
+  {
+   "id": "questions-ask",
+   "says": "a question",
+   "route": "POST /v1/missions/:mission/work/questions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"one door or two?\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000d\"}\n"
+  },
+  {
+   "id": "questions-ask-unknown-item",
+   "says": "an item that does not exist",
+   "route": "POST /v1/missions/:mission/work/questions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"workItemId\":\"not-an-item\",\"question\":\"?\"}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no work item not-an-item in this mission\",\"recovery\":\"check the id against GET /v1/missions/<mission>/work; nothing was asked\",\"retryable\":false,\"details\":{\"refusal\":\"question_item_unknown\",\"mission\":\"tx-ask\",\"missing\":[\"not-an-item\"]}}\n"
+  },
+  {
+   "id": "questions-dispatch-blocked",
+   "says": "a dispatch onto the parked item names the question",
+   "route": "POST /v1/missions/:mission/jobs",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/jobs",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"laneId\":\"l\",\"role\":\"builder\",\"dispatchKey\":\"k-blocked\",\"base\":\"main\",\"head\":\"abc\",\"task\":\"build it\",\"workerProvider\":\"claude\",\"workItemId\":\"00000000-0000-4000-8000-00000000000b\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"work item 00000000-0000-4000-8000-00000000000b is waiting on an unanswered question\",\"recovery\":\"answer the question named in details.missing with POST /v1/missions/<mission>/work/questions/answer, or take it back with .../questions/withdraw; until then this item is the owner's and nothing on it dispatches — the rest of the mission still can\",\"retryable\":false,\"details\":{\"refusal\":\"item_blocked\",\"mission\":\"tx-ask\",\"missing\":[\"00000000-0000-4000-8000-00000000000d\"]}}\n"
+  },
+  {
+   "id": "questions-delegate",
+   "says": "delegated to codex",
+   "route": "POST /v1/missions/:mission/work/questions/delegate",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/delegate",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"provider\":\"codex\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"delegatedTo\":\"codex\"}\n"
+  },
+  {
+   "id": "questions-answer-by-holder",
+   "says": "the holder at the owner's door",
+   "route": "POST /v1/missions/:mission/work/questions/answer",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/answer",
+    "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"answer\":\"two\"}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"human:adnan@wapps.co has held this mission's lease since this question was asked; an orchestrator does not answer its own question — relay it instead, and let somebody else confirm\",\"recovery\":\"you hold this mission, so this answer would be your own: relay it with POST /v1/missions/<mission>/work/questions/relay, and it unblocks the work at once — somebody else vouches for it later with .../questions/confirm\",\"retryable\":false,\"details\":{\"refusal\":\"answer_from_holder\",\"mission\":\"tx-ask\"}}\n"
+  },
+  {
+   "id": "questions-answer",
+   "says": "the owner answers",
+   "route": "POST /v1/missions/:mission/work/questions/answer",
+   "principal": "human:owner@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/answer",
+    "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"answer\":\"two\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"answeredBy\":\"owner\"}\n"
+  },
+  {
+   "id": "questions-answer-again",
+   "says": "an answered question",
+   "route": "POST /v1/missions/:mission/work/questions/answer",
+   "principal": "human:owner@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/answer",
+    "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"answer\":\"three\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"question 00000000-0000-4000-8000-00000000000d was already answered by owner\",\"recovery\":\"read GET /v1/missions/<mission>/work/questions for the answer and how it arrived; a question is answered once and never edited\",\"retryable\":false,\"details\":{\"refusal\":\"question_answered\",\"mission\":\"tx-ask\",\"missing\":[\"00000000-0000-4000-8000-00000000000d\"]}}\n"
+  },
+  {
+   "id": "questions-ask-relay",
+   "says": "a question",
+   "route": "POST /v1/missions/:mission/work/questions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"ship it?\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000e\"}\n"
+  },
+  {
+   "id": "questions-relay",
+   "says": "the orchestrator relays the owner's words",
+   "route": "POST /v1/missions/:mission/work/questions/relay",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/relay",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"questionId\":\"00000000-0000-4000-8000-00000000000e\",\"answer\":\"yes\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000e\",\"answeredBy\":\"relay\",\"confirmationRequiredBeforeRelease\":true}\n"
+  },
+  {
+   "id": "lease-release-unconfirmed",
+   "says": "release waits for the relay to be vouched for",
+   "route": "POST /v1/missions/:mission/lease/release",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/lease/release",
+    "body": "{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"question 00000000-0000-4000-8000-00000000000e carries an answer human:adnan@wapps.co attributed to the owner, and nobody has vouched for it\",\"recovery\":\"have an identity other than the relayer vouch for it with POST /v1/missions/<mission>/work/questions/confirm; the work already flowed on that answer, and this is where it is squared up\",\"retryable\":false,\"details\":{\"refusal\":\"unconfirmed_relay\",\"mission\":\"tx-ask\",\"missing\":[\"00000000-0000-4000-8000-00000000000e\"]}}\n"
+  },
+  {
+   "id": "questions-confirm",
+   "says": "the owner vouches",
+   "route": "POST /v1/missions/:mission/work/questions/confirm",
+   "principal": "human:owner@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/confirm",
+    "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000e\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000e\",\"confirmedBy\":\"human:owner@wapps.co\"}\n"
+  },
+  {
+   "id": "questions-confirm-again",
+   "says": "a relay vouched for twice",
+   "route": "POST /v1/missions/:mission/work/questions/confirm",
+   "principal": "human:owner@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/confirm",
+    "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000e\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"question 00000000-0000-4000-8000-00000000000e was already confirmed\",\"recovery\":\"this relay was already vouched for; read GET /v1/missions/<mission>/work/questions to see by whom\",\"retryable\":false,\"details\":{\"refusal\":\"already_confirmed\",\"mission\":\"tx-ask\",\"missing\":[\"00000000-0000-4000-8000-00000000000e\"]}}\n"
+  },
+  {
+   "id": "questions-ask-proposal",
+   "says": "a question",
+   "route": "POST /v1/missions/:mission/work/questions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"which name?\",\"proposal\":\"öneri 🚀 burada\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000f\"}\n"
+  },
+  {
+   "id": "questions-work-digest",
+   "says": "the work list carries the proposal's digest",
+   "route": "GET /v1/missions/:mission/work",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-ask/work",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"items\":[{\"id\":\"00000000-0000-4000-8000-00000000000b\",\"parentId\":null,\"horizon\":\"now\",\"discoveredFrom\":null,\"title\":\"split the gate\",\"intent\":\"because\",\"position\":1,\"createdAt\":1900002400000,\"closedAt\":null,\"closedReason\":null,\"sourceJobId\":null,\"openQuestions\":[{\"id\":\"00000000-0000-4000-8000-00000000000f\",\"question\":\"which name?\",\"raisedAt\":1900002400000,\"proposal\":\"öneri 🚀 burada\",\"proposalDigest\":\"fd785d45\",\"delegateProvider\":null}],\"effectiveHorizon\":\"now\",\"ready\":false,\"blockedBy\":\"00000000-0000-4000-8000-00000000000f\",\"children\":{\"total\":0,\"closed\":0},\"subtree\":{\"items\":0,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}},{\"id\":\"00000000-0000-4000-8000-00000000000c\",\"parentId\":null,\"horizon\":\"now\",\"discoveredFrom\":null,\"title\":\"the other\",\"intent\":\"x\",\"position\":2,\"createdAt\":1900002400000,\"closedAt\":null,\"closedReason\":null,\"sourceJobId\":null,\"openQuestions\":[],\"effectiveHorizon\":\"now\",\"ready\":true,\"blockedBy\":null,\"children\":{\"total\":0,\"closed\":0},\"subtree\":{\"items\":0,\"closedItems\":0},\"jobs\":{\"total\":0,\"live\":0}}],\"progress\":{\"now\":2,\"next\":0,\"later\":0,\"someday\":0,\"unplaced\":0,\"delivered\":0}}\n"
+  },
+  {
+   "id": "questions-accept-wrong-digest",
+   "says": "a digest that is not the proposal's",
+   "route": "POST /v1/missions/:mission/work/questions/accept",
+   "principal": "human:owner@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/accept",
+    "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000f\",\"digest\":\"00000000\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"the digest presented is not the one on file for question 00000000-0000-4000-8000-00000000000f\",\"recovery\":\"send the digest GET /v1/missions/<mission>/work/questions gives for this question; the digest exists so that what you read is what you accept\",\"retryable\":false,\"details\":{\"refusal\":\"proposal_changed\",\"mission\":\"tx-ask\",\"missing\":[\"00000000-0000-4000-8000-00000000000f\"]}}\n"
+  },
+  {
+   "id": "questions-accept",
+   "says": "the proposal, accepted as read",
+   "route": "POST /v1/missions/:mission/work/questions/accept",
+   "principal": "human:owner@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/accept",
+    "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000f\",\"digest\":\"fd785d45\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-00000000000f\",\"answeredBy\":\"proposal\",\"answer\":\"öneri 🚀 burada\"}\n"
+  },
+  {
+   "id": "questions-ask-withdraw",
+   "says": "a question",
+   "route": "POST /v1/missions/:mission/work/questions",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"never mind?\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-000000000010\"}\n"
+  },
+  {
+   "id": "questions-withdraw",
+   "says": "withdrawn, with a reason",
+   "route": "POST /v1/missions/:mission/work/questions/withdraw",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/withdraw",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"questionId\":\"00000000-0000-4000-8000-000000000010\",\"reason\":\"answered elsewhere\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questionId\":\"00000000-0000-4000-8000-000000000010\",\"withdrawn\":true}\n"
+  },
+  {
+   "id": "questions-withdraw-again",
+   "says": "a withdrawn question",
+   "route": "POST /v1/missions/:mission/work/questions/withdraw",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/work/questions/withdraw",
+    "body": "{\"authority\":{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1},\"questionId\":\"00000000-0000-4000-8000-000000000010\",\"reason\":\"again\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"question 00000000-0000-4000-8000-000000000010 was withdrawn and is nobody's to decide\",\"recovery\":\"this question was taken back and is nobody's to decide: ask a new one with POST /v1/missions/<mission>/work/questions\",\"retryable\":false,\"details\":{\"refusal\":\"question_withdrawn\",\"mission\":\"tx-ask\",\"missing\":[\"00000000-0000-4000-8000-000000000010\"]}}\n"
+  },
+  {
+   "id": "questions-list",
+   "says": "every question, every channel",
+   "route": "GET /v1/missions/:mission/work/questions",
+   "principal": "human:owner@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-ask/work/questions",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"questions\":[{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"one door or two?\",\"proposal\":null,\"proposalDigest\":null,\"raisedAt\":1900002400000,\"delegateProvider\":\"codex\",\"answeredAt\":1900002400000,\"answer\":\"two\",\"answeredBy\":\"owner\",\"answeredByPrincipal\":\"human:owner@wapps.co\",\"answerJobId\":null,\"confirmedAt\":null,\"confirmedBy\":null,\"withdrawnAt\":null,\"withdrawnReason\":null},{\"questionId\":\"00000000-0000-4000-8000-00000000000e\",\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"ship it?\",\"proposal\":null,\"proposalDigest\":null,\"raisedAt\":1900002400000,\"delegateProvider\":null,\"answeredAt\":1900002400000,\"answer\":\"yes\",\"answeredBy\":\"relay\",\"answeredByPrincipal\":\"human:adnan@wapps.co\",\"answerJobId\":null,\"confirmedAt\":1900002400000,\"confirmedBy\":\"human:owner@wapps.co\",\"withdrawnAt\":null,\"withdrawnReason\":null},{\"questionId\":\"00000000-0000-4000-8000-00000000000f\",\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"which name?\",\"proposal\":\"öneri 🚀 burada\",\"proposalDigest\":\"fd785d45\",\"raisedAt\":1900002400000,\"delegateProvider\":null,\"answeredAt\":1900002400000,\"answer\":\"öneri 🚀 burada\",\"answeredBy\":\"proposal\",\"answeredByPrincipal\":\"human:owner@wapps.co\",\"answerJobId\":null,\"confirmedAt\":null,\"confirmedBy\":null,\"withdrawnAt\":null,\"withdrawnReason\":null},{\"questionId\":\"00000000-0000-4000-8000-000000000010\",\"workItemId\":\"00000000-0000-4000-8000-00000000000b\",\"question\":\"never mind?\",\"proposal\":null,\"proposalDigest\":null,\"raisedAt\":1900002400000,\"delegateProvider\":null,\"answeredAt\":null,\"answer\":null,\"answeredBy\":null,\"answeredByPrincipal\":null,\"answerJobId\":null,\"confirmedAt\":null,\"confirmedBy\":null,\"withdrawnAt\":1900002400000,\"withdrawnReason\":\"answered elsewhere\"}]}\n"
+  },
+  {
+   "id": "attention",
+   "says": "the standing obligations",
+   "route": "GET /v1/missions/:mission/attention",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-ask/attention",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"attention\":{\"awaitingReview\":[],\"openQuestions\":[],\"answeredNotActed\":[{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"item\":\"split the gate\",\"answeredAgoMs\":0},{\"questionId\":\"00000000-0000-4000-8000-00000000000e\",\"item\":\"split the gate\",\"answeredAgoMs\":0},{\"questionId\":\"00000000-0000-4000-8000-00000000000f\",\"item\":\"split the gate\",\"answeredAgoMs\":0}],\"stalled\":[],\"settledUnread\":[],\"unwatched\":[],\"roundDrained\":null,\"quiet\":false},\"digest\":\"f117d7be\",\"changed\":false}\n"
+  },
+  {
+   "id": "attention-since",
+   "says": "the same digest presented back",
+   "route": "GET /v1/missions/:mission/attention",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-ask/attention?since=f117d7be",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"attention\":{\"awaitingReview\":[],\"openQuestions\":[],\"answeredNotActed\":[{\"questionId\":\"00000000-0000-4000-8000-00000000000d\",\"item\":\"split the gate\",\"answeredAgoMs\":60000},{\"questionId\":\"00000000-0000-4000-8000-00000000000e\",\"item\":\"split the gate\",\"answeredAgoMs\":60000},{\"questionId\":\"00000000-0000-4000-8000-00000000000f\",\"item\":\"split the gate\",\"answeredAgoMs\":60000}],\"stalled\":[],\"settledUnread\":[],\"unwatched\":[],\"roundDrained\":null,\"quiet\":false},\"digest\":\"f117d7be\",\"changed\":false}\n"
+  },
+  {
+   "id": "lease-release-confirmed",
+   "says": "now the release passes",
+   "route": "POST /v1/missions/:mission/lease/release",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-ask/lease/release",
+    "body": "{\"capability\":\"hwqNEJMWmRyfIqUoqy6xNLc6vUDDRslMz1LVWNte4WQ\",\"fencingToken\":1}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"released\":true,\"fencingToken\":1}\n"
+  },
+  {
+   "id": "hand-claim",
+   "says": "the handover mission's lease",
+   "route": "POST /v1/missions/:mission/lease",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/lease",
+    "body": "{\"provider\":\"claude\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"authority\":{\"capability\":\"R8pN0FPWWdxf4mXoa-5x9Hf6fQCDBokMjxKVGJseoSQ\",\"fencingToken\":1},\"heartbeatDeadline\":1900003300000}\n"
+  },
+  {
+   "id": "handoff-prepare",
+   "says": "a package for codex",
+   "route": "POST /v1/missions/:mission/handoff",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff",
+    "body": "{\"authority\":{\"capability\":\"R8pN0FPWWdxf4mXoa-5x9Hf6fQCDBokMjxKVGJseoSQ\",\"fencingToken\":1},\"targetPrincipal\":\"svc:codex-orchestrator\",\"targetProvider\":\"codex\",\"note\":\"the CHECK on answered_by is next\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"handoffId\":\"00000000-0000-4000-8000-000000000011\",\"targetPrincipal\":\"svc:codex-orchestrator\",\"expiresAt\":1900003600000}\n"
+  },
+  {
+   "id": "handoff-prepare-with-expiry",
+   "says": "no body carries a time",
+   "route": "POST /v1/missions/:mission/handoff",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff",
+    "body": "{\"authority\":{\"capability\":\"R8pN0FPWWdxf4mXoa-5x9Hf6fQCDBokMjxKVGJseoSQ\",\"fencingToken\":1},\"targetPrincipal\":\"svc:codex-orchestrator\",\"targetProvider\":\"codex\",\"note\":\"x\",\"expiresAt\":9999999999999}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"body: Unrecognized key: \\\"expiresAt\\\"\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"body\"}}\n"
+  },
+  {
+   "id": "handoff-prepare-bad-target",
+   "says": "a target the gate could never produce",
+   "route": "POST /v1/missions/:mission/handoff",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff",
+    "body": "{\"authority\":{\"capability\":\"R8pN0FPWWdxf4mXoa-5x9Hf6fQCDBokMjxKVGJseoSQ\",\"fencingToken\":1},\"targetPrincipal\":\"nobody\",\"targetProvider\":\"codex\",\"note\":\"x\"}"
+   },
+   "status": 400,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"INVALID_ARGUMENT\",\"message\":\"targetPrincipal: must be the id an Access token produces\",\"recovery\":\"fix the named field and re-send; the accepted shape is in crates/core/src/broker/body.rs\",\"retryable\":false,\"details\":{\"field\":\"targetPrincipal\"}}\n"
+  },
+  {
+   "id": "handoff-takeover-not-yours",
+   "says": "a principal the package was not written to",
+   "route": "POST /v1/missions/:mission/handoff/takeover",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff/takeover",
+    "body": "{\"handoffId\":\"00000000-0000-4000-8000-000000000011\",\"provider\":\"claude\"}"
+   },
+   "status": 403,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"FORBIDDEN\",\"message\":\"handoff package 00000000-0000-4000-8000-000000000011 was written to a different principal\",\"recovery\":\"this package names a different principal; nothing was transferred, and authority is not handed to a resemblance\",\"retryable\":false,\"details\":{\"refusal\":\"handoff_not_yours\",\"mission\":\"tx-hand\",\"missing\":[\"00000000-0000-4000-8000-000000000011\"]}}\n"
+  },
+  {
+   "id": "handoff-takeover",
+   "says": "the target takes over, with the note",
+   "route": "POST /v1/missions/:mission/handoff/takeover",
+   "principal": "svc:codex-orchestrator",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff/takeover",
+    "body": "{\"handoffId\":\"00000000-0000-4000-8000-000000000011\",\"provider\":\"codex\"}"
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"authority\":{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":2},\"heartbeatDeadline\":1900003360000,\"handoff\":{\"note\":\"the CHECK on answered_by is next\",\"preparedBy\":\"human:adnan@wapps.co\"}}\n"
+  },
+  {
+   "id": "handoff-takeover-again",
+   "says": "a package is taken once",
+   "route": "POST /v1/missions/:mission/handoff/takeover",
+   "principal": "svc:codex-orchestrator",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff/takeover",
+    "body": "{\"handoffId\":\"00000000-0000-4000-8000-000000000011\",\"provider\":\"codex\"}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no handoff package 00000000-0000-4000-8000-000000000011 in this mission\",\"recovery\":\"check the id the outgoing orchestrator handed you; a package that lapsed is gone, and GET /v1/missions/<mission>/lease/ledger shows a HANDOFF_LAPSED line if it did\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_handoff\",\"mission\":\"tx-hand\",\"missing\":[\"00000000-0000-4000-8000-000000000011\"]}}\n"
+  },
+  {
+   "id": "handoff-prepare-to-lapse",
+   "says": "a package nobody takes",
+   "route": "POST /v1/missions/:mission/handoff",
+   "principal": "svc:codex-orchestrator",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff",
+    "body": "{\"authority\":{\"capability\":\"B4oNkBOWGZwfoiWoK64xtDe6PcBDxknMT9JV2FveYeQ\",\"fencingToken\":2},\"targetPrincipal\":\"human:adnan@wapps.co\",\"targetProvider\":\"claude\",\"note\":\"back to you\"}"
+   },
+   "status": 201,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"handoffId\":\"00000000-0000-4000-8000-000000000012\",\"targetPrincipal\":\"human:adnan@wapps.co\",\"expiresAt\":1900003660000}\n"
+  },
+  {
+   "id": "handoff-takeover-lapsed",
+   "says": "a lapsed package is gone",
+   "route": "POST /v1/missions/:mission/handoff/takeover",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "POST",
+    "path": "/v1/missions/tx-hand/handoff/takeover",
+    "body": "{\"handoffId\":\"00000000-0000-4000-8000-000000000012\",\"provider\":\"claude\"}"
+   },
+   "status": 404,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no handoff package 00000000-0000-4000-8000-000000000012 in this mission\",\"recovery\":\"check the id the outgoing orchestrator handed you; a package that lapsed is gone, and GET /v1/missions/<mission>/lease/ledger shows a HANDOFF_LAPSED line if it did\",\"retryable\":false,\"details\":{\"refusal\":\"unknown_handoff\",\"mission\":\"tx-hand\",\"missing\":[\"00000000-0000-4000-8000-000000000012\"]}}\n"
+  },
+  {
+   "id": "ledger-handover",
+   "says": "claim, handover, lapse",
+   "route": "GET /v1/missions/:mission/lease/ledger",
+   "principal": "human:adnan@wapps.co",
+   "request": {
+    "method": "GET",
+    "path": "/v1/missions/tx-hand/lease/ledger",
+    "body": null
+   },
+   "status": 200,
+   "envelope": {
+    "contentType": "application/json; charset=utf-8",
+    "retryAfter": null
+   },
+   "body": "{\"events\":[{\"seq\":1,\"at\":1900003000000,\"kind\":\"CLAIM\",\"ownerId\":\"human:adnan@wapps.co\",\"fencingToken\":1,\"provider\":\"claude\",\"silentSince\":null},{\"seq\":2,\"at\":1900003060000,\"kind\":\"CLAIM\",\"ownerId\":\"svc:codex-orchestrator\",\"fencingToken\":2,\"provider\":\"codex\",\"silentSince\":null},{\"seq\":3,\"at\":1900003660000,\"kind\":\"EXPIRE\",\"ownerId\":\"svc:codex-orchestrator\",\"fencingToken\":2,\"provider\":null,\"silentSince\":1900003060000},{\"seq\":4,\"at\":1900003660000,\"kind\":\"HANDOFF_LAPSED\",\"ownerId\":\"human:adnan@wapps.co\",\"fencingToken\":2,\"provider\":\"claude\",\"silentSince\":null}]}\n"
+  }
+ ]
+}

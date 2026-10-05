@@ -1,0 +1,23 @@
+# The broker daemon's oracle harness (docs/broker-daemon-port.md, slice 13.0).
+#
+# Test support only: no product code, never shipped. It is a crate of its own,
+# not a module of `crates/cli`, so the daemon slices can depend on it as a
+# dev-dependency while the CLI port (lane/cli-s10) changes `crates/cli` and
+# `.goreleaser.yml` without the two lanes touching one file.
+#
+# No new crate enters the graph: serde and serde_json are already in
+# Cargo.lock through `crates/cli`, and the fake cloud speaks HTTP/1.1 over
+# `std::net` rather than through a server crate.
+[package]
+name = "broker-oracle"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "broker-oracle-fake"
+path = "src/bin/broker-oracle-fake.rs"
