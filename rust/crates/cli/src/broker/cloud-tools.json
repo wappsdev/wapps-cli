@@ -213,6 +213,12 @@
             },
             "minItems": 1,
             "maxItems": 500
+          },
+          "operationKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
           }
         },
         "required": [
@@ -466,6 +472,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4000
+          },
+          "operationKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
           }
         },
         "required": [
