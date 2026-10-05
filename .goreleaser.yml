@@ -1,25 +1,36 @@
 version: 2
 project_name: wapps
 
-# The Rust CLI's `--version` is rust/crates/cli/Cargo.toml's version, and that
-# must equal the tag (owner decision, 2026-10-05): a tag Cargo.toml does not
-# carry fails the release here, before anything is built.
+# The release ships the Rust `wapps` (rust/crates/cli); the Go CLI is retired
+# from the release (owner decision 2026-10-05, R0 in docs/broker-daemon-port.md).
+# The Go source stays in the repo as the differential's oracle until the owner
+# retires it; nothing here builds it.
+#
+# `wapps --version` is rust/crates/cli/Cargo.toml's version, and that must
+# equal the tag: a tag Cargo.toml does not carry fails the release here,
+# before anything is built.
 before:
   hooks:
     - sh rust/check-version.sh {{ .Version }}
 
 builds:
   - id: wapps
-    main: ./main.go
+    builder: rust
+    dir: rust
     binary: wapps
-    goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    env:
-      - CGO_ENABLED=0
-    ldflags:
-      # cmd.Version is consumed by rootCmd.Version → enables `wapps --version`.
-      # Previously pointed at main.version which had no matching var (no-op).
-      - -s -w -X github.com/wappsdev/wapps-cli/cmd.Version={{.Version}}
+    # `cargo zigbuild` (GoReleaser's default for Rust): zig is the linker for
+    # every target, so one runner builds all four. The same four platforms the
+    # Go release shipped (v0.23.0: Darwin/Linux x arm64/x86_64). Linux is musl,
+    # a static binary like the CGO_ENABLED=0 Go one, so it runs on any distro.
+    targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - aarch64-unknown-linux-musl
+      - x86_64-unknown-linux-musl
+    flags:
+      - --release
+      - --locked
+      - --package=wapps
 
 archives:
   - formats: [tar.gz]
@@ -33,11 +44,14 @@ archives:
 checksum:
   name_template: 'checksums.txt'
 
-brews:
+# A cask, not a formula: GoReleaser deprecated `brews` (goreleaser check exits
+# 2 on it). The tap still holds the old Formula/wapps.rb; the release that
+# first publishes this cask must also delete that formula and add
+# `tap_migrations.json` to the tap (docs/PORT-kalan-yuzey.md, "Release switch"),
+# so `brew upgrade` moves formula installs over to the cask.
+homebrew_casks:
   - name: wapps
-    # Place wapps.rb under Formula/ per Homebrew tap convention
-    # (default is repo root; mixing with .gitkeep / README in root hides the formula from `brew tap`).
-    directory: Formula
+    directory: Casks
     repository:
       owner: wappsdev
       name: homebrew-tap
@@ -54,11 +68,24 @@ brews:
     # Tab completion (owner decision 2026-10-05, docs/PORT-kalan-yuzey.md
     # §4.2): the scripts are generated at install time from the binary just
     # installed (`wapps completion bash|zsh|fish`), so they always describe
-    # that binary's commands; Homebrew puts them where its bash-completion,
-    # zsh site-functions and fish vendor_completions directories expect them.
-    install: |
-      bin.install "wapps"
-      generate_completions_from_executable(bin/"wapps", "completion", shells: [:bash, :zsh, :fish])
+    # that binary's commands.
+    generate_completions_from_executable:
+      executable: wapps
+      args: [completion]
+      shells: [bash, zsh, fish]
+    # The darwin binaries are not notarized (arm64 is ad-hoc signed by the
+    # linker, x86_64 not at all): while Homebrew's quarantine attribute is on
+    # the file macOS kills it (exit 137). Removed in a PREFLIGHT: Homebrew
+    # runs the completion generation above before any postflight, and that
+    # runs the binary. `preflight_steps`, not GoReleaser's `hooks.pre.install`:
+    # that renders a `preflight do` block, which Homebrew 7.0.7 reports as
+    # deprecated on every install.
+    custom_block: |
+      preflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{" }}staged_path{{ "}}" }}/wapps"]
+        end
+      end
     caveats: |
       Enable the AI-safe "wapps-secrets" skill so coding agents (Claude Code,
       Cursor, Aider) use apply-only secret commands and never read your .env:
@@ -68,5 +95,3 @@ brews:
 
       After a future `brew upgrade wapps`, the skill auto-refreshes on the next
       `wapps` run — no need to re-install.
-    test: |
-      assert_match "wapps", shell_output("#{bin}/wapps --help")

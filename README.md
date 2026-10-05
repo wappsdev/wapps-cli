@@ -20,11 +20,16 @@ brew tap wappsdev/tap
 brew install wapps
 ```
 
-Or:
+`wapps` ships as a Homebrew cask (macOS and Linux, arm64 and x86_64); an
+install that came from the old formula moves to the cask on the next
+`brew update`. Or build it from a checkout:
 
 ```bash
-go install github.com/wappsdev/wapps-cli@latest
+cargo install --locked --path rust/crates/cli
 ```
+
+The released binary is the Rust one under `rust/`. The Go source at the repo
+root is no longer released; it stays as the differential test's oracle.
 
 ## First run
 

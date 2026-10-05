@@ -437,6 +437,8 @@ Sıra **bağımlılık maliyetine** göre, satır sayısına göre değil. Her d
 geçmesi gereken kapı bugün tek ve YEREL: `cargo test` (differential + armcheck
 + helptext + birim testleri), `cargo fmt --check`, `cargo deny check`. CI'da
 Rust kapısı **yok** (ölçüldü, §4.3).
+*Since the release switch:* CI runs fmt, clippy, the full `cargo test
+--release` (ubuntu and macOS) and `cargo deny check`.
 
 Vaka sayıları §3.4'ün mekanik tabanından türetildi: 4 kol × 2 mod = 8, muafiyet
 başına −2, üstüne fiilin kendi hata dalları.
@@ -1547,6 +1549,147 @@ through a temp file). The real GitHub endpoint (never contacted by a test).
 
 ---
 
+### Release switch — ship the Rust binary, retire Go, `brews` → `homebrew_casks` · **RELEASE SWITCH LANDED**
+
+Owner decision 2026-10-05 (R0 in `docs/broker-daemon-port.md` on `main`): when
+the port is done, the release ships the Rust `wapps` and the Go binary leaves
+the release. **Nothing was tagged, pushed or published.** The first real
+pre-release is the owner's call (the command is at the end of this section).
+
+**Measured before the change.** The v0.23.0 release (latest, 2026-08-15)
+carries five assets: `wapps_0.23.0_{Darwin,Linux}_{arm64,x86_64}.tar.gz` and
+`checksums.txt` — Go's `goos [linux, darwin] × goarch [amd64, arm64]`. The tap
+`wappsdev/homebrew-tap` holds `Formula/wapps.rb` and a README, nothing else.
+`goreleaser check` (2.17.1) exited 2 (deprecated `brews`); CI ran no `cargo`
+step.
+
+| | |
+|---|---|
+| build | `.goreleaser.yml` `builds:` has one entry, `builder: rust`, `dir: rust`, `flags: [--release, --locked, --package=wapps]`, through GoReleaser's default `cargo zigbuild`. Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-musl`, `x86_64-unknown-linux-musl` — the same four platforms, the same archive names (`title .Os` / `.Arch` map the triples to `Darwin`/`Linux`, `arm64`/`x86_64`). Linux is **musl**: static, like the `CGO_ENABLED=0` Go binary, so it runs on any distro (measured: `--version` and `completion` on Alpine arm64 and Debian amd64) |
+| Go | Gone from `builds:` and from `release.yml` (no `setup-go`). The Go source stays in the repo as the differential's oracle until the owner retires it; CI still vets, tests and builds it (the `test` job is unchanged) |
+| version | The `before` hook (`sh rust/check-version.sh {{ .Version }}`) is unchanged and now versions the only binary. Measured in a temp clone with a LOCAL tag (no remote to push to): HEAD tagged `v0.23.0` → `release --clean --skip=publish` exit 0, archives `wapps_0.23.0_*`, cask `version "0.23.0"`; HEAD also tagged `v0.24.0` → exit 1 at the hook ("release version 0.24.0 does not match … 0.23.0") |
+| Homebrew | `brews` → `homebrew_casks` (`directory: Casks`): `generate_completions_from_executable` (`wapps completion` for bash/zsh/fish) and a quarantine removal (finding 1). The `test` block and `license` have no cask counterpart and are gone (the cask DSL has neither). `caveats` kept |
+| tap migration | GoReleaser writes only `Casks/wapps.rb`; it neither deletes the formula nor writes `tap_migrations.json`. The first cask release needs one manual commit in `wappsdev/homebrew-tap`: delete `Formula/wapps.rb` and add `tap_migrations.json` = `{"wapps": "wappsdev/tap"}` (finding 3 for why that value) |
+| CI | `ci.yml` gained a `rust` job (ubuntu-latest and macos-latest: `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --release --locked -- --nocapture`, with `setup-go` for the oracle and `zsh` installed on Linux for the Tab driver) and a `deny` job (`EmbarkStudios/cargo-deny-action@v2`). `release.yml` runs on `macos-latest`: darwin builds natively there and the musl targets link with zig, the host this section was proven on. `actionlint` exit 0 on both files |
+| `deny.toml` | `[graph] targets` moved from the two `linux-gnu` triples to the two shipped `linux-musl` ones; `cargo deny check` exit 0 |
+| docs | README install section (cask; `cargo install --locked --path rust/crates/cli` replaces `go install`), CHANGELOG `[Unreleased]` |
+
+**Verified (without publishing).**
+
+- `goreleaser check` exit **0** (was 2). It prints "you are using the experimental Rust builder".
+- `goreleaser release --snapshot --clean --skip=publish` in a temp clone, as
+  asked: exit **1** at the version hook, by design — a snapshot's version
+  (`0.23.0-SNAPSHOT-9bde749`) is not Cargo.toml's. With `--skip=before,publish`:
+  exit 0, 4 m 58 s cold on this machine (other lanes compiling at the same
+  time), four archives, `checksums.txt`, `dist/homebrew/Casks/wapps.rb`;
+  `ruby -c` Syntax OK. Binaries: darwin arm64 4 067 712 B (ad-hoc
+  linker-signed), darwin x86_64 4 591 608 B (unsigned), linux-musl arm64
+  3 585 920 B, x86_64 4 292 096 B, all statically linked on Linux. The Go
+  release binaries built the same way (`-s -w`) are 7 633 826 / 8 316 528 /
+  7 536 802 / 8 163 490 B: the Rust ones are about half.
+- Homebrew 7.0.7's `Utils::ShellCompletion.completion_shell_parameter` +
+  `generate_completion_output` with `brew ruby` against the snapshot's
+  darwin_arm64 binary: exit 0, `bash`/`zsh`/`fish`, 134 512 / 116 335 /
+  81 185 bytes (clap_complete's scripts; cobra's were 16 093 / 7 712 / 9 601).
+- **A real `brew install --cask`** of the rendered cask, changed only in the
+  token (`wappss10test`), `url` (`file://` to the snapshot archive), the link
+  name (`binary "wapps", target: "wapps-s10test"`) and the completion
+  `base_name`, from a throwaway local tap: exit 0, no warning, the three
+  completion files written and byte-identical to `wapps completion <shell>`,
+  no quarantine attribute left, `wapps-s10test --version` → `wapps version
+  0.23.0`. `brew audit --cask --strict` exit 0. `brew style` exit 1 with 19
+  convention offenses, almost all GoReleaser's own template order (`on_arm`
+  before `on_intel`, `version` after the custom block, …); not fixed, a style
+  check is not run on install.
+- **The formula → cask move**, with Homebrew's own `Reporter` (what `brew
+  update` runs) on a throwaway git tap: commit 1 a formula, installed; commit 2
+  deletes it, adds the cask and `tap_migrations.json` `{"<name>": "<tap>"}`.
+  `Reporter#report` → `T: [<tap>/<name>]`, `AC: [<tap>/<name>]`;
+  `migrate_tap_migration` printed "has been migrated from a formula to a cask",
+  unlinked the keg, ran `brew cleanup`, installed the cask (completions
+  written, binary runs). It installs automatically only when the cask is
+  TRUSTED (Homebrew 7's tap trust): measured, `wappsdev/tap` is trusted as a
+  whole tap on this machine, so `wappsdev/tap/wapps` is; on a machine that
+  trusts only the formula, Homebrew prints `brew trust --cask
+  wappsdev/tap/wapps` + `brew install --cask wappsdev/tap/wapps` instead. The
+  old keg stays installed (unlinked) until `brew uninstall --formula --force
+  wapps`.
+- All throwaway casks, the formula, both taps and the trust entry were removed
+  afterwards; the developer's own `wapps` formula (Go 0.23.0) was not touched.
+  Side effect of Homebrew's migration code, not of this slice: its `brew
+  cleanup` removed an outdated `xz` 5.8.3 keg (5.8.4 stays), a stale
+  portable-ruby and bootsnap caches.
+
+**Findings.**
+
+1. *The quarantine must go in a PREFLIGHT, not the post-install hook the plan
+   named.* Measured: a quarantined copy of the darwin arm64 binary is killed
+   (exit 137, `spctl`: rejected). Homebrew orders a cask's artifacts so that
+   `generate_completions_from_executable` runs BEFORE every postflight
+   (`AbstractArtifact#sort_order`), and generating runs the binary: with no
+   removal the install "succeeds" with three "Failed to generate … terminated
+   by uncaught signal KILL" warnings and a binary that is killed on every run;
+   a postflight would fix the binary and still lose the completions.
+2. *GoReleaser's `hooks.pre.install` renders `preflight do`, which Homebrew
+   7.0.7 reports as deprecated on every install* ("Calling `preflight` is
+   deprecated! Use `preflight_steps` instead"). The cask uses `custom_block`
+   with `preflight_steps { on_macos { run "/usr/bin/xattr", args: ["-dr",
+   "com.apple.quarantine", "{{staged_path}}/wapps"] } }` — installed without a
+   warning. (`{{ "{{" }}` in the YAML keeps GoReleaser's template engine off
+   Homebrew's token.)
+3. *The `tap_migrations.json` value must be the TAP, not `tap/name`.*
+   `Reporter#migrate_tap_migration` takes a three-part target as
+   `name_from_full_name` (`"wapps"`), which is never in `cask_tokens`
+   (`"wappsdev/tap/wapps"`), so `"wappsdev/tap/wapps"` would fall to the
+   formula branch and only retag the keg. `"wappsdev/tap"` (or the bare
+   `"wapps"`) resolves to `wappsdev/tap/wapps` and hits the cask branch; the
+   tap form was the one run.
+4. *A snapshot cannot pass the version hook.* Left strict on purpose: the hook
+   guards tags, and loosening it for snapshots would make the release path
+   the less-tested one. Snapshots take `--skip=before`.
+5. *GoReleaser's Rust builder is labelled experimental* in 2.17.1, and
+   `release.yml` installs `goreleaser` `latest`. Not pinned here (it was not
+   pinned before either).
+
+**Gates**, each run on its own, exit codes read on their own: `go build ./...` 0,
+`go vet ./cmd/... ./internal/...` 0, `go test ./...` 0, `cargo fmt --all --
+--check` 0, `cargo clippy --all-targets -- -D warnings` 0, `cargo deny check`
+0, `cargo test --release -- --nocapture` 0 (differential `EQUAL=1043
+DIFFERENT=0 UNSOUND=0`, unchanged — no Rust or Go source changed; help axis 54
+nodes, 162 pages, 0 differ; Tab parity 40 lines, 9 under the recorded bash
+divergence, 0 differ; 59 test binaries ok; the differential 699 s with other
+lanes compiling), `goreleaser check` 0, `actionlint` 0.
+
+**Not verified.** CI itself: the workflows were linted, not run (nothing was
+pushed); in particular the Rust suite has **never run on Linux** (every
+measurement in this document is macOS; slice 10 already listed `$XDG_CACHE_HOME`
+and the Tab drivers' bash 4/5 as unmeasured), so the new `ubuntu-latest` leg
+of the `rust` job is the first Linux run and may surface real divergences.
+The darwin x86_64 binary was built and archived but not run (no Intel Mac);
+the linux binaries ran under OrbStack containers only for `--version`,
+`completion` and an offline `whoami`; no HTTPS call was made from a Linux
+binary. The real tap push, a real `brew upgrade` from the published formula,
+and `cargo zigbuild` on the GitHub macOS runner. Linux Homebrew installing the
+cask.
+
+**Cutting the first pre-release (the owner's call).** Bump
+`rust/crates/cli/Cargo.toml` to the new version on `main` (the hook refuses
+otherwise), then:
+
+```bash
+git tag -a v0.24.0-rc.1 -m "v0.24.0-rc.1: the Rust wapps" && git push origin v0.24.0-rc.1
+```
+
+with `version = "0.24.0-rc.1"` in Cargo.toml (the hook compares the full
+string). GoReleaser marks a semver pre-release tag as a GitHub pre-release on
+its own only with `release.prerelease: auto`, which this file does not set —
+so either add that line first, or cut `v0.24.0` directly. In the same window,
+one commit in `wappsdev/homebrew-tap`: `git rm Formula/wapps.rb` and add
+`tap_migrations.json` `{"wapps": "wappsdev/tap"}`. Note that GoReleaser pushes
+`Casks/wapps.rb` for a pre-release tag too unless `skip_upload: auto` is set.
+
+---
+
 ### Sıra özeti
 
 | # | dilim | Go satırı | yeni crate | differential vakası |
@@ -1615,6 +1758,10 @@ Bunlar tahminle doldurulmadı; ölçülmediği için ölçülmemiş olarak yazı
    *Still open after the `completion` follow-up:* the formula now generates
    bash, zsh and fish completions at install time, from whichever `wapps` it
    installs; today that is still the Go binary, so users get cobra's scripts.
+   *Measured since, in the release switch:* one `builds:` entry, GoReleaser's
+   Rust builder (`cargo zigbuild`), four targets (darwin arm64/x86_64,
+   linux-musl arm64/x86_64), released from `macos-latest`; CI builds and
+   tests the crate. See "Release switch" in §5.
 
 7. **`worker/` ağacı.** CLI yüzeyi sorusunun dışında; hiç bakmadım.
 

@@ -9,6 +9,8 @@ permissions:
   contents: read
 
 jobs:
+  # The Go CLI is no longer released; it stays as the differential's oracle,
+  # so it is still vetted and tested here.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -20,3 +22,37 @@ jobs:
       - run: go vet ./...
       - run: go test ./... -v -race -timeout 20m -coverprofile=coverage.out
       - run: go build -o /tmp/wapps .
+
+  # The released binary. Both OSes it ships for; the toolchain comes from
+  # rust/rust-toolchain.toml. The differential, help-axis and Tab tests build
+  # the Go oracle themselves (setup-go) and drive /bin/bash and /bin/zsh.
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --release --locked -- --nocapture
+
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: rust/Cargo.toml
+          command: check
