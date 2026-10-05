@@ -216,11 +216,12 @@ var bindPrompt = func(repoID string, cfg *config.WappsYAML) bool {
 }
 
 // bindPromptText is the inline binding question: the repo, the project it
-// claims, and every source a sync of this config would read.
+// claims, and every source a sync of this config would read. Every
+// user-controlled string passes through visible.
 func bindPromptText(repoID string, cfg *config.WappsYAML) string {
 	return "This repo is not bound to a project yet.\n" +
-		"  repo:    " + repoID + "\n" +
-		"  project: " + cfg.Project + "\n" +
+		"  repo:    " + visible(repoID) + "\n" +
+		"  project: " + visible(cfg.Project) + "\n" +
 		syncReadsBlock(cfg) +
 		"Bind them? [y/N]: "
 }

@@ -242,3 +242,47 @@ func TestVisible_EscapesBytesThatAreNotUTF8(t *testing.T) {
 		t.Errorf("visible = %q", got)
 	}
 }
+
+// --- hardening: the repo and project lines ------------------------------------
+//
+// The same vectors as rust/crates/cli/tests/syncreads.rs. project comes from
+// the cloned repo's .wapps.yaml and repo is a remote URL or a directory path,
+// so both are attacker-controlled text.
+
+const (
+	hostileText    = "a\x1b[2K\rproject: forged\nb\u202ec"
+	hostileEscaped = `a\x1b[2K\rproject: forged\nb\u202ec`
+)
+
+func TestBindPromptText_EscapesRepoAndProject(t *testing.T) {
+	cfg := loadCfgIn(t, t.TempDir(), "version: 2\nproject: testproj\n")
+	cfg.Project = hostileText
+	want := "This repo is not bound to a project yet.\n" +
+		"  repo:    " + hostileEscaped + "\n" +
+		"  project: " + hostileEscaped + "\n" +
+		"Bind them? [y/N]: "
+	if got := bindPromptText(hostileText, cfg); got != want {
+		t.Errorf("bindPromptText:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestTrustRepoCore_EscapesEveryUserControlledLine(t *testing.T) {
+	cfg := loadCfgIn(t, t.TempDir(), "version: 2\nproject: testproj\nprofiles:\n  dev: [\"x\"]\n")
+	cfg.Project = hostileText
+	cfg.Profiles = map[string][]string{hostileText: {"x"}}
+	var out bytes.Buffer
+	pins := filepath.Join(t.TempDir(), "pins.json")
+	if err := trustRepoCore(cfg, hostileText, pins, func() bool { return true }, &out); err != nil {
+		t.Fatal(err)
+	}
+	want := "Pin repo→project binding:\n" +
+		"  repo:    " + hostileEscaped + "\n" +
+		"  project: " + hostileEscaped + "\n" +
+		"  backend: store\n" +
+		"  profiles: " + hostileEscaped + "\n" +
+		"Pin this binding? [y/N]: " +
+		"pinned " + hostileEscaped + " → " + hostileEscaped + "\n"
+	if out.String() != want {
+		t.Errorf("trust-repo output:\n got %q\nwant %q", out.String(), want)
+	}
+}

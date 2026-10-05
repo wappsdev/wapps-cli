@@ -229,7 +229,7 @@ pub fn check_repo_binding<W: Write>(
                 Code::BindingUnpinned,
                 format!(
                     "repo is pinned to a different project than {}; re-pin required",
-                    crate::gojson::quote(&cfg.project)
+                    gostrconv::quote(&cfg.project)
                 ),
             )
             .with_recovery("if this is intended, run: wapps secrets trust-repo"));
@@ -249,7 +249,7 @@ pub fn check_repo_binding<W: Write>(
             Code::BindingUnpinned,
             format!(
                 "repo→project binding for {} is not pinned",
-                crate::gojson::quote(&cfg.project)
+                gostrconv::quote(&cfg.project)
             ),
         ));
     }
@@ -265,7 +265,7 @@ pub fn check_repo_binding<W: Write>(
             Code::BindingUnpinned,
             format!(
                 "not pinned; binding declined for {}",
-                crate::gojson::quote(&cfg.project)
+                gostrconv::quote(&cfg.project)
             ),
         ));
     }
@@ -283,7 +283,7 @@ pub fn check_repo_binding<W: Write>(
     let _ = writeln!(
         errw,
         "✓ bound this repo to project {} (change it later with: wapps secrets trust-repo)",
-        crate::gojson::quote(&cfg.project)
+        gostrconv::quote(&cfg.project)
     );
     Ok(())
 }
@@ -301,11 +301,13 @@ pub fn bind_prompt<W: Write>(repo_id: &str, cfg: &WappsYaml, errw: &mut W) -> bo
 }
 
 /// bind_prompt_text is the inline binding question: the repo, the project it
-/// claims, and every source a sync of this config would read.
+/// claims, and every source a sync of this config would read. Every
+/// user-controlled string passes through `visible`.
 pub fn bind_prompt_text(repo_id: &str, cfg: &WappsYaml) -> String {
     format!(
-        "This repo is not bound to a project yet.\n  repo:    {repo_id}\n  project: {}\n{}Bind them? [y/N]: ",
-        cfg.project,
+        "This repo is not bound to a project yet.\n  repo:    {}\n  project: {}\n{}Bind them? [y/N]: ",
+        visible(repo_id),
+        visible(&cfg.project),
         sync_reads_block(cfg)
     )
 }
