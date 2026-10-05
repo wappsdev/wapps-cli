@@ -1,0 +1,132 @@
+Worker CLI research: preparation, not OD5 proof
+===============================================
+
+Scope and result
+----------------
+OD5 remains UNVERIFIED. This directory contains an original research synthesis
+and safe help/version probes, not a worker adapter or completed slice 13.5.
+No model-backed session, credential fetch, real job, hook execution, cancellation
+signal, installation or permission-setting change was performed by this record.
+Raw proprietary/minified native-CLI excerpts, SDK snippets, machine paths and
+logs remain only in the preserved local preparation, not in this repository.
+
+Historical evidence (2026-10-05)
+--------------------------------
+Public CLI: 2.1.289 (Claude Code), binary SHA-256
+03d66745e3bb69ec727d66023696f3820bc0a00a8a5ba725eb6706d0c67cbe69.
+SDK-bundled CLI: 2.1.228 (Claude Code), SHA-256
+43484b1352cef03a08346f36ef0437755b1aad646ab9313ce187857b794b7247;
+Agent SDK package version 0.3.228. Public and bundled evidence is NOT interchangeable.
+The existing adapter uses the SDK-bundled binary by default, not necessarily PATH.
+
+Seven help/version cases per binary were measured historically; all 14 direct
+subprocess exits were 0. Invalid effort warned and fell back. Malformed agents
+and an undocumented --skills switch also exited 0 WITH --help: a negative control
+showing help short-circuits startup, not evidence those inputs work at runtime.
+The original source inspection was static/read-only, never model execution.
+It located delegated-agent skill preloading and retained definition fields, but
+established no main-thread skills/agent-effort consumption. This curation did
+not rerun the old evidence-overwriting probe or re-inspect installed native code.
+Only synthetic executables are used by the new test suite.
+
+Documentation re-check (2026-10-06)
+-----------------------------------
+Official hooks documentation confirms effort is an object with effort.level,
+not effort.value or effort.source. The documented level is effective for that
+model when supported; it supplies no provenance of where that level came from.
+Use hook effort.level as evidence, but retain actual provider-request
+output_config.effort capture as the stronger future request-generation proof.
+Neither init metadata nor a successful result proves effort was honored.
+
+The subagent documentation accepts skills and effort in definitions and describes
+preloading/effort for delegated subagents. Its --agent main-session description
+explicitly establishes prompt/model/tool restrictions, not main-thread skills
+preloading or provider-effective effort. Definition/help acceptance therefore
+cannot close the main-thread gap. This is UNVERIFIED, not a claim of impossibility.
+
+Control contract and limits
+---------------------------
+Model: pass the role's exact provider-specific selection; compare init.model and
+result model-usage keys, including provider remapping/fallback. Do not substitute
+the researching agent's model, use drifting aliases as proof, or silently fallback.
+
+Effort: validate named levels before spawn, pass top-level --effort explicitly,
+remove inherited effort overrides from the allowlisted worker environment, and
+establish model compatibility. Agent JSON effort alone is not main-thread proof.
+Request generation may clamp/drop unsupported effort. It is not a compute ceiling.
+
+Skills: keep independently resolved required skill/rulebook content in an immutable
+role prompt; reject missing required skills early. Content delivery is distinct
+from native preload/invocation. SDK main-session skills filtering is distinct from
+agents[name].skills and uses a version-coupled initialize control message. Do not
+invent --skills as a public runtime switch or treat a preload list as containment.
+
+Tool ceiling: --tools controls built-in availability; --allowedTools preapproves
+permission checks, not availability. MCP needs separate strict empty configuration
+and policy. Intrinsic helpers/delegation/Skill need explicit review. Denying Write
+and Edit while allowing Bash or write-capable MCP is not read-only. Role prose and
+init.tools alone are not an exact enforced ceiling or filesystem sandbox.
+
+Command PreToolUse hooks: valid deny JSON on exit 0 blocks; exit 2 blocks. Empty
+exit 0 proceeds through normal permissions (not approval). Malformed/schema-invalid
+output, plain non-2 failures, missing executable and timeouts are nonblocking;
+timeouts discard output. Valid decision JSON on another non-2 exit can still decide.
+Agent SDK callback timeout semantics differ and cannot be borrowed by command hooks.
+Thus a command hook alone is NOT a fail-closed authorization boundary. Preapproval
+can worsen failure-open behavior. Gate all tools; keep policy/executable outside
+worker write access. Do not assume bare/safe mode or invalid print-mode settings
+preserve hooks, and do not copy bypassPermissions from the former adapter.
+
+NDJSON: parse bounded complete lines; drain both streams; allow startup/unknown
+events; require terminal result plus process lifecycle outcome. EOF, nonzero exit,
+malformed stream, timeout and cancellation are distinct. A success result after
+permission denial does not prove the requested side effect happened. Hook events,
+permission_denied advisory and final permission_denials are not interchangeable.
+
+Cancellation: documented POSIX foreground SIGINT interruption and SIGTERM shutdown
+are candidates, not measurements. The documented SIGTERM outcome is exit 143,
+no result for unfinished turn and descendant cleanup; no such signal ran here.
+Test only job-specific children/groups, reap/drain with bounded escalation. Never
+signal unrelated sessions. Background-session stop is not foreground cancellation;
+private SDK interrupt/close control differs. Linux/Windows outcomes are unverified.
+
+Future experiments: owner approval still required
+-------------------------------------------------
+Before any model-backed experiment, obtain explicit owner authorization for exact
+model, credential backend and spend limit. Use private disposable synthetic inputs,
+immutable external policy/skill fixture, version/hash-pinned binary and environment
+allowlist. Never use real work items/stores or extract credentials.
+
+1. Main-thread A/B/C: agent high effort + top-level low; no agent effort/skills;
+   agent low + top-level high. Capture hook effort.level and actual provider
+   output_config.effort without credentials. A synthetic marker absent from the
+   role prompt tests skill preload; separately test delegated context and explicit
+   immutable prompt injection. Marker visibility alone is not native invocation.
+2. Ceiling/containment/pause faults: direct file tools and Bash, sibling paths,
+   traversal/symlinks, unexpected MCP/helpers/delegation; explicit deny, exit 2,
+   other exit, malformed output, missing hook binary, timeout, policy tampering.
+   Check filesystem bytes, not only result/deny text. A failure-open hook requires
+   an architectural decision, not a happy-path exception.
+3. NDJSON/cancel lifecycle: backpressure, early events, EOF without result, deny
+   followed by success, controlled child, SIGINT/SIGTERM and persisted-session
+   resume with original policy/model/effort revalidated. Assert no orphan or
+   duplicate side effect. No experiment is executed by the offline probe.
+
+OD5-B fallback, if separately selected: Rust implements the version-pinned private
+control protocol presently used by the SDK (initialize, correlated hook callbacks,
+normal messages, interrupt/result/shutdown). Public SDK types do not make that CLI
+protocol public/stable. Do not port the whole SDK or infer private subtype validity
+from stream-json acceptance. No Rust implementation is part of this preparation.
+
+Sources (public documentation, not native snippets)
+---------------------------------------------------
+https://code.claude.com/docs/en/cli-reference
+https://code.claude.com/docs/en/sub-agents
+https://code.claude.com/docs/en/hooks
+https://code.claude.com/docs/en/headless
+https://code.claude.com/docs/en/settings-reference
+
+The hooks/sub-agents pages were re-fetched for this curation; the other pages are
+references from the historical research, not claims of fresh runtime verification.
+Optional challenge: instructions loaded, panel NOT RUN because model-backed sessions
+are outside this lane. Local checks do not replace sequential independent review.

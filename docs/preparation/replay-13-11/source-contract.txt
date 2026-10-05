@@ -1,0 +1,76 @@
+Historical platform source contract (read, not run)
+=================================================
+
+Historical inspection: 2026-10-05, platform commit
+18d0f6b100f5ba36810d89991ac7109d8ee07a36.
+Earlier unkeyed inspection dccbbf947fca45fc1a470e9d98eba15ad15dd8af is historical;
+it does not describe the later optional-key facility. operationKey is merged,
+NOT DEPLOYED at this handoff. No runtime/service/deployment was tested here.
+
+Recorded contract
+-----------------
+Only work_add/work_ask accept optional operationKey: case-sensitive, untrimmed
+ASCII, 1-128 characters, first alphanumeric, remainder alphanumeric or . _ : -.
+Unknown fields and null optionals refuse. Principal comes from authenticated
+routing, not body data. Claim admission and current live capability/lease apply.
+
+Semantic hash: SHA-256 of normalized typed serde JSON, UTF-8 and compact.
+work_add hashes ordered NewWorkItem vector: title,intent,parentId,horizon,
+discoveredFrom in that field order, absent optional fields serialized null.
+work_ask hashes [workItemId,question,proposal], absent proposal null. ECMAScript
+trim and UTF-16 bounds apply before hashing; empty trimmed proposal refuses.
+Input object order/escaping are immaterial; array order matters. Key/principal/
+capability/fence/time are excluded from semantic hash, not from authorization.
+
+Receipt scope is mission-local database + (principal,fixed verb,key).
+Current lease is rechecked BEFORE receipt lookup. Matching fingerprint returns
+original result and touches current lease without rechecking mutable creation
+preconditions. Conflicts refuse. Unreadable committed results fail closed.
+Mutation/receipt insertion/touch occur in one synchronous transaction: no upsert,
+no partial mutation on SQL/insert/touch error. Post-commit response/alarm failure
+can lose acknowledgment without undoing commit.
+
+Receipt lifetime is mission lifetime: no expiry/eviction/pending facility or
+result lookup endpoint. Both first and replay success are 201 with workItemIds
+or questionId; no replay marker. Conflict is 409 OPERATION_KEY_CONFLICT,
+details.refusal operation_key_conflict, retryable false, no Retry-After.
+Different principal/mission/verb means independent creation, NOT recovery.
+
+Historical file-byte SHA-256 (platform-relative paths)
+----------------------------------------------------
+153b883433462d39bc4914e75a7a1297d728c2b19c6f3e52c63c9e4ca3cff155  docs/broker-operation-key.plan.txt
+40bff77ebec7cccdb722944a99a3edb60b101dac3b076b10ae1bfdc9751e4ed4  crates/core/src/broker/body.rs
+c58e4aedb8d73ab09aeea96399b003e35f39d86fe4e108623839364d08ec2279  crates/core/src/js.rs
+bcb1ccddb94e704381119f274133e67166a393542f1edc833e6e0c71c6d54fb8  crates/workers/src/broker_handlers.rs
+974c90105468760575636e1fdc0c39a86930971b40c95f7412c1357565d76378  crates/workers/src/mission_lane.rs
+3df90ebf143e91e58455b83cbf11198c5914fa7c44cba8e6e654c6e1029de2f0  crates/workers/src/mission_lane/operation.rs
+7c2e69888f0bf87a53546b856c92658814cb3ab93e4dce1bdd7223aa65aa5eb2  crates/workers/src/mission_lane/methods.rs
+43f67539bb53dcb5a39523af99cc673c6ae8f1dd046845c70a0e9005b8b827f4  crates/workers/src/mission_lane/payload.rs
+16eaad83e34888c3e8b19c5e87037c8cbbd08742c6950f4919763f2bc1a1160d  crates/workers/src/do_lane/storage.rs
+2bd5ff20580b6beb1ab5e95c878e0c14d76c225fb6c9db6ad718e36039251b17  services/broker/migrations/010_work_operation.sql
+7572b85a7ddab00f5574f199cb88678bb455838cd842dfa7e8622c53876f7a3f  services/broker/test/operation-key.test.ts
+924290e98d01b0a5547749358c75f8058cd95afa93fbdca588a86bed9df127a4  services/broker/test/operation-key-reopen.mjs
+439c29a27850fd5838e082403dc554d96dd6ea20db11c3adfc3b1d0421ad672a  crates/core/tests/broker_envelope_frozen.rs
+
+Separate bounded revalidation (2026-10-06)
+----------------------------------------
+Compared Git objects at 18d0f6b to feefd2d3da990dce70e71899ac0cf77ff18e2c64,
+not mutable working-tree source. All 13 historical digests above match the
+18d0f6b objects. Twelve files are byte-identical at feefd2d; mission_lane.rs is
+not. Its inspected delta changes the wasm_bindgen import/annotations to
+cfg(feature = "test-seams") / cfg_attr for the method-table helper, alarm,
+handoff-window and handoff-target helper. No operation payload/hash/body or
+receipt methods changed within that file. The operation module and current
+MissionDO add/ask forwarding were read as well: principal/key metadata remains
+forwarded to the same lane methods. The do_entry/mission.rs delta gates the
+mission_fetch and mission_verbs wasm exports; their bodies/argument lists do
+not change.
+
+This is bounded SOURCE semantic agreement for the recorded operation contract,
+not a new effective deployment/build/RPC compatibility assertion. Annotation
+and build changes can affect exports; production build/runtime verification
+belongs to its own lane. Historical digests are intentionally NOT replaced
+with current hashes. Historical line-number citations may have shifted.
+Production operation-key/reopen test definitions were read by the original
+preparation; they were not run in this curation. A future live preflight must
+revalidate the then-deployed implementation, schema and transport independently.
