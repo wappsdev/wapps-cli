@@ -9,6 +9,52 @@ use std::{
 const MAX_RESPONSE: u64 = 4 * 1024 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub(super) fn validate(config: &Config, id: &Value, name: &str, args: &Value) -> Result<(), Value> {
+    // Inspect decoded input before stripping routing metadata: the credential
+    // must not reach either a request body or the mission's URL segment.
+    if contains_secret(args, &config.secret) || contains_secret(id, &config.secret) {
+        return Err(tool_error(
+            "INVALID_ARGUMENT",
+            "arguments contain the runtime credential",
+        ));
+    }
+    let Some(arguments) = args.as_object() else {
+        return Err(tool_error(
+            "INVALID_ARGUMENT",
+            "arguments must be an object",
+        ));
+    };
+    let Some(Value::String(mission)) = arguments.get("missionId") else {
+        return Err(tool_error(
+            "INVALID_ARGUMENT",
+            "missionId is required on each call",
+        ));
+    };
+    if !valid_mission(mission) {
+        return Err(tool_error("INVALID_ARGUMENT", "invalid missionId"));
+    }
+    if matches!(
+        name,
+        "agent_submit" | "agent_cancel" | "agent_attach" | "agent_report"
+    ) {
+        return Err(tool_error(
+            "ACTION_UNAVAILABLE",
+            "Execution is not implemented in this slice; no worker was launched or changed",
+        ));
+    }
+    if name == "agent_await"
+        && arguments
+            .get("waitMs")
+            .is_some_and(|v| v.as_u64().is_none_or(|ms| ms > 55000))
+    {
+        return Err(tool_error(
+            "INVALID_ARGUMENT",
+            "waitMs must be an integer from 0 to 55000",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn call(
     config: &Config,
     id: &Value,
@@ -16,45 +62,16 @@ pub(super) fn call(
     mut args: Value,
     cancelled: &AtomicBool,
 ) -> Value {
-    // Inspect decoded input before stripping routing metadata: the credential
-    // must not reach either a request body or the mission's URL segment.
-    if contains_secret(&args, &config.secret) || contains_secret(id, &config.secret) {
-        return tool_error(
-            "INVALID_ARGUMENT",
-            "arguments contain the runtime credential",
-        );
+    if let Err(error) = validate(config, id, name, &args) {
+        return error;
     }
-    let Some(arguments) = args.as_object_mut() else {
-        return tool_error("INVALID_ARGUMENT", "arguments must be an object");
-    };
-    let Some(Value::String(mission)) = arguments.remove("missionId") else {
-        return tool_error("INVALID_ARGUMENT", "missionId is required on each call");
-    };
-    if !valid_mission(&mission) {
-        return tool_error("INVALID_ARGUMENT", "invalid missionId");
-    }
-    if matches!(
-        name,
-        "agent_submit" | "agent_cancel" | "agent_attach" | "agent_report"
-    ) {
-        return tool_error(
-            "ACTION_UNAVAILABLE",
-            "Execution is not implemented in this slice; no worker was launched or changed",
-        );
-    }
+    let arguments = args.as_object_mut().expect("validated arguments");
+    let mission = arguments.remove("missionId").expect("validated mission");
+    let mission = mission.as_str().expect("validated mission string");
     let wait = if name == "agent_await" {
-        match arguments.remove("waitMs") {
-            None => 55000,
-            Some(v) => match v.as_u64() {
-                Some(ms) if ms <= 55000 => ms,
-                _ => {
-                    return tool_error(
-                        "INVALID_ARGUMENT",
-                        "waitMs must be an integer from 0 to 55000",
-                    )
-                }
-            },
-        }
+        arguments
+            .remove("waitMs")
+            .map_or(55000, |v| v.as_u64().expect("validated wait"))
     } else {
         0
     };
@@ -66,7 +83,7 @@ pub(super) fn call(
         .path_segments_mut()
         .expect("validated origin")
         .clear()
-        .extend(["v1", "missions", &mission, "mcp"]);
+        .extend(["v1", "missions", mission, "mcp"]);
     let addresses = config.addresses.clone();
     let agent = ureq::AgentBuilder::new()
         .resolver(move |_: &str| Ok(addresses.clone()))

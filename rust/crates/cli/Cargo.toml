@@ -116,6 +116,10 @@ clap_complete = "4"
 # URL parsing and path-segment encoding for the broker; already in ureq's graph.
 url = "2"
 
+# POSIX sigaction for graceful daemon shutdown on macOS and Linux. Already in
+# the rustix/ring dependency graph; no new package is introduced.
+libc = "0.2"
+
 [dev-dependencies]
 # Test support from this workspace (no package enters the lock): the tests that
 # write a shim and run it at once write it through
