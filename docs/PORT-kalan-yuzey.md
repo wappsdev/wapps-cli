@@ -1174,7 +1174,12 @@ column rules, not the texts.
 it, so Go runs the command after it with `""` as an argument; clap takes it as
 the family's stray word and Rust prints that family's page (exit 0). Found by
 hand while closing the dispatch's family arms (they would otherwise have
-panicked); porting it means re-ordering the argv for clap, not done.
+panicked); porting it means re-ordering the argv for clap, not done. Pinned by
+`helpaxis.rs` `an_empty_word_before_a_command_is_a_recorded_divergence`
+(`secrets "" get`: Go exit 1 `AGENT_MODE_REFUSED`, Rust exit 0 with the
+`secrets` page); it fails when either side changes, so a fix cannot land
+without updating this paragraph. Red-proved by pointing its Rust run at
+`secrets get` (exit 101, the Rust assertion fired).
 
 **Not measured.** `completion` and every path through it (`wapps help
 completion`, a suggestion of `completion` for a typo like `comp`): Go answers,
@@ -1186,7 +1191,10 @@ missing-value message now names the pflag type (`'--share <stringArray>'`);
 Go's `flag needs an argument` was not ported for value flags in any slice.
 Help pages under a pty (the axis runs on pipes; the pty cases cover three
 pages).
- — `updatecheck` + skill auto-refresh (çapraz kesen)
+
+---
+
+### Dilim 10 — `updatecheck` + skill auto-refresh (çapraz kesen)
 
 | | |
 |---|---|

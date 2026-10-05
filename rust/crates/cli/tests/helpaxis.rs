@@ -185,3 +185,40 @@ fn every_help_page_matches_the_oracle() {
         diffs.join("\n")
     );
 }
+
+// A recorded divergence, pinned so it cannot change unseen (docs/PORT-kalan-
+// yuzey.md, slice 9, "Known divergence"). An empty word before a command name:
+// cobra's stripFlags skips it, so Go runs `get` (here refused, the run is not a
+// terminal); clap takes it as the family's stray word, so Rust prints the
+// `secrets` page with exit 0. When the port closes it, the Rust half fails:
+// then compare the two outputs instead and drop the doc's paragraph.
+#[test]
+fn an_empty_word_before_a_command_is_a_recorded_divergence() {
+    let work = scratch().join("empty-word");
+    std::fs::create_dir_all(&work).expect("scratch");
+    let go = go_oracle(&work);
+    let rs = PathBuf::from(env!("CARGO_BIN_EXE_wapps"));
+    let args: Vec<String> = ["secrets", "", "get"].map(String::from).to_vec();
+    let family: Vec<String> = ["secrets", "--help"].map(String::from).to_vec();
+
+    let g = run(&go, &work, &args);
+    let g_family = run(&go, &work, &family);
+    assert_eq!(g.status.code(), Some(1), "Go:\n{}", shown(&g));
+    assert!(
+        String::from_utf8_lossy(&g.stderr).contains("AGENT_MODE_REFUSED"),
+        "Go no longer runs `get` after an empty word:\n{}",
+        shown(&g)
+    );
+    assert_ne!(g.stdout, g_family.stdout, "Go printed the family page");
+
+    let r = run(&rs, &work, &args);
+    let r_family = run(&rs, &work, &family);
+    assert_eq!(
+        (r.status.code(), &r.stdout, &r.stderr),
+        (Some(0), &r_family.stdout, &r_family.stderr),
+        "Rust no longer prints the family page for an empty word; the \
+         divergence may be closed, update this test and the doc:\n{}",
+        shown(&r)
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
