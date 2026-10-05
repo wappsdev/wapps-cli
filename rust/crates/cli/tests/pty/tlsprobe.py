@@ -23,11 +23,12 @@ beklentiyi kaydediyor — tahmin etmiyor, kosuldugu platformda olcuyor.
 public_chain AG'a cikiyor, bu yuzden VARSAYILAN OLARAK KOSMUYOR: sessizce
 atlanan bir vaka olmasin diye sonucu daima raporlaniyor ("skipped" olarak).
 WAPPS_TLS_PUBLIC_CHAIN=1 ile acilir."""
-import json, os, shutil, socket, subprocess, sys, time
+import json, os, shutil, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ptyrun import run
 from mintca import mint
+import gateproc
 
 # Gercek bir servis DEGIL: IANA'nin dokumantasyon alan adi. Yalnizca "herkesin
 # guvendigi bir zincir" uretmek icin; hicbir sir buraya gitmiyor (istek 405 ile
@@ -35,35 +36,12 @@ from mintca import mint
 PUBLIC_CHAIN_HOST = "https://example.com"
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
-
-
-def wait_up(port):
-    for _ in range(200):
-        try:
-            socket.create_connection(("127.0.0.1", port), 0.05).close()
-            return True
-        except OSError:
-            time.sleep(0.02)
-    return False
-
-
 def main():
     go_bin, rs_bin, workdir, outpath = sys.argv[1:5]
     certs = mint(os.path.join(workdir, "tlscerts"))
-    port = free_port()
     here = os.path.dirname(os.path.abspath(__file__))
-    gate = subprocess.Popen(
-        [sys.executable, os.path.join(here, "tlsgate.py"), str(port), certs["crt"], certs["key"]],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if not wait_up(port):
-        gate.terminate()
-        raise SystemExit("tls fake gate did not come up")
+    gate, port = gateproc.start(os.path.join(here, "tlsgate.py"),
+                                [certs["crt"], certs["key"]], label="tls fake gate")
 
     local = "https://127.0.0.1:%d" % port
     scenarios = [

@@ -21,7 +21,7 @@ DAIMA kirli olcum verir.
 
 GERCEK SIR YOK: yazilan dize bu dosyada duran uydurma bir test dizesidir.
 """
-import json, os, pty, select, socket, subprocess, sys, termios, time
+import json, os, pty, select, subprocess, sys, termios, time
 
 TYPED = b"prompted-test-string\n"
 PROMPT_MARK = b"Value for "
@@ -127,17 +127,10 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, here)
     from cases import GATE_SCRIPT
+    import gateproc
 
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
-    gate = subprocess.Popen([sys.executable, os.path.join(here, "fakegate.py"),
-                             str(port), json.dumps(GATE_SCRIPT)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(200):
-        try:
-            socket.create_connection(("127.0.0.1", port), 0.05).close(); break
-        except OSError: time.sleep(0.02)
-    else:
-        raise SystemExit("fake gate did not come up")
+    gate, port = gateproc.start(os.path.join(here, "fakegate.py"),
+                                [json.dumps(GATE_SCRIPT)])
     try:
         res = measure(binary, port, workdir)
     finally:
