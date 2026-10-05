@@ -368,6 +368,13 @@ kriptografik/format ihtiyacı yok.
 
 ### 4.2 GERÇEK crate kararı olan TEK yer: `completion`
 
+> **DECIDED 2026-10-05 by the owner: drop `completion`.** Nobody uses it: the
+> Homebrew formula does not install a completion script and the owner's shell
+> loads none, so Tab completion does not work today. The subcommand is removed
+> from BOTH binaries (Go and Rust) in the same change, so the differential stays
+> equal; no crate is added. Nothing is deployed against it, so no compatibility
+> path is kept.
+
 cobra dört betik üretiyor ve boyutları ölçüldü:
 
 | kabuk | satır | bayt |
