@@ -1551,7 +1551,8 @@ inherited owner tests to exit 0 and three additional red tests to exit 101:
 refusal details were discarded, empty/mismatched work acknowledgements reported
 success, and trim-changing IDs reached HTTP. Their repairs passed the focused
 suite. Those historical runs are retained as history, not takeover gate evidence.
-The current `broker_owner.rs` contains 14 hermetic PTY/HTTP tests. A frozen-cloud
+At the verified subset commit `f4905ce`, `broker_owner.rs` contained 14 hermetic
+PTY/HTTP tests. A frozen-cloud
 differential replays seven owner read/write cases against 13.0's recorded public HTTP
 values, including the public acknowledgements without an internal `ok` field. Its
 question preflight rows restore the recorded questions to their pre-write state;
@@ -1607,6 +1608,99 @@ go-vet,go-test,fmt,clippy,deny,release,indexed-build,indexed-tests}.log`.
 Only synthetic homes, tokens and loopback peers were used. No real enrollment or
 user configuration mutation, worker spawn, release, tag, deploy, plugin retirement,
 migration, push or main merge is part of this lane.
+
+### 7.3 Owner context hardening (2026-10-06; 13.8 remains PARTIAL)
+
+The independent, read-only synthetic audit at
+`/private/tmp/wapps-owner-auth.tss6Bf/` reproduced a **local context-detection gap**
+in `f4905ce`: a synthetic PTY with the daemon/launcher hints and a cached fake
+human SSO token reached the loopback owner's list and file routes. The owner guard
+already disabled the general `WAPPS_AGENT_MODE=0` override; endpoint-keyed cached
+human SSO, Access signature/audience/principal validation and Worker grants were
+still protections. This is **not evidence of a remote authorization bypass or a
+Critical cloud flaw**. Unsigned fixtures were accepted only by the loopback peer.
+
+Marker names and semantics were checked against the provider source at
+`dual-orchestrator-agent-broker` commit `c6d7e09`:
+`src/daemon/client.ts:148-150` sets `AGENT_BROKER_DAEMON=1` on daemon spawn;
+`src/bootstrap.ts:133-139` requires `AGENT_BROKER_LAUNCHER_PROVIDER` to be
+`claude` or `codex`, and `scripts/project.ts:54-59` emits the Codex launcher hint.
+The 13.0 recorded Claude launch also carries both names (§13.0-c above).
+The owner's guard now refuses a nonempty value of either explicit hint, before
+loading metadata/session, resolving the endpoint, making a request or entering
+local enrollment. This is deliberately **owner-specific**: no daemon file, shared
+Go/Rust detector, shipped override semantics or cloud authorization changed.
+`CODEX_HOME`, ordinary HOME/PATH configuration and empty hints are not proof of an
+agent context. Normal human PTY commands continue to use the existing SSO path.
+
+TTY/environment hints are **not cryptographic proof of human intent or a hostile
+same-UID boundary**. A same-user process can strip hints and create a PTY; this
+patch neither prevents credential theft nor promises to identify that process.
+Stronger human-presence requirements need a separate owner design decision.
+Pause/unpause and role apply retain their honest unfinished-dependency refusals;
+enrollment still writes only the version-1 local root registry.
+
+**Measured red/green.** Five owner tests were added (19 total), using only the
+actual binary, hermetic PTYs/homes, synthetic tokens and numeric-loopback peers.
+The final pre-fix run exited 101 with **15 passing and 4 expected failing tests**:
+explicit broker contexts reached HTTP, a malformed cached session was inspected
+before refusal, enrollment succeeded in the refused context, and no-session
+broker context fell through to the SSO requirement. The initial run exposed an
+overly broad test substring: the login hint itself mentions a human terminal.
+Assertions were corrected to identify the owner-context refusal specifically,
+then red was rerun before the production change. The minimal owner-only check
+passed **19/19** in the debug suite. Tests cover Claude/CI refusal and each daemon
+or Claude/Codex launcher hint independently, with and without override zero;
+cached SSO read/file/answer/confirm refusals with zero HTTP requests; malformed
+metadata/session ordering; absent-session and service/environment-token fallback
+refusal; normal human configuration; and enrollment creating no state directory
+or changing an existing registry, lock, temporary file or project tree.
+The inherited owner write authorization/protocol and unfinished-dependency tests
+remain present. Simplification retained the six-line production condition and the
+existing PTY runner; no new dependency or general-purpose detector was introduced.
+Review found no additional significant defect in the changed guard/tests.
+
+**Fresh final verification (darwin/arm64, Rust 1.98.0, Go 1.26.5).** The owner
+worktree is `/Users/adnankurt/Documents/Projects/.worktrees/broker-owner-13-8` (`W`
+below). Explicit staging included only this note, `owner/mod.rs` and
+`broker_owner.rs`. `git checkout-index --all` produced the tracked-only snapshot
+`/tmp/broker-owner-context-indexed.stSiZz` (`S`); its final build/tests used a fresh,
+separate `S/target`, with no ignored source files or pre-existing build artifacts.
+The staged guard/tests match the snapshot byte for byte.
+
+| Gate | Command / observation | Exit |
+|---|---|---|
+| Context red | `cargo test --manifest-path W/rust/Cargo.toml --locked --offline --test broker_owner -- --nocapture`; 15 pass, 4 expected failures before production change | 101, expected |
+| Context green | Same command after the six-line owner check; 19 pass | 0 |
+| Go build | `go -C W build -o /tmp/broker-owner-context-go .` | 0 |
+| Go vet | `go -C W vet ./...` | 0 |
+| Go race | `go -C W test ./... -race -count=1 -timeout 20m` | 0 |
+| Rust format | `cargo fmt --manifest-path W/rust/Cargo.toml --all -- --check` | 0 |
+| Rust clippy | `cargo clippy --manifest-path W/rust/Cargo.toml --all-targets --locked --offline -- -D warnings` | 0 |
+| Dependency policy | `cargo deny --manifest-path W/rust/Cargo.toml --offline --locked check`; duplicate `syn` and three unused license allowances remain warnings | 0 |
+| Complete release suite | `cargo test --manifest-path W/rust/Cargo.toml --release --locked --offline -- --nocapture`; **548 pass, 0 fail, 2 intentionally ignored whole-plugin runs** | 0 |
+| Full PTY differential | Included in release suite; **EQUAL=1043 DIFFERENT=0 UNSOUND=0** | 0 |
+| Clean Git-indexed build | `cargo build --manifest-path S/rust/Cargo.toml --target-dir S/target --release --locked --offline` | 0 |
+| Clean Git-indexed focused suite | `cargo test --manifest-path S/rust/Cargo.toml --target-dir S/target --release --locked --offline --test broker_owner --test broker_mcp --test helpaxis -- --nocapture`; **19 owner, 28 13.1 MCP/bridge, 2 help pass**; 54 legacy nodes/162 pages, 0 differences | 0 |
+| Source/index hygiene | `git diff --check`, `git diff --cached --check`; only the three owned tracked files staged | 0 |
+
+The first indexed focused invocation mistakenly named a nonexistent
+`broker_daemon` integration target and exited 101 **without running tests**.
+Source inspection confirmed that 13.1's bridge coverage is `broker_mcp`; the
+corrected clean-snapshot invocation above passed. This was a command-selection
+error, not a hidden product failure or a bypassed gate.
+Local evidence is `/tmp/broker-owner-context-{red,green,go-build,go-vet,go-race,
+rust-fmt,rust-clippy,rust-deny,rust-release,indexed-build,indexed-tests,
+indexed-target-selection}.log`.
+Review covered CLI/environment input, context/auth ordering, session and HTTP
+credential separation, enrollment side effects, injection, disclosure, bounds,
+races and state transitions; no additional significant finding or useful source
+refactor was identified. SQL, browser XSS/CSRF and new cryptography do not apply to
+this patch. No external challenge was retried or bypassed (unavailable, WARN-only).
+Live Access/cloud grants, real credentials/configuration, real enrollment,
+providers, migrations and non-darwin platforms remain unverified. No full mutation
+sweep, release/tag, push, main merge or deploy was performed. **13.8 stays PARTIAL**
+for the genuine pause/role/harness dependencies, not for the verified context fix.
 
 ## 8. Owner decisions
 

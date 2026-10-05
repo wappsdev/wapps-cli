@@ -118,6 +118,12 @@ pub fn run(name: &str, args: &ArgMatches) -> Result<(), String> {
         allow_override: false,
     })
     .is_agent()
+        // Provider daemon/launcher hints belong to this owner guard, not the
+        // shared Go/Rust detector. Like TTY, these are context hints, not proof
+        // of human intent or a boundary against a hostile same-UID process.
+        || ["AGENT_BROKER_DAEMON", "AGENT_BROKER_LAUNCHER_PROVIDER"]
+            .iter()
+            .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
     {
         return Err(
             "owner commands require a human terminal; agents must relay answers over MCP".into(),

@@ -48,11 +48,14 @@ impl Home {
         .unwrap();
     }
     fn run(&self, args: &[&str], agent: bool) -> (i64, String, String) {
+        self.run_env(args, if agent { &[("CLAUDECODE", "1")] } else { &[] })
+    }
+    fn run_env(&self, args: &[&str], context: &[(&str, &str)]) -> (i64, String, String) {
         let mut argv = vec![env!("CARGO_BIN_EXE_wapps"), "broker"];
         argv.extend(args);
         let mut env = json!({"HOME":self.0,"PATH":"/usr/bin:/bin", "WAPPS_NO_UPDATE_CHECK":"1"});
-        if agent {
-            env["CLAUDECODE"] = json!("1");
+        for (key, value) in context {
+            env[*key] = json!(value);
         }
         let spec = json!({"argv":argv,"env":env,"cwd":self.0.join("project")});
         let mut child = Command::new("python3")
@@ -259,6 +262,192 @@ fn agent_missing_session_and_ambiguous_mission_never_send_a_request() {
     assert!(r.2.contains("SSO"));
     cloud.assert_owner(&[]);
 }
+#[test]
+fn explicit_agent_contexts_refuse_pty_owner_reads_and_writes_even_with_override_zero() {
+    let cloud = Cloud::new(vec![]);
+    let home = Home::new(&cloud.endpoint);
+    // These are the daemon spawn and generated launcher config markers, not
+    // ordinary configuration such as CODEX_HOME. Test each independently.
+    for marker in [
+        ("CLAUDECODE", "1"),
+        ("CLAUDE_CODE", "1"),
+        ("CI", "1"),
+        ("AGENT_BROKER_DAEMON", "1"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "claude"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "codex"),
+    ] {
+        for override_zero in [false, true] {
+            let mut context = vec![marker];
+            if override_zero {
+                context.push(("WAPPS_AGENT_MODE", "0"));
+            }
+            for args in [
+                vec!["list", "--mission", "a"],
+                vec!["file", "--mission", "a", "brief"],
+                vec!["answer", "--mission", "a", "q-1", "yes"],
+                vec!["confirm", "--mission", "a", "q-1"],
+            ] {
+                let r = home.run_env(&args, &context);
+                assert_eq!(r.0, 1, "{context:?} {args:?}: {}", r.2);
+                assert!(
+                    r.2.contains("owner commands require a human terminal"),
+                    "{context:?}: {}",
+                    r.2
+                );
+                assert!(r.1.is_empty());
+                cloud.assert_owner(&[]);
+            }
+        }
+    }
+}
+
+#[test]
+fn broker_context_refusal_precedes_metadata_and_session_loading() {
+    let cloud = Cloud::new(vec![]);
+    let home = Home::new(&cloud.endpoint);
+    for marker in [
+        ("AGENT_BROKER_DAEMON", "1"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "claude"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "codex"),
+    ] {
+        let context = [marker, ("WAPPS_AGENT_MODE", "0")];
+        home.session(&cloud.endpoint, "malformed-session");
+        let r = home.run_env(&["list", "--mission", "a"], &context);
+        assert_eq!(r.0, 1);
+        assert!(
+            r.2.contains("owner commands require a human terminal"),
+            "{}",
+            r.2
+        );
+        let metadata = home.0.join(".config/wapps-broker/client.yaml");
+        let before = fs::read(&metadata).unwrap();
+        fs::write(&metadata, "endpoint: [").unwrap();
+        let r = home.run_env(&["list", "--mission", "a"], &context);
+        assert_eq!(r.0, 1);
+        assert!(
+            r.2.contains("owner commands require a human terminal"),
+            "{}",
+            r.2
+        );
+        fs::write(metadata, before).unwrap();
+        cloud.assert_owner(&[]);
+    }
+}
+
+#[test]
+fn broker_context_refusal_never_creates_or_changes_local_enrollment() {
+    let cloud = Cloud::new(vec![]);
+    let home = Home::new(&cloud.endpoint);
+    let root = home.0.join("project");
+    let state = home.0.join(".agent-broker");
+    for marker in [
+        ("AGENT_BROKER_DAEMON", "1"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "claude"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "codex"),
+    ] {
+        let r = home.run_env(
+            &["project", "enroll", "local-project", root.to_str().unwrap()],
+            &[marker, ("WAPPS_AGENT_MODE", "0")],
+        );
+        assert_eq!(r.0, 1);
+        assert!(
+            r.2.contains("owner commands require a human terminal"),
+            "{}",
+            r.2
+        );
+        assert!(
+            !state.exists(),
+            "refusal must not create registry or lock directories"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+    assert_eq!(
+        home.run(
+            &["project", "enroll", "local-project", root.to_str().unwrap()],
+            false
+        )
+        .0,
+        0
+    );
+    let before = fs::read(state.join("projects.json")).unwrap();
+    let other = home.0.join("other-project");
+    fs::create_dir(&other).unwrap();
+    for marker in [
+        ("AGENT_BROKER_DAEMON", "1"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "claude"),
+        ("AGENT_BROKER_LAUNCHER_PROVIDER", "codex"),
+    ] {
+        let r = home.run_env(
+            &["project", "enroll", "other", other.to_str().unwrap()],
+            &[marker, ("WAPPS_AGENT_MODE", "0")],
+        );
+        assert_eq!(r.0, 1);
+        assert!(
+            r.2.contains("owner commands require a human terminal"),
+            "{}",
+            r.2
+        );
+        assert_eq!(before, fs::read(state.join("projects.json")).unwrap());
+        assert_eq!(
+            fs::read_dir(&state).unwrap().count(),
+            1,
+            "no lock or temporary files"
+        );
+        assert_eq!(fs::read_dir(&other).unwrap().count(), 0);
+    }
+    cloud.assert_owner(&[]);
+}
+
+#[test]
+fn human_configuration_is_not_agent_context_and_empty_broker_hints_do_not_refuse() {
+    let cloud = Cloud::new(vec![(200, json!({"items":[]}))]);
+    let home = Home::new(&cloud.endpoint);
+    let r = home.run_env(
+        &["list", "--mission", "a"],
+        &[
+            ("WAPPS_AGENT_MODE", "0"),
+            ("CODEX_HOME", "/fixture/normal-codex-config"),
+            ("AGENT_BROKER_DAEMON", ""),
+            ("AGENT_BROKER_LAUNCHER_PROVIDER", ""),
+        ],
+    );
+    assert_eq!(r.0, 0, "{}", r.2);
+    cloud.assert_owner(&[("GET", "/v1/missions/a/work", Value::Null)]);
+}
+
+#[test]
+fn owner_missing_session_cannot_fall_back_to_environment_or_service_tokens() {
+    let cloud = Cloud::new(vec![]);
+    let home = Home::new(&cloud.endpoint);
+    fs::remove_dir_all(home.0.join(".config/wapps/session")).unwrap();
+    for context in [
+        vec![],
+        vec![("WAPPS_SESSION_TOKEN", TOKEN)],
+        vec![
+            ("CF_ACCESS_CLIENT_ID", "fixture-id"),
+            ("CF_ACCESS_CLIENT_SECRET", AGENT),
+        ],
+        vec![("AGENT_BROKER_DAEMON", "1"), ("WAPPS_AGENT_MODE", "0")],
+        vec![
+            ("AGENT_BROKER_LAUNCHER_PROVIDER", "codex"),
+            ("WAPPS_AGENT_MODE", "0"),
+        ],
+    ] {
+        let r = home.run_env(&["list", "--mission", "a"], &context);
+        assert_eq!(r.0, 1);
+        let expected = if context
+            .iter()
+            .any(|(key, _)| key.starts_with("AGENT_BROKER_"))
+        {
+            "owner commands require a human terminal"
+        } else {
+            "SSO session required"
+        };
+        assert!(r.2.contains(expected), "{}", r.2);
+        cloud.assert_owner(&[]);
+    }
+}
+
 #[test]
 fn answer_and_accept_are_exact_mission_question_and_digest_writes() {
     let cloud = Cloud::new(vec![
