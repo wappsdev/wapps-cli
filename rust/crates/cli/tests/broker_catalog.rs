@@ -15,8 +15,12 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[path = "support/broker_daemon_cleanup.rs"]
+mod broker_daemon_cleanup;
+use broker_daemon_cleanup::DaemonCleanup;
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
-struct Home(PathBuf);
+struct Home(PathBuf, DaemonCleanup);
 impl Home {
     fn new(endpoint: &str) -> Self {
         let root = broker_oracle::hermetic::temp_root(&format!(
@@ -40,10 +44,11 @@ impl Home {
         let secret = root.join(".config/wapps-broker/agents.secret");
         fs::write(&secret, "fixture-catalog-secret").unwrap();
         fs::set_permissions(secret, fs::Permissions::from_mode(0o600)).unwrap();
-        Self(root)
+        Self(root, DaemonCleanup::default())
     }
 
     fn run(&self, steps: Value) -> Vec<Value> {
+        self.1.start(&self.0).expect("fixture daemon ready");
         let transcript = mcp::run(
             &Server {
                 program: env!("CARGO_BIN_EXE_wapps").into(),
@@ -66,8 +71,147 @@ impl Home {
 }
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.1.remove_home(&self.0);
     }
+}
+
+// Removing a fixture HOME must not strand the daemon started by its MCP client.
+// Keep a connection solely to recover this run's daemon when testing the old bug.
+fn assert_fixture_daemon_cleanup(unwind: bool) {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::{fs::MetadataExt, net::UnixStream},
+        panic::{catch_unwind, AssertUnwindSafe},
+        time::{Duration, Instant},
+    };
+    let home = Home::new("http://127.0.0.1:9");
+    home.run(json!([{"call":"initialize"}]));
+    let root = home.0.clone();
+    let directory = root.join(".agent-broker/daemon");
+    let owner: Value =
+        serde_json::from_slice(&fs::read(directory.join("owner.json")).unwrap()).unwrap();
+    let pid = i32::try_from(owner["pid"].as_u64().unwrap()).unwrap();
+    let socket_meta = fs::symlink_metadata(directory.join("broker.sock")).unwrap();
+    let mut recovery = UnixStream::connect(directory.join("broker.sock")).unwrap();
+    recovery
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    recovery
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    eprintln!(
+        "fixture root={} pid={pid} socket={}:{}",
+        root.display(),
+        socket_meta.dev(),
+        socket_meta.ino()
+    );
+    let outcome = catch_unwind(AssertUnwindSafe(move || {
+        let _home = home;
+        if unwind {
+            std::panic::panic_any("original fixture failure");
+        }
+    }));
+    if unwind {
+        assert_eq!(
+            *outcome.unwrap_err().downcast::<&str>().unwrap(),
+            "original fixture failure"
+        );
+    } else {
+        assert!(outcome.is_ok());
+    }
+    // SAFETY: signal zero only observes the exact PID recorded in this newly
+    // created private HOME; it never sends a signal or enumerates other processes.
+    let alive = || unsafe { libc::kill(pid, 0) == 0 };
+    let leaked = alive();
+    if leaked {
+        writeln!(recovery, "{{\"kind\":\"stop\"}}").unwrap();
+        let mut reply = String::new();
+        BufReader::new(recovery).read_line(&mut reply).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&reply).unwrap()["kind"],
+            "stopping"
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!alive(), "recovery must stop only this run's daemon {pid}");
+    }
+    assert!(
+        !leaked,
+        "fixture removed HOME but left its daemon {pid} running"
+    );
+    assert!(
+        !root.exists(),
+        "fixture HOME must be removed after child exit"
+    );
+}
+
+#[test]
+fn fixture_daemon_is_reaped_before_home_removal() {
+    assert_fixture_daemon_cleanup(false);
+}
+
+#[test]
+fn fixture_daemon_is_reaped_without_hiding_original_panic() {
+    assert_fixture_daemon_cleanup(true);
+}
+
+#[test]
+fn fixture_teardown_does_not_stop_another_private_home_daemon() {
+    let first = Home::new("http://127.0.0.1:9");
+    let other = Home::new("http://127.0.0.1:9");
+    first.run(json!([{"call":"initialize"}]));
+    other.run(json!([{"call":"initialize"}]));
+    let record = other.0.join(".agent-broker/daemon/owner.json");
+    let before = fs::read(&record).unwrap();
+    let non_owner = DaemonCleanup::default();
+    assert!(
+        non_owner.start(&other.0).is_err(),
+        "another guard must not reuse an existing runtime"
+    );
+    drop(first);
+    assert_eq!(other.run(json!([{"call":"ping"}]))[0]["result"], json!({}));
+    assert_eq!(
+        fs::read(record).unwrap(),
+        before,
+        "the other owner must not be replaced"
+    );
+}
+
+#[test]
+fn changed_owner_record_retains_state_without_hiding_original_panic() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let home = Home::new("http://127.0.0.1:9");
+    home.run(json!([{"call":"initialize"}]));
+    let root = home.0.clone();
+    let record = root.join(".agent-broker/daemon/owner.json");
+    let pid = serde_json::from_slice::<Value>(&fs::read(&record).unwrap()).unwrap()["pid"]
+        .as_i64()
+        .unwrap();
+    fs::rename(&record, record.with_extension("original")).unwrap();
+    // This diagnostic PID must never become a signalling authority.
+    fs::write(&record, json!({"pid":std::process::id()}).to_string()).unwrap();
+    fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+    let outcome = catch_unwind(AssertUnwindSafe(move || {
+        let _home = home;
+        std::panic::panic_any("original fixture failure");
+    }));
+    assert_eq!(
+        *outcome.unwrap_err().downcast::<&str>().unwrap(),
+        "original fixture failure"
+    );
+    // SAFETY: signal zero observes only the PID originally recorded by this run.
+    assert_eq!(
+        unsafe { libc::kill(i32::try_from(pid).unwrap(), 0) },
+        -1,
+        "owned child must be reaped even when socket control is refused"
+    );
+    assert!(
+        root.exists(),
+        "failed ownership proof must retain private state"
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn frozen() -> Value {

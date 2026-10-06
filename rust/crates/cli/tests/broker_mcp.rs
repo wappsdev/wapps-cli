@@ -11,9 +11,13 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[path = "support/broker_daemon_cleanup.rs"]
+mod broker_daemon_cleanup;
+use broker_daemon_cleanup::DaemonCleanup;
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const SECRET: &str = "fixture-access-secret-never-disclose";
-struct Home(PathBuf);
+struct Home(PathBuf, DaemonCleanup);
 impl Home {
     fn new(endpoint: &str) -> Self {
         let root = broker_oracle::hermetic::temp_root(&format!(
@@ -37,9 +41,10 @@ impl Home {
         let secret = root.join(".config/wapps-broker/agents.secret");
         fs::write(&secret, SECRET).unwrap();
         fs::set_permissions(secret, fs::Permissions::from_mode(0o600)).unwrap();
-        Self(root)
+        Self(root, DaemonCleanup::default())
     }
     fn run(&self, steps: Value) -> String {
+        self.1.start(&self.0).expect("fixture daemon ready");
         let script: Vec<Step> = serde_json::from_value(steps).unwrap();
         mcp::run(
             &Server {
@@ -58,24 +63,7 @@ impl Home {
 }
 impl Drop for Home {
     fn drop(&mut self) {
-        use std::{
-            io::Write,
-            os::unix::net::UnixStream,
-            time::{Duration, Instant},
-        };
-        let socket = self.0.join(".agent-broker/daemon/broker.sock");
-        if let Ok(mut stream) = UnixStream::connect(&socket) {
-            let _ = writeln!(stream, "{{\"kind\":\"stop\"}}");
-            let deadline = Instant::now() + Duration::from_secs(12);
-            while socket.exists() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(
-                !socket.exists(),
-                "fixture daemon must stop before home removal"
-            );
-        }
-        let _ = fs::remove_dir_all(&self.0);
+        self.1.remove_home(&self.0);
     }
 }
 // Raw peer for malformed frames and in-flight cancellation, which the sequential
@@ -87,6 +75,7 @@ struct Peer {
 }
 impl Peer {
     fn new(home: &Home) -> Self {
+        home.1.start(&home.0).expect("fixture daemon ready");
         use std::io::BufRead;
         use std::process::{Command, Stdio};
         let mut child = Command::new(env!("CARGO_BIN_EXE_wapps"))
