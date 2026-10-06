@@ -2067,3 +2067,43 @@ recording), `rustcopy/` (crate-delta runs), and from this revision `tools.json` 
 `slices.py` and its two mutation runs. The scripts of §0 are committed in
 `docs/broker-daemon-port.measure/` and regenerate everything else in this document
 that is not named here.
+
+## 10. Integration readiness update (2026-10-06)
+
+This update supersedes historical implementation-readiness statements above,
+not the original measurements or independently recorded owner decisions.
+Recommendation-labelled entries do not supply missing operational approval.
+
+- Daemon 13.2 and the human owner subset are integrated. Owner-boundary coverage
+  in `00812e7` was merged as `0a4c9c2`; fresh full Go/Rust, formatting, strict
+  Clippy, dependency-policy and preparation gates passed on that main identity.
+  The added tests cover 44 scenarios, not live Access/grant enforcement.
+- Pure execution preparation in `000bf53` has independent acceptance: distinct
+  authority types, actual cloud wire validation, fail-closed outbound scrubbing,
+  parsing-only quota/events, and supported finite JSON rounding. Runtime
+  modules remain unregistered and execution calls return `ACTION_UNAVAILABLE`.
+  This is **PARTIAL 13.3**, not a working provider execution engine. See
+  `docs/execution-components/integration-pure.txt` for evidence and exclusions.
+- PIO-16/H3 source-content preparation in `45b61ee` has independent acceptance.
+  The asset and contract tests do not activate production Rust embedding,
+  installation, selection or refresh. PIO-17 remains unresolved. The retired
+  Go oracle's broad embed includes the asset, but its installer and fingerprint
+  still select only wapps-secrets.
+- These reviewed branches still require combined-main regression gates before
+  push. Accepted lane evidence is not proof of a later combined tree.
+
+Execution readiness still depends on explicit project/repo/mission binding and
+registration behavior, local spawn/provider profiles, admitted tool-ceiling
+metadata, review-provider routing, worker shutdown/containment and resume
+ownership. Workflow model preferences do not choose worker model/auth/spend.
+Quota selection/freshness and transcript retention/header contracts are also
+unresolved; the plugin's 2,000-row cap contradicts the historical no-retention
+claim. Do not silently promote either behavior to an approved contract.
+
+No live deployment, new grants/credentials, real migration/snapshot access,
+user configuration/skill installation, release or plugin retirement follows
+from these source integrations. Broker rollout and v0.24.0 remain separately
+approval-gated. The source cloud MCP and operation-key implementations exist;
+historical statements that they are unbuilt do not describe current source.
+Offline replay preparation exists and has synthetic tests, but is not the
+Rust production migration executor or an authorized real replay.
