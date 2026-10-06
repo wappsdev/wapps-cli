@@ -1,0 +1,82 @@
+DNS timeout regression evidence (2026-10-06)
+
+Base: b5149f521aaaea75fd2e99f44f8cd15b4d46fa32
+Lane: lane/broker-dns-timeout-ci
+Tree: /Users/adnankurt/Documents/Projects/.worktrees/broker-dns-timeout-ci
+Scope: rust/crates/cli/src/broker/config.rs, test module only.
+This record and the test correction are staged, not committed or pushed.
+
+Hosted failure investigated
+- Run 37402530730, macos-latest, cargo test --release --locked -- --nocapture.
+- Source evidence: /tmp/wapps-ci-37402530730-EuOHng.
+- 02:11:20.3481130Z: running 11 library tests.
+- 02:11:20.5129850Z: stalled_dns_is_bounded_before_any_mcp_call panicked
+  at config.rs:209; started.elapsed() < Duration::from_millis(150) failed.
+- The earlier result.is_err() assertion did not fail. The synthetic resolver
+  returns a nonempty successful answer only after its 200 ms sleep.
+- 02:11:32.9798240Z: 10 passed, 1 failed; 02:11:32.9806140Z: exit 101.
+- These are log timestamps, not an instrumented trace of individual scheduling
+  events. The exact source of the hosted scheduling delay is not established.
+
+Contract and investigation
+- Config::load resolves before daemon startup or the client's MCP handshake.
+- resolve_with waits on recv_timeout; its worker performs blocking DNS.
+- Forwarding uses the cached addresses and preserves hostname TLS validation.
+- The old elapsed assertion includes spawning, waiting and assertion scheduling,
+  not just the bounded receive. No production contract violation was observed.
+- The unchanged focused release test passed locally (exit 0).
+- A scratch extraction retained the production resolver and the original
+  assertions, adding a handshake after the timeout result. Its owned child was
+  stopped for 180 ms, resumed, and reaped. DNS returned its timeout at 22.689 ms;
+  the elapsed assertion failed at 207.906125 ms (test exit 101). Resolver
+  completion was observed during panic cleanup. This is controlled synthetic
+  evidence of assertion brittleness, not a natural reproduction of hosted load.
+
+Test correction
+- The resolver announces startup and blocks until an explicit release signal.
+- The real resolver function must return its timeout error while completion is
+  still absent and before release. The configured test timeout remains 20 ms.
+- Five-second receive watchdogs only fail hung setup, return, or cleanup; no
+  wall-clock performance threshold is used as the semantic expectation.
+- RAII releases and observes the synthetic resolver on success and unwinding;
+  a scoped caller is joined on both paths.
+- Separate success, resolver-error and empty-address tests cover normal results.
+- The corrected test passed the same controlled 180 ms pause (exit 0).
+- One scratch negative control replaced only recv_timeout(timeout) with recv().
+  The corrected test failed at its return watchdog (exit 101), released the
+  resolver during unwinding, observed completion, and reaped the owned child.
+  This control was rerun against the final simplified test. Its unused-timeout
+  compiler warning is expected in scratch; it was not a compilation failure.
+- Scratch controls did not modify lane source bytes.
+
+Production preservation
+- Every byte before #[cfg(test)] matches the fixed base: 7194 bytes.
+- SHA256: c40f4f3b206b920c0ffa13818df30acf9ccaf0c296533cced1f74fa49d3fbf42.
+- The ten-second production DNS timeout, validation, credentials, endpoint and
+  TLS behavior are unchanged. No retry, test skip, CI setting or deadline change.
+
+Final local gates
+- cargo fmt --all -- --check: exit 0.
+- cargo clippy --all-targets --locked -- -D warnings: exit 0.
+- cargo test -p wapps --release --locked --lib -- --nocapture: three runs,
+  each exit 0, 14 passed, none failed/ignored/filtered.
+- Focused release library config tests: 30 runs, each exit 0, four passed.
+- Simplifier review reduced the release guard to a direct sender. Find-bugs
+  self-review found no significant defect in the complete test-only diff.
+- All cargo commands used this tree's rust/Cargo.toml, with isolated build output.
+- Full gate output: /tmp/wapps-dns-ci-final-gates.log.
+- Reproduction inputs/output: /tmp/wapps-dns-ci-reproduce.py and
+  /tmp/wapps-dns-ci-original-paused.log.
+- Semantic pause inputs/output: /tmp/wapps-dns-ci-semantic-paused.py and
+  /tmp/wapps-dns-ci-semantic-paused.log.
+- Negative-control inputs/output: /tmp/wapps-dns-ci-negative-control.py and
+  /tmp/wapps-dns-ci-final-negative-control.log.
+
+Limits
+- No hosted restart, dispatch or subsequent hosted result was obtained.
+  Run 37402530730 remains failed; overall CI is not certified green.
+- No full integration suite or Linux rerun was performed by this lane.
+- No commit, push, main write/merge, provider session, publication, installation,
+  deployment, real credential/config access, broad kill or mutation sweep.
+- Existing .wrangler and prior diagnostics were preserved. Independent review,
+  coordinator integration, fresh post-merge gates and hosted confirmation remain.

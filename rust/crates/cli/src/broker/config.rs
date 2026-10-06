@@ -194,18 +194,90 @@ fn header_value(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+
+    // A hung test fails; this is not an assertion about scheduler latency.
+    const WATCHDOG: Duration = Duration::from_secs(5);
+
+    struct StalledResolver {
+        release: Sender<()>,
+        completed: Receiver<()>,
+    }
+    impl Drop for StalledResolver {
+        fn drop(&mut self) {
+            // Release the resolver even during assertion unwinding.
+            let _ = self.release.send(());
+            let completed = self.completed.recv_timeout(WATCHDOG);
+            if !std::thread::panicking() {
+                completed.expect("stalled resolver did not complete after release");
+            }
+        }
+    }
 
     #[test]
     fn stalled_dns_is_bounded_before_any_mcp_call() {
-        let started = std::time::Instant::now();
-        let result = resolve_with(
-            || {
-                std::thread::sleep(Duration::from_millis(200));
-                Ok(vec!["127.0.0.1:443".parse().unwrap()])
-            },
-            Duration::from_millis(20),
+        std::thread::scope(|scope| {
+            let (release, wait_for_release) = mpsc::channel();
+            let (started, wait_for_start) = mpsc::channel();
+            let (completed, wait_for_completion) = mpsc::channel();
+            let (returned, wait_for_return) = mpsc::channel();
+            let stalled = StalledResolver {
+                release,
+                completed: wait_for_completion,
+            };
+            // The scoped caller is joined even if a test assertion panics.
+            let caller = scope.spawn(move || {
+                let result = resolve_with(
+                    move || {
+                        let _ = started.send(());
+                        let _ = wait_for_release.recv();
+                        let _ = completed.send(());
+                        Ok(vec![SocketAddr::from(([127, 0, 0, 1], 443))])
+                    },
+                    Duration::from_millis(20),
+                );
+                let _ = returned.send(result);
+            });
+            wait_for_start
+                .recv_timeout(WATCHDOG)
+                .expect("resolver did not start");
+            let result = wait_for_return
+                .recv_timeout(WATCHDOG)
+                .expect("DNS timeout waited for the stalled resolver");
+            assert_eq!(result, Err("broker DNS timed out".into()));
+            // The timeout must return before the resolver is allowed to finish.
+            assert_eq!(stalled.completed.try_recv(), Err(TryRecvError::Empty));
+            drop(stalled);
+            caller.join().expect("DNS caller panicked");
+        });
+    }
+
+    #[test]
+    fn successful_dns_preserves_resolved_addresses() {
+        let addresses = vec![
+            SocketAddr::from(([127, 0, 0, 1], 443)),
+            SocketAddr::from(([127, 0, 0, 2], 443)),
+        ];
+        let expected = addresses.clone();
+        assert_eq!(resolve_with(move || Ok(addresses), WATCHDOG), Ok(expected));
+    }
+
+    #[test]
+    fn failed_dns_reports_resolution_error() {
+        assert_eq!(
+            resolve_with(
+                || Err(std::io::Error::other("synthetic resolver failure")),
+                WATCHDOG,
+            ),
+            Err("cannot resolve broker endpoint".into()),
         );
-        assert!(result.is_err());
-        assert!(started.elapsed() < Duration::from_millis(150));
+    }
+
+    #[test]
+    fn empty_dns_rejects_missing_addresses() {
+        assert_eq!(
+            resolve_with(|| Ok(Vec::new()), WATCHDOG),
+            Err("broker endpoint has no addresses".into()),
+        );
     }
 }
