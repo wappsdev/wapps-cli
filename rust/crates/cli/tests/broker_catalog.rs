@@ -75,12 +75,12 @@ impl Drop for Home {
     }
 }
 
-// Removing a fixture HOME must not strand the daemon started by its MCP client.
-// Keep a connection solely to recover this run's daemon when testing the old bug.
+// Removing a fixture HOME must not strand its owned foreground daemon.
+// The old remove-only defect has separate captured proof; cleanup here uses only
+// the fixture's Child ownership, never a pathname-based recovery stop frame.
 fn assert_fixture_daemon_cleanup(unwind: bool) {
     use std::{
-        io::{BufRead, BufReader, Write},
-        os::unix::{fs::MetadataExt, net::UnixStream},
+        os::unix::fs::MetadataExt,
         panic::{catch_unwind, AssertUnwindSafe},
         time::{Duration, Instant},
     };
@@ -92,13 +92,7 @@ fn assert_fixture_daemon_cleanup(unwind: bool) {
         serde_json::from_slice(&fs::read(directory.join("owner.json")).unwrap()).unwrap();
     let pid = i32::try_from(owner["pid"].as_u64().unwrap()).unwrap();
     let socket_meta = fs::symlink_metadata(directory.join("broker.sock")).unwrap();
-    let mut recovery = UnixStream::connect(directory.join("broker.sock")).unwrap();
-    recovery
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    recovery
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
+    let started = Instant::now();
     eprintln!(
         "fixture root={} pid={pid} socket={}:{}",
         root.display(),
@@ -121,26 +115,12 @@ fn assert_fixture_daemon_cleanup(unwind: bool) {
     }
     // SAFETY: signal zero only observes the exact PID recorded in this newly
     // created private HOME; it never sends a signal or enumerates other processes.
-    let alive = || unsafe { libc::kill(pid, 0) == 0 };
-    let leaked = alive();
-    if leaked {
-        writeln!(recovery, "{{\"kind\":\"stop\"}}").unwrap();
-        let mut reply = String::new();
-        BufReader::new(recovery).read_line(&mut reply).unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&reply).unwrap()["kind"],
-            "stopping"
-        );
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while alive() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(!alive(), "recovery must stop only this run's daemon {pid}");
-    }
-    assert!(
-        !leaked,
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
         "fixture removed HOME but left its daemon {pid} running"
     );
+    assert!(started.elapsed() < Duration::from_secs(18));
     assert!(
         !root.exists(),
         "fixture HOME must be removed after child exit"
@@ -205,7 +185,7 @@ fn changed_owner_record_retains_state_without_hiding_original_panic() {
     assert_eq!(
         unsafe { libc::kill(i32::try_from(pid).unwrap(), 0) },
         -1,
-        "owned child must be reaped even when socket control is refused"
+        "owned child must be reaped even when ownership resources changed"
     );
     assert!(
         root.exists(),
