@@ -1,0 +1,99 @@
+13.3 shared pure contract
+========================
+
+Scope
+-----
+Only rust/crates/cli/src/broker/execution/types.rs and its path-imported test
+rust/crates/cli/tests/broker_execution_types.rs are implemented. This record is
+the third owned file. Nothing registers an execution module or changes broker
+commands, the catalog, manifests, lockfiles, task maps, or proof scripts.
+These components do not implement the execution engine. agent_submit,
+agent_cancel, agent_attach, and agent_report remain ACTION_UNAVAILABLE.
+
+Source grounding
+----------------
+CLI baseline: 31c3cf5 (daemon 13.2 and curated preparation, not execution).
+Plan: docs/broker-daemon-port.md sections 4.5 and 7.1, slice 13.3.
+Original plugin: c6d7e09fa0df9d8ad231fd56520a14fee4432ba5 in
+/Users/adnankurt/Documents/Projects/dual-orchestrator-agent-broker.
+Read roles/types.ts, process/provider_types.ts, process/runtime.ts,
+storage/leases.ts, and storage/jobs.ts. Its Provider is claude/codex; its
+ProviderResultStatus lacks timed_out. The cloud, not that smaller result set,
+defines the worker report contract in this component.
+Platform source: feefd2d3da990dce70e71899ac0cf77ff18e2c64 in
+/Users/adnankurt/Documents/Projects/wapps-platform (source only, not live rollout).
+Read crates/core/src/broker/body.rs, broker/job.rs, broker/envelope.rs,
+crates/core/src/envelope.rs, crates/workers/src/do_entry/mission.rs,
+mission_lane/rows.rs, mission_lane/payload.rs, and mission_lane/methods.rs.
+The existing CLI forward.rs grounds transport/HTTP/protocol/RPC categories.
+
+Frozen API and meanings
+-----------------------
+Provider::{Claude,Codex}: exact lower-case source names, no worker model choice.
+ReportStatus::{Completed,Failed,TimedOut,Cancelled}: body.rs REPORTED_STATUSES.
+Not job state: rejected and orphaned cannot be reported; a completed report may
+leave a cloud row review_pending or failed (finish_locked). No job-state machine
+or review policy is duplicated here.
+SecretMaterial::new(String): nonempty, opaque, unchanged capability bytes.
+No assumed base64 format, trimming, raw getter, Display, or generic Serialize.
+LeaseAuthority::new(SecretMaterial,u64): capability plus public fencingToken,
+1 through 9007199254740991 inclusive (body.rs check_int). This constructor is not
+a JSON-number parser: codecs must preserve the core's integral-number semantics,
+including integral decimal notation, rather than imposing serde u64 parsing.
+JobAuthority::new(String,SecretMaterial): jobId plus capability, no epoch.
+jobId uses JavaScript trim and 1..128 UTF-16 units (body.rs JOB_AUTHORITY).
+No lease/job conversion exists. job_id() and fencing_token() expose metadata.
+wire() returns a distinct borrowed typed view: LeaseAuthorityWire serializes
+{capability,fencingToken}; JobAuthorityWire serializes {jobId,capability}.
+Only these explicit authority-bearing wire views implement Serialize. Debug
+redacts both views and owning authority; even an untrusted job id is omitted.
+ContractError retains no rejected input, and diagnostics/error serialization
+contain only fixed categories. This is containment, not memory zeroization.
+CloudError::{Transport,Http{status},Protocol,Rpc,Refused} retains no request,
+URL, arbitrary message, response body, recovery text, or nested provider error.
+RPC is category-only: the bridge accepts integral numbers beyond i64, so no
+narrower code representation is frozen. No cloud refusal/code mapping table is
+copied. outcome() is Refused only for a known nonmutating schema/auth/domain
+refusal; bare HTTP status, protocol/RPC failure, and transport failure are
+Unknown. Generic isError or an INTERNAL envelope is not proof of no mutation.
+This contract makes no retry decision or network request.
+
+Reuse and integration boundary
+------------------------------
+Existing serde and serde_json suffice; no dependency is added. The CLI bridge
+uses dynamic Value/string errors, and the platform's public dynamic authority
+has secret-bearing Debug/Serialize, so neither is an adequate safe owning type
+for this separate native component. The cloud's schema/policy remains cloud-owned.
+No provider payload, role registry, quota schema, or outbound scrub algorithm is
+invented here. Codecs can encode typed wire views and use categorical errors;
+scrub/quota consumers can share Provider without importing a runtime.
+Integration blockers intentionally remain unresolved: project/provider context,
+role policy, review independence, role registry filesystem layout, credentials,
+model defaults, native adapter provenance, and HTTP retries. Source changes do
+not establish that platform feefd2d is deployed. No provider/cloud execution,
+real stores, credentials, configuration changes, deployment, release, push,
+migration, or primary-checkout edit was performed.
+
+Focused evidence
+----------------
+Initial test-first API availability red: cargo test --offline --locked -p wapps
+--test broker_execution_types, exit 101 because the types module did not exist.
+Behavioral contract green: 9 tests, exit 0; compiler diagnostics then added.
+Diagnostic regression red: temporarily enabled Serialize on SecretMaterial in
+the isolated owned file; the diagnostic test failed exactly on unsafe generic
+serialization, exit 101. Original source bytes restored in a finally block.
+Final focused verification: 10 tests, exit 0. The compiler positive fixture
+exits 0; 13 negative fixtures exit 1 with checked E0308/E0277/E0616 diagnostics.
+The negative fixtures prove authority positions are distinct, owning secrets
+cannot be generically serialized/displayed, and raw fields remain private.
+rustfmt --edition 2021 --check on the two owned Rust files: exit 0.
+cargo clippy --offline --locked -p wapps --test broker_execution_types --
+-D warnings: exit 0.
+cargo deny --offline --locked check with rust/deny.toml: exit 0; unchanged
+syn duplicate-version and unused-license-allowance warnings remain. Advisory
+checks used the local cache only; no freshness claim is made for that cache.
+Simplification and local scoped find-bugs review completed. No cloud/provider
+calls were made for review. Optional challenge did not run: its external model
+leg conflicts with this lane's no-provider-call boundary (WARN, not a pass).
+No full-suite or proof-script sweep was run; coordinator integration gates and
+any commit/landing remain separate.

@@ -1,0 +1,234 @@
+Execution cloud wire component
+==============================
+
+Scope and provenance
+--------------------
+Branch lane/execution-cloud-wire remains at frozen contract commit
+25ab4384098716b8498a8444e85b22ce0c1fa0db. This repair preserves the existing
+three-file staged delivery, not a new component writer or runtime integration.
+Owned paths, relative to this checkout:
+  rust/crates/cli/src/broker/execution/cloud_wire.rs
+  rust/crates/cli/tests/broker_execution_cloud_wire.rs
+  docs/execution-components/execution-cloud-wire.txt
+The shared types, manifests, lockfile, catalog, module registration, CLI, task
+maps and proof scripts are unchanged. Tests import the pure source with #[path].
+Nothing enables agent_submit, agent_attach, agent_report or agent_cancel in the
+execution engine. Existing execution tools still answer ACTION_UNAVAILABLE.
+
+Plan grounding: docs/broker-daemon-port.md sections 4.3b, 4.5 and 7.1 (13.3).
+Original builder inspected plugin c6d7e09fa0df9d8ad231fd56520a14fee4432ba5 in
+/Users/adnankurt/Documents/Projects/dual-orchestrator-agent-broker, including
+process/runtime.ts submit, #runRemote, #terminalize and #note. The cloud replaces
+local reservation/transition/task construction: attach must finish before spawn,
+and its task is authoritative. Integration must attach with jobId as providerRunId;
+this general encoder accepts the cloud's field, not a local session policy.
+
+Public contract and independent evidence
+---------------------------------------
+Platform source is at 4f701f6b040efedb6e46a1169a6678eb1584c547 in
+/Users/adnankurt/Documents/Projects/wapps-platform. The prior builder/verifier
+established that inspected body/job/envelope, mission_lane payload/methods,
+broker_mcp/broker_handlers and catalog_lane payload files were unchanged from
+feefd2d3da990dce70e71899ac0cf77ff18e2c64. This repair freshly read public handler
+construction, MCP result serialization, core states/transitions and settle_subject.
+Source inspection and hermetic tests are not evidence of a live rollout.
+
+The rejected component's independent Sol verifier result was recovered from
+/Users/adnankurt/.claude/projects/-Users-adnankurt-Documents-Projects-wapps-cli/37332331-3dd9-4038-adf0-bffa80654761/workflows/wf_81a47f02-1af.json
+and its verifier journal, agent-afd897874cc37faff.jsonl under that session's
+subagents/workflows/wf_81a47f02-1af directory. The original reproducer was read at
+/var/folders/sq/s629yjq92n53ghnf1xp5rvyr0000gn/T/cloud-wire-independent-review-jfiweuzz/independent_wire_oracle.rs.
+Its report was rejection, not approval: original 72 tests passed, but six of eight
+independent reply probes failed. The historical review's no-additional-defect
+claim and green tests did not establish public reply compatibility.
+
+Confirmed HIGH: public dispatch/progress/finish/cancel handlers project their
+fields and OMIT the private DO ok flag. A blanket ok:true requirement rejected
+committed HTTP and MCP successes as Protocol/Unknown. Attach instead returns the
+whole brief, including ok:true. Registration also projects created/mission and
+omits ok; the repair task's assumption that PUBLIC registration supplies ok was
+checked against broker_handlers::register_mission and the frozen record, and was
+not copied into either tests or transport.
+
+Confirmed MEDIUM: settle_subject returns the subject's observed state when a
+verdict's transition is disallowed. The actual core allows review_pending to
+cancelled and disallows cancelled to completed. A reviewer can therefore finish
+successfully with a cancelled subject; completed/rejected-only decoding imposed
+local settlement policy and misclassified success as Protocol/Unknown.
+
+Eight exact HTTP bodies are embedded in the owned test, selected by record id
+from services/broker/test/frozen/surface-transcript.json: jobs-dispatch,
+jobs-dispatch-replay, jobs-attach, jobs-progress, jobs-finish, jobs-finish-review,
+jobs-cancel and missions-register. Full frozen-file SHA-256:
+26eb925fe33e2dc495c1a2ebfca5c6b6bb186c96cc937187d122dfe6b2f833fa.
+All eight embedded objects were independently compared to the actual file, exit 0.
+The creation capability is the frozen test's synthetic value, not a real secret.
+MCP goldens wrap the public bodies in content/structuredContent, omitting isError
+on success as mcp_lane::tool_result does. No ok is added by the wrapper. Progress
+has no advertised MCP tool; its envelope test checks generic decoding only, not
+an actual progress tool call or newly supported route.
+
+Encoding contract
+-----------------
+Dispatch, Attach, Progress, Finish, Cancel and Register encode explicit JSON
+bodies. Dispatch and Cancel require LeaseAuthority; Attach, Progress and Finish
+require JobAuthority. Neither a principal nor a lease is invented by the codec.
+Register is an explicit tokenless body, not automatic mission registration.
+The existing dependencies serde and serde_json are sufficient.
+
+Dispatch contains exactly authority, laneId, role, dispatchKey, base, head,
+task, workerProvider and present workItemId, reviewsJobId, resumesJobId,
+answersQuestionId. There is no operationKey on jobs: that key belongs only to
+work_add/work_ask. No model, effort, tools, handBack, principal, time, cwd,
+local path or worktree metadata can enter dispatch through this API. Worktree
+path/branch is an optional attach field, exactly as the cloud declares it.
+The cloud validates declared role ceilings and one-bind admission. Local
+routing/review independence remains pending slice 13.3 runtime integration;
+this encoder does not enforce either policy.
+
+Optional outbound fields are omitted, not emitted as null. Finish accepts an
+explicit empty output/error and does not trim either. Trimmed fields follow
+JavaScript trim (BOM is whitespace; NEL is not) and UTF-16 unit ceilings.
+Over-limit or empty trimmed inputs produce Protocol; they are not truncated or
+filled with defaults. Mission ids follow the ASCII source pattern and are not
+trimmed. Encoding Values contain capabilities and must never be logged.
+Progress notes and finish output/error must pass the separate outbound scrub
+before encoding. This module neither implements nor claims to enforce that
+scrub; integration must not send raw provider text through these functions.
+
+Decoding contract
+-----------------
+Each decoder first requires an application object without a top-level refusal.
+Success then requires operation-specific fields, types, identities and states;
+arbitrary objects, including an object containing only ok:true, are not success.
+A present ok field must be true; false, null or a wrong type contradicts success.
+Only attach requires that the flag be present. The codec neither fabricates a
+missing flag nor modifies the public envelope.
+
+decode_dispatch validates original jobId, boolean created and the job-state
+vocabulary. Created jobs must be reserved with a nonempty opaque capability;
+they yield JobAuthority. Existing jobs must have absent or null capability and
+yield only jobId/state. No replay recovers authority or permits another spawn.
+
+decode_attach(source, job_authority, expected_resumes_job_id) additionally requires
+ok:true, original matching job id, nonblank authoritative task, role/lane/base/head,
+required nullable work/review/question ids, a positive integral safe deadline,
+and required nullable resumeFrom. A resumed brief must name the expected prior
+job, a providerRunId, and explicit worktree null or a valid path/branch pair.
+Unexpected, missing or mismatched resume data is Protocol. Returned task bytes
+are preserved; the dispatch ceiling is not imposed on a cloud-built brief.
+Consumers must reconcile returned metadata with their selected role and dispatch
+context before execution. Provider, role and resume policies are not implemented.
+
+decode_progress requires matching original job id and a positive safe deadline.
+decode_finish requires matching id, a finish-produced state and explicit subject
+null or an object with an original id and a known observed job state. The subject
+uses the full core state vocabulary, not a verdict-derived transition rule. A
+cancelled subject is preserved unchanged. A completed report can yield
+review_pending or failed; no local settlement or retry policy is inferred.
+decode_cancel requires matching original id and cancelled state.
+decode_register requires boolean created, original requested mission/repo and
+catalog registeredAt/registeredBy. registeredBy is received metadata, never
+injected. Public registration does not require ok. Integer decimal notation is
+accepted without coercing strings/fractions or allowing unsafe JavaScript integers.
+
+Reply preserves attention or attentionError independently of mutation success.
+A valid attentionError, including INTERNAL, is not a refusal of the preceding
+mutation. Absent optional attention stays absent; malformed/null or contradictory
+attention fields are Protocol. Attention's domain interpretation is not duplicated.
+Reply and text-bearing result types have no generic Debug/Serialize.
+
+decode_rpc validates a complete JSON-RPC reply's version/id, exclusive result/error,
+MCP content/optional metadata and structuredContent. Integral numeric RPC codes,
+including decimal notation and numbers beyond i64, yield CloudError::Rpc. Missing
+structuredContent has no text-parsing fallback. An operation-specific decoder
+must still accept the application object before success is established.
+
+Only complete source schema/auth/domain nonmutating envelopes become Refused.
+Generic isError, malformed or contradictory envelopes, INTERNAL and availability
+failures become Protocol. Both Protocol and Rpc retain Unknown mutation outcome,
+as does transport/HTTP loss in frozen types. No retry or safe-replay decision is
+implemented. Diagnostics retain no arbitrary error messages or recovery strings.
+
+Repair evidence and review
+--------------------------
+Fresh repair logs and auxiliary oracle files: /tmp/cloud-wire-repair.resi5v.
+Red-first updated public tests: exit 101, 12 passed/15 failed. All eight separate
+HTTP/MCP-form operation goldens failed against the previous codec. Original
+synthetic success fixtures for those four operations were corrected to omit ok;
+missing-field tests no longer falsely require it. Attach's existing requirement
+and registration's actual public omission were retained as controls. Malformed
+and contradictory flags/refusals, creation-only and null authority, unknown
+outcomes, original IDs and extensions remain covered.
+
+After fixing acknowledgement validation only: exit 101, 25 passed/2 failed.
+Both remaining failures isolated cancelled-subject/full-vocabulary decoding;
+the public success goldens and flag controls passed. After removing the local
+subject-transition restriction: exit 0, 27 passed, none ignored. Simplification
+inlined the attach-only flag check, removing the redundant shared acknowledgement
+helper; no behavior, transport fields, retries or runtime policy were added.
+
+Recovered independent oracle rerun against current source: fresh actual wapps-core
+library compile exit 0, driver compile with release-compatible LTO exit 0,
+nine oracle tests exit 0. These include the seven frozen public reply records,
+MCP dispatch with independent attentionError, cancelled review subject/core
+transition assertions, full actual JOB_STATES observations, and 18 request bodies
+compared to actual Body::read. The latter also rejects optional nulls/job
+operationKey and checks generated Dispatch schema. Expected responses are not
+computed by this codec. No Worker runtime or provider/cloud service was called.
+
+Fresh lane gates after simplification:
+  focused cargo test --offline --locked: 27 passed, exit 0
+  cargo fmt --all -- --check: exit 0
+  focused cargo clippy --offline --locked -- -D warnings: exit 0
+  cargo deny --offline --locked --config rust/deny.toml check: exit 0
+Deny uses the local advisory cache; freshness is not claimed. Existing duplicate
+syn and three unmatched-license-allowance warnings remain; no new dependency.
+
+Fresh offline/locked release test command, -p wapps, four explicit targets:
+  broker_execution_cloud_wire: 27 passed
+  broker_execution_types: 10 passed (including compiler authority diagnostics)
+  broker_mcp (13.1): 28 passed
+  broker_daemon (13.2): 20 passed
+Combined exit 0: 85 tests, none failed or ignored. MCP/daemon fixtures use
+hermetic roots and strict loopback peers, not real cloud/provider services.
+Clean indexed export, exact tree identity and its fresh gate exits are reported
+in the repair's structured handoff; they are not inferred from this lane run.
+The first export/integrity script exited 1 because its all-file byte comparison
+followed a tracked SKILL.md symlink instead of comparing the link text. Export,
+staging, owned-file equality and whitespace checks themselves had exited 0.
+A symlink-aware comparison of every indexed file then exited 0; no source was
+changed or excluded to satisfy it. git check-ignore --no-index exited 1 as
+expected (none of the three owned paths is ignored). No tool denial occurred.
+No full-suite, mutation, proof-script or integration sweep was performed.
+
+Scoped code-simplifier and find-bugs review read all three owned files completely
+and checked the repaired branches against public wrappers and actual core rules.
+Inputs are explicit encoder fields and untrusted decoded Values. There are no
+DB queries, process/network calls, session/store changes, auth policy decisions
+or cryptographic operations in this pure component. Injection, XSS, CSRF, DB
+races, session fixation and cryptographic-operation checklist items have no sinks
+here. Distinct authority positions, creation-only disclosure, original identity
+checks, numeric/length boundaries, categorical diagnostics, malformed/refusal
+separation and unknown outcomes were checked. No additional confirmed defect
+remained in this scoped repair review. Arbitrary response-size limits, actual
+credential/auth enforcement, outbound scrub and role/provider reconciliation
+remain transport/integration boundaries, not proven security properties here.
+Optional external challenge was not invoked under the no-provider-call boundary;
+this is WARN-only, not a challenge pass. Independent Astra verification is the
+next stage; no reviewer was spawned, resumed or awaited by this repair.
+
+Integration blockers
+--------------------
+Production execution module/commands remain intentionally unregistered. Transport
+must supply raw replies to decode_rpc or raw HTTP application objects to the
+operation decoders. forward.rs currently unwraps JSON-RPC and sanitizes generic
+results; blindly reusing it for capability-bearing replies is not validated.
+The generated MCP catalog exposes neither progress nor registration tools; HTTP
+progress does exist. These codecs do not add tools or automatic registration.
+There is no new-mission policy, capability persistence, heartbeat scheduling,
+worker spawning, scrub integration, cancel process control or retry reconciliation.
+No primary checkout edit, real store/config/credential access, provider/cloud
+call, install, release, deployment, migration, main merge or push was performed.
+No commit is made: staged delivery is a deliberate handoff, not a tool denial or
+claim of user authorization. Commit/landing and runtime acceptance remain separate.

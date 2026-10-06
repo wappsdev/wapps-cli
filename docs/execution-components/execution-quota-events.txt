@@ -1,0 +1,171 @@
+Execution quota and event parsing component
+
+Scope and integration state
+---------------------------
+Branch: lane/execution-quota-events
+Frozen parent: 25ab438 (lane/execution-13-3-types).
+Only the quota parser, its #[path] integration test, and this component record
+are owned by this lane. Shared types are unchanged. No module, manifest, CLI,
+registration, cloud, provider, timer, storage, transcript, or attention wiring
+has been added. This pure component is NOT the completed 13.3 execution engine.
+The test imports the frozen Provider enum through the shared types file.
+
+Source contract
+---------------
+Source root: /Users/adnankurt/Documents/Projects/dual-orchestrator-agent-broker
+The inspected source is unchanged by this work.
+
+src/process/quota.ts (complete, 100 lines):
+- Claude utilization is a fraction, always multiplied by 100. Codex
+  used_percent is already percent, even when it is 1 or less.
+- Round with JavaScript Math.round semantics, then clamp to [0, 100]. Only
+  numeric finite usage values qualify; strings, booleans, null, and missing
+  values produce a status-only reading, not coercion.
+- Claude rejected and allowed_warning override inferred status. Other status
+  words use the percentage threshold of 90. Codex infers status from percent.
+- Claude rateLimitType is preserved verbatim, including an empty string.
+  Codex uses primary only, never secondary. At least 1440 minutes selects days;
+  shorter windows select hours. Division is rounded, not floored.
+- Both reset fields are raw Unix seconds. Negative, fractional, zero, expired,
+  and implausibly large finite numeric resets are retained without conversion,
+  freshness filtering, or guessing whether the provider supplied milliseconds.
+- Truthy malformed info/primary values (arrays, objects, nonempty strings,
+  true, and nonzero numbers) still produce a reading with absent fields. Falsy
+  values (null, false, zero, and empty string) do not. This preserves source
+  behavior rather than imposing a stricter schema.
+
+src/process/codex_mcp.ts:89-149:
+- Admit only the source's 12 watched event types from method codex/event,
+  params.msg. Borrow that exact message without transformation or cloning.
+- Drop unknown events, agent_message_content_delta and raw_response_item.
+- token_count is admitted even when it carries no primary quota reading.
+
+src/process/runtime.ts:447-479:
+- Read quota before classifying noise.
+- Suppress recording and progress ONLY if quota extraction returned a reading
+  and the payload's type is token_count. Claude quota messages, unrecognized
+  direct messages, and counters without quota are not suppressed.
+- Event admission and runtime message classification are separate functions;
+  classify_message does not reinterpret unknown events as progress noise.
+
+Reading diagnostics never retain the input payload and redact the untrusted
+window string in Debug, including when nested in ParsedMessage. Serialize is
+an explicit data representation, not a credential-safe diagnostic format.
+The JSON Value domain excludes NaN and infinity; overflow from multiplying a
+finite Claude fraction is nevertheless correctly clamped to 100.
+
+Unresolved storage and attention policy (not implemented)
+---------------------------------------------------------
+The plan docs/broker-daemon-port.md:256 requires the newest reading per provider
+AND window. Source storage/jobs.ts:883-933 retains five rows per provider but
+latestQuota selects only the newest row per PROVIDER. storage/attention.ts:
+224-246 consumes that selection and filters rejected or >=90% readings whose
+reset seconds * 1000 are greater than the supplied now. At the exact reset the
+row is expired. The digest at attention.ts:322-328 also selects per provider,
+includes only status, and does not apply that attention freshness filter.
+Do not silently choose between these policies during integration. This lane
+preserves raw parsing only; it makes no selection, expiry, digest, or attention
+merge decision.
+
+Differential evidence and JSON ingress limitation
+-------------------------------------------------
+Source hashes (SHA-256):
+quota.ts       e5446968684dc86063d498f7c9c7b7a30c45412d30a85d679d7dbbd68c5aa32f
+codex_mcp.ts   30a3be43800d0a513d2314ec6fd662a5648445432dca09cfb2c0f84559220efc
+runtime.ts     90038c9277080f0347de08741a8a78610268608fda32f7da9216ed44e7cf203c
+
+The temporary local oracle uses the actual complete quota.ts, the pure source
+window from WATCHED_CODEX_EVENTS through codexEventPayload, and the exact noisy
+expression from runtime.ts. No provider adapter, real store, cloud call, or
+live runtime was imported or started. Its Rust runner imports this component
+and the frozen types directly. Scratch files are in the lane's ignored
+rust/target/quota-oracle directory, with root permissions 0700; they are not
+product source or required by permanent tests.
+
+Permanent tests contain 51 literal quota and 27 literal event fixtures. The
+source independently confirms all 78 literal expectations. A deterministic
+6,344-case JSON-domain differential exited 0 with zero mismatches. Expanding
+to 10,440 cases (including 4,096 deterministic exponent/negative-window samples)
+revealed 1,098 raw-JSON mismatches before the component boundary: the existing
+serde_json configuration does not enable float_roundtrip and can materialize
+JSON numbers differently from JavaScript JSON.parse. For example JSON
+997473240364.3429 becomes 997473240364.3428 in the current Rust Value input.
+That changes a raw reset and can change extreme window labels. No manifest or
+shared ingestion changes were made; byte-for-byte provider-JSON numeric parity
+is an integration blocker, not a passing claim.
+
+Comparing both implementations on the exact same materialized Value input
+isolates this parser from that ingress discrepancy. All 10,440 component cases
+then exited 0 with zero mismatches, including the numeric/window extremes.
+Integration must resolve or explicitly accept the ingress precision boundary;
+this component cannot recover original numeric text from a Value.
+
+Verification and review
+-----------------------
+All commands below used this isolated lane, locked dependencies, and offline
+Cargo operation where supported. No proof sweeps were run.
+
+- TDD RED: cargo test --locked --offline --test broker_execution_quota:
+  exit 101, four behavioral failures against intentionally empty parser code.
+- First implementation test: exit 101, two fixture equality failures caused by
+  integer-versus-f64 reset representation in serde_json::Value equality. The
+  literal expected reset notation was corrected to f64 without changing its
+  numeric meaning or the source-oracle expectation.
+- GREEN: same debug test command, exit 0, four passed, zero ignored.
+- Initial source differential: exit 1, 856 comparison-harness mismatches from
+  JS undefined/-0 properties versus JSON serialization. Comparing identical
+  JSON inputs fixed the harness; the 6,344-case comparison exited 0.
+- Expanded raw-JSON differential: exit 1, 1,098 ingress precision mismatches,
+  retained above as an unresolved integration boundary.
+- Materialized-Value differential: exit 0, 10,440 cases, zero mismatches.
+- rustfmt on the two owned Rust files: exit 0.
+- cargo fmt --all -- --check: exit 0.
+- cargo clippy --locked --offline --workspace --all-targets -- -D warnings:
+  exit 0, no warnings.
+- cargo deny --offline --locked check: exit 0; advisories, bans, licenses and
+  sources OK. Existing duplicate-syn and three unmatched-license warnings
+  remain unchanged.
+- cargo test --release --locked --offline -- --nocapture: exit 0, 570 passed,
+  zero failed, two existing intentionally ignored plugin-oracle runs. Includes
+  28 broker_mcp tests (13.1), 20 broker_daemon process tests plus seven lifecycle
+  unit regressions (13.2), 10 frozen contract tests, and four quota/event tests.
+  The full suite's log is rust/target/quota-release-tests.log.
+
+Code-simplifier review retained direct parsing functions and necessary numeric
+helpers; no abstraction, configuration knob, dependency, or policy layer was
+added. Local find-bugs review read all owned source/tests. Inputs are arbitrary
+JSON Values. Database, authentication, authorization, CSRF, session, crypto,
+external calls, and race surfaces are absent in this pure component. Injection
+and XSS have no execution/rendering sink here. Debug disclosure is covered by
+synthetic credential/window sentinels; serialized readings remain untrusted
+wire data. Numeric overflow, signed ties, malformed containers, threshold
+rounding, primary/secondary preference, and noise suppression have fixtures.
+No additional component-local finding was verified. Storage policy, JSON
+numeric ingress, and future scrubbed logging/wiring remain outside this scope.
+Optional provider-backed challenge was not invoked under the no-real-provider
+constraint. Review did not launch another writer.
+
+Delivery
+--------
+No public execution success/stub was added. No commit, push, release, migration,
+real credential access, cloud deployment, or primary-checkout source edit was
+performed. The caller must integrate this parser into a separately verified
+execution engine and obtain direct user commit authorization before committing.
+
+Indexed snapshot validation
+---------------------------
+Only the three owned paths were staged (stage exit 0). git diff --cached --check
+exited 0; git check-ignore returned 1 for the owned paths (none ignored). A clean
+git checkout-index snapshot under rust/target/quota-indexed contained only
+indexed source, not scratch oracle files or local ignored source. Release
+compilation explicitly used that snapshot's broker-oracle and cli crates.
+
+With CARGO_TARGET_DIR pointing at this lane's cache, the snapshot command was:
+  cargo test --manifest-path rust/target/quota-indexed/rust/Cargo.toml
+    --release --locked --offline --lib --test broker_execution_quota
+    --test broker_execution_types --test broker_mcp --test broker_daemon
+    -- --nocapture
+Result: exit 0, 75 passed, zero failed, zero ignored. This revalidated the quota
+component, frozen contract, and 13.1/13.2 regressions from indexed source. The
+complete 570-test release suite was run in the worktree, not rerun in the indexed
+snapshot. No commit was made; the exact three-file delivery remains staged.

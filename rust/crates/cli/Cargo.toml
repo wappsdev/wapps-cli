@@ -13,80 +13,72 @@ name = "wapps"
 path = "src/main.rs"
 
 [dependencies]
-# clap: derive KULLANILIYOR ama `///` doc yorumlari YASAK (bkz. helptext.rs).
+# clap: derive is used, but `///` help comments are prohibited (see helptext.rs).
 clap = { version = "4", features = ["derive", "string"] }
 serde = { version = "1", features = ["derive"] }
-# raw_value: Go'nun `json.RawMessage`inin karsiligi. GEREKLI, cunku exec'in
-# env kurucusu string-olmayan bir degeri HAM bayt olarak tasiyor (yalnizca
-# TrimSpace) — `[1, 2]` bosluguyla kaliyor. serde_json::Value bu bosluk
-# bilgisini KAYBEDIYOR ve olculdu: onsuz `K=[1,2]` uretiliyordu, Go ise
-# `K=[1, 2]`. Bir OZELLIK, yeni crate DEGIL.
-serde_json = { version = "1", features = ["raw_value"] }
-# ureq: BLOKLAYAN (async degil) HTTP istemcisi. Bu bir performans tercihi degil
-# bir BAGIMLILIK POLITIKASI tercihi: async bir istemci tokio'yu grafige sokardi
-# ve tokio bu estate'te yasakli. Olculdu: ureq'in grafiginde tokio/mio/socket2
-# YOK, yani yasagi gevsetmeye gerek kalmiyor.
+# raw_value is Go's json.RawMessage equivalent. The exec environment builder
+# carries non-string values as raw bytes after TrimSpace: `[1, 2]` must retain
+# its spaces. Value loses them: measured output was `K=[1,2]` versus Go's
+# `K=[1, 2]`. This is a feature, not a new crate.
+# float_roundtrip preserves finite numeric ingress precision; the default
+# best-effort parser changed quota reset bits and extreme window labels.
+# It adds no dependency. See tests/json_ingress_precision.rs for boundaries;
+# this does not provide unrestricted JS acceptance or serialization parity.
+serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
+# ureq is blocking, not async. This is dependency policy, not a performance
+# preference: an async client would introduce tokio, which this estate bans.
+# Measurement found no tokio/mio/socket2 in ureq's graph; no ban was relaxed.
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
-# stdin'in TTY olup olmadigi — agentmode'un ekseni.
+# Whether stdin is a TTY is the axis of agent mode.
 rustix = { version = "0.38", features = ["termios", "stdio", "fs", "process"] }
-# rustls / webpki-roots / rustls-pki-types: HEPSI zaten `ureq`in grafiginde vardi
-# (asagidaki `tls` ozelligi getiriyor). Burada DOGRUDAN bagimlilik yapilmalarinin
-# tek sebebi kok deposunu ELDE KURMAK (store.rs, `root_store`): `ureq`in
-# varsayilani gomulu kokleri VERIYOR ama uzerine ekleme yapmanin yolunu vermiyor.
-# Surumler `ureq`in istedikleriyle BIREBIR ayni tutuldu — amac Cargo.lock'a tek
-# bir yeni crate sokmamak, ve olculdu: sokmuyor (93 crate, oncesiyle ayni).
+# rustls / webpki-roots / rustls-pki-types already belonged to ureq's graph
+# through tls. They are direct dependencies only to construct the root store
+# manually (store.rs, root_store): ureq supplies embedded roots but no way to
+# augment them. Versions match ureq's requirements. Measurement added no crate
+# to Cargo.lock (the historical graph remained at 93 crates).
 #
-# `rustls-native-certs` ve `rustls-pemfile` BILEREK YOK. Platform deposunu okuma
-# sikki (B) olculdu: darwin'de alti crate ekliyor ve `cargo deny`yi dusuruyor
-# (`rustls-pemfile` bakimsiz, guvenli yukseltme yok). PEM okumasi bunun yerine
-# `rustls-pki-types`in kendi `PemObject`i uzerinden yapiliyor — RUSTSEC-2025-0134
-# duyurusunun isaret ettigi yol.
+# rustls-native-certs and rustls-pemfile are intentionally absent. The measured
+# platform-store option added six crates on Darwin and failed cargo deny:
+# rustls-pemfile was unmaintained without a safe upgrade. PEM reading instead
+# uses rustls-pki-types' PemObject, the path identified by RUSTSEC-2025-0134.
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
-# `std`: `PemObject::pem_file_iter` bu ozelligin arkasinda. Yeni bagimlilik
-# getirmiyor (`std = ["alloc"]`).
+# PemObject::pem_file_iter requires std; std = ["alloc"] adds no dependency.
 rustls-pki-types = { version = "1", features = ["std"] }
 webpki-roots = "0.26"
-# serde_yaml_ng: `.wapps.yaml` ayristiricisi. Go tarafi gopkg.in/yaml.v3
-# kullaniyor; Rust'ta bu bir BAGIMLILIK POLITIKASI karari, o yuzden adaylar
-# HATIRLANMADI, OLCULDU (taban: 93 crate, `cargo deny check` = 0):
+# serde_yaml_ng parses .wapps.yaml; Go uses gopkg.in/yaml.v3. This was a
+# dependency-policy decision measured against a 93-crate baseline, deny exit 0:
 #
-#   aday            crate delta   deny check   sonuc
-#   serde_yaml      +6            0            ELENDI: surumun kendisi
-#                                              "0.9.34+deprecated"; dtolnay 2024'te
-#                                              arsivledi. RUSTSEC'te BUGUN bir
-#                                              duyuru YOK (tek kayit 2018-0005,
-#                                              >=0.8.4'te yamali) — yani deny'i
-#                                              gecerdi. Elenme sebebi olculen
-#                                              BAKIM durumu, bir duyuru degil.
-#   serde_yaml_ng   +6            0            SECILDI (bkz. asagi)
-#   serde_yml       +8            1            ELENDI: RUSTSEC-2025-0068,
-#                                              "unsound and unmaintained",
-#                                              patched=[] — yani `ignore` YAZMADAN
-#                                              gecirmenin yolu YOK. Bu estate bir
-#                                              guvenlik/bakim duyurusunu kalici
-#                                              susturan ignore yazmiyor
-#                                              (rustls-pemfile'da da yazmadi).
-#   saphyr          +10           0            ELENDI: serde entegrasyonu yok +
-#                                              en buyuk graf.
-#   yaml-rust2      +6            0            ELENDI: serde entegrasyonu yok.
+#   candidate       crate delta   deny exit   result
+#   serde_yaml      +6            0           REJECTED: 0.9.34+deprecated;
+#                                             archived by dtolnay in 2024.
+#                                             No then-current advisory (the
+#                                             2018-0005 entry was fixed in
+#                                             >=0.8.4); maintenance was the
+#                                             measured reason for rejection.
+#   serde_yaml_ng   +6            0           CHOSEN (see below).
+#   serde_yml       +8            1           REJECTED: RUSTSEC-2025-0068,
+#                                             unsound and unmaintained, no
+#                                             patched version. This estate
+#                                             does not permanently suppress
+#                                             such advisories with ignore.
+#   saphyr          +10           0           REJECTED: no serde integration
+#                                             and the largest graph.
+#   yaml-rust2      +6            0           REJECTED: no serde integration.
 #
-# serde_yaml_ng, serde_yaml'in BAKIMI SUREN catali ve API'si birebir ayni.
-# serde derive'i tasidigi icin Go'nun struct etiketleri Rust alanlarina
-# DOGRUDAN esleniyor — ozellikle `Prefix *string`in "yok" / "acikca bos" ayrimi
-# `Option<String>`e birebir dusuyor. saphyr/yaml-rust2 ile bu eslemeyi ELDE
-# yazmak gerekirdi ve bir portun sessizce ayrisacagi yer tam olarak orasidir.
+# serde_yaml_ng is the maintained serde_yaml fork with the same API. Serde
+# derive maps Go struct tags directly: Prefix *string's absent/explicit-empty
+# distinction maps to Option<String>. saphyr/yaml-rust2 would require manual
+# mapping at precisely the boundary where a port could silently diverge.
 #
-# Grafa giren 6 crate: equivalent, hashbrown, indexmap, ryu, serde_yaml_ng,
-# unsafe-libyaml. unsafe-libyaml icin RUSTSEC-2023-0075 (hizalanmamis u64
-# yazimi) VAR ama >=0.2.10'da yamali (cozulen: 0.2.11) ve duyuru zaten yalnizca
-# 32/16-bit hedefleri etkiliyor — deny.toml'daki dort ucluden hicbiri o kumede.
+# The six added crates were equivalent, hashbrown, indexmap, ryu,
+# serde_yaml_ng and unsafe-libyaml. RUSTSEC-2023-0075 (unaligned u64 writes)
+# in unsafe-libyaml was fixed in >=0.2.10 (resolved: 0.2.11) and only affects
+# 32/16-bit targets; none of deny.toml's four triples belongs to that set.
 serde_yaml_ng = "0.10"
-# ring: baglama parmak izinin SHA-256'si (binding.rs). Grafa YENI crate
-# SOKMUYOR ve bu olculdu: `rustls`in `ring` ozelligi onu zaten getiriyordu
-# (Cargo.lock'ta 0.17.14). Surum onunla BIREBIR ayni tutuldu — rustls-pki-types
-# icin verilen kararin aynisi. Alternatif `sha2` grafa uc crate eklerdi ve bu
-# ikilide zaten bir kripto kutuphanesi varken ikinciyi tasimak, iki ayri
-# denetim yuzeyi demek olurdu.
+# ring provides binding fingerprints' SHA-256 (binding.rs). Measurement added
+# no crate: rustls already enabled ring (Cargo.lock: 0.17.14). The version
+# matches that dependency, as for rustls-pki-types. sha2 would add three crates
+# and a second cryptographic audit surface beside the existing library.
 ring = "0.17"
 # clap_complete: `wapps completion <shell>` (owner decision 2026-10-05,
 # docs/PORT-kalan-yuzey.md §4.2: keep completion, generate it with
