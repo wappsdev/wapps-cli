@@ -1,0 +1,839 @@
+{
+  "contract": {
+    "cliBase": "7edab79978c416a8a90f084e2dcc557c3f46ed2d",
+    "platformBase": "4f701f6b040efedb6e46a1169a6678eb1584c547",
+    "sources": [
+      "rust/crates/cli/src/broker/owner/mod.rs",
+      "rust/crates/cli/src/broker/owner/http.rs",
+      "wapps-platform/crates/workers/src/broker_handlers.rs:answer_question,accept_proposal,confirm_relay,owner_move_work",
+      "wapps-platform/crates/workers/src/mission_lane/methods.rs:owner_door,question_settled_refusal,accept_proposal,move_items",
+      "wapps-platform/crates/core/src/broker/envelope.rs:refusal,QUESTION_RECOVERY"
+    ],
+    "limitations": "Synthetic protocol exchanges only; no live Access signature/grant checks or Worker storage. Digest is opaque fixture data. Answer acknowledgements do not expose principal attribution; confirmation acknowledgements expose confirmedBy only. Response loss follows a fully received mutation body, but cannot establish whether the server committed it."
+  },
+  "preflights": {
+    "open": {
+      "questions": [
+        {
+          "questionId": "q-alternate",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": null,
+          "answer": null,
+          "answeredBy": null,
+          "answeredByPrincipal": null,
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        },
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": null,
+          "answer": null,
+          "answeredBy": null,
+          "answeredByPrincipal": null,
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        }
+      ]
+    },
+    "relay": {
+      "questions": [
+        {
+          "questionId": "q-alternate",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": 120,
+          "answer": "Yes",
+          "answeredBy": "relay",
+          "answeredByPrincipal": "svc:fixture-agent",
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        },
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": 120,
+          "answer": "Yes",
+          "answeredBy": "relay",
+          "answeredByPrincipal": "svc:fixture-agent",
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        }
+      ]
+    },
+    "duplicate-open": {
+      "questions": [
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": null,
+          "answer": null,
+          "answeredBy": null,
+          "answeredByPrincipal": null,
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        },
+        {
+          "questionId": "q-1",
+          "workItemId": "task-2",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": null,
+          "answer": null,
+          "answeredBy": null,
+          "answeredByPrincipal": null,
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        }
+      ]
+    },
+    "duplicate-relay": {
+      "questions": [
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": 120,
+          "answer": "Yes",
+          "answeredBy": "relay",
+          "answeredByPrincipal": "svc:fixture-agent",
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        },
+        {
+          "questionId": "q-1",
+          "workItemId": "task-2",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": 120,
+          "answer": "Yes",
+          "answeredBy": "relay",
+          "answeredByPrincipal": "svc:fixture-agent",
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        }
+      ]
+    },
+    "identical-duplicate-open": {
+      "questions": [
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": null,
+          "answer": null,
+          "answeredBy": null,
+          "answeredByPrincipal": null,
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        },
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": null,
+          "answer": null,
+          "answeredBy": null,
+          "answeredByPrincipal": null,
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        }
+      ]
+    },
+    "identical-duplicate-relay": {
+      "questions": [
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": 120,
+          "answer": "Yes",
+          "answeredBy": "relay",
+          "answeredByPrincipal": "svc:fixture-agent",
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        },
+        {
+          "questionId": "q-1",
+          "workItemId": "task-1",
+          "question": "Which path?",
+          "proposal": "Keep full intent",
+          "proposalDigest": "p-1234",
+          "raisedAt": 100,
+          "delegateProvider": null,
+          "answeredAt": 120,
+          "answer": "Yes",
+          "answeredBy": "relay",
+          "answeredByPrincipal": "svc:fixture-agent",
+          "answerJobId": null,
+          "confirmedAt": null,
+          "confirmedBy": null,
+          "withdrawnAt": null,
+          "withdrawnReason": null
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "duplicate-answer",
+      "group": "duplicate",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "duplicate-open",
+      "mutation": null,
+      "reply": null,
+      "outcome": "refused",
+      "stderr_contains": ["not uniquely found"]
+    },
+    {
+      "id": "identical-duplicate-answer",
+      "group": "duplicate",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "identical-duplicate-open",
+      "mutation": null,
+      "reply": null,
+      "outcome": "refused",
+      "stderr_contains": ["not uniquely found"]
+    },
+    {
+      "id": "unique-answer",
+      "group": "duplicate",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "answeredBy": "owner"}},
+      "outcome": "success",
+      "stderr_contains": []
+    },
+    {
+      "id": "duplicate-accept",
+      "group": "duplicate",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "duplicate-open",
+      "mutation": null,
+      "reply": null,
+      "outcome": "refused",
+      "stderr_contains": ["not uniquely found"]
+    },
+    {
+      "id": "identical-duplicate-accept",
+      "group": "duplicate",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "identical-duplicate-open",
+      "mutation": null,
+      "reply": null,
+      "outcome": "refused",
+      "stderr_contains": ["not uniquely found"]
+    },
+    {
+      "id": "unique-accept",
+      "group": "duplicate",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "answeredBy": "proposal", "answer": "Keep full intent"}},
+      "outcome": "success",
+      "stderr_contains": []
+    },
+    {
+      "id": "duplicate-confirm",
+      "group": "duplicate",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "duplicate-relay",
+      "mutation": null,
+      "reply": null,
+      "outcome": "refused",
+      "stderr_contains": ["not uniquely found"]
+    },
+    {
+      "id": "identical-duplicate-confirm",
+      "group": "duplicate",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "identical-duplicate-relay",
+      "mutation": null,
+      "reply": null,
+      "outcome": "refused",
+      "stderr_contains": ["not uniquely found"]
+    },
+    {
+      "id": "unique-confirm",
+      "group": "duplicate",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "confirmedBy": "human:owner@example.test"}},
+      "outcome": "success",
+      "stderr_contains": []
+    },
+    {
+      "id": "accept-proposal_changed",
+      "group": "refusal",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {
+        "kind": "json",
+        "status": 400,
+        "body": {
+          "error": "INVALID_ARGUMENT",
+          "message": "the digest presented is not the one on file for question q-1",
+          "recovery": "send the digest GET /v1/missions/<mission>/work/questions gives for this question; the digest exists so that what you read is what you accept",
+          "retryable": false,
+          "details": {"refusal": "proposal_changed", "mission": "selected", "missing": ["q-1"]}
+        }
+      },
+      "outcome": "refused",
+      "stderr_contains": [
+        "400",
+        "INVALID_ARGUMENT",
+        "proposal_changed",
+        "the digest presented is not the one on file for question q-1",
+        "send the digest GET /v1/missions/<mission>/work/questions gives for this question; the digest exists so that what you read is what you accept",
+        "not retried"
+      ]
+    },
+    {
+      "id": "answer-question_answered",
+      "group": "refusal",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {
+        "kind": "json",
+        "status": 400,
+        "body": {
+          "error": "INVALID_ARGUMENT",
+          "message": "question q-1 was already answered by owner",
+          "recovery": "read GET /v1/missions/<mission>/work/questions for the answer and how it arrived; a question is answered once and never edited",
+          "retryable": false,
+          "details": {"refusal": "question_answered", "mission": "selected", "missing": ["q-1"]}
+        }
+      },
+      "outcome": "refused",
+      "stderr_contains": [
+        "400",
+        "INVALID_ARGUMENT",
+        "question_answered",
+        "question q-1 was already answered by owner",
+        "read GET /v1/missions/<mission>/work/questions for the answer and how it arrived; a question is answered once and never edited",
+        "not retried"
+      ]
+    },
+    {
+      "id": "accept-question_answered",
+      "group": "refusal",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {
+        "kind": "json",
+        "status": 400,
+        "body": {
+          "error": "INVALID_ARGUMENT",
+          "message": "question q-1 was already answered by owner",
+          "recovery": "read GET /v1/missions/<mission>/work/questions for the answer and how it arrived; a question is answered once and never edited",
+          "retryable": false,
+          "details": {"refusal": "question_answered", "mission": "selected", "missing": ["q-1"]}
+        }
+      },
+      "outcome": "refused",
+      "stderr_contains": [
+        "400",
+        "INVALID_ARGUMENT",
+        "question_answered",
+        "question q-1 was already answered by owner",
+        "read GET /v1/missions/<mission>/work/questions for the answer and how it arrived; a question is answered once and never edited",
+        "not retried"
+      ]
+    },
+    {
+      "id": "answer-question_withdrawn",
+      "group": "refusal",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {
+        "kind": "json",
+        "status": 400,
+        "body": {
+          "error": "INVALID_ARGUMENT",
+          "message": "question q-1 was withdrawn and is nobody's to decide",
+          "recovery": "this question was taken back and is nobody's to decide: ask a new one with POST /v1/missions/<mission>/work/questions",
+          "retryable": false,
+          "details": {"refusal": "question_withdrawn", "mission": "selected", "missing": ["q-1"]}
+        }
+      },
+      "outcome": "refused",
+      "stderr_contains": [
+        "400",
+        "INVALID_ARGUMENT",
+        "question_withdrawn",
+        "question q-1 was withdrawn and is nobody's to decide",
+        "this question was taken back and is nobody's to decide: ask a new one with POST /v1/missions/<mission>/work/questions",
+        "not retried"
+      ]
+    },
+    {
+      "id": "accept-question_withdrawn",
+      "group": "refusal",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {
+        "kind": "json",
+        "status": 400,
+        "body": {
+          "error": "INVALID_ARGUMENT",
+          "message": "question q-1 was withdrawn and is nobody's to decide",
+          "recovery": "this question was taken back and is nobody's to decide: ask a new one with POST /v1/missions/<mission>/work/questions",
+          "retryable": false,
+          "details": {"refusal": "question_withdrawn", "mission": "selected", "missing": ["q-1"]}
+        }
+      },
+      "outcome": "refused",
+      "stderr_contains": [
+        "400",
+        "INVALID_ARGUMENT",
+        "question_withdrawn",
+        "question q-1 was withdrawn and is nobody's to decide",
+        "this question was taken back and is nobody's to decide: ask a new one with POST /v1/missions/<mission>/work/questions",
+        "not retried"
+      ]
+    },
+    {
+      "id": "valid-answer-ack",
+      "group": "question_ack",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "answeredBy": "owner"}},
+      "outcome": "success",
+      "stderr_contains": []
+    },
+    {
+      "id": "answer-wrong-identity",
+      "group": "question_ack",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-other", "answeredBy": "owner"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "answer-wrong-channel",
+      "group": "question_ack",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "answeredBy": "relay"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "answer-missing-channel",
+      "group": "question_ack",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "valid-accept-ack",
+      "group": "question_ack",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "answeredBy": "proposal", "answer": "Keep full intent"}},
+      "outcome": "success",
+      "stderr_contains": []
+    },
+    {
+      "id": "accept-wrong-identity",
+      "group": "question_ack",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-other", "answeredBy": "proposal", "answer": "Keep full intent"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "accept-wrong-channel",
+      "group": "question_ack",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "answeredBy": "owner", "answer": "Keep full intent"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "accept-missing-channel",
+      "group": "question_ack",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "answer": "Keep full intent"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "valid-confirm-ack",
+      "group": "question_ack",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "confirmedBy": "human:owner@example.test"}},
+      "outcome": "success",
+      "stderr_contains": []
+    },
+    {
+      "id": "confirm-wrong-identity",
+      "group": "question_ack",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-other", "confirmedBy": "human:owner@example.test"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "confirm-null-attribution",
+      "group": "question_ack",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "confirmedBy": null}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "confirm-non-string-attribution",
+      "group": "question_ack",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1", "confirmedBy": 42}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "confirm-missing-attribution",
+      "group": "question_ack",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "json", "status": 200, "body": {"questionId": "q-1"}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid question acknowledgement"]
+    },
+    {
+      "id": "complete-ordered-move",
+      "group": "move_ack",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {
+        "kind": "json",
+        "status": 200,
+        "body": {"moved": [{"id": "task-1", "horizon": "next", "detachedFrom": null}, {"id": "task-2", "horizon": "next", "detachedFrom": "parent-task"}]}
+      },
+      "outcome": "success",
+      "stderr_contains": []
+    },
+    {
+      "id": "move-missing-second",
+      "group": "move_ack",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {"kind": "json", "status": 200, "body": {"moved": [{"id": "task-1", "horizon": "next", "detachedFrom": null}]}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid work acknowledgement"]
+    },
+    {
+      "id": "move-missing-first",
+      "group": "move_ack",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {"kind": "json", "status": 200, "body": {"moved": [{"id": "task-2", "horizon": "next", "detachedFrom": "parent-task"}]}},
+      "outcome": "unknown",
+      "stderr_contains": ["invalid work acknowledgement"]
+    },
+    {
+      "id": "move-reversed",
+      "group": "move_ack",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {
+        "kind": "json",
+        "status": 200,
+        "body": {"moved": [{"id": "task-2", "horizon": "next", "detachedFrom": "parent-task"}, {"id": "task-1", "horizon": "next", "detachedFrom": null}]}
+      },
+      "outcome": "unknown",
+      "stderr_contains": ["invalid work acknowledgement"]
+    },
+    {
+      "id": "move-duplicate-first",
+      "group": "move_ack",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {
+        "kind": "json",
+        "status": 200,
+        "body": {"moved": [{"id": "task-1", "horizon": "next", "detachedFrom": null}, {"id": "task-1", "horizon": "next", "detachedFrom": null}]}
+      },
+      "outcome": "unknown",
+      "stderr_contains": ["invalid work acknowledgement"]
+    },
+    {
+      "id": "move-extra-item",
+      "group": "move_ack",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {
+        "kind": "json",
+        "status": 200,
+        "body": {
+          "moved": [
+            {"id": "task-1", "horizon": "next", "detachedFrom": null},
+            {"id": "task-2", "horizon": "next", "detachedFrom": "parent-task"},
+            {"id": "task-other", "horizon": "next", "detachedFrom": null}
+          ]
+        }
+      },
+      "outcome": "unknown",
+      "stderr_contains": ["invalid work acknowledgement"]
+    },
+    {
+      "id": "move-missing-second-detachment",
+      "group": "move_ack",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {
+        "kind": "json",
+        "status": 200,
+        "body": {"moved": [{"id": "task-1", "horizon": "next", "detachedFrom": null}, {"id": "task-2", "horizon": "next"}]}
+      },
+      "outcome": "unknown",
+      "stderr_contains": ["invalid work acknowledgement"]
+    },
+    {
+      "id": "answer-close_after_request",
+      "group": "response_loss",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {"kind": "close_after_request"},
+      "outcome": "unknown",
+      "stderr_contains": ["not retried"]
+    },
+    {
+      "id": "answer-truncated_json",
+      "group": "response_loss",
+      "args": ["answer", "--mission", "selected", "--work-item", "task-1", "q-1", "My own words"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/answer", "body": {"questionId": "q-1", "answer": "My own words"}},
+      "reply": {"kind": "truncated_json", "body": {"questionId": "q-1", "answeredBy": "owner"}},
+      "outcome": "unknown",
+      "stderr_contains": []
+    },
+    {
+      "id": "accept-close_after_request",
+      "group": "response_loss",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {"kind": "close_after_request"},
+      "outcome": "unknown",
+      "stderr_contains": ["not retried"]
+    },
+    {
+      "id": "accept-truncated_json",
+      "group": "response_loss",
+      "args": ["accept", "--mission", "selected", "--work-item", "task-1", "q-1", "p-1234"],
+      "preflight": "open",
+      "mutation": {"path": "/v1/missions/selected/work/questions/accept", "body": {"questionId": "q-1", "digest": "p-1234"}},
+      "reply": {"kind": "truncated_json", "body": {"questionId": "q-1", "answeredBy": "proposal", "answer": "Keep full intent"}},
+      "outcome": "unknown",
+      "stderr_contains": []
+    },
+    {
+      "id": "confirm-close_after_request",
+      "group": "response_loss",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "close_after_request"},
+      "outcome": "unknown",
+      "stderr_contains": ["not retried"]
+    },
+    {
+      "id": "confirm-truncated_json",
+      "group": "response_loss",
+      "args": ["confirm", "--mission", "selected", "--work-item", "task-1", "q-1"],
+      "preflight": "relay",
+      "mutation": {"path": "/v1/missions/selected/work/questions/confirm", "body": {"questionId": "q-1"}},
+      "reply": {"kind": "truncated_json", "body": {"questionId": "q-1", "confirmedBy": "human:owner@example.test"}},
+      "outcome": "unknown",
+      "stderr_contains": []
+    },
+    {
+      "id": "file-close_after_request",
+      "group": "response_loss",
+      "args": ["file", "--mission", "selected", "brief"],
+      "preflight": null,
+      "mutation": {"path": "/v1/missions/selected/work/owner/file", "body": {"items": [{"title": "brief", "intent": "brief"}]}},
+      "reply": {"kind": "close_after_request"},
+      "outcome": "unknown",
+      "stderr_contains": ["not retried"]
+    },
+    {
+      "id": "file-truncated_json",
+      "group": "response_loss",
+      "args": ["file", "--mission", "selected", "brief"],
+      "preflight": null,
+      "mutation": {"path": "/v1/missions/selected/work/owner/file", "body": {"items": [{"title": "brief", "intent": "brief"}]}},
+      "reply": {"kind": "truncated_json", "body": {"workItemIds": ["new-task"]}},
+      "outcome": "unknown",
+      "stderr_contains": []
+    },
+    {
+      "id": "move-close_after_request",
+      "group": "response_loss",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {"kind": "close_after_request"},
+      "outcome": "unknown",
+      "stderr_contains": ["not retried"]
+    },
+    {
+      "id": "move-truncated_json",
+      "group": "response_loss",
+      "args": ["move", "--mission", "selected", "next", "task-1", "task-2"],
+      "preflight": null,
+      "mutation": {
+        "path": "/v1/missions/selected/work/owner/move",
+        "body": {"moves": [{"workItemId": "task-1", "horizon": "next"}, {"workItemId": "task-2", "horizon": "next"}]}
+      },
+      "reply": {
+        "kind": "truncated_json",
+        "body": {"moved": [{"id": "task-1", "horizon": "next", "detachedFrom": null}, {"id": "task-2", "horizon": "next", "detachedFrom": "parent-task"}]}
+      },
+      "outcome": "unknown",
+      "stderr_contains": []
+    }
+  ]
+}
