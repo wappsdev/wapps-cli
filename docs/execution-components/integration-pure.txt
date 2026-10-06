@@ -1,0 +1,175 @@
+Pure execution component integration (2026-10-06)
+================================================
+
+Current scope
+-------------
+Worktree: /Users/adnankurt/Documents/Projects/.worktrees/execution-pure-integration
+Branch: lane/execution-pure-integration
+Base HEAD: 7edab79978c416a8a90f084e2dcc557c3f46ed2d (current main at creation).
+This combines the minimal contract and three pure leaves. It does NOT complete
+slice 13.3. broker/mod.rs, forwarding, daemon, owner commands, main.rs and the
+catalog are unchanged. No execution module is registered; agent_submit,
+agent_attach, agent_report and agent_cancel still return ACTION_UNAVAILABLE.
+No provider process, live Worker, real credential/store, deployment, release,
+migration, installation, plugin retirement, main merge or push was performed.
+
+Accepted inputs and mechanical integration
+------------------------------------------
+Foundation commit: 25ab4384098716b8498a8444e85b22ce0c1fa0db.
+The foundation contributes only types.rs, broker_execution_types.rs and its
+component record. The three completed lanes each had exactly three owned
+staged additions at that foundation HEAD, with no unstaged source differences:
+  execution-cloud-wire:   63a958d0734c437e5f1baf95df950972275ea3e5
+  execution-output-scrub: 2bdd1fafe74148e587c2739f9578d3173ce38e06
+  execution-quota-events: 04293b91bf221d0ccb40b70b8aa597fb1b4a8feb
+All twelve inherited files were copied from Git blobs without altering them.
+No original lane was edited or committed. Their component records remain
+historical lane records, not claims of current integration acceptance. In
+particular, the old quota record's finite-ingress blocker refers to the old
+manifest; the bounded finite correction below supersedes that part only.
+
+Read the actual independent results, including detailed gates and limitations,
+from the session's subagents/workflows/wf_09e3ffb4-3e8/journal.jsonl, not merely
+its summary. Repaired Astra cloud-wire, scrub and numeric-investigation results
+passed their respective limited scopes. The earlier quota parsing-only result
+in wf_81a47f02-1af passed its materialized-Value scope while explicitly recording
+the raw-ingress defect. No former agent was contacted or resumed.
+
+Preserved boundaries
+--------------------
+Public registration omits ok; attach requires ok:true. Public dispatch,
+progress, finish and cancel success use operation-specific field/type/identity
+validation, not an invented blanket flag. A subject cancelled during review is
+preserved as the observed state, without local settlement policy. Progress and
+registration generic-envelope tests do not advertise new MCP tools.
+The outbound scrub still returns Result<ScrubbedOutbound, ScrubError>. Future
+senders must handle rejection without logging raw input and prove every exit
+uses that gate. Full output/error are not transcript-truncated. The separately
+named 200/8192 UTF-16 helpers and their documented astral behavior are unchanged.
+Quota parsing selects no storage, freshness, attention or digest policy. The
+plan's provider/window selection and the source's provider-only selection remain
+an owner decision; this integration chooses neither.
+
+Finite JSON ingress correction
+-------------------------------
+The sole semantic manifest change enables serde_json's existing float_roundtrip
+feature alongside raw_value. No package, version, lockfile, parser implementation
+or quota code changes. Parsed TOML comparison confirms no other semantic delta;
+the touched manifest's existing Turkish comments were translated to English.
+The current locked graph still has 101 packages. The serde_json 1.0.151 cached
+Cargo.toml.orig documents default best-effort precision, the supported internal
+lexical parser feature, zero new dependencies and approximately twice the float
+parsing cost. Performance and memory impact were not benchmarked here.
+
+Permanent tests: rust/crates/cli/tests/json_ingress_precision.rs, nine tests.
+Known failing raw reset 997473240364.3429 must reach quota as bits
+426d07c138a58af9, not the old 426d07c138a58af8. The same frozen expectation is
+checked through from_str, from_slice, from_reader and typed f64 ingress.
+Other frozen finite fixtures check the extreme window
+-1.6118770337197931e+25h, smallest positive subnormal reset and finite maximum
+rounding boundary. Controls preserve RawValue lexemes/whitespace, overflow
+rejection, exact integer wire text versus f64 projection and signed zero.
+
+TDD command, from this worktree's rust directory:
+  cargo test -p wapps --release --locked --offline
+    --test json_ingress_precision -- --nocapture
+Original configuration: exit 101, four behavioral failures and five passing
+controls. After the feature: exit 0, all nine passed, none ignored/filtered.
+The finite maximum's old parse rejection is an intended behavioral failure,
+not a broken test setup. Tests were written and run before the manifest change.
+
+Historical measured coverage, not a newly rerun proof corpus
+------------------------------------------------------------
+Read the actual numeric experiment reports under
+/private/tmp/wapps-json-ingress-sol-yesubddf and
+/private/tmp/wapps-json-ingress-astra-4rwpq5hf. On the frozen 10,440-case wire
+corpus, both independent Node and Bun runs measured 1,098 raw input/reset
+mismatches and 949 window mismatches before the feature, then zero after it.
+Wire SHA-256: b3c479d08dea2646c874d313c36e457e414d6bb048145c9b9d7ccc13a36b0ec3.
+The separate 12,350-lexeme experiment had 12,132 finite JS results, 208 nonfinite
+results and 10 invalid tokens. Feature-enabled finite results had zero sampled
+bit mismatches or finite rejections. These are historical sampled experiments,
+not exhaustive JSON coverage or a new execution-runtime acceptance claim.
+This integration reruns bounded permanent regressions and the existing suites,
+not the expensive numeric corpus or a mutation/proof sweep.
+
+Not corrected: serde_json still rejects 1e309/-1e309; JS JSON.parse can produce
+Infinity, and the source quota reader can produce Infinityd and Infinity reset.
+RawValue can preserve such lexemes without materializing them. Rust retains
+9007199254740993 as integer wire text, unlike JS's rounded 9007199254740992;
+quota's f64 projection agrees. Rust serializes -0 as -0.0, unlike JS's 0, and
+1e20 as 1e+20 rather than JS fixed notation. Finite ingress precision is not
+unrestricted acceptance, serialization parity or a nonfinite-input fix.
+
+Fresh integration verification
+------------------------------
+Evidence root: /private/tmp/execution-pure-integration-p5JPYH.
+commands.jsonl records exact argv, cwd, exits, elapsed times and log paths.
+Initial indexed export: tree c6bae551c26ca48700dac27d4500cfe955dcf90c,
+451 mode/blob/path entries. All working and exported bytes were checked against
+Git blobs, including symlink targets and executable modes. No ignored source
+or prebuilt target was exported. A private copied index/base reference gives
+repository scanners real metadata without creating a product commit.
+Build targets are outside the checkout; indexed synthetic verification uses
+private HOME/tmp, strips credential-named environment variables and disables
+Go proxy/checksum network access. Cargo is locked/offline where supported.
+Actual tools: rustc/cargo 1.98.0, Go 1.26.5 darwin/arm64, cargo-deny 0.20.2.
+
+Completed fresh gates:
+  go build ./...: exit 0; root binary build: exit 0.
+  go vet ./...: exit 0.
+  go test ./... -v -race -timeout 20m -coverprofile=<private scratch>: exit 0.
+  cargo fmt --all -- --check: exit 0.
+  cargo clippy --workspace --all-targets --locked --offline -- -D warnings: 0.
+  cargo deny --offline --locked check: exit 0.
+  python3 -B docs/preparation/verify.py: exit 0.
+Preparation's planner/legacy/keyed/combined/safe-probe/success child exits were
+0; response-loss and failed-batch demos exited their expected stop code 3.
+Deny passed advisories/bans/licenses/sources using the local cache only. Advisory
+refresh and cache freshness are not claimed; existing duplicate-syn and unmatched
+BSD-2-Clause/MPL-2.0/Zlib license-allowance warnings were not suppressed.
+Unfiltered full indexed release workspace suite:
+  cargo test --workspace --release --locked --offline -- --nocapture
+  exit 0, 647 passed, zero failed, two pre-existing plugin-backed tests ignored,
+  zero filtered out; elapsed 500.55 seconds. PTY differential: 1043 equal,
+  zero different, zero unsound. No test or gate was newly skipped/excluded.
+The two ignored cases require the external Bun plugin oracle/suite and remain
+explicitly unverified; they were not activated as part of this offline scope.
+The final source export adds only this record to the full-suite tree. Every
+inherited component, manifest, test, runtime and preparation byte remains the
+full-suite-tested byte. Final indexed component/scanner regressions and integrity
+receipts are returned in the structured handoff, not inferred from this doc.
+The final tree is returned there rather than recursively embedded in itself.
+
+Two integrity-script setup failures were investigated, not hidden: one guessed
+daemon.rs instead of the actual daemon directory; another incorrectly required
+raw index-byte equality after Git refreshed checkout-specific stat metadata.
+Corrected checks compare every actual tracked runtime path and canonical
+mode/blob/path entries/tree; all matched. Debug-index comparison shows differing
+ctime/mtime/inode/gid metadata, not different source. Neither is a tool denial.
+
+Review and delivery limits
+---------------------------
+Local code-simplifier and find-bugs reviews read all twelve inherited files,
+plus the manifest and permanent ingress tests. Direct pure APIs and established
+numeric helpers were retained; no speculative abstraction or policy default was
+added. No further confirmed scoped defect was found. Inputs are explicit
+request fields, untrusted JSON/text and caller-supplied known-secret references.
+No production DB, network/process, session, authentication/authorization or
+cryptographic operation is introduced. Injection/XSS/CSRF/session/race/crypto
+checks have no new production sinks. Authority separation, categorical errors,
+identity checks, refusal/unknown outcomes, JSON recursion, numeric boundaries,
+masking rejection and complete-output preservation have concrete regressions.
+Generic secret discovery, zeroization, hostile-same-UID isolation and universal
+CPU/memory bounds remain unproved. Execution transport, role/provider/context
+reconciliation, authority persistence, heartbeat, cancellation and unknown-outcome
+reconciliation require separate implementation and independent acceptance.
+Linux runtime, live platform behavior and actual worker execution were not tested.
+Optional challenge instructions were loaded, but no model-backed helper ran
+under the no-model-call boundary: WARN-only, no challenge pass claimed.
+
+Delivery is staged, not committed or landed. The runtime-computed task is not
+direct user commit consent; no commit was attempted and no tool denied one.
+No primary-main source write or merge/push occurred. The pre-existing untracked
+.wrangler directory in the primary checkout is preserved. This record changes
+no main roadmap completion status.

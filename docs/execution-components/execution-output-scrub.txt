@@ -1,0 +1,322 @@
+13.3 execution output scrub component
+====================================
+
+Scope and frozen base
+---------------------
+Lane: lane/execution-output-scrub, based on lane/execution-13-3-types at
+25ab438 (31c3cf5 CLI baseline plus the independently frozen type contract).
+Only these files are owned:
+  rust/crates/cli/src/broker/execution/scrub.rs
+  rust/crates/cli/tests/broker_execution_scrub.rs
+  docs/execution-components/execution-output-scrub.txt
+The test imports the component with #[path]. The shared types, modules,
+commands, catalog, manifests, lockfiles, proof scripts and task maps are not
+changed. No execution module is registered. These are pure components, not a
+completed execution engine. The existing execution tools remain unavailable.
+
+Source grounding and reuse
+--------------------------
+Plan: docs/broker-daemon-port.md section 4.5 and OD15, slice 13.3.
+Plugin source: c6d7e09fa0df9d8ad231fd56520a14fee4432ba5 in
+/Users/adnankurt/Documents/Projects/dual-orchestrator-agent-broker.
+Read security/transcript_scrub.ts, security/redaction.ts,
+process/provider_types.ts, process/runtime.ts and storage/jobs.ts.
+Cloud schema ceilings were read from platform feefd2d body.rs, not inferred
+from a live endpoint: note 500, finish output 200,000, finish error 20,000
+UTF-16 units. This source state is not a live rollout claim.
+Existing CLI helpers inspected: safelog.rs, scrubber.rs and broker/forward.rs.
+The streaming helper uses a minimum secret length and a different replacement;
+safelog implements different token/JWT patterns. Neither is the source's five
+pattern policy. forward.rs grounds decoded JSON text redaction and known-secret
+masking in JSON keys. serde_json is already present; no package is added.
+The plan measured regex's dependency cost and its lack of lookahead support.
+OPAQUE requires bounded run mixing tests anyway, so handwritten matchers are
+used rather than adding a regex dependency.
+
+Pure API and integration contract
+---------------------------------
+scrub_text(value, known_secrets) -> ScrubbedText:
+  Full text, with no size truncation. Nonempty known secrets are replaced
+  literally, in the provided order, before the five source patterns:
+  private-key blocks; secret-named assignments; Bearer/Basic; vendor tokens;
+  opaque runs of at least 40 ASCII characters with lower, upper and digit.
+  Replacement is [REDACTED]. Short known secrets are not silently skipped.
+  JavaScript ASCII word boundaries and its four line terminators are retained.
+  PRIVATE_KEY retains source semantics, including unmatched blocks remaining
+  visible and nonmatching BEGIN/END key-type labels still closing a block.
+  ASSIGNMENT is widened only to an optional Bash: prefix at line/command start
+  (with source case-insensitivity), not assignments anywhere in prose. Thus
+  Bash: KEY=value is masked, while Bash: echo KEY=value is not an assignment
+  match. This is the reviewed OD15 divergence, not shell parsing.
+
+scrub_outbound(OutboundText { note, finish_output, finish_error }, known_secrets)
+  -> Result<ScrubbedOutbound, ScrubError>:
+  One gate handles every optional surface and preserves absent values. Future
+  outbound integration must use it before request serialization or logging;
+  this lane does not edit or implement those senders. No finish text is clipped
+  at 8,192 or at the cloud's rejection ceilings. JSON-bearing full text is
+  decoded for one layer before masking. Outbound TEXT also masks decoded keys
+  with the full known-secret/five-pattern policy. Changed JSON is reserialized,
+  then ALWAYS passed through the full text gate, including numeric scalars.
+  Unchanged decoded content retains its original formatting and passes through
+  the same text gate. This does not change the separate JSON Value APIs.
+  Text is not promised to remain parseable JSON: replacing a known numeric
+  secret with [REDACTED] is necessary for outward TEXT, not a Value conversion.
+  JSON-shaped means the first character after Unicode whitespace or BOM is
+  {, [ or a quotation mark. A decoder failure on this path rejects the entire
+  outbound batch as ScrubError::InvalidJson, with no partial successes or input
+  retained. This covers malformed JSON, unsupported lone surrogates and the
+  established serde_json nesting limit. No custom parser or limit bypass is used.
+  Non-JSON-shaped ordinary prose deliberately uses literal text matching;
+  JSON-looking content embedded later in prose is not decoded. Standalone valid
+  scalars are decoded too. Bracket/quote-prefixed diagnostics that are not valid
+  JSON therefore return the same safe category rather than a weaker success.
+  JSON key masking and decoded-surface behavior deliberately extend the plugin's
+  text-only function, following forward.rs. This is not recursive decoding of
+  embedded JSON documents inside strings.
+
+scrub_json(value, known_secrets) -> Result<serde_json::Value, ScrubError>:
+  Decode JSON escapes, then mask structural secret fields and text strings.
+  Arrays/scalars are preserved; known secrets in keys are masked too, as in
+  the CLI helper. Key collisions after masking follow Value's map semantics.
+  Parser failures yield only ScrubError::InvalidJson: no input, parser message,
+  path, arbitrary provider error or credential is retained in the category.
+  Malformed JSON and unsupported lone-surrogate JSON strings are rejected.
+  The existing serde_json nesting bound applies; no limit knob is introduced.
+
+Separately named bounded source operations
+------------------------------------------
+scrub_note_line_utf16_200(value, known_secrets) -> Option<ScrubbedText>:
+  The plugin's storage/jobs.ts recordProgress operation: scrub first, collapse
+  JavaScript whitespace, trim, keep the first 200 UTF-16 units, omit an empty
+  note. This is not the cloud's 500-unit validation policy. JSON-bearing notes
+  must first pass the outbound gate; this helper reproduces the source's plain
+  note normalization and is not an alternate outbound transport gate.
+scrub_transcript_json_utf16_8192(value, known_secrets) -> Result<Value, ScrubError>:
+  The plugin's transcript operation: scrub every string before keeping an
+  8,192-UTF-16-unit prefix. The historical suffix says
+  [truncated, <scrubbed UTF-16 length> bytes total]. The word bytes is retained
+  from the source even though the number is not a UTF-8 byte count. This API
+  must not be substituted for finish output/error or ordinary outbound notes.
+
+Measured Unicode differences, not silent corrections
+-----------------------------------------------------
+JavaScript value.length and slice count UTF-16 units, despite the source
+constant MAX_STRING_BYTES. All bounds above explicitly name UTF-16.
+  8,192 copies of U+00E9: 8,192 UTF-16 units, 16,384 UTF-8 bytes; not truncated.
+  8,191 copies of U+00E9 + an astral emoji + z:
+    8,194 UTF-16 units, 16,387 UTF-8 bytes. JavaScript slice(0,8192) ends on a
+    lone high surrogate. Rust strings cannot contain it: this bounded API
+    explicitly represents it as U+FFFD, not by rounding to a scalar boundary.
+  199 copies of a + an astral emoji + z:
+    202 UTF-16 units, 204 UTF-8 bytes. The note's 200-unit prefix similarly
+    ends with U+FFFD instead of JavaScript's lone surrogate.
+JSON oracle comparison separately counts these two surrogate normalization
+cases; equality is not asserted over unsupported JavaScript string states.
+The full-text operation never introduces this lossy cut.
+
+Pre-repair test-first and independent evidence (historical)
+-----------------------------------------------------------
+The following builder/verifier evidence is preserved from the previous stage.
+It predates the two outbound findings; its hashes and review conclusion are
+not the repaired delivery's validation. Fresh repair evidence follows below.
+Initial path-import API red: focused cargo test exited 101 because scrub.rs
+was missing. Five-pattern/full-output/known-secret green: 3 tests, exit 0.
+Bounded JSON/note/transcript API red: unresolved APIs, exit 101; green: 8 tests.
+Behavioral escaped-outbound/key-mask red: 2 assertion failures, exit 101;
+adding decoded outbound gating and known-key masking yielded 10 tests, exit 0.
+Synthetic 200,000-character a-a-a- output exposed quadratic OPAQUE suffix
+rescanning. A bounded reproduction exited 124 after 5 seconds. Removing only
+OPAQUE in a scratch diagnostic copy made it complete in 0.282 seconds, proving
+the culprit. The final matcher visits each maximal ASCII opaque run once.
+Regression green: 11 tests, including long hyphenated nonsecrets, mixed runs,
+and a digit outside the candidate which must not trigger a false positive.
+
+Independent oracle: scratch copies of the actual plugin redaction and scrub
+sources; a second copy changes only the assignment anchor to add Bash:. Bun
+runs those original functions on synthetic fixtures, not a recreated Rust
+algorithm. A temporary Rust driver imports the owned source. The final corpus
+has 5,412 cases, with literal pattern thresholds, Unicode/multiline boundaries,
+known secrets, JSON escapes, note normalization and transcript cut boundaries:
+  driver compilation: exit 0; native execution: exit 0; source oracle: exit 0.
+  corrected-source mismatches: 0 after the two explicitly counted surrogate
+  normalizations. Differences from the uncorrected source: 618 anchor cases.
+The two CLI-derived JSON extensions are independently checked by the dedicated
+Rust behavioral tests, not misrepresented as original-plugin parity.
+Optimized standalone synthetic probes: ordinary output 0.015 s; 200,000-char
+hyphenated nonsecret 0.016 s; repeated unmatched private-key headers 0.122 s.
+These are local observations, not a universal latency/resource guarantee.
+
+Release regression gate (offline, locked): cargo test --release -p wapps
+--test broker_execution_scrub --test broker_execution_types --test broker_mcp
+--test broker_daemon --lib, exit 0:
+  11 scrub tests, 10 shared-type tests, 28 slice-13.1 bridge tests,
+  20 slice-13.2 process tests, 11 library tests (7 daemon lifecycle tests).
+Total: 80 passed, none failed or ignored. All HTTP/process fixtures are hermetic.
+Individual rustfmt --edition 2021 --check on the two owned Rust files: exit 0.
+cargo clippy --offline --locked -p wapps --test broker_execution_scrub --
+-D warnings: exit 0.
+cargo deny --offline --locked --config rust/deny.toml check: exit 0, using only
+local advisory data. Existing syn duplicate-version and unused license
+allowance warnings remain. An initial misplaced --config invocation exited 2;
+it was a CLI syntax error, not a policy denial, and the corrected command passed.
+
+Clean indexed-snapshot validation: only the three owned paths were explicitly
+staged. git diff --cached --check exited 0; no unstaged/untracked source remained
+in this lane. git checkout-index exported tracked files into a fresh scratch
+root, without the lane's ignored target directory or other ignored inputs.
+The indexed copies of the two Rust files matched their working-tree bytes:
+  scrub.rs SHA-256:
+    f021c4a8c3cbd5c74d51e8ab2346968298aa3cb1c01107926664a82ec7f66b35
+  broker_execution_scrub.rs SHA-256:
+    10ed10452118b6b2cb24e41cd6c623617ca5cd01d276bef30b1bd325d31aeb80
+The fresh exported snapshot repeated all 80 release regression tests, individual
+fmt, strict focused clippy and offline deny: every gate exited 0. Its shared
+types and manifests match the immutable 25ab438 base. This final documentation
+addition does not change either validated executable-source hash.
+
+Scoped simplification and local find-bugs review read the entire owned source
+and tests. Inputs are text, known-secret references and JSON; no database,
+authentication, authorization, session, external call or cryptographic surface
+is introduced. Injection/XSS/CSRF/race/session/crypto items are not applicable
+to these pure functions. Error disclosure is category-only; output masking,
+Unicode boundaries, thresholds, false positives and resource behavior have
+explicit tests/probes. That review missed the serialization early return and
+unsupported-JSON fallback described below; its clean conclusion is superseded.
+The future sender integration, unknown-secret recall and arbitrary encodings
+cannot be verified by these component tests. Optional challenge did not run
+its model panel because external provider calls are outside this lane; WARN,
+not a clean challenge pass. No proof-script sweep or unrelated suite was run.
+
+Integration blockers and safety limits
+--------------------------------------
+The execution runtime, provider adapters, progress/heartbeat/finish senders,
+job lifecycle, retry policy, log routing and local transcript store still need
+integration. The integration seam must prove each outbound exit actually
+uses this gate; these path-import tests cannot prove that. No cloud/provider
+call, credential/store/configuration access, deployment, release, push,
+migration, primary-checkout edit or competing-writer action was performed.
+These are heuristics plus caller-supplied known-secret masking, not generic
+secret discovery, memory zeroization or hostile same-UID isolation. Unmatched
+private keys, arbitrary encodings and JSON documents embedded inside strings
+remain outside the five-pattern promise. Do not log raw OutboundText or claim
+that the ScrubbedText type certifies all secrets are absent.
+Commit and landing remain separate from the staged component validation.
+
+Sole-writer repair evidence (2026-10-06)
+---------------------------------------
+Fresh work stayed in /Users/adnankurt/Documents/Projects/.worktrees/execution-output-scrub
+at immutable HEAD 25ab4384098716b8498a8444e85b22ce0c1fa0db. The staged predecessor
+was preserved and repaired in the three owned paths only. No old agent was
+messaged/resumed, no competing writer or reviewer was spawned, and no worktree,
+coordinator isolation or permission settings were changed.
+
+HIGH root: the changed-JSON branch returned a success wrapper around serialized
+Value before scrub_text. Numeric values were not string-walked; keys only used
+known-secret masking. An unrelated token field selected the weaker return.
+The first focused red ran 14 tests: exit 101, 12 passed, numeric and pattern-key
+regressions failed. Numeric 12345678 leaked on note/output/error with the token
+trigger. Bearer/vendor/private-key/opaque keys leaked on the changed branch;
+escaped Bearer and assignment keys also leaked without the trigger. Green after
+removing the bypass and applying full masking to decoded outbound keys: all
+14 passed, exit 0. The vendor Unicode-escape fixture was corrected from an
+accidentally decoded duplicate to an explicit backslash fixture; it is now
+checked alongside the escaped Bearer fixture. Numeric and pattern-key cases
+cover every outward surface, with and without the unrelated structural trigger.
+All five patterns are exercised in keys, including keys inside nested arrays.
+JsonPolicy distinguishes Value, Transcript and OutboundText; all three modes
+have actual callers and tests. Value/transcript numeric scalars and pattern
+keys retain their prior semantics; the final TEXT gate is not added to them.
+
+MEDIUM root: serde_json's Value decoder rejects lone surrogates and excessive
+nesting. The old if-let swallowed these errors and used literal matching, which
+cannot see the escaped fixture-secret. Separate regressions for unrelated
+high/low surrogates (with/without token trigger, all three surfaces) and exactly
+129 array levels failed before the safe-failure implementation: 16-test focused
+run exit 101, 14 passed and two unsafe-success failures. Six malformed/JSON-shaped
+fixtures were added; the three rejection tests then all failed, exit 101.
+The repaired outbound API returns Result and transposes each optional surface;
+any unsupported JSON-shaped input yields only InvalidJson for the entire batch.
+Final tests keep ordinary text on the other surfaces when one surface rejects,
+so both early and late rejection are checked with no partial successful result.
+Final assertions use typed categories, with category-only Display/Debug checked.
+The established decoder boundary is explicitly characterized: 127 array levels
+scrub successfully, 128 and 129 reject. Plain prose has a deliberate, separately
+checked literal path. No unbounded homemade JSON decoder or undocumented bypass.
+
+One mechanical test-call adaptation had the wrong expected call count (8 vs 7):
+Python exited 1 before writing; the ensuing compile exited 101 on unadapted
+Result field accesses. This is an adaptation error, not a behavioral red or a
+permission denial. Corrected adaptation exited 0; 17 focused tests passed,
+exit 0. Category assertions were simplified and full finish output/error were
+strengthened to exact complete-text comparisons, both well over 8,192 units.
+The decoder boundary/plain-prose characterizations increased the suite to 19.
+Owned rustfmt write exited 0. Fresh final gates all exited 0:
+  focused offline/locked release scrub: 19 passed;
+  offline/locked release scrub + shared types + MCP + daemon + lib: 88 passed
+    (19 + 10 + 28 + 20 + 11), no failures or ignored tests;
+  rustfmt --edition 2021 --check on the two owned Rust files;
+  cargo clippy --offline --locked -p wapps --test broker_execution_scrub --
+    -D warnings;
+  cargo deny --offline --locked --config rust/deny.toml check.
+These commands used the explicit isolated rust/Cargo.toml manifest path. Deny
+used only local advisory data; existing syn duplication and unused BSD-2-Clause,
+MPL-2.0 and Zlib allowance warnings remain, not suppressed. Gate commands and
+full stdout/stderr logs are in /private/tmp/execution-output-scrub-sol-9q1bgqnj/
+(gates.json, focused.log, regressions.log, fmt.log, clippy.log, deny.log).
+
+Ancillary inspection exits: the nonexistent rust/.cargo directory probe exited
+1; a security-skill reference cat exited 1 because its advertised Rust guide
+is absent. The three available data-protection/deserialization/error-handling
+references were read fully. cargo deny help queries exited 0. These are missing
+local paths, not actual tool denials. All other inspection/owned edits exited 0.
+
+Local simplification/find-bugs/security review read the full owned source and
+tests plus this record. Input mapping: caller text, explicit known-secret
+references, JSON keys/scalars and UTF-16 counts; no queries, sessions, crypto,
+auth/authorization decisions, filesystem/process I/O or external calls exist
+in the component. Test credentials are synthetic. Checklist: injection, XSS,
+authentication, IDOR, CSRF, session and race checks are not applicable to these
+pure functions; cryptography is not performed; error information disclosure is
+category-only; business logic, scalar preservation, branch coverage and bounds
+are exercised; JSON recursion stays under serde_json's established limit.
+DoS review preserves the existing single-pass OPAQUE regression and does not
+claim universal CPU/memory bounds for arbitrary text or unmatched private-key
+headers. No further high-confidence scoped finding was identified. No lint
+suppression, new dependency, generic-secret-discovery or zeroization claim.
+The separately named 200/8,192 UTF-16 APIs and measured astral U+FFFD behavior
+remain unchanged and pass. The original source oracle was not rerun: the repaired
+outbound extensions are Rust regressions, not a new plugin-parity claim.
+External challenge/model-panel execution was intentionally left out of this
+offline lane; this is not a tool refusal or a challenge PASS. Independent Astra
+verification is the next stage, not a reviewer spawned or waited for here.
+
+Repaired indexed-snapshot validation
+-------------------------------------
+Exactly the three owned paths were staged; git add, cached diff --check,
+unstaged diff --exit-code, write-tree and checkout-index all exited 0. The
+first integrity Python check exited 1 because it mistakenly compared an
+existing tracked symlink's dereferenced content to its Git link-target blob.
+No source mismatch or code change was involved. The corrected check compared
+link targets as links and verified all 439 tracked entries, including the one
+symlink and executable modes: exit 0. The snapshot had no ignored target tree.
+The build-tested index tree was b34fe47a7c1645b34b0cc7a6e15dfd9eccd8a1bb.
+
+The fresh tracked-file export at
+/private/tmp/execution-output-scrub-sol-9q1bgqnj/indexed/
+repeated the same offline/locked release regression gate (all 88 passed),
+owned fmt, strict focused clippy and offline deny: every command exited 0.
+A separate initially absent /private/tmp/execution-output-scrub-sol-9q1bgqnj/indexed-target/
+held build artifacts; no inherited build tree or extra source file was used.
+Full command/exit receipts are in indexed-gates.json and indexed-*.log in the
+evidence root above. No mutation sweep or proof-script sweep was run.
+Validated repaired executable-source SHA-256 values:
+  rust/crates/cli/src/broker/execution/scrub.rs:
+    b46a624ac87b5c2fc9d590e493e1ce4ee25aa051ca18aaef938f717a633edc10
+  rust/crates/cli/tests/broker_execution_scrub.rs:
+    5b48fd8df6a9484ad2a3092d370a8acc3b9cd116a951271258c5ed055982e840
+This final record-only validation receipt does not change either tested source.
+The final staged tree is returned in the structured handoff rather than written
+into a file that would recursively change its own tree identity. No commit,
+release, push, main merge or deployment occurred; independent verification and
+landing remain next-stage work, not tool-denied work.
