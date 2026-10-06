@@ -13,11 +13,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "support/broker_daemon_cleanup.rs"]
+mod broker_daemon_cleanup;
+use broker_daemon_cleanup::DaemonCleanup;
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 // Unsigned fixture only. The real Access edge verifies signatures and owner permissions.
 const TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6Im93bmVyQGV4YW1wbGUudGVzdCIsImV4cCI6NDEwMjQ0NDgwMH0.b3duZXItc2lnbmF0dXJl";
 const AGENT: &str = "fixture-agent-secret-never-owner";
-struct Home(PathBuf);
+struct Home(PathBuf, DaemonCleanup);
 impl Home {
     fn new(endpoint: &str) -> Self {
         let root = broker_oracle::hermetic::temp_root(&format!(
@@ -32,7 +36,7 @@ impl Home {
         )
         .unwrap();
         fs::write(root.join(".config/wapps-broker/agents.secret"), AGENT).unwrap();
-        let home = Self(root);
+        let home = Self(root, DaemonCleanup::default());
         home.session(endpoint, TOKEN);
         home
     }
@@ -96,7 +100,7 @@ impl Home {
 }
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.1.remove_home(&self.0);
     }
 }
 #[derive(Debug)]
@@ -681,6 +685,7 @@ fn enroll_writes_only_the_version_one_registry_and_is_readable_by_the_stdio_brid
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
+    home.1.start(&home.0).expect("fixture daemon ready");
     let mut child = Command::new(env!("CARGO_BIN_EXE_wapps"))
         .args(["broker", "serve"])
         .env_clear()

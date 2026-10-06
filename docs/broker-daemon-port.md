@@ -2089,8 +2089,16 @@ Recommendation-labelled entries do not supply missing operational approval.
   installation, selection or refresh. PIO-17 remains unresolved. The retired
   Go oracle's broad embed includes the asset, but its installer and fingerprint
   still select only wapps-secrets.
-- These reviewed branches still require combined-main regression gates before
-  push. Accepted lane evidence is not proof of a later combined tree.
+- The pure execution and skill-source branches were combined on main `104179f`.
+  All eight fresh Go/Rust, formatting, strict Clippy, dependency-policy and
+  preparation gates passed on that identity, which was pushed.
+- Test-only daemon cleanup in `94f6f79` has independent macOS acceptance after
+  repair of a fixture socket-path race. Catalog, owner and MCP fixtures retain
+  exclusive foreground Child ownership; shutdown uses that Child, not a socket
+  pathname or disk PID. Fresh focused coverage passed 66 tests. Production
+  idle/shutdown policy is unchanged, and Linux execution remains unverified.
+  The cleanup package requires its own combined-main gates before push.
+  Accepted lane evidence is not proof of a later combined tree.
 
 Execution readiness still depends on explicit project/repo/mission binding and
 registration behavior, local spawn/provider profiles, admitted tool-ceiling
