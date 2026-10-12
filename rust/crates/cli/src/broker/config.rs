@@ -24,8 +24,9 @@ struct Project {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Client {
+    #[serde(deserialize_with = "crate::yaml::string")]
     client_id: String,
-    #[serde(default = "endpoint")]
+    #[serde(default = "endpoint", deserialize_with = "crate::yaml::string")]
     endpoint: String,
 }
 fn endpoint() -> String {
@@ -90,7 +91,7 @@ impl Config {
         if roots.iter().any(|root| real_client.starts_with(root)) {
             return Err("client metadata is inside an enrolled root".into());
         }
-        let client: Client = serde_yaml_ng::from_slice(
+        let client: Client = crate::yaml::from_slice(
             &fs::read(client_path).map_err(|_| "cannot read client metadata")?,
         )
         .map_err(|_| "invalid client metadata")?;
@@ -279,5 +280,39 @@ mod tests {
             resolve_with(|| Ok(Vec::new()), WATCHDOG),
             Err("broker endpoint has no addresses".into()),
         );
+    }
+
+    fn client(src: &str) -> Result<(String, String), String> {
+        crate::yaml::from_slice::<Client>(src.as_bytes())
+            .map(|c| (c.client_id, c.endpoint))
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn client_metadata_decodes_camel_case_with_a_default_endpoint() {
+        assert_eq!(
+            client("clientId: a\nendpoint: http://127.0.0.1:1\n"),
+            Ok(("a".into(), "http://127.0.0.1:1".into()))
+        );
+        assert_eq!(client("clientId: a\n"), Ok(("a".into(), endpoint())));
+        // Null is "": the id and endpoint checks refuse it after parsing.
+        assert_eq!(client("clientId:\n"), Ok((String::new(), endpoint())));
+        assert_eq!(
+            client("clientId: a\nendpoint:\n"),
+            Ok(("a".into(), String::new()))
+        );
+    }
+
+    #[test]
+    fn client_metadata_refuses_unknown_missing_and_duplicate_fields() {
+        for src in [
+            "clientId: a\nextra: 1\n",
+            "client_id: a\n",
+            "endpoint: https://x\n",
+            "clientId: a\nclientId: b\n",
+            "",
+        ] {
+            assert!(client(src).is_err(), "{src:?}");
+        }
     }
 }

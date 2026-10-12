@@ -1,39 +1,41 @@
-// wappsyaml, depo basina `.wapps.yaml` dosyasini yukler ve DOGRULAR.
+// wappsyaml loads and VALIDATES the per-repo `.wapps.yaml` file.
 //
-// ORACLE: internal/config/wapps_yaml.go. Bu dosyanin sozlesmesi yalnizca "ayni
-// seyleri reddet" degil, "AYNI METINLE reddet": bu hatalari bir INSAN okuyor ve
-// metin, yanlis yapilandirilmis bir depoda operatorun elindeki tek ipucu.
+// ORACLE: internal/config/wapps_yaml.go. The contract of this file is not only
+// "refuse the same things" but "refuse them WITH THE SAME TEXT": a HUMAN reads
+// these errors, and the text is the operator's only clue in a misconfigured
+// repo.
 //
-// Semanin KUCUK ve SABIT tutulmasi bilincli (kaynak tipleri derleme zamaninda
-// sabit, calisma zamaninda eklenti yuklenmiyor): boylece bir yazim hatasi
-// ayristirma hatasi olarak yuzeye cikar, sessizce BOS bir kume olarak degil.
+// The schema is kept SMALL and FIXED on purpose (source types are fixed at
+// compile time, no plugin is loaded at run time): a typo then surfaces as a
+// parse error, not silently as an EMPTY set.
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-// BACKEND_STORE, TEK backend'dir. `backend:` alani yalnizca mevcut dosyalari
-// kirmamak icin okunuyor (absent == store).
+// BACKEND_STORE is the ONLY backend. The `backend:` field is read only so that
+// existing files keep working (absent == store).
 pub const BACKEND_STORE: &str = "store";
 pub const BACKEND_LEGACY_GIT: &str = "legacy-git";
 
 const DEFAULT_VERSION: i64 = 1;
 
-/// Target, arsivden uretilen duz metin tuketim dosyasidir.
+/// Target is a plaintext consumer file generated from the archive.
 ///
-/// `prefix` neden `Option<String>`: "yok" ile "acikca bos" FARKLI seyler.
-/// default_prefix='TF_VAR_' iken bir target'in '' istemesi gercek bir senaryo
-/// (terraform.tfvars icin TF_VAR_, .env.local icin duz). Go'da bu `*string`.
+/// Why `prefix` is `Option<String>`: "absent" and "explicitly empty" are
+/// DIFFERENT. A target that asks for '' while default_prefix='TF_VAR_' is a
+/// real case (TF_VAR_ for terraform.tfvars, none for .env.local). In Go this
+/// is `*string`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Target {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub path: String,
     #[serde(default)]
     pub prefix: Option<String>,
 }
 
 impl Target {
-    /// effective_prefix, bu target icin FIILEN kullanilan onektir: acikca
-    /// verilmisse o (BOS olsa bile), yoksa depo genelindeki varsayilan.
+    /// effective_prefix is the prefix ACTUALLY used for this target: the
+    /// explicit one when given (even if EMPTY), else the repo-wide default.
     pub fn effective_prefix<'a>(&'a self, default_prefix: &'a str) -> &'a str {
         match &self.prefix {
             Some(p) => p,
@@ -41,41 +43,41 @@ impl Target {
         }
     }
 
-    /// resolve_path, bu target'in yolunu config_root'a gore cozer.
+    /// resolve_path resolves this target's path against config_root.
     pub fn resolve_path(&self, config_root: &str) -> String {
         resolve_rel(config_root, &self.path)
     }
 }
 
-/// SourceConfig, bildirilen bir kaynaktir (yalnizca tofu-sync girdileri icin;
-/// store backend'de sources OPSIYONEL).
+/// SourceConfig is a declared source (only for tofu-sync inputs; sources are
+/// OPTIONAL with the store backend).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SourceConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub r#type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub workdir: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub prefix: String,
 }
 
-/// CoolifyApp, bir arsiv anahtar-onekini tek bir Coolify uygulamasina esler.
+/// CoolifyApp maps an archive key prefix to a single Coolify application.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CoolifyApp {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub uuid: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub archive_prefix: String,
 }
 
-/// CoolifySync, cok-uygulamali push yapilandirmasidir (opsiyonel).
+/// CoolifySync is the multi-app push configuration (optional).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CoolifySync {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::boolean")]
     pub delete_unmanaged: bool,
     #[serde(default)]
     pub exclude_keys: Vec<String>,
@@ -83,24 +85,27 @@ pub struct CoolifySync {
     pub apps: Vec<CoolifyApp>,
 }
 
-/// WappsYaml, ayristirilmis semadir. Varsayilanlar yukleme sirasinda
-/// uygulanir, yani cagiranlar alanlarin dolu olduguna guvenebilir.
+/// WappsYaml is the parsed schema. Defaults are applied at load time, so
+/// callers can rely on the fields being set.
 ///
-/// BILINMEYEN ALANLAR SESSIZCE ATLANIR ve bu bilincli: Go'nun yaml.v3'u
-/// KnownFields ACIK DEGIL, yani sahadaki dosyalarda duran `dest:`,
-/// `redact_in_logs:`, `require_clean_git:` gibi eski alanlar hata uretmiyor.
-/// `deny_unknown_fields` eklemek o dosyalari kirardi.
+/// UNKNOWN FIELDS ARE SILENTLY SKIPPED, on purpose: Go's yaml.v3 does NOT
+/// enable KnownFields, so old fields in deployed files such as `dest:`,
+/// `redact_in_logs:` and `require_clean_git:` produce no error. Adding
+/// `deny_unknown_fields` would break those files.
+///
+/// String, integer and boolean fields decode through the `crate::yaml`
+/// helpers, which keep yaml.v3's null and quoting rules.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WappsYaml {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::int")]
     pub version: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub backend: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub project: String,
     #[serde(default)]
     pub profiles: BTreeMap<String, Vec<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::string")]
     pub default_prefix: String,
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
@@ -109,22 +114,22 @@ pub struct WappsYaml {
     #[serde(default)]
     pub coolify_sync: Option<CoolifySync>,
 
-    // config_root, yuklenen dosyanin MUTLAK dizinidir. `load` doldurur,
-    // `parse` DOLDURMAZ (diskte dosya yok) — o durumda goreli yollar oldugu
-    // gibi birakilir (cwd-goreli, eski davranis).
+    // config_root is the ABSOLUTE directory of the loaded file. `load` sets
+    // it, `parse` does NOT (there is no file on disk); relative paths then
+    // stay as they are (cwd-relative, the old behavior).
     #[serde(skip)]
     config_root: String,
 }
 
 impl WappsYaml {
-    /// config_root, yuklenen `.wapps.yaml`in mutlak dizini (parse ile
-    /// kurulmussa "").
+    /// config_root is the absolute directory of the loaded `.wapps.yaml`
+    /// ("" when built by parse).
     pub fn config_root(&self) -> &str {
         &self.config_root
     }
 
-    /// profile_keys, adlandirilmis bir profilin anahtar listesini doner.
-    /// Bos ad → Some(bos liste) = "tum granted anahtarlar" (§7.6).
+    /// profile_keys returns the key list of a named profile.
+    /// Empty name → Some(empty list) = "all granted keys" (§7.6).
     pub fn profile_keys(&self, name: &str) -> Option<Vec<String>> {
         if name.is_empty() {
             return Some(Vec::new());
@@ -193,7 +198,7 @@ pub fn go_clean(p: &str) -> String {
     }
 }
 
-/// load, `path`teki `.wapps.yaml`i okur ve dogrular.
+/// load reads and validates the `.wapps.yaml` at `path`.
 pub fn load(path: &Path) -> Result<WappsYaml, String> {
     let data = std::fs::read(path).map_err(|e| {
         format!(
@@ -203,8 +208,8 @@ pub fn load(path: &Path) -> Result<WappsYaml, String> {
         )
     })?;
     let mut y = parse(&data)?;
-    // Yuklenen dosyanin MUTLAK dizini kaydediliyor ki dest/targets/sources
-    // altindaki tum goreli yollar cwd'ye degil ONA gore cozulsun.
+    // The loaded file's ABSOLUTE directory is recorded so that every relative
+    // path under dest/targets/sources resolves against IT, not the cwd.
     let abs: PathBuf = std::fs::canonicalize(path)
         .or_else(|_| std::env::current_dir().map(|c| c.join(path)))
         .map_err(|e| format!("config: resolve abs path {}: {}", path.display(), e))?;
@@ -215,24 +220,25 @@ pub fn load(path: &Path) -> Result<WappsYaml, String> {
     Ok(y)
 }
 
-/// parse, load'un test edilebilir yarisidir. AYNI dogrulama iki yolda da kosar.
+/// parse is the testable half of load. The SAME validation runs on both paths.
 pub fn parse(data: &[u8]) -> Result<WappsYaml, String> {
-    let mut y: WappsYaml = serde_yaml_ng::from_slice(data)
+    let mut y: WappsYaml = crate::yaml::from_slice(data)
         .map_err(|e| format!("config: parse yaml: {}", yaml_error_text(&e)))?;
     apply_defaults_and_validate(&mut y)?;
     Ok(y)
 }
 
-// yaml_error_text, ayristirici hatasini tek satira indirger.
+// yaml_error_text reduces the parser error to its message.
 //
-// DURUSTLUK NOTU: bu metin Go ile BIREBIR AYNI DEGIL ve olculdu. yaml.v3
-// "yaml: mapping values are not allowed in this context" diyor; serde_yaml_ng
-// ayni durumu kendi diziyle ve bir konum ekiyle ("at line N column M")
-// anlatiyor. Konum eki SOYULUYOR (asagida) cunku iki ayristirici ayni bayta
-// ayni konumu vermiyor; geri kalan ayrisma tests/wappsyaml.rs'te DEGIL
-// raporda yaziliyor. Go'nun ic hata tablosunu taklit etmek sahte bir sadakat
-// olurdu — bir sonraki bozuk dosyada yine ayrisirdi.
-fn yaml_error_text(e: &serde_yaml_ng::Error) -> String {
+// HONESTY NOTE: this text is NOT byte-identical to Go's, and that was
+// measured. yaml.v3 says "yaml: mapping values are not allowed in this
+// context"; serde-saphyr says "mapping values are not allowed in this context
+// at line N, column M", and for type errors it uses its own wording. The
+// position suffix is STRIPPED (below) because the two parsers do not report
+// the same position for the same byte; the remaining divergence is recorded in
+// the report, NOT in tests/wappsyaml.rs. Imitating Go's internal error table
+// would be fake fidelity: the next malformed file would diverge again.
+fn yaml_error_text(e: &serde_saphyr::Error) -> String {
     let s = e.to_string();
     match s.find(" at line ") {
         Some(i) => s[..i].to_string(),
@@ -241,8 +247,9 @@ fn yaml_error_text(e: &serde_yaml_ng::Error) -> String {
 }
 
 fn apply_defaults_and_validate(y: &mut WappsYaml) -> Result<(), String> {
-    // ABSENT version → v1 (yeni ikili, eski v1 dosyalari icin bayt-esdeger
-    // drop-in). v1|v2 disi → YUKSEK SESLE fail-closed (§7.12 parser matrisi).
+    // ABSENT version → v1 (the new binary is a byte-equivalent drop-in for
+    // old v1 files). Anything but v1|v2 → LOUD fail-closed (§7.12 parser
+    // matrix).
     if y.version == 0 {
         y.version = DEFAULT_VERSION;
     }
@@ -253,9 +260,8 @@ fn apply_defaults_and_validate(y: &mut WappsYaml) -> Result<(), String> {
         ));
     }
 
-    // v2 alanlari (backend/project/profiles) varsa version 2 ZORUNLU: surum
-    // bump'i, ESKI ikililerin sessiz misparse yerine yuksek sesle hata
-    // vermesini saglar.
+    // v2 fields (backend/project/profiles) REQUIRE version 2: the version
+    // bump makes OLD binaries fail loudly instead of silently misparsing.
     let carries_v2 = !y.backend.is_empty() || !y.project.is_empty() || !y.profiles.is_empty();
     if carries_v2 && y.version != 2 {
         return Err(format!(
@@ -264,9 +270,9 @@ fn apply_defaults_and_validate(y: &mut WappsYaml) -> Result<(), String> {
         ));
     }
 
-    // Backend: absent == store. legacy-git ACIK hata — sessizce store'a
-    // dusmek, operatorun git'e commit edilen bir arsiv sandigi yerde sunucuya
-    // yazmasi demek olurdu.
+    // Backend: absent == store. legacy-git is an EXPLICIT error: silently
+    // falling back to store would mean writing to the server where the
+    // operator believes a git-committed archive is used.
     match y.backend.as_str() {
         "" | BACKEND_STORE => y.backend = BACKEND_STORE.to_string(),
         BACKEND_LEGACY_GIT => {
@@ -284,7 +290,7 @@ fn apply_defaults_and_validate(y: &mut WappsYaml) -> Result<(), String> {
         }
     }
 
-    // project ZORUNLU: gate'in adresi o. sources OPSIYONEL.
+    // project is REQUIRED: it is the gate's address. sources are OPTIONAL.
     if y.project.is_empty() {
         return Err(
             "config: 'project: <name>' is required — it names the project in the secrets gate"
@@ -300,9 +306,9 @@ fn apply_defaults_and_validate(y: &mut WappsYaml) -> Result<(), String> {
     Ok(())
 }
 
-// validate_source, kaynak adaptorunun kurulabilirligini dogrular (Go'da
-// source.New'in kendisi). Adaptor secimi DERLEME ZAMANINDA sabit: tanimadigi
-// tip, calisma zamaninda bir eklenti aramak yerine yuksek sesle duser.
+// validate_source checks that the source adapter can be built (source.New
+// itself in Go). Adapter selection is fixed at COMPILE TIME: an unknown type
+// fails loudly instead of looking for a plugin at run time.
 fn validate_source(cfg: &SourceConfig) -> Result<(), String> {
     match cfg.r#type.as_str() {
         "tofu" => {
@@ -328,8 +334,8 @@ fn validate_source(cfg: &SourceConfig) -> Result<(), String> {
     }
 }
 
-// validate_targets: yol bos olamaz, tekrar edemez, ve '..' TASIYAMAZ — yanlis
-// yapilandirilmis bir yaml depo kokunun DISINA yazamasin.
+// validate_targets: a path cannot be empty, cannot repeat, and cannot CONTAIN
+// '..', so a misconfigured yaml cannot write OUTSIDE the repo root.
 fn validate_targets(targets: &[Target]) -> Result<(), String> {
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, t) in targets.iter().enumerate() {
@@ -355,12 +361,12 @@ fn validate_targets(targets: &[Target]) -> Result<(), String> {
     Ok(())
 }
 
-// validate_coolify_sync: her uygulamanin uuid + archive_prefix'i dolu olmali,
-// uuid tekrar etmemeli, ve onekler CAKISMAMALI.
+// validate_coolify_sync: every app needs a uuid and an archive_prefix, a uuid
+// must not repeat, and prefixes must NOT OVERLAP.
 //
-// Cakismada en-uzun-eslesme SECILMIYOR, REDDEDILIYOR: sessiz bir
-// en-uzun-eslesme bir sirri YANLIS uygulamaya yollayabilir ("ROYCO_" ve
-// "ROYCO_API_"). Sir materyali icin acik olmak, zekice olmaktan iyidir.
+// An overlap is REFUSED, not resolved by longest match: a silent longest
+// match could send a secret to the WRONG app ("ROYCO_" and "ROYCO_API_"). For
+// secret material, being explicit beats being clever.
 fn validate_coolify_sync(cs: Option<&CoolifySync>) -> Result<(), String> {
     let Some(cs) = cs else { return Ok(()) };
     let mut seen_uuid: BTreeMap<&str, usize> = BTreeMap::new();
