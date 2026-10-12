@@ -45,36 +45,75 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 # PemObject::pem_file_iter requires std; std = ["alloc"] adds no dependency.
 rustls-pki-types = { version = "1", features = ["std"] }
 webpki-roots = "0.26"
-# serde_yaml_ng parses .wapps.yaml; Go uses gopkg.in/yaml.v3. This was a
-# dependency-policy decision measured against a 93-crate baseline, deny exit 0:
+# serde-saphyr parses every YAML file this binary reads (.wapps.yaml,
+# projects.yaml, the broker's client.yaml); Go uses gopkg.in/yaml.v3.
 #
-#   candidate       crate delta   deny exit   result
-#   serde_yaml      +6            0           REJECTED: 0.9.34+deprecated;
-#                                             archived by dtolnay in 2024.
-#                                             No then-current advisory (the
-#                                             2018-0005 entry was fixed in
-#                                             >=0.8.4); maintenance was the
-#                                             measured reason for rejection.
-#   serde_yaml_ng   +6            0           CHOSEN (see below).
-#   serde_yml       +8            1           REJECTED: RUSTSEC-2025-0068,
-#                                             unsound and unmaintained, no
-#                                             patched version. This estate
-#                                             does not permanently suppress
-#                                             such advisories with ignore.
-#   saphyr          +10           0           REJECTED: no serde integration
-#                                             and the largest graph.
-#   yaml-rust2      +6            0           REJECTED: no serde integration.
+# It replaced serde_yaml_ng 0.10 (2026-10-12). serde_yaml_ng's parser is
+# unsafe-libyaml, a c2rust translation of libyaml: RUSTSEC-2024-0449 marks it
+# unmaintained (archived 2024-03-25) with no safe upgrade, so `cargo deny
+# check` exited 1. This estate does not suppress advisories with ignore.
 #
-# serde_yaml_ng is the maintained serde_yaml fork with the same API. Serde
-# derive maps Go struct tags directly: Prefix *string's absent/explicit-empty
-# distinction maps to Option<String>. saphyr/yaml-rust2 would require manual
-# mapping at precisely the boundary where a port could silently diverge.
+# Measured on the graph without a YAML crate (95 crates in Cargo.lock):
 #
-# The six added crates were equivalent, hashbrown, indexmap, ryu,
-# serde_yaml_ng and unsafe-libyaml. RUSTSEC-2023-0075 (unaligned u64 writes)
-# in unsafe-libyaml was fixed in >=0.2.10 (resolved: 0.2.11) and only affects
-# 32/16-bit targets; none of deny.toml's four triples belongs to that set.
-serde_yaml_ng = "0.10"
+#   candidate              crate delta   deny exit   result
+#   serde_yaml_ng 0.10     +6            1           REMOVED: RUSTSEC-2024-0449.
+#   serde_yaml_ok 0.9.36   +6            1           REJECTED: unsafe-libyaml.
+#   yaml_serde 0.10.7      +6            0           REJECTED: its parser,
+#                                                    libyaml-rs, is the same
+#                                                    c2rust libyaml (236 lines
+#                                                    with `unsafe`); the
+#                                                    advisory asks for safe
+#                                                    Rust.
+#   serde_norway 0.9.42    +6            0           REJECTED: unsafe-libyaml-
+#                                                    norway, a fork of the same
+#                                                    code; no release since
+#                                                    2024-12.
+#   serde_yaml_bw 2.5.8    +13           0           REJECTED: still links
+#                                                    unsafe-libyaml-norway.
+#   noyalib 0.0.57         +8 (+6 with   0           REJECTED: 0.0.x with 55
+#                          only "std")               releases in five months.
+#                                                    Measured semantics broke
+#                                                    real configs: it refuses
+#                                                    `project: 123` and a null
+#                                                    list (`targets:`), which
+#                                                    yaml.v3 and serde_yaml_ng
+#                                                    accept, and it accepts a
+#                                                    duplicate struct field.
+#   serde_yaml2 0.1.3      +18           0           REJECTED: largest graph, no
+#                                                    release since 2025-05; it
+#                                                    refuses aliases and an
+#                                                    empty document.
+#   serde-saphyr 1.3.0     +14           0           CHOSEN (see below).
+#
+# serde-saphyr is #![forbid(unsafe_code)], and so is its parser granit-parser.
+# That covers the parser itself, not the whole graph: arraydeque, encoding_rs,
+# simdutf8, core_detect and scopeguard contain unsafe code (no advisory).
+# It is 1.x, with a release every two to three weeks since 1.0 (2026-07-31).
+# Only the "deserialize" feature is enabled: nothing here writes YAML through
+# serde (`secrets init` renders a fixed template), and the default "serialize"
+# feature would add one more crate. The 14 added crates are annotate-snippets,
+# arraydeque, autocfg, core_detect, encoding_rs, encoding_rs_io, granit-parser,
+# multiversion_no_op, num-traits, rustversion, scopeguard, serde-saphyr,
+# simdutf8 and unicode-width. The 6 removed crates are equivalent, hashbrown,
+# indexmap, ryu, serde_yaml_ng and unsafe-libyaml.
+#
+# Serde derive still maps the Go struct tags directly: Prefix *string's
+# absent/explicit-empty distinction is Option<String>, and unknown fields are
+# ignored unless a struct says deny_unknown_fields. A probe of 138 inputs
+# against yaml.v3 and serde_yaml_ng found two scalar rules that differ, and
+# src/yaml.rs restores yaml.v3 for both: serde-saphyr refuses null into a
+# String (yaml.v3 gives ""), and it parses a QUOTED "2" or "true" into an
+# integer or boolean (yaml.v3 refuses it). With that, every input on which
+# both old parsers agreed decodes as before, except two degenerate inputs that
+# are now refused: a null mapping key and input past serde-saphyr's default
+# budget (nesting deeper than 64, more than 250,000 nodes, 1,000,000 events or
+# 50,000 aliases, or an excessive alias-to-anchor ratio). The 13 real
+# .wapps.yaml files and the projects.yaml on the owner's machine decode as
+# before. Where serde_yaml_ng disagreed with yaml.v3 (merge keys, a byte-order
+# mark, duplicate keys, `yes`/`on`, `~` read as the text "~"), the result now
+# follows yaml.v3, except a null item in a list of strings, which is refused.
+# tests/yaml_ingress.rs pins all of it.
+serde-saphyr = { version = "1.3", default-features = false, features = ["deserialize"] }
 # ring provides binding fingerprints' SHA-256 (binding.rs). Measurement added
 # no crate: rustls already enabled ring (Cargo.lock: 0.17.14). The version
 # matches that dependency, as for rustls-pki-types. sha2 would add three crates
@@ -83,7 +122,7 @@ ring = "0.17"
 # clap_complete: `wapps completion <shell>` (owner decision 2026-10-05,
 # docs/PORT-kalan-yuzey.md §4.2: keep completion, generate it with
 # clap_complete, install it from the Homebrew formula). Measured the same way
-# as serde_yaml_ng above (base: 99 crates, `cargo deny check` = 0):
+# as the YAML parser above (base: 99 crates, `cargo deny check` = 0):
 #
 #   candidate                   crate delta   deny check   result
 #   clap_complete 4.6.11        +1            0            CHOSEN: from the clap

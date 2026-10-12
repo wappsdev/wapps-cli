@@ -225,7 +225,7 @@ fn source_frontmatter_identifies_an_english_source_only_reference() {
     let source = source();
     let after = source.strip_prefix("---\n").expect("frontmatter");
     let (frontmatter, _) = after.split_once("\n---\n").unwrap();
-    let fields: serde_yaml_ng::Value = serde_yaml_ng::from_str(frontmatter).unwrap();
+    let fields: serde_json::Value = wapps::yaml::from_slice(frontmatter.as_bytes()).unwrap();
     assert_eq!(fields["name"].as_str(), Some("agent-broker"));
     assert!(fields["description"]
         .as_str()

@@ -51,3 +51,4 @@ pub mod tofu;
 pub mod trustrepo;
 pub mod updatecheck;
 pub mod wappsyaml;
+pub mod yaml;

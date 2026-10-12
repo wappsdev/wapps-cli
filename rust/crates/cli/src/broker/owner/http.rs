@@ -22,7 +22,7 @@ impl Client {
         let path = Path::new(&home).join(".config/wapps-broker/client.yaml");
         let endpoint = match std::fs::read(path) {
             Ok(raw) => {
-                serde_yaml_ng::from_slice::<Metadata>(&raw)
+                crate::yaml::from_slice::<Metadata>(&raw)
                     .map_err(|_| "invalid broker client metadata")?
                     .endpoint
             }
@@ -233,4 +233,28 @@ fn read_json(response: ureq::Response) -> Result<Value, String> {
     }
     serde_json::from_slice(&bytes)
         .map_err(|_| "cloud protocol: invalid JSON; outcome may be unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Metadata;
+
+    fn endpoint(src: &str) -> Result<Option<String>, String> {
+        crate::yaml::from_slice::<Metadata>(src.as_bytes())
+            .map(|m| m.endpoint)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn owner_metadata_reads_only_the_endpoint_of_the_shared_client_file() {
+        assert_eq!(
+            endpoint("clientId: agent-only\nendpoint: https://x\n"),
+            Ok(Some("https://x".into()))
+        );
+        assert_eq!(endpoint("clientId: agent-only\n"), Ok(None));
+        assert_eq!(endpoint("endpoint:\n"), Ok(None));
+        assert_eq!(endpoint("endpoint: ~\n"), Ok(None));
+        assert_eq!(endpoint(""), Ok(None));
+        assert!(endpoint("endpoint: [a]\n").is_err());
+    }
 }
