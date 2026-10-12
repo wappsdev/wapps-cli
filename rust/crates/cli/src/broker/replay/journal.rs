@@ -116,7 +116,7 @@ fn private(fd: &OwnedFd, directory: bool) -> Result<(), StopCode> {
     };
     let private = FileType::from_raw_mode(stat.st_mode as _) == expected
         && stat.st_uid == getuid().as_raw()
-        && u32::from(stat.st_mode) & 0o077 == 0
+        && !Mode::from_raw_mode(stat.st_mode as _).intersects(Mode::RWXG | Mode::RWXO)
         && (directory || stat.st_nlink == 1);
     private.then_some(()).ok_or(StopCode::JournalUnsafe)
 }
