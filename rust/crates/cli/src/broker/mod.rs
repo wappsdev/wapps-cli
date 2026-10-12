@@ -3,6 +3,7 @@ mod config;
 pub mod daemon;
 mod forward;
 pub mod owner;
+pub mod replay;
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, Read},
