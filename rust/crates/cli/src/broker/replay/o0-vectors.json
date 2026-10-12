@@ -1,0 +1,88 @@
+{
+  "derivation": "Synthetic O0 vectors. Derived 2026-10-12 with Python 3.14.6 from the frozen, unchanged docs/preparation/replay-13-11 sources at CLI 4caf419 (replay_plan.encoded, replay_recovery.digest/request_for, replay_keyed.keyed_operations/semantic/semantic_fingerprint, synthetic_recovery.synthetic_manifest). Destination IDs synthetic-item-1..3 are the fake cloud's minted IDs, substituted through request_for. No real source, snapshot or service was read.",
+  "keys": [
+    {
+      "kind": "work_add",
+      "source_ids": [
+        "root-a",
+        "root-b"
+      ],
+      "canonical": "{\"kind\":\"work_add\",\"project\":\"navlun\",\"source_ids\":[\"root-a\",\"root-b\"],\"source_mission_id\":\"source\",\"target_mission_id\":\"target\",\"version\":1}",
+      "operation_key": "od10k1-3bfb9103f7adcc244f16f137cc10fccf9bffc884382c6af3a4d9c74e90850fe5"
+    },
+    {
+      "kind": "work_add",
+      "source_ids": [
+        "child"
+      ],
+      "canonical": "{\"kind\":\"work_add\",\"project\":\"navlun\",\"source_ids\":[\"child\"],\"source_mission_id\":\"source\",\"target_mission_id\":\"target\",\"version\":1}",
+      "operation_key": "od10k1-fac4d225dc1b7ca5fafa59848524a7340416b6cf4eab9fee0bf4fd4a66262478"
+    },
+    {
+      "kind": "work_ask",
+      "source_ids": [
+        "q"
+      ],
+      "canonical": "{\"kind\":\"work_ask\",\"project\":\"navlun\",\"source_ids\":[\"q\"],\"source_mission_id\":\"source\",\"target_mission_id\":\"target\",\"version\":1}",
+      "operation_key": "od10k1-35fae7ddc16664edc50b84dba440ea9a9035de7d5c6251ce45197c62037788d9"
+    },
+    {
+      "kind": "work_add",
+      "source_ids": [
+        "root-\u00e9",
+        "root-\ud83d\ude00\u007f"
+      ],
+      "canonical": "{\"kind\":\"work_add\",\"project\":\"navlun\",\"source_ids\":[\"root-\\u00e9\",\"root-\\ud83d\\ude00\\u007f\"],\"source_mission_id\":\"source\",\"target_mission_id\":\"target\",\"version\":1}",
+      "operation_key": "od10k1-87ac47cc37bececb4077265282519bbd730b70b15c3663a2193db9018e5e61b4"
+    }
+  ],
+  "synthetic_requests": [
+    {
+      "operation_key": "od10k1-3bfb9103f7adcc244f16f137cc10fccf9bffc884382c6af3a4d9c74e90850fe5",
+      "kind": "work_add",
+      "source_ids": [
+        "root-a",
+        "root-b"
+      ],
+      "canonical": "{\"items\":[{\"horizon\":\"next\",\"intent\":\"Synthetic intent\",\"title\":\"Same synthetic title\"},{\"horizon\":\"next\",\"intent\":\"Synthetic intent\",\"title\":\"Same synthetic title\"}]}",
+      "request_sha256": "c8a55868abd87d583ab6ce55896a8c21e6b2124b45e30bfd24a637de5818549d",
+      "semantic_sha256": "20d8a75c920336851e8c79b69b2e2a0df10f75dcaef3215b517ce78d207b625b"
+    },
+    {
+      "operation_key": "od10k1-fac4d225dc1b7ca5fafa59848524a7340416b6cf4eab9fee0bf4fd4a66262478",
+      "kind": "work_add",
+      "source_ids": [
+        "child"
+      ],
+      "canonical": "{\"items\":[{\"intent\":\"Child intent\",\"parentId\":\"synthetic-item-1\",\"title\":\"Synthetic child\"}]}",
+      "request_sha256": "53ef0c8c22df0faf7f2a2a3914142d47135e1fddb4920a1d8a69e469fb790983",
+      "semantic_sha256": "b60e26fa2b99e2b2b2d0695c4ef74bee0f4eb71b619ded7e34bbdc70579b7e64"
+    },
+    {
+      "operation_key": "od10k1-35fae7ddc16664edc50b84dba440ea9a9035de7d5c6251ce45197c62037788d9",
+      "kind": "work_ask",
+      "source_ids": [
+        "q"
+      ],
+      "canonical": "{\"proposal\":\"Proposal\",\"question\":\"Synthetic question?\",\"workItemId\":\"synthetic-item-3\"}",
+      "request_sha256": "3b29168d8633e2ca2cd8f6f5a3c089eab22bdfbd6fa88310fcef0f51ad92d34a",
+      "semantic_sha256": "b1f3a738b7fa8b055e3970ca6229520ab4326e0a4f6ebada0f3e617d51f4de75"
+    }
+  ],
+  "escaping_requests": [
+    {
+      "kind": "work_add",
+      "text": "T\u00e9 \u2028 \ud83d\ude00 \u007f \" \\ \n \u0001 </>&",
+      "canonical": "{\"items\":[{\"horizon\":\"later\",\"intent\":\"T\\u00e9 \\u2028 \\ud83d\\ude00 \\u007f \\\" \\\\ \\n \\u0001 </>&\",\"title\":\"T\\u00e9 \\u2028 \\ud83d\\ude00 \\u007f \\\" \\\\ \\n \\u0001 </>&\"}]}",
+      "request_sha256": "178350a790b972785c6b8c01565bd4db11625a8e63fc43801942303e4f3b42b2",
+      "semantic_sha256": "dd6c4b376a072839e45938f2c73942a02c1854691c4deca777b5d11c1f4f5478"
+    },
+    {
+      "kind": "work_ask",
+      "text": "T\u00e9 \u2028 \ud83d\ude00 \u007f \" \\ \n \u0001 </>&",
+      "canonical": "{\"proposal\":\"T\\u00e9 \\u2028 \\ud83d\\ude00 \\u007f \\\" \\\\ \\n \\u0001 </>&\",\"question\":\"T\\u00e9 \\u2028 \\ud83d\\ude00 \\u007f \\\" \\\\ \\n \\u0001 </>&\",\"workItemId\":\"synthetic-item-1\"}",
+      "request_sha256": "07dd728c8b15e82023ee1f769d4eb4bf13e3a6c3823e2f1bc28966df2a28b1eb",
+      "semantic_sha256": "f3f8870e492d196a00646f0b75a155bffa16a469d08d68f64390b7177e3ad714"
+    }
+  ]
+}
