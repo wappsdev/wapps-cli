@@ -1,0 +1,708 @@
+Rust Migration Executor Implementation Plan
+==========================================
+2026-10-06 — offline technical proposal for TX-11A–TX-11H / slice 13.11.
+Status: PREPARATION ONLY; not accepted production schema, implemented executor,
+completed migration, rollout authorization, or authorization to acquire snapshots.
+
+Goal: the smallest Rust path that validates explicitly supplied source inputs,
+replays an immutable allocation through the existing admitted MCP path, stops on
+uncertainty, and separately verifies every retained destination field and link.
+Architecture: a CLI-side replay module, a private journal, and one narrowly typed
+MCP backend. Python remains a frozen synthetic oracle, never product runtime.
+Tech stack: existing serde/serde_json, ring, rustix, clap and broker forwarding;
+a read-only SQLite adapter needs a bounded dependency/build review.
+For future implementers: use TDD and verification-before-completion inside the
+project workflow; execute the vertical lanes below, not standalone helper tasks.
+This document grants no consent to execute them against real sources or targets.
+
+0. Scope, identity, and work ownership
+------------------------------------
+Only this record is written/staged in this lane:
+/Users/adnankurt/Documents/Projects/.worktrees/broker-migration-executor-contract/docs/broker-rust-migration-executor-contract.txt
+Branch: lane/broker-migration-executor-contract.
+Source CLI: b5149f521aaaea75fd2e99f44f8cd15b4d46fa32.
+Source platform: b9181445fce94f969a5d04f4f43e5c46368f12aa.
+
+No primary/main product edits, commits, pushes, deployment/provisioning, grants,
+credentials, real stores/snapshots/replay, installed configuration/skills, provider
+sessions/spend, release/tag or plugin retirement. Experiments run in private
+scratch with empty HOME/config and synthetic data. No parent/coordinator cwd
+switch, competing writer, daemon takeover, broad process kill or cleanup sweep.
+The config.rs DNS repair and separate execution/rollout records are not owned here;
+this proposal consumes their eventual verified interfaces, not their records.
+No execution-provider/prompt/ceiling/context redesign is included.
+
+Sources read in full: curated replay README/source-contract; replay_plan.py,
+replay_recovery.py, replay_keyed.py, synthetic_recovery.py, recovery_demo.py and all
+three test files. Their base is:
+/Users/adnankurt/Documents/Projects/.worktrees/broker-migration-executor-contract/docs/preparation/replay-13-11/
+Also read: preparation verifier/index; broker owner, forward and daemon session
+routing; relevant current crate APIs; pinned platform creation/admission/receipt
+bodies and transaction entry; targeted TX-11A–H and K1–K4 task records in:
+/Users/adnankurt/.claude/projects/-Users-adnankurt-Documents-Projects-wapps-cli/37332331-3dd9-4038-adf0-bffa80654761/subagents/workflows/wf_23efdb74-799/journal.jsonl
+Only migration entries/sections were extracted, not unrelated workflow records.
+Historical stores, private snapshots and their contents were not inspected.
+
+1. Existing selection versus concrete owner inputs
+-------------------------------------------------
+Preserve the recorded OD10 selection: navlun, ecommerce, kick-clip-analyzer and
+real-estate-analysis; all open items from the explicitly selected active source
+mission, carrying title, intent, parent and horizon; at most the one selected
+navlun open question, carrying question/proposal and its item association.
+Exclude wapps-platform. Do not reopen these categorical choices as though absent,
+or expand them because of a schema/transport implementation preference.
+
+The original measurement table names source missions navlun, ecommerce,
+irl-relay and l0-walking-skeleton respectively. These are historical SOURCE hints,
+not validated destination mappings or permission to open those sources. Original
+226 items / 26 parents / one question / 57 long titles are not execution inputs.
+Fresh user-supplied snapshots determine truth. A subset may be prepared and must
+list projects_not_provided; it never completes the four-project cut-over.
+Any semantic issue clears every project's executable batches/questions while
+preserving original selected rows and diagnostics. No useful partial replay plan.
+
+Minimum concrete owner/operator inputs still absent for real use:
+- For each selected project: exact project/repository identity, standalone snapshot
+  path and authorization to access it, source mission ID, target registered mission
+  ID, and target/environment identity. No project-name-to-target inference.
+- Exact navlun source question ID and snapshot-bound review of its question,
+  proposal and associated open item. Extra open questions block rather than vanish.
+- Review of the actual transform/archive inventory. Title shortening is lossless
+  only if the COMPLETE original title equals the COMPLETE retained target intent
+  and that intent fits 100,000 UTF-16 units. Any other shortening requires the exact
+  title-shortening:<source-id> decision for that snapshot; unused approvals refuse.
+  Padded text and oversize intent/question/proposal remain blocking, not new silent
+  trim/truncate policies. Different source state/scope returns to the owner.
+- Confirm archive-only treatment of original position, created_at/raised_at,
+  source_job_id/source_index, discovered_from and other reported non-null metadata.
+  discovered_from is supported by cloud, but excluded from the selected OD10 fields;
+  it is not an unsupported cloud feature. Do not invent destination provenance.
+- Exact admitted execution principal and approved claim/release flow for these
+  targets, access/registration/grants, cut-over/writer quiescence and backup access,
+  and separate authorization for uncertain keyed resume. These are not implied by
+  general permission to continue development. Existing active leases are not stolen.
+
+Engineering mechanics need no new product-policy vote: UTF-16 checks, deterministic
+parent-first order, SHA-256 and escaping, strict schemas/duplicate-key refusal,
+private durability, no successor before durable acknowledgment, and fixed diagnostics.
+The technical schema/crate/CLI proposal below still needs engineering review; no
+missing decision is labeled accepted. Config approval strings, digests and synthetic
+approved_retry=True are assertions/test orchestration, not attested human consent.
+There is no automatic conversion of Python fake receipts or legacy ambiguity.
+
+2. Proposed local input/manifest contract
+----------------------------------------
+Local validate/plan must work without loading broker credentials, claiming a lease,
+starting a daemon or contacting any service. Real inputs are supplied by an authorized
+operator, never discovered from installed plugin paths. The executor does not create,
+copy, checkpoint, repair or upgrade a live database. Backup acquisition is outside it.
+
+Mapping input: retain the strict curated {sources:[...]} shape, exactly six fields
+per source: project, snapshot (absolute path), source_mission_id, target_mission_id,
+selected_question_ids, approved_lossy_transformations. One to four distinct allowed
+projects; distinct targets; mission IDs match [a-z0-9][a-z0-9._-]{0,127}. Duplicate
+JSON keys and unknown fields refuse. Expected principal/destination/runtime approvals
+belong to execution bindings, not source-data mapping or operation key material.
+Bind mapping_sha256 to the EXACT mapping-file bytes, not reparsed/rounded JSON.
+Whitespace/path/approval edits require new offline review and cannot resume an attempt.
+
+Snapshot input: existing immutable, consistent, standalone SQLite file from stopped
+writers; private UID-owned regular file, single link, no symlink path components,
+private source containment; reject -wal, -shm and -journal sidecars. Open an escaped
+file URI with mode=ro&immutable=1 and explicit READ_ONLY without CREATE; query_only=ON,
+trusted_schema=OFF. Check schema tables, required columns, mission uniqueness/state;
+read a transaction and hash file bytes before/after with ring SHA-256. Recheck identity
+and sidecars. Immutable assumes stable bytes; it does not freeze concurrent writers.
+Before/after hash alone cannot establish consistency. Never retry a changing source.
+Only missions (id/status), work_items and work_questions are interpreted. No queries
+of jobs, transcripts, leases or credentials; file hashing covers opaque file bytes.
+
+Preserve original column names/selected rows as typed SQLite values. Integer values
+must remain i64, never f64 or JS Number. Finite REAL archive values must retain their
+exact binary64 bit representation in the production archive (tag real_bits_hex);
+this avoids inventing cross-language decimal equivalence. Null/text/integer retain
+native JSON null/string/integer values. BLOB, invalid Unicode and non-finite REAL
+are invalid inputs, not base64 export or silent conversion. Unknown non-null source
+columns block as the oracle does; list them in diagnostics, not executable payloads.
+No timestamp/position coercion: integer SQLite storage is required where the oracle
+requires int. The tagged REAL archive is a proposed production-format distinction;
+never reinterpret or rewrite the frozen Python JSON to match it.
+
+Proposed new manifest format: wapps-broker-replay-plan-v1, not the Python fake format.
+Required top-level fields:
+  format, status (blocked | ready_for_review), nothing_migrated:true,
+  live_replay_safe:false, mapping_sha256, selected_scope, projects_not_provided,
+  excluded_project:"wapps-platform", issues, projects, limits, live_prerequisites.
+Project fields retain the six source mapping fields plus snapshot_sha256,
+source_items, source_questions, counts, unsupported_metadata, transformations,
+batches and questions, as in the curated planner. Batches retain depth, source_ids,
+items:{source_id,parent_source_id,body}, reserved_body_bytes. Questions retain
+source_id, work_item_source_id, body. body carries only title/intent/optional horizon
+or question/optional proposal; source references are not destination IDs.
+
+Graph/state rules: duplicate IDs never overwrite; reject missing, closed and
+cross-mission parents, cycles, child horizons and unknown states. Root horizon may
+be absent/null in the source or now/next/later/someday. Iterative topological levels,
+ordered by (original i64 position, source ID), earlier-depth parents only; split at
+500 items or conservative body budget, never combine parent/child in one batch.
+Question state/selection rules are unchanged. Retain open unselected question rows
+in a BLOCKED manifest; do not silently discard them. Oversize, blank and padded
+required text blocks; omit optional wire fields rather than sending explicit null.
+
+Manifest_sha256 is SHA-256 of the EXACT published manifest bytes, including the
+single trailing LF. Publish a new private 0600 file exclusively, file and directory
+sync; never stdout/overwrite/force. Fixed diagnostic codes only, no source text,
+paths or raw exceptions. Exit 0 means ready for OFFLINE review, 3 written blocked
+manifest, 2 invalid/unsafe input or I/O failure. These exits do not mean migration.
+Missing required sources and a blocked/partial manifest cannot authorize full replay.
+
+3. Stable operation identity and four distinct fingerprints
+-----------------------------------------------------------
+Allocate the entire ordered operation/key list before any creation send. Allocate
+keys and source identities, NOT destination IDs (the server mints those). Bind the
+immutable manifest, mapping, principal, destination and partition separately.
+
+Client operationKey stays exactly the frozen od10k1- contract:
+  od10k1- + lowercase SHA-256(compact sorted-key ASCII JSON of
+  {version:1,project,source_mission_id,target_mission_id,kind,source_ids}).
+kind is work_add or work_ask. source_ids is an ORDERED list. No whitespace; Python
+ensure_ascii=True escaping, lowercase hex and UTF-16 surrogate pairs for non-BMP
+scalar values. Escape U+007F too (Python does); reject unpaired surrogates. The
+fixed key is 71 ASCII characters; platform grammar is case-sensitive/untrimmed,
+1–128 ASCII characters, first alphanumeric, remainder alphanumeric or . _ : -.
+
+Content/title, snapshot digest, principal, returned IDs, lease capability/fence,
+clock and transport request ID are not in this key. Changing them cannot mint a
+replacement recovery identity. Principal is separately server-scoped and journal
+bound. Changing project/source/target/verb/order/partition changes key material but
+is FORBIDDEN after an attempted send, not a recovery technique. Original batches
+stay immutable even if a future transport could fit a different partition.
+
+Distinct digests; never substitute one for another:
+  snapshot_sha256: original opaque SQLite file bytes.
+  mapping_sha256 / manifest_sha256: exact immutable private file bytes.
+  request_sha256: exact stored authority-free resolved creation JSON bytes.
+  semantic_sha256: normalized typed server semantic JSON UTF-8 bytes.
+Journal integrity sha256 additionally covers exact journal document bytes, not keys.
+Checksums detect corruption; none proves origin, consent or rollback resistance.
+
+Server semantic: work_add hashes a Vec<NewWorkItem> in declaration field order
+(title,intent,parentId,horizon,discoveredFrom), absent optionals serialized null.
+work_ask hashes the tuple [workItemId,question,proposal], absent proposal null.
+Normalized ECMAScript trim and UTF-16 bounds apply first. Wire explicit null/unknown
+fields refuse; empty trimmed proposal refuses. Object input order/escape spelling
+is immaterial; array order matters. The server's typed hash excludes key/principal/
+authority/time but authorization does not. Not Python sorted ASCII JSON, not GoEscape,
+not JSON.stringify(input), not serde_json::Value map ordering.
+
+Serialization prerequisites grounded in source/types and synthetic measurement:
+- Python integers and Rust i64 preserve 9007199254740993; JS JSON.parse/stringify
+  yields 9007199254740992. Source position/timestamps must not pass through JS or f64.
+  Text-only key identity uses integer version 1, so avoid adding numeric source rows
+  to the key. Authority fencingToken must be an integral 1..=9007199254740991 value;
+  reject bool/fraction/nonfinite/out-of-range, do not round it.
+- Python ensure_ascii escapes DEL, é, U+2028 and emoji; serde_json default emits
+  valid UTF-8 fragments. Existing gojson::GoEscape additionally escapes <>& and
+  U+2028/U+2029, which neither server typed hash nor Python key encoding wants.
+  Use serde_json::Serializer with a narrow ASCII string Formatter for key identity,
+  sorted fixed identity fields; do not implement a general JSON library or use
+  gojson for fingerprints. Formatter::write_string_fragment/write_char_escape are
+  already available in the project's dependency. Version is explicitly integer.
+- No NFC/NFD normalization. Rust str::trim is wrong: BOM is ECMAScript whitespace,
+  NEL is not. Preserve those distinctions; count encode_utf16(), not bytes/chars.
+  Shorten only at whole Unicode-scalar boundaries within 500 UTF-16 units.
+- serde_json raw_value/float_roundtrip features are already enabled. They do not
+  provide Python ASCII output, JS number parity, duplicate-key rejection or exact
+  arbitrary SQLite-value semantics. Use a duplicate-checking serde visitor, not
+  Value's last-key-wins parser, for mapping/manifest/journal inputs.
+
+Measured synthetic golden keys (scope navlun/source/target):
+  work_add [root-a,root-b]
+    od10k1-3bfb9103f7adcc244f16f137cc10fccf9bffc884382c6af3a4d9c74e90850fe5
+  work_add [child]
+    od10k1-fac4d225dc1b7ca5fafa59848524a7340416b6cf4eab9fee0bf4fd4a66262478
+  work_ask [q]
+    od10k1-35fae7ddc16664edc50b84dba440ea9a9035de7d5c6251ce45197c62037788d9
+  work_add [root-é,root-<U+1F600><U+007F>]
+    od10k1-87ac47cc37bececb4077265282519bbd730b70b15c3663a2193db9018e5e61b4
+The last canonical bytes are exactly:
+{"kind":"work_add","project":"navlun","source_ids":["root-\u00e9","root-\ud83d\ude00\u007f"],"source_mission_id":"source","target_mission_id":"target","version":1}
+These were derived with frozen Python, not a Rust allocation implementation.
+
+Final-envelope sizing: preparation's 1,048,576 budget/4,096 reserve is conservative,
+not HTTP runtime proof. Current local serve MAX_FRAME includes the JSON-RPC frame
+and LF; current forwarding MAX_RESPONSE is 4 MiB. Verify effective deployed HTTP
+limits independently. Before allocation publication, bound worst-case escaped
+128-unit future parent IDs and the permitted authority/envelope sizes for every
+operation. Once parents are acknowledged, measure exact final MCP/daemon/HTTP bytes
+with current authority/key/routing. If oversize, SEND NOTHING for that operation;
+preserve existing allocation/history and stop. Never repartition an attempted plan.
+Authority-free payload bytes/checksums persist; authority-bearing frames do not.
+
+4. Smallest proposed Rust interface (declarations, not implementation)
+--------------------------------------------------------------------
+One broker::replay module in the CLI product; no new shared package or provider
+executor abstraction. Reuse existing daemon/forwarding, not owner::http. Private
+constructors keep validated inputs from being fabricated through ordinary callers.
+
+Interface declarations below are proposed Rust signatures; bodies do not exist:
+  fn validate(mapping: &MappingInput, sources: &[SnapshotRows])
+      -> Result<Manifest, StopCode>;
+  fn allocate(manifest: &ValidatedManifest, binding: ExecutionBinding)
+      -> Result<Allocation, StopCode>;
+  fn execute(plan: &Allocation, journal: &mut Journal, backend: &mut dyn ReplayBackend,
+      action: ReplayAction) -> Result<RunReport, StopCode>;
+  fn verify(plan: &Allocation, journal: &Journal, destination: &DestinationInventory)
+      -> Result<VerificationReport, StopCode>;
+
+MappingInput = parsed strict mapping plus exact input-byte digest.
+SnapshotRows = project/source identity, file digest, typed mission/item/question
+rows from the supplied read-only adapter; in-memory curated fixtures supply the
+same shape without SQLite. Manifest is blocked or ready_for_review, not authority.
+ValidatedManifest = ready manifest with original byte/mapping/snapshot digests and
+all graph/scope/text checks passed; private constructor, no fake-manifest importer.
+ExecutionBinding = exact expected principal, destination origin/mission bindings,
+reviewed source mapping identity and approved retained-history evidence reference.
+It contains no credential. Allocation = complete immutable ordered operations,
+source reference graph, keys and digests; no resolved child destination IDs yet.
+ReplayAction = Start | ResumeSameKeys; supplied by the approved operator entrypoint,
+not inferred from file presence/checksum or approved_lossy_transformations strings.
+Journal = private locked durable file plus validated state; not a public JSON Value.
+StopCode = fixed enum codes for scope/source/schema/authority/size/protocol/conflict/
+uncertainty/drift/durability; no raw text, paths or underlying error formatting.
+RunReport = per-operation acknowledged counts/IDs references, current stop location,
+unknown operation count, pending count, verification and lease disposition; private
+IDs/fields remain private. Console output only fixed codes/counts.
+VerificationReport = exact retained-field/link comparison and drift codes, not an
+ability to repair or undo. DestinationInventory = all safely read work rows and
+nested open questions plus reviewed pre-existing target baseline; no job result reads.
+
+ReplayBackend has only these operations (proposed method signatures):
+  fn claim(&mut self, target: &TargetBinding) -> Result<LiveLease, CallFailure>;
+  fn create(&mut self, op: &ResolvedOperation, lease: &LiveLease)
+      -> Result<CreationReceipt, CallFailure>;
+  fn inventory(&mut self, target: &TargetBinding)
+      -> Result<DestinationInventory, CallFailure>;
+  fn release(&mut self, target: &TargetBinding, lease: &LiveLease)
+      -> Result<(), CallFailure>;
+TargetBinding = exact mission/origin/expected principal and verified schema/limit
+binding. LiveLease = in-memory capability, integral fencing token, heartbeat deadline
+and validated owner/provider/mission binding. ResolvedOperation = fixed verb/key,
+ordered source IDs, exact authority-free payload bytes and digests. CreationReceipt
+= ordered validated workItemIds or one validated questionId, matching operation.
+CallFailure = KnownUnsent | AuthoritativeRefusal | OutcomeUnknown, with fixed code.
+No arbitrary tool name/URL, owner mutation, grant operation, agent dispatch/report,
+job-result discharge, force release or identity-switch method is provided.
+
+Claim status may be read through the existing orchestrator_status path within the
+backend; implementation must verify held state, owner.id==expected principal and
+matching fencingToken/mission against the just-returned claim authority. Claim's
+response itself contains authority/deadline, NOT the principal. Route-list health
+or an asserted local principal is not evidence. Test the claim+status binding and
+unchanged auth channel; stop before creations if it cannot establish identity.
+Claim provider is the already selected orchestrator declaration, not selection of
+an LLM/model, launching a worker or a new execution-context design here.
+
+5. Admission and exact keyed replay contract at pinned platform
+--------------------------------------------------------------
+Read as Git objects at b918144, not mutable platform checkout. Relevant sources:
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/core/src/broker/body.rs
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/workers/src/broker_handlers.rs
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/workers/src/broker_mcp.rs
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/workers/src/broker_gate.rs
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/workers/src/broker_routes.rs
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/workers/src/mission_lane.rs
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/workers/src/mission_lane/{payload.rs,methods.rs,operation.rs}
+/Users/adnankurt/Documents/Projects/wapps-platform/crates/workers/src/do_lane/storage.rs
+/Users/adnankurt/Documents/Projects/wapps-platform/services/broker/migrations/010_work_operation.sql
+
+Historical source-contract.txt remains historical: no old digests were replaced.
+At this pin operation.rs differs from historical 18d0f6b by formatting; migration
+010 is identical. body/handlers/lane have substantial other deltas: the relevant
+current bodies were read, not claimed whole-tree byte/semantic equivalence.
+No platform production tests/build/runtime/deployment were executed in this lane.
+
+MCP endpoint admission requires read, then the routed creation/claim/release verb
+requires current Claim/InMission admission. Registry and roster admission are
+separate from mission-local mutation; do not promise cross-object atomic revocation.
+The authenticated router supplies operation principal, never a public body field.
+Current live lease/capability/fence is checked before receipt lookup and rechecked
+in the synchronous critical section after async capability verification.
+
+Server receipt scope = mission database + (principal, fixed verb, operationKey).
+Matching normalized fingerprint returns original result and touches current lease
+without re-running mutable creation preconditions. Changed content returns 409
+OPERATION_KEY_CONFLICT / details.refusal=operation_key_conflict, retryable:false,
+no Retry-After. HTTP first/replay creations are 201; MCP wraps successful routed
+content in CallToolResult over HTTP 200, without a replay marker. Do not require
+201 as the outer MCP HTTP status or assume text alone is authoritative success.
+
+Whole batch mutation, receipt insert and lease touch share the synchronous SQL
+transaction. No upsert; SQL/receipt/touch error rolls back, not partial item commit.
+Post-commit response/alarm failure can lose acknowledgment while data stays committed.
+Receipts have mission lifetime; no expiry, pending/result-lookup endpoint or deletion
+recovery facility. Missing means create. Unreadable committed results fail closed.
+Different principal/verb/mission is independent creation, NEVER recovery.
+
+CLI routing boundary at the fixed CLI pin:
+- broker/forward.rs requires missionId on EVERY call, removes only routing metadata,
+  bounds/validates HTTP JSON or SSE JSON-RPC/MCP responses, disables redirect/proxy,
+  and does not retry mutations. Use its tested protocol rules, not oracle/mcp.rs's
+  permissive text extraction as production parser. Existing catalog includes key
+  support on add/ask; future runtime schema agreement still needs verification.
+- daemon/sessions.rs tracks mission capabilities only in memory. Claim can release
+  a cached gone-session lease before claiming; migration must not attach to a live
+  unrelated daemon/session or use this as implicit takeover. Integration owns testing
+  this behavior through a dedicated approved session/fixture, not changes here.
+- owner::http uses human SSO and owner::file uses the leaseless Answer door, which
+  is NOT keyed Claim migration. Do not recover through it, change grants through it,
+  or impersonate the owner. Preserve owner/agent boundaries and scrub policies.
+- work_list includes nested OPEN question data usable to verify the selected open
+  question and item association; no new work_questions MCP tool is assumed. If
+  actual required fields are absent/truncated, stop for a surface fix. An answered/
+  withdrawn question missing from this view is drift, never permission to recreate.
+
+6. Proposed journal, uncertainty, crash boundaries and accounting
+----------------------------------------------------------------
+New format only: wapps-broker-replay-journal-v1. Refuse all legacy/fake formats,
+unknown keys/states, duplicate keys, corrupt/partial bytes and missing resume files.
+Integrity envelope {journal:<document>,sha256:<hex>} uses a defined compact UTF-8
+serialization of journal, fixed struct order, exact integer/string types; no JS
+round trip. Store/compare prior complete file bytes while holding persistent lock.
+
+Journal document fields:
+  format, manifest_sha256, mapping_sha256, principal, destination_bindings,
+  allocation_sha256, entries, verification_state, lease_disposition.
+Each entry fields:
+  operation_key, kind, project, source_mission_id, target_mission_id, snapshot_sha256,
+  source_ids, state, request (absent until resolved), request_sha256,
+  semantic_sha256, destination_ids, reason.
+The request value is exact authority-free payload JSON (no routing key/authority);
+its serialized bytes are the request digest input. allocation_sha256 binds all
+ordered immutable entry identities/partitions. Every binding and original source
+row/selection/transform remains locked by manifest/mapping digests. Do not persist
+Access tokens, service credentials, capabilities, full frames or headers. Integer
+fence may be checked in memory; it is not journal identity or recovery permission.
+Mappings are derived from ordered acknowledged entries, not a second mutable map.
+Mapping scope includes project/source/target/snapshot/source ID; duplicate titles
+and reused IDs in other projects never establish a match.
+
+States: pending, in_flight, acknowledged, unresolved. Keep Python keyed semantics:
+known local pre-send errors leave pending and send nothing; authoritative refusal
+for an attempted operation stops without pretending that earlier uncertainty was
+rolled back. No need for a second general retry state machine. Refusal reason is a
+fixed code; preserve an already acknowledged entry/IDs on a current replay refusal.
+
+Normal transitions:
+  validated allocation -> durably publish all pending entries -> resolve next body
+  -> check exact frame size/current binding -> durably publish in_flight+request
+  -> one admitted keyed call -> validate full result/cardinality/order/uniqueness
+  -> durably publish acknowledged+ordered IDs -> only then advance successor.
+Uncertain/malformed response -> unresolved -> stop ALL later operations/projects.
+A crash leaving in_flight is uncertainty even if no socket bytes were sent. An
+unapproved resume may validate locally but emits ZERO cloud mutation calls, including
+claim, acknowledged-key replay and release. A separately authorized resume validates
+all immutable history first, re-establishes same-principal current authority and
+uses exact stored keys/payloads. New valid lease is permitted; stale/revoked/wrong
+capability never bypasses current admission. Confirm every acknowledged original
+ordered result before dependent work; keep original IDs if current replay is refused.
+
+CreationReceipt validation: correct JSON-RPC version/correlation ID, exactly result
+OR error, valid MCP content/isError/structuredContent shape, non-refusal creation
+payload, expected ID field/count, nonempty bounded IDs, no duplicates within/across
+same-mission verb results, expected ordered original IDs on acknowledged replay.
+Do not promote arbitrary extension fields into envelope status. Successful content
+with invalid IDs is uncertainty, not a zero-commit proof. Do not repair by sorting.
+
+Crash/durability boundaries and permitted next action:
+  Initial allocation or intent file/file-sync/dir-sync fails: zero sends; stop.
+  Intent committed, process exits before send: in_flight; approved same-key recovery.
+  Send starts, response lost/parse failure/cancelled: unresolved; no automatic retry.
+  Server SQL rolls back with authoritative refusal: no current batch partial commit;
+    still stop; previously committed operations remain recorded.
+  Server commits, response/alarm fails: unknown locally until authorized same-key result.
+  Ack validation succeeds but local publication fails: stop before dependents; restart
+    sees old in_flight OR full acknowledged file, never infer success from memory.
+  Ack file published, process exits: reopen, validate, recheck current authority/results.
+  Directory sync fails AFTER replacement: new bytes may be visible but durability is
+    not proven; stop without issuing successor or assuming old/new document selection.
+
+Filesystem mechanics: UID-owned 0700 containment directory; walk/open with dirfds
+and no-follow, files 0600 regular/single-link; persistent lock inode with exclusive
+nonblocking flock; exclusive sibling temp, complete write, file sync, first
+publication without overwriting any existing name, then directory sync; subsequent
+atomic replacement only after checking exact prior bytes. Never chmod an untrusted
+existing directory to make it acceptable. Retain orphan crash files; no temp/lock
+sweep, repair, force or truncation. Advisory locking/checksums do not defend against
+coherent same-UID tampering/rollback, hostile writers or hardware power loss.
+
+Existing rustix fs/process features expose openat/linkat/renameat/flock/fsync. Existing
+atomicfile::write syncs file then rename but lacks directory fsync, prior-byte checks,
+persistent writer lock and exclusive first publication; do not falsely reuse it as
+sufficient journal durability or broaden that shipped helper in this lane.
+
+Per-operation accounting: no global transaction across batches/missions. Report
+acknowledged item/question counts by operation/project separately from unresolved
+attempt counts and pending counts. Example curated trace: 2 roots acknowledged,
+child acknowledged, question response lost => 3 known created items, 1 UNKNOWN
+question operation, not "0 migrated" or "complete". Source archive/config rollback
+cannot undo these creations. Question recovery uses its own key and receipt; no
+second question. No compensating closes, deletes, title adoption or inventory
+absence inference. Final verification compares exact retained fields/links and the
+reviewed pre-existing target baseline, not only aggregate count. Receipt after
+closure/withdrawal still proves creation, not correct current final content.
+
+Lease release is a separate admitted operation and outcome. Stop means no later
+creation, not concealed successful release. Report held/released/unknown/refused
+lease status and required reconciliation; no takeover or forced release. A cut-over
+must not restart old writers after ambiguous/committed operations on the theory
+that restoring local configuration rolled back cloud data. Retirement stays 13.12.
+
+7. Exact remaining engineering gaps / gates
+------------------------------------------
+The curated preparation is a usable SYNTHETIC behavioral specification, not a
+ready production interface. No implementation can claim these absent guarantees:
+
+G1 — Snapshot adapter dependency/build. CLI has no SQLite crate. Inspected docs.rs
+rusqlite 0.40.2 Connection/OpenFlags APIs: open_with_flags(P,OpenFlags), READ_ONLY
+fails if absent; URI, NO_MUTEX, NOFOLLOW exist; default open enables READ_WRITE and
+CREATE and is unsuitable. NOFOLLOW requires SQLite >=3.31.0. Documentation confirms
+flags, not immutable snapshot acquisition guarantees. Candidate: rusqlite with an
+explicit read-only URI, explicit version/features; inspect SQLite URI semantics,
+linked SQLite version, supported-target build/dependency/license/advisories before
+locking it. No dependency/lockfile added here. No external sqlite3 subprocess runtime
+or custom SQLite FFI as a temporary substitute. Reviewed adapter work is engineering,
+actual snapshot acquisition/access remains separately gated.
+
+G2 — Production encoding/archive format. Golden key agreement, tagged REAL archive,
+strict input visitor and byte-digest definition need Rust/Python vectors before first
+attempt. Existing tests do not prove Rust formatter or snapshot parser behavior.
+No Python fake-journal import or format migration is planned.
+
+G3 — Final serialized authority/frame limits and principal proof. Existing forwarding
+is not a ready replay client. Need tested claim+status binding and strict typed
+creation response parser, effective schemas and limits. Catalog agreement alone
+neither proves deployment nor current grant/identity. No credentials read here.
+
+G4 — Retained receipt HISTORY is an irreducible recovery precondition. With current
+API, a removed/restored receipt yields Missing and a same-key call CAN CREATE AGAIN.
+Comparing returned IDs afterward is too late: an acknowledged replay may already
+have duplicated work. No receipt lookup/database incarnation endpoint exists; an
+unresolved operation has no old IDs to compare. The fake does not solve this.
+Therefore synthetic restores must block BEFORE create when independent history
+continuity evidence is absent. Do not implement "detect erased history" by titles,
+inventory or a local journal. Production recovery requires independently reviewed
+receipt-retention/database-continuity evidence; if that cannot be supplied reliably,
+a server-side history/incarnation/lookup contract is a separate prerequisite owned
+by the platform lane. This record does not authorize adding that API or expanding
+scope. Never promise exactly-once after erased history or incoherent client rollback.
+
+G5 — Actual production-source integration/durability. Need Rust client/real workerd
+synthetic transaction/response-loss/reopen gates. Model tests do not prove SQL rollback,
+Access signatures, DO clocks/alarms, physical durability or cross-object revocation.
+Current macOS DNS repair/runtime entry build and approved context/bootstrap interfaces
+remain other lanes' responsibilities. No "migration success" stub is acceptable.
+
+8. Bounded implementation lane DAG and exclusive ownership
+----------------------------------------------------------
+All file lists below are FUTURE proposals, not created files. Use separately assigned
+exclusive owners in isolated lanes; no simultaneous mod.rs/Cargo registration edits.
+No worktree/workflow or another provider session is launched by this record.
+
+Base CLI module path R:
+/Users/adnankurt/Documents/Projects/wapps-cli/rust/crates/cli/src/broker/replay/
+CLI integration tests path T:
+/Users/adnankurt/Documents/Projects/wapps-cli/rust/crates/cli/tests/
+Oracle support path O:
+/Users/adnankurt/Documents/Projects/wapps-cli/rust/crates/broker-oracle/
+
+DAG (text, no hidden dependency):
+  O0 frozen-vector/fixture contract -----------------------> R1
+  R1 synthetic end-to-end validator+allocation+journal ----> R2
+  R2 explicit snapshot adapter/full planning -------------> C1 offline CLI
+  R1 + existing catalog/RPC/bootstrap + G3/G4 evidence ----> R3 MCP executor
+  R2 + R3 -----------------------------------------------> R4 final verification
+  R4 + built indexed platform entry ---------------------> O1 workerd acceptance
+  C1 + R4 + O1 ------------------------------------------> C2 gated execute/resume CLI
+  C2 does not open any real-use gate in sections 1/7.
+
+R owner (one Rust replay owner, serialized internal increments): exclusively owns
+R manifest.rs, validate.rs, snapshot.rs, operation.rs, journal.rs, client.rs,
+execute.rs, recover.rs, verify.rs and their exports in replay/mod.rs; T
+broker_replay_manifest.rs, broker_replay_snapshot.rs, broker_replay_operation.rs,
+broker_replay_journal.rs, broker_replay_client.rs, broker_replay_recovery.rs,
+broker_replay_verify.rs. No daemon/config/owner/execution-provider file edits.
+Each increment includes consumer tests; no isolated allocation/journal helper lane.
+
+R1 retains TX-11A/C/D/F mechanics in one smallest WORKING vertical slice:
+- [ ] Add failing synthetic root-a/root-b -> child -> q test with equal root titles;
+  expect three distinct destination items, exact parent/item substitution and one
+  question. Add commit-then-response-loss step; assert later call count zero.
+- [ ] Implement the proposed validator/allocation/journal/execute interfaces against
+  a curated fake backend and typed synthetic SnapshotRows; no SQLite/network loader.
+- [ ] Run success, loss, restart, stale grant/lease and no-send-on-sync-failure tests;
+  assert exact golden keys, receipts and original IDs after approved same-key resume.
+- [ ] Review changed scope and record exact separate exits; result says SYNTHETIC,
+  not migrated. No mock-success production adapter, CLI execute stub or orphan helper.
+
+R2 retains TX-11A/B/full-C validation: use reviewed SQLite dependency only after G1;
+consume exact fixture rows through real read-only adapter, all four scopes/subset,
+graph/UTF-16/title/archive rules and conservative 500-item/byte batches. Prove missing
+file not created, query_only disabled still cannot write, no sidecars/byte change,
+unsafe components/link/schema drift refuses and unrelated tables not exported.
+Resolve G2 with synthetic integer/REAL/non-ASCII cases. Product sources remain Rust.
+
+R3 retains TX-11E/F: connect existing stateless serve/MCP path, do not create a second
+network parser or credential fallback. Use scriptable synthetic loopback admission,
+claim+status, exact frame size and typed results. One creation at a time, no auto
+retry; response-loss/restart exercise the same Rust state machine as R1. Revocation
+between preflight and call stops; new current same-principal lease may recover exact
+keys. Legacy uncertainty and missing continuity evidence yield zero create calls.
+R4 retains TX-11G: full mapping/content/baseline verification with nested questions;
+correct counts/wrong fields, closure, withdrawal, alias, changed proposal and source
+drift refuse, no recreation. Record lease disposition independently of content result.
+
+C owner (CLI registration only): exclusively owns future replay CLI adapter and
+wiring in /Users/adnankurt/Documents/Projects/wapps-cli/rust/crates/cli/src/cli.rs,
+/Users/adnankurt/Documents/Projects/wapps-cli/rust/crates/cli/src/broker/mod.rs,
+R cli.rs and T broker_replay_cli.rs. Cargo.toml/Cargo.lock dependency registration
+is one C-owned reviewed integration change after R/G1 dependency evidence, not
+parallel edits. No config.rs or owner credential-route changes.
+C1 exposes local-only validation/planning; test that credential/daemon/network shims
+are never invoked. C2 appears only with real R3/R4 errors and admission gates; absent
+prerequisites fail before mutations rather than returning pretend success.
+
+O owner (new synthetic oracle/integration only): exclusively owns new O
+src/replay.rs, its isolated export registration, O fixtures/replay/ and T
+broker_replay_workerd.rs plus T fixtures/broker/replay-workerd.json. Python curated
+sources/tests and existing frozen goldens are read-only, byte-identical inputs.
+O0 extracts them to private scratch, produces synthetic vectors/scenarios and
+compares projected semantic traces (not incompatible whole-manifest JSON formats).
+Reuse established process/env/owned-child utilities; no permissive oracle parser
+in product. O1 retains TX-11H: actual Rust CLI -> serve/MCP -> production-source
+Rust broker under synthetic signed Access identity/grants, persisted synthetic DO
+state; inject commit-before-response-loss, actual client process exits, reopen and
+recovery. Assert item AND question original ordered IDs, SQL rollback/touch faults,
+conflict, revoked/stale admission and unreadable committed result. Platform leaf
+sources/test registrations remain platform integrator-owned read-only inputs.
+
+Accept each increment with red then green targeted tests and scoped independent
+review; no deployment, broad proof sweep, commit/push or release is implied by this
+plan. Check the final diff for simplification and verified defects before any
+separately requested commit. Plans/interfaces are technical proposals, not approved
+real-snapshot/operator scope.
+
+9. Frozen regression traceability and new acceptance coverage
+------------------------------------------------------------
+Small traceability table; totals are the ORIGINAL 98 tests, not 98 Rust tests:
+  Oracle / count     Existing guarantees                  Future consumers
+  test_replay / 38   scope, schema, graph, parent levels,  TX-11A/B/C; R1/R2/C1
+                    UTF-16, transforms, private readonly
+  test_recovery /29  unkeyed uncertainty never adopted;   TX-11D/F/G; R1/R3/R4
+                    durability/locks/crash, ID mapping
+  test_keyed / 31    key normalization/scopes/conflicts,  TX-11C/D/E/F/G/H;
+                    current authority, durable restart   R1/R3/R4/O1
+  TOTAL / 98        preserve existing oracle behavior    no frozen-test rewrites
+
+Representative anchors:
+- planner test_parent_first_stable_sibling_order_and_question_references,
+  test_actual_500_item_limit_splits_same_depth,
+  test_lossless_title_shortening_uses_utf16_without_splitting_astral_character,
+  test_all_four_projects_are_explicit_and_any_issue_blocks_all_batches,
+  test_sidecars_are_rejected_not_ignored_by_immutable_read.
+- legacy test_committed_write_with_lost_response_is_unresolved_never_resent,
+  test_crash_after_commit_before_ack_and_crash_before_send_both_stop,
+  test_second_writer_refused_and_external_edit_never_replaced,
+  test_directory_fsync_failure_halts_before_fake_send.
+- keyed test_stable_key_excludes_titles_snapshot_and_current_lease,
+  test_response_loss_after_commit_requires_approval_and_replays_original_ids,
+  test_current_admission_is_rechecked_after_preflight_and_question_replays_need_live_lease,
+  test_actual_client_process_exit_at_send_commit_and_ack_boundaries.
+
+New Rust acceptance must add what the frozen fake does NOT establish: byte-exact
+key formatter, typed source REAL/i64 preservation, directory/component containment,
+actual final-envelope limits, strict MCP correlation/results, claim+status identity,
+pre-send history-continuity gate (absence means zero send), final retained-content
+verification, real source SQL transaction rollback/alarm response-loss and reopening
+actual workerd. Fake closure replay remains successful creation evidence while
+final verification must fail. Do not rewrite its oracle expectation to conflate them.
+
+10. Proposed commands (NOT executed / commands do not exist yet)
+----------------------------------------------------------------
+The following CLI surface is a proposal, NOT a runnable executor or implicit consent:
+  wapps broker replay validate --mapping <absolute-private-file>
+  wapps broker replay plan --mapping <absolute-private-file> --output <new-private-file>
+  wapps broker replay execute --manifest <absolute-private-file> --journal <new-private-file>
+  wapps broker replay resume --manifest <absolute-private-file> --journal <existing-private-file>
+Execute/resume require the separately reviewed current execution authorization and
+bindings; no --force, --live-auto, URL override, grant edit, snapshot discovery or
+"approved" boolean generates owner consent. Start refuses any existing journal;
+resume refuses missing/corrupt/legacy journal and identity/history drift. No automatic
+replan/resume after transport error. Fixed stopped/refused/unresolved exits cannot
+be rendered as verified migration. Exit details should follow the implementation's
+reviewed CLI contract, not manufacture current binary support from this proposal.
+
+Future test commands, using a clean indexed CLI snapshot and private HOME/TMPDIR/
+CARGO_TARGET_DIR (not the main build output); each command's exit recorded directly:
+  cargo test --manifest-path <indexed-cli>/rust/Cargo.toml -p wapps --locked
+    --test broker_replay_manifest --test broker_replay_snapshot
+  cargo test --manifest-path <indexed-cli>/rust/Cargo.toml -p wapps --locked
+    --test broker_replay_operation --test broker_replay_journal
+    --test broker_replay_client --test broker_replay_recovery --test broker_replay_verify
+  cargo test --manifest-path <indexed-cli>/rust/Cargo.toml -p wapps --locked
+    --test broker_replay_cli --test broker_replay_workerd
+The wrapped lines above are command descriptions, not shell continuations. None
+of these future test targets exists/was run in this lane. Existing platform tests
+operation-key.test.ts, mcp.test.ts and operation-key-reopen.mjs are prospective O1
+inputs; execute only in independently built private indexed platform fixtures, not
+through deployment/provisioning or real Access credentials.
+
+11. Actual evidence, limitations, and actionable next slice
+----------------------------------------------------------
+Actual method: registered exclusive worktree from fixed CLI commit, read curated
+sources/tests and relevant pinned platform Git objects, targeted journal extraction,
+indexed Python verifier in private scratch, synthetic serialization/key measurements,
+and local contract review. Only this record is staged; no source/runtime activation.
+
+Scratch: /private/tmp/broker-migration-contract.gNLglv
+No real manifest/receipt/log/snapshot was copied into Git. Verifier extracted indexed
+sources to private scratch and supplied an env allowlist with synthetic HOME/config.
+Indexed preparation inventory SHA-256:
+8646025d8d015ea6587ff108fdda15a6eb8307223d7846336c2367dba8f09135
+
+First verifier invocation: /usr/bin/python3 3.9.6, exit 1. Reproduced missing
+hashlib.file_digest; curated README requires Python >=3.11. This was an environment
+prerequisite violation, not fixed by editing frozen sources. Diagnosis command
+confirmed /opt/homebrew/opt/python@3.14/bin/python3.14 is 3.14.6 with file_digest.
+
+Correct invocation (executed, env -i with private HOME/TMPDIR/config):
+/opt/homebrew/opt/python@3.14/bin/python3.14 -B /Users/adnankurt/Documents/Projects/.worktrees/broker-migration-executor-contract/docs/preparation/verify.py
+Child exits: planner 0 (38), legacy 0 (29), keyed 0 (31), combined replay_98 0,
+safe_probe 0 (6), demo_success 0, demo_response-loss 3, demo_failed-batch 3.
+Verifier exit 0. Demo nonzero values are expected STOP evidence, not live success.
+Original child interruption codes 47 and 71 are asserted inside unchanged tests;
+not independently observed live runtime exits. No installed model CLI invoked.
+
+Synthetic Python golden-key/UTF-8 fingerprint probe exit 0; Node v26.7.0 numeric/
+text JSON probe exit 0. Source key vectors used indexed curated modules, synthetic
+IDs only. No Rust allocation/journal/executor implementation or Rust benchmark was
+built/run. No platform test/build/production runtime or macOS CI repair claim.
+Challenge skill instructions loaded; model-backed panel NOT run because this lane
+excludes model sessions. Local source review is not independent review/PASS.
+
+Library docs inspected (documentation only, not a dependency installation):
+https://docs.rs/rusqlite/0.40.2/rusqlite/struct.Connection.html
+https://docs.rs/rusqlite/0.40.2/rusqlite/struct.OpenFlags.html
+Existing cached serde_json 1.0.151 Formatter and rustix 0.38.44 fs signatures were
+read; project Cargo.toml features/dependencies and atomicfile helper were inspected.
+
+Next smallest actionable engineering slice: assign O0+R1 as the single synthetic
+vertical deliverable with exclusive oracle/Rust ownership. Its finish line is a
+working root/root/child/question trace, commit-response-loss stop, new process
+restart under current fake grants/lease and original same-key receipt recovery,
+plus zero-send persistence/continuity failures. Do not implement helpers alone or
+start real snapshot access. C1/R2 follow after format/dependency review; other
+execution/rollout owners need no interruption or duplicate record changes.
+Remaining minimal owner inputs are exact snapshot access/mappings/question IDs,
+actual transform/archive decisions, admitted target principal/cut-over access and
+separate real execute/resume consent. This record does not collect or accept them.
