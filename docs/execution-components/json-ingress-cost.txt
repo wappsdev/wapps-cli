@@ -1,0 +1,231 @@
+Offline JSON ingress feature-cost measurement (2026-10-06)
+==========================================================
+
+Scope and result
+----------------
+Worktree: /Users/adnankurt/Documents/Projects/.worktrees/broker-json-ingress-cost
+Branch: lane/broker-json-ingress-cost
+Pinned CLI source: b5149f521aaaea75fd2e99f44f8cd15b4d46fa32
+Only this record is a repository change. Experiments, inputs, executables and
+raw receipts are private scratch files; no product source/manifest was edited.
+
+A local cost is observed on the bounded long-decimal response: enabled median
+28.898 us versus baseline 27.535 us, +1.363 us / +4.95% for the complete parse
+and drop. All six adjacent paired ratios exceed 1 (1.0304-1.0788). The known
+precision-sensitive quota reset costs +5.5 ns / +1.60% by ratio of medians here;
+the faster baseline is numerically WRONG and is not an alternative. The simple
+fraction workloads have mixed, small differences, not a uniform slowdown.
+These measurements establish no material end-to-end regression, production
+latency budget, throughput/rate guarantee, or need for an optimization, new
+knob or dependency. No such change was made. Required numeric accuracy remains
+fixed; this record does not establish complete JavaScript parity.
+
+Pinned library, consumers and comparison
+---------------------------------------
+Read the actual CLI manifest, permanent json_ingress_precision.rs tests, pure
+broker/execution/quota.rs and types.rs, and current broker parse consumers.
+serde_json 1.0.151 Cargo.toml.orig, lines 67-85, documents approximately 2x
+FLOAT parsing cost for float_roundtrip versus default best-effort precision.
+The feature is an empty dependency list; de.rs switches to its internal lexical
+parser. This is not a documented 2x cost for an entire object/CLI operation.
+
+The same Git export and Cargo.lock feed both scratch copies. Baseline removes
+only float_roundtrip from the CLI's serde_json features; enabled preserves it.
+Both retain raw_value. Identical test-only benchmark target registration and
+harness files are added to BOTH scratch manifests/copies, not to this worktree.
+No custom numeric parser or benchmark dependency is introduced. The existing
+pure quota consumers are imported unchanged, as in the permanent tests.
+
+Effective resolved AND compiled serde_json features:
+  baseline: default, raw_value, std
+  enabled:  default, float_roundtrip, raw_value, std
+Cargo metadata, feature tree and actual compiler-artifact JSON agree. No other
+resolved feature changes. Both locks are byte-identical; the lock has 101
+packages, 99 registry archives verified against their locked SHA-256 before
+private vendoring. The target-filtered resolved graph has 84 packages in both
+variants, not a dependency addition/removal. Source export integrity checks
+457 tracked blobs, including symlink text rather than its referent.
+Lock SHA-256: 110876aa4074ca6a42928d1b5838fce5a33c663c9740395bedc379f093d011bb
+
+Workload selection (all synthetic; no user/provider/store data)
+--------------------------------------------------------------
+Light response: valid MCP/JSON-RPC envelope, one fractional priority and two
+integers, mostly strings/booleans. Time from_str::<Value>, as in forward.rs:219,
+and from_slice::<Value>, as in daemon/mod.rs:159 and broker/mod.rs:164. These
+are the actual serde ingress stages, NOT full HTTP/framing/validation/redaction.
+Enrollment: version 1 and three synthetic roots, one integer, no floats. Use
+serde from_slice with the exact Enrollment/Project schema from config.rs.
+Those private types are mirrored in the harness; Config::load, filesystem
+validation, credential loading and DNS are deliberately NOT called.
+Quota token: Value ingress plus actual read_quota; primary/secondary fields,
+four fractional and two integer tokens. Quota rate: same pure path, utilization
+and reset, two fractional tokens. These ordinary finite fractions are binary
+exact (e.g. .125/.375/.90625); they do not exercise all lexical slow paths.
+Heavy response: valid structuredContent extension with 128 synthetic samples,
+384 fractional and 258 integer tokens; 13,605 bytes versus the bridge's 4 MiB
+response bound. Simple fractions, not a claimed production payload distribution.
+Raw archive: actual wapps::execverb::exec_env_and_values, synthetic envelope
+only; 257 fractional lexemes stay raw, including whitespace. No process runs.
+This covers an existing raw_value consumer, not materialized float conversion.
+
+After retaining all initial results, add two long-decimal cases rather than
+concluding from binary-exact fractions alone. Quota precision uses the frozen
+997473240364.3429 reset plus a long utilization percentage. Precision-heavy
+response has 128 repeated synthetic telemetry tuples, 384 fractional tokens
+with 16-17 significant digits and 258 integer tokens, 16,830 bytes. Both use
+the same accepted serde/pure-quota stages. The repeated tuples are a bounded
+illustrative workload, NOT real traffic or a representative provider corpus.
+
+Method and machine
+------------------
+rustc 1.98.0 (88d9e12ae178fab0fb5cc050a94da85685d449ea, LLVM 22.1.8);
+cargo 1.98.0 (797e8a9bca276c1c9f9f738d2a20f484fa4eea9d).
+Explicit target aarch64-apple-darwin; release integration-test executables,
+harness=false, opt-level 3, LTO, codegen-units 1, no debug assertions. The
+existing release profile is unchanged; no target-cpu/RUSTFLAGS customization.
+Mac16,7 / Apple M4 Pro, 14 logical CPUs, 24 GiB RAM, macOS 27.2 / 26B5091g,
+AC power. No affinity, frequency lock, quiet-machine or temperature guarantee.
+pmset reported no recorded thermal/performance warning, not measured temperature.
+
+Build/test/benchmark child environments are whitelist-constructed: private HOME/CARGO_HOME/tmp,
+explicit toolchain binaries, offline vendored registry, no inherited credential
+environment variables or real config. Sequential builds, not competing variants.
+One clean build per initial variant: baseline 37.236 s, enabled 39.300 s, both
+exit 0. This includes dependencies/library/test compilation, not parse time.
+The added target used existing scratch artifacts: 2.800 / 2.628 s, both exit 0.
+Single build observations have no statistical significance or cold-disk claim.
+
+Each workload/variant has SIX warm measured runs and SIX fresh-process first
+parses. Order alternates baseline/enabled then enabled/baseline; workload order
+rotates each round. Adjacent pairs have identical bytes, work and iteration
+counts. Adaptive calibration doubles counts until >=250 ms of timed work, then
+chooses one common count per pair, targeting >=750 ms using the faster estimate.
+Initial/additional calibrations used 138/32 batches; these are recorded separately,
+not mixed into the six-run statistics. There is no workload-dependent abort/time
+cap in calibration. Each warm run has 1,024 untimed warmup parses, black_box on
+inputs and results, explicit drop, and untimed output checks before/after timing.
+Timing is monotonic elapsed WALL time, not CPU time. Total timed iterations:
+137,079,708. All 120 warm batches lasted 0.735-0.861 s. No measured sample or
+workload was dropped; all startup outliers are retained.
+
+Initial one-minute load average: 9.239 at measurement start, 9.205-6.375 across
+warm-round starts, 7.004 at end. Additional long-decimal round starts: 4.008-3.777.
+Five/fifteen-minute load and exact timestamps are in context.jsonl. Load varied;
+these are local observations, not confidence intervals or clean CPU isolation.
+Do not compare different workload families' phases as a controlled load experiment.
+
+Warm evidence (six runs per variant; elapsed ns per complete parse/consumer)
+---------------------------------------------------------------------------
+B = baseline, R = enabled. Brackets are observed min,max, NOT confidence bounds.
+Ratio is median(R)/median(B); identical iterations PER RUN are shown explicitly.
+
+Workload                       Bytes Iterations | B median [min,max]          | R median [min,max]          | R/B
+broker_light_str                 346    839124 |   895.2 [880.2,1025.5]       |   882.6 [875.9,888.7]        | 0.9859
+broker_light_slice               346    731198 |  1057.0 [1042.6,1114.3]      |  1054.0 [1048.2,1106.1]      | 0.9971
+enrollment_typed_slice           132   3315608 |   230.7 [225.0,237.3]        |   231.2 [227.4,240.8]        | 1.0022
+quota_token_str                  202   1549072 |   498.9 [482.5,506.2]        |   489.7 [481.9,512.3]        | 0.9815
+quota_rate_str                   150   2361484 |   325.8 [318.4,335.4]        |   322.9 [315.3,328.6]        | 0.9910
+broker_heavy_str               13605     27835 | 26953.0 [26429.3,27890.5]    | 26781.2 [26468.0,27239.3]    | 0.9936
+broker_heavy_slice             13605     23699 | 31679.3 [31386.9,32341.2]    | 31646.8 [31157.8,31986.9]    | 0.9990
+raw_archive_exec                2289    329452 |  2276.8 [2274.0,2338.2]      |  2312.7 [2285.0,2382.8]      | 1.0158
+quota_precision_str             134   2218258 |   341.1 [336.2,344.7]        |   346.6 [343.4,359.9]        | 1.0160
+broker_precision_heavy_str     16830     27579 | 27534.6 [27150.1,28187.4]    | 28897.6 [28465.4,29331.3]    | 1.0495
+
+Normalized ns/byte and ADJACENT-PAIR ratios (median [min,max], six pairs):
+Workload                        ns/byte B/R | Paired R/B
+broker_light_str                2.587/2.551 | 0.9846 [0.8666,0.9960]
+broker_light_slice              3.055/3.046 | 1.0005 [0.9772,1.0054]
+enrollment_typed_slice          1.747/1.751 | 1.0099 [0.9607,1.0245]
+quota_token_str                 2.470/2.424 | 0.9909 [0.9726,1.0120]
+quota_rate_str                  2.172/2.153 | 0.9860 [0.9744,1.0053]
+broker_heavy_str                1.981/1.968 | 0.9971 [0.9749,1.0115]
+broker_heavy_slice              2.329/2.326 | 0.9979 [0.9890,1.0021]
+raw_archive_exec                0.995/1.010 | 1.0159 [1.0048,1.0205]
+quota_precision_str            2.546/2.586 | 1.0177 [1.0082,1.0583]
+broker_precision_heavy_str      1.636/1.717 | 1.0410 [1.0304,1.0788]
+
+The raw-only path's +36 ns local difference is observed, but is not evidence
+that raw lexemes were materialized as floats. Attribution beyond the feature
+comparison (including code layout/allocator/scheduling effects) is unmeasured.
+There is no consistent whole-payload 2x penalty here. This does not disprove
+the library's approximate float-parser cost or bound longer/harder decimals.
+
+First parse versus process/startup (six fresh processes per variant)
+------------------------------------------------------------------
+First parse starts AFTER input-file read/UTF-8 admission; no cache flush. It is
+a fresh-process first invocation, NOT cold hardware/OS-cache performance.
+Elapsed us, median [min,max]:
+Workload                        B                           R
+broker_light_str                5.917 [5.250,17.208]         6.250 [5.625,20.583]
+broker_light_slice              6.792 [5.667,7.667]          7.021 [6.000,8.542]
+enrollment_typed_slice          4.229 [3.750,6.084]          4.083 [3.500,4.917]
+quota_token_str                 9.896 [8.709,17.333]        11.021 [9.667,18.167]
+quota_rate_str                  6.000 [4.708,7.166]          6.250 [5.375,7.125]
+broker_heavy_str               35.771 [35.208,38.500]       33.959 [33.042,40.541]
+broker_heavy_slice             47.312 [42.625,51.166]       47.854 [41.166,50.834]
+raw_archive_exec               14.750 [13.750,32.458]       16.625 [15.417,40.708]
+quota_precision_str             9.084 [5.916,70.125]         9.458 [6.458,70.208]
+broker_precision_heavy_str     54.438 [37.542,103.250]      56.209 [37.375,126.375]
+
+Initial harness no-parse process control, six runs: B wall median 2.742 ms
+[2.326,3.694], R 2.453 ms [2.158,2.803]. This includes process startup, loading,
+argument handling, output and exit; it is not pure loader latency. Per-workload
+process wall receipts also include file read, untimed correctness checks and
+output. Precision-quota medians B/R 3.508/3.324 ms, ranges [2.408,348.586] /
+[2.361,188.538]; those large outliers are retained, not silently excluded.
+No startup difference is attributed to float_roundtrip or subtracted from warm
+parse timings. Full per-workload startup samples are in the raw receipts.
+
+Correctness controls and actual exits
+------------------------------------
+Unmodified permanent release tests, json_ingress_precision.rs: enabled exit 0,
+9 passed, zero failed/ignored/filtered. Scratch baseline exit 101, five passed
+and FOUR expected failures: fractional reset, finite maximum rounding boundary,
+smallest positive subnormal and extreme window. These are not setup failures.
+Known 997473240364.3429 control, from_str/from_slice/from_reader and typed f64:
+  expected/enabled: 426d07c138a58af9; baseline: 426d07c138a58af8.
+Precision-quota timed outputs independently report that same wrong baseline
+reset bit and the correct enabled bit on every run. Both long-decimal heavy
+variants match all 384 reference field bits (Rust correctly-rounded literals,
+not a new JS oracle). Schema checks and all eight initial timed outputs pass.
+Benchmark child commands exit 0; this does NOT mean the baseline accuracy gate
+passes. Faster wrong bits cannot replace the enabled configuration.
+
+Separate preserved limits: Value rejects 1e309/-1e309; RawValue retains such
+lexemes and internal whitespace. Integer wire 9007199254740993 stays exact,
+quota f64 projection is 4340000000000000. Negative zero retains sign bit
+8000000000000000 and Rust wire -0.0. No unrestricted JS acceptance, nonfinite
+fix, serialization equivalence or full numeric oracle/mutation sweep claimed.
+Allocator counts, peak/live allocations, RSS, CPU utilization/time, cache misses
+and energy are UNMEASURED; no unsupported memory/CPU estimate is supplied.
+
+Evidence, verification and delivery boundaries
+---------------------------------------------
+Private root: /private/tmp/broker-json-ingress-cost-XEi9Ta
+Receipts there under receipts/:
+  commands.jsonl: 434 exact child argv/cwd/exit/time/output references.
+  setup.json, additional-inputs.json: synthetic bytes, hashes, versions.
+  measurements.json, additional-measurements.json: EVERY raw sample and summary.
+  calibration.json: initial calibration samples; additional ones in its result.
+  environment.json, context.jsonl: hardware/tools/load/timestamps/power evidence.
+  builds.json, additional-builds.json; *-build.stdout/stderr.txt: real builds.
+  *-controls.stdout.txt, *-precision-tests.*: actual bounded correctness receipts.
+  integrity-initial.json, integrity.json: source/features/compiler/executable hashes.
+Scripts and Rust harnesses live only in that root, as do targets/vendor/inputs.
+Final verifier exits 0 and checks equal bytes/counts, compiled features, retained
+samples, reference outputs and unchanged source/lock; failures are not concealed.
+Initial scratch verification exposed symlink hashing/copy dereference, repaired
+before any timing. An additional verifier assumption that EVERY long decimal
+must fail in baseline was rejected by actual evidence: only the frozen reset
+fails here; the heavy tuple is correct in both. That assertion was corrected,
+not the measurements. Earlier failure logs remain in scratch; no samples dropped.
+
+Local code-simplifier/method review kept direct library/pure-consumer calls,
+explicit black_box/drop and paired iteration counts. Challenge guidance was
+loaded, but no model-backed panel/helper ran under the no-provider-session gate;
+no independent challenge pass claimed. No real HOME/store credentials, user
+config/skill installation, provider/model session, snapshot/replay, network
+mutation, deployment, grants, release/tag, commit, push or publication occurred.
+No execution/runtime activation, main-roadmap completion or CI repair claimed.
+Delivery is this staged record only; exact staged blob/tree identity is returned
+in the handoff, not recursively embedded in the record itself.
