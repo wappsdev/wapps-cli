@@ -1,0 +1,574 @@
+Broker rollout preflight — 2026-10-06
+====================================
+
+Scope and authority
+-------------------
+The genuine human input is “onaylıyorum yapabilirsin”. It approves continuing
+previously listed work in principle. It does not select worker models/backends,
+authentication/spend, grant recipients/verbs, source-to-target migration records,
+retention changes, or a destructive compatibility policy. This lane prepares
+rollout; it does not exercise those choices or operate a rollout.
+
+Sole staged record:
+  /Users/adnankurt/Documents/Projects/.worktrees/broker-approved-rollout-preflight/docs/broker-rollout-preflight-2026-10-06.txt
+CLI worktree/branch:
+  /Users/adnankurt/Documents/Projects/.worktrees/broker-approved-rollout-preflight
+  lane/broker-approved-rollout-preflight
+CLI base: b5149f521aaaea75fd2e99f44f8cd15b4d46fa32
+Private platform build worktree/branch:
+  /Users/adnankurt/Documents/Projects/.worktrees/platform-private-rollout-preflight
+  lane/platform-private-rollout-preflight
+Platform base: b9181445fce94f969a5d04f4f43e5c46368f12aa
+
+Both repositories' worktree registrations and branch/path availability were
+checked before creation. Native git worktree add created these checkouts without
+changing the coordinator's cwd. No platform source is owned or modified here.
+All new build outputs are in this private platform worktree's ignored target/.
+Other agents' mutable build outputs were not used. The reserved DNS-fix worktree
+and workflow wf_bfaf8804-cbd were neither edited nor contacted/resumed.
+
+No commits, pushes, tags, releases, deployment uploads, provision writes, grant
+writes, credential issuance/rotation, new auth flow, source-data snapshots,
+replays, installation, retention changes, plugin retirement, coordinator/config
+edits, broad process kills, full mutation sweeps, or external publication ran.
+The original preparation launched no model-backed worker/reviewer/challenge.
+A subsequent independent Astra review rejected this record's next-step runbook;
+its full result is entry 8 of the existing journal:
+  /Users/adnankurt/.claude/projects/-Users-adnankurt-Documents-Projects-wapps-cli/37332331-3dd9-4038-adf0-bffa80654761/subagents/workflows/wf_c131f968-8ac/journal.jsonl
+This repair read that result, traced the specific source contracts and inspected
+existing tool versions/hashes only. It did not repeat live credential/API checks,
+compile/package/run a Worker, acquire tools or contact any other worker. The
+original staged tree was 15ea3c92e265c83ee307130903910a416215c0e7; working and
+indexed bytes matched SHA-256
+97140f5c6802f2af0e2552e8cdc0c03ce337ed3c930fe61fb9ff29b83bb433cb before editing.
+Independent reacceptance of the repaired record and of an actual production
+package remains pending; source inspection is not runtime acceptance.
+
+Source contracts inspected
+--------------------------
+Platform paths below are relative to the private platform worktree:
+  services/broker/README.md, section “Provisioning”
+  services/broker/package.json and wrangler.jsonc
+  crates/ops/src/main.rs
+  crates/ops/src/provision.rs
+  crates/ops/src/provision/{broker,system}.rs
+  crates/ops/tests/provision_broker.rs
+  crates/workers/workerd/{build-entry,build}.sh
+  crates/workers/src/{broker_entry,broker_routes,broker_mcp,lib}.rs
+  crates/workers/src/mission_lane/operation.rs
+  services/broker/migrations/010_work_operation.sql
+  Cargo.lock, package-lock.json, docs/broker-operation-key.plan.txt
+
+The actual broker entry is `wapps-ops broker provision --plan`, not
+`wapps-ops broker preflight --plan`. The latter was tried without credentials,
+printed the actual usage and exited 1. The dedicated preflight command belongs
+to memory; its package scripts must not be mistaken for broker commands.
+
+Provision defaults to Apply if --plan is omitted. Its common value flags are
+--account-id, --host, --allow-email-domain, --admin and --token-sink. It reads
+CLOUDFLARE_API_TOKEN only from the environment. It admits principal IDs, not bare
+email addresses. The service token sink defaults to a 0600 agents.secret file;
+this preparation adopted an existing token and did not write any sink.
+
+Plan safety was checked before execution: Apply guards surround configuration
+writes, resource creation, secret upload, catalog CREATE statements, deployment
+and roster POST. Plan performs Cloudflare GETs, a schema-only SELECT submitted
+via the D1 POST query API, anonymous Access detection when needed, and a cached
+cloudflared token read followed by GET /v1/roster if available. SystemTools passes
+login=false in Plan; the interactive login branch is not entered. Source hashing
+uses git hash-object without -w. No user data is copied into the record.
+
+Original preparation's local gates (platform b918144; not rerun by repair)
+-------------------------------------------------------------------------
+1. Offline, locked, isolated provisioning regression suite:
+   cargo test --offline --locked --manifest-path
+     <private-platform>/Cargo.toml -p wapps-ops --test provision_broker
+     --target-dir <private-platform>/target
+   Exit 0: 22 passed, zero failed/ignored/filtered. Includes Plan write fencing,
+   working-account idempotence, duplicate-app refusal, secret-output scrubbing,
+   partial grants and refusal to silently narrow answer/administer holders.
+   Fake API tests do not prove live grants or deployed behavior.
+2. Offline locked wapps-ops build in that same target directory: exit 0.
+3. Production-feature wasm compile:
+   cargo build --offline --locked --manifest-path
+     <private-platform>/Cargo.toml -p wapps-workers
+     --target wasm32-unknown-unknown --release --features broker-entry
+     --target-dir <private-platform>/target/entry-broker
+   Exit 0; worker 0.8.7 and wasm-bindgen 0.2.129 came from Cargo.lock.
+   Raw wasm SHA-256:
+     286af34abc25a5d8b49ef2400e5ad35a38c2505fb94c116cec431d40d08cfab0
+   This is a raw compile, NOT a worker-build bundle or workerd runtime test.
+4. Explicit existing-tool gate, avoiding the build script's automatic install:
+   WORKER_BUILD=/Users/adnankurt/.cargo/bin/worker-build
+     <private-platform>/crates/workers/workerd/build-entry.sh broker
+   Exit 1: installed worker-build 0.8.5 does not match locked worker 0.8.7.
+   The script stopped before build/install. No default-script invocation that
+   would install worker-build was made. wasm-bindgen CLI is the matching 0.2.129.
+5. Locked Wrangler is 4.123.0; global Wrangler is 4.90.0. The isolated worktree
+   has no installed node dependencies. Global deploy --help confirms dry-run,
+   outdir, tag and secrets-file syntax, but is not pinned-version packaging proof.
+   npm ci, production module generation and Wrangler packaging dry-run were NOT
+   run. Pinned production packaging remains a gate, not a green claim.
+
+Production builds use broker-entry alone. build-entry.sh never enables
+test-seams; lib.rs has a compile_error for a production entry combined with
+test-seams. Generated gen/ test-seam artifacts are not deployable modules.
+The release profile's no-strip rule and worker-build abort-handler requirements
+remain unchanged. No handwritten application JavaScript was introduced.
+
+Existing authentication and secret handling
+------------------------------------------
+Installed wapps is 0.23.0. `wapps login --check` reported an existing read session
+for adnan@wapps.co at gw.meapps.dev; no valid write-AUD session. No login ran.
+The platform .wapps.yaml binds project wapps-platform; its version-2 config uses
+the store workflow, not a legacy encrypted archive. Read-only secrets list on
+the worktree's config succeeded and exposed names only, including:
+  CLOUDFLARE_PROVISION_TOKEN
+  CF_ACCESS_ADMIN_TOKEN
+  BROKER_AGENT_TOKEN_ID / BROKER_AGENT_TOKEN_SECRET
+The original preparation reports no secrets get, env dump, plaintext credential
+file or secret argv. No credential material is present in this staged record;
+this repair has not audited all historical subprocess output and asserts no
+historical leak. Source does expose an adopted client ID/status and svc principal
+in plan output, so injection alone cannot establish safe logging. Future output
+must satisfy the capture/suppression contract below, including error paths.
+Existing gate exec injected values into a Python subprocess.
+The plan wrapper retained only HOME/PATH/TMPDIR/USER/LOGNAME and optional TLS
+certificate path variables, mapped CLOUDFLARE_PROVISION_TOKEN in memory to
+CLOUDFLARE_API_TOKEN, disabled Wrangler metrics, and passed stdin=/dev/null.
+The new Cloudflare MCP auth tools were not used; an existing authenticated API
+connection was available. Worker secret values cannot be read back and were
+never requested or printed; names are evidence of presence only.
+
+Historical live read-only evidence (2026-10-06, approximately 02:24–02:33 UTC)
+----------------------------------------------------------------------------
+The following are the original preparation's observations, not repair-time
+remote verification. They can go stale and establish no current auth success.
+Cloudflare MCP GET metadata, with explicit account and filtered output:
+  account: 7456aa24ee87823999383dc294780a21 (wapps)
+  Worker: wapps-broker; host: broker.meapps.dev
+  deployment: 68fc20c0-94e3-4176-a397-881fc852faf2
+  live version: d50d64fc-e3c8-4228-a7e5-a6010420efab, 100% traffic
+  created: 2026-10-05T09:17:05.579893Z; source: wrangler
+  version annotation: src-d8d18582917584d8
+  compatibility date: 2026-08-01; flags: nodejs_compat
+  CATALOG D1: 36501735-e181-4cdc-9c92-907b6af35a6f
+  MISSIONS / MissionDO: 7c19a80412ac4231a832ce01d9654e1a, SQLite
+  ROSTER / RosterDO: 2f604bfefe2040dd8796f167f050243b, SQLite
+  secret binding names: ACCESS_AUD, ADMIN_PRINCIPALS
+  plain binding name: ACCESS_TEAM_DOMAIN
+  organization domain: wapps-dev.cloudflareaccess.com
+  custom domain points to wapps-broker in meapps.dev, not another Worker
+  zone: 8af14173a771bf07e5add7f3ddc7f475
+  Access app: 9ec84188-f824-4722-9684-289ef3f7f20b
+    wapps-broker, self_hosted, broker.meapps.dev/v1, session 24h
+  human policy: 7f27e27f-54cb-4b5b-b578-0100500d9097
+    allow email domain wapps.co; empty exclude/require arrays
+  agent policy: 05bcfce2-c210-4963-af7b-bb81f150ce34
+    non_identity for service-token resource
+      1b75d797-f7f2-44cd-994e-5f8e065f37e5
+  adopted service-token resource: wapps-broker-agents
+    expires 2027-10-05T09:15:54Z
+The service-token resource UUID is metadata, not its client credential. No
+client ID/secret material is copied here. Listing response pagination metadata
+showed all inspected collections fit the returned page. Account/zone Access
+coverage was additionally checked by the real provision plan, not inferred
+solely from the account-level MCP list.
+
+The deployed version is NOT current source. No deployed commit identity or
+operationKey/owner-door runtime support can be inferred from its annotation.
+Metadata does not prove that the Worker secrets' values match the current app
+AUD/admin identity or that its grant row matches the stored agent credentials.
+No mission route, MCP tool call, result-read acknowledgment, lease mutation or
+live schema-010 probe ran.
+
+Actual provisioning plan receipt
+--------------------------------
+Executed the privately compiled target/debug/wapps-ops with argv:
+  broker provision --plan
+  --account-id 7456aa24ee87823999383dc294780a21
+  --host broker.meapps.dev --allow-email-domain wapps.co
+  --admin human:adnan@wapps.co
+It ran under the safe gate-exec mapping described above, with cwd at the private
+platform services/broker directory. These inputs reproduce documented prior
+owner parameters/current metadata for a READ-ONLY check, not newly authorized
+secret values or policy changes.
+
+Actual exit: 1, not a passing rollout preflight.
+  [1] d1 adopt; config skip (database, route and team already match)
+  [2] Access application adopt; allow policy adopt
+  [3] existing service token adopt; non_identity policy adopt
+  [4] secrets skip: ACCESS_AUD and ADMIN_PRINCIPALS names present
+  [5] catalog schema skip: mission_row, mission_row_registered, role_variant exist
+  [6] both DO namespaces adopt; custom domain adopt
+  [6] deploy CREATE WOULD BE NEEDED:
+      current source tag src-2098ced94a3faf78 != live src-d8d18582917584d8
+  [7] agent grant UNKNOWN: no cached broker cloudflared application token
+No deployment occurred; create is a plan label. Schema presence is not a full
+constraint/content check. The plan did not fabricate an empty roster or propose
+a definite grant diff after that credential failure.
+
+A separate existing stored CF_ACCESS_ADMIN_TOKEN GET /v1/roster returned 403
+using the owner's source-correct CF-Access-Token header. An earlier request
+using Cf-Access-Jwt-Assertion also returned 403 and is not authentication proof.
+Existing broker agent credential headers returned 403 for GET /v1/health,
+/v1/roster and /v1/roles. Only status/availability was printed; no raw bodies,
+principals, role content or credential values were logged. These outcomes do
+not isolate expiration, audience, Access policy or roster causes. No alternative
+identity, token issuance, cached-token write or new login was attempted.
+Live roster grant diff and live role inventory remain UNAVAILABLE.
+
+Migration, compatibility and retention
+-------------------------------------
+D1 provisioning deliberately includes only 002_registry.sql and 009_roles.sql.
+DO class lifecycle config still names v1 MissionDO and v2 RosterDO: no rename,
+delete, transfer or new class tag is requested by current source.
+
+010_work_operation.sql is NOT a D1 migration. broker_entry.rs embeds it in the
+MissionDO constructor's block_concurrency_while schema initialization. Updating
+the Worker can therefore cause per-mission SQLite CREATE TABLE IF NOT EXISTS
+on future object construction. Deployment immediately makes the keyed creation
+schemas available to authorized callers; there is no separate later activation
+switch. Lazy DO initialization can occur on a subsequent non-keyed request too,
+not just the first keyed write. The plan cannot enumerate those mission schemas
+or establish which live instances already have the table. Do not run `wrangler
+d1 migrations apply` over the broker migrations directory; most files are DO
+schemas. No live data migration or snapshot was inspected/executed.
+
+Platform b918144 source adds mission/principal/operation-scoped receipts for
+work_add and work_ask, preserving no-key creation semantics. The exact key grammar
+is ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$: case-sensitive, untrimmed, 1–128 characters,
+first ASCII alphanumeric and subsequent ASCII alphanumeric or . _ : -. Spaces,
+Unicode, leading punctuation, empty values and 129-character keys are rejected.
+Retries still require current authentication, grants and live lease authority.
+Receipt and creation commit together; changed
+semantic content returns nonretryable OPERATION_KEY_CONFLICT. Receipts remain
+for the mission lifetime: no TTL, prune, eviction or key recycling. This record
+neither changes that source contract nor approves new retention/spend policy.
+
+A previous Worker version may not honor keyed retries even if SQLite receipts
+survive. Rolling code back is NOT an inverse of schema creation and does not
+restore D1/DO data, grants, Access policies or secret values. Do not mix old/new
+creation semantics or resume ambiguous writes on an old version. Once keyed
+writes are admitted, a code-only rollback to unverified old behavior risks
+duplicate work/questions. Proposed response is to stop affected writes and
+reconcile/roll forward; destructive receipt cleanup is not an acceptable reset.
+Ask the owner before changing shipped compatibility or retention behavior.
+
+Pinned tool provision versus offline packaging — NOT EXECUTED
+------------------------------------------------------------
+P = /Users/adnankurt/Documents/Projects/.worktrees/platform-private-rollout-preflight
+T = P/target/rollout-tools (proposed private tool copy; not populated by repair)
+A = P/target/broker-accepted (proposed frozen package; not produced)
+
+Acquisition/provision of tools and dependency caches is a separate engineering
+step, not offline packaging. This document-only repair permits no installation,
+download or global replacement. It neither fabricates a separate owner approval
+requirement for ordinary engineering tool provision nor claims provision is
+already complete. A later build slice must have the scope to supply the missing
+prerequisites; the absence of tools is a technical gate, not a selected policy.
+Already-installed candidates can be inspected/copied into private scratch in
+that slice, validating the full executable/dependency tree before use.
+
+Repair-time inventory, using version-only execution and local file hashes:
+  - Required worker-build 0.8.7: P/target/tools/worker-build-0.8.7/bin/worker-build
+    absent. /Users/adnankurt/.cargo/bin/worker-build is 0.8.5, SHA-256
+    b4dd88b8e87b98b1be06b31811c01ca42a38f3d208254ccf045aee9c1fe0e478.
+    Cached 0.8.7 SDK source is not a usable installed executable.
+  - Required wasm-bindgen 0.2.129: existing cache executable
+    /Users/adnankurt/Library/Caches/worker-build/wasm-bindgen-aarch64-apple-darwin-0.2.129/wasm-bindgen
+    has SHA-256 6ad2f953d8abcb36d6b084df221fb2f0716217854c1b8df938aa2f5678d1b948.
+    /Users/adnankurt/.cargo/bin/wasm-bindgen reports the same version, with
+    different SHA-256 1da5edd4406ed8ced1054e429fabeb62e76c602945f15ec784038585fdea9544.
+    Choose and hash one private copy; version equality is not byte equality.
+  - Required Binaryen 132: expected existing cache
+    /Users/adnankurt/Library/Caches/worker-build/wasm-opt-arm64-macos-132/bin/wasm-opt
+    absent. The inspected cache is 130, SHA-256
+    fa49ec32a92b72b368b66f8f19d84e9adffeef002449e6a07cd95a3ed2612b41.
+  - Required worker-build helper esbuild 0.28.2: expected existing cache
+    /Users/adnankurt/Library/Caches/worker-build/esbuild-darwin-arm64-0.28.2/bin/esbuild
+    absent. The inspected cache and platform Node binary are 0.28.1, SHA-256
+    e2dc9a52440a2a34f09434a2f4843cb1e30f84e40dcf238976ec61ef8cd7f36a.
+    Root package-lock.json pins Wrangler's esbuild to 0.28.1, not the SDK's
+    separate 0.28.2 helper. Do not replace the root lock to conflate them.
+  - Required Wrangler 4.123.0: P has no Node dependencies. The existing candidate
+    /Users/adnankurt/Documents/Projects/wapps-platform/node_modules/wrangler
+    has package version 4.123.0; wrangler-dist/cli.js SHA-256 is
+    54f9ac65c8136f81ee4695844be67c37d543b40f3f6486f4234e2dce92b14a7d.
+    Only this entry hash was inspected, not its complete transitive closure;
+    that closure still needs validation and a private copy. Do not use global
+    4.90.0, npm exec/npx auto-resolution or another lane's generated package.
+
+Cached worker-build-0.8.7/src/binary.rs resolves WASM_BINDGEN_BIN, WASM_OPT_BIN
+and ESBUILD_BIN overrides first, then its platform/version cache, then downloads
+on a miss. An invalid override warns and falls back. Before download it can
+remove all cached versions for that helper/target under Library/Caches/worker-build.
+CARGO_NET_OFFLINE covers Cargo, NOT these downloads. build-entry.sh also runs
+cargo install if WORKER_BUILD is absent, and does not pass --locked/--offline
+into its ordinary build. Wrangler --dry-run prevents upload, not those effects.
+
+The later packaging slice must validate executable paths, exact version outputs
+and SHA-256s for all five pinned tools, Node/Rust toolchain and wasm target,
+plus all needed dependency/cache bytes. Copy any needed dynamic library files
+with their hashes. Set WORKER_BUILD, WASM_BINDGEN_BIN, WASM_OPT_BIN and ESBUILD_BIN
+to immutable private absolute paths; precheck every path before invoking SDK
+code. Use an externally network-denied packaging process with no credentials or
+HOME auth, private writable scratch/cache, CARGO_NET_OFFLINE=true and validated
+existing Cargo dependencies. If network denial or a prerequisite cannot be
+established, STOP: do not call the run offline and do not allow auto-download,
+cache pruning, rustup target acquisition, npm installation or login fallback.
+The controls are preconditions, not claimed features of worker-build.
+
+Expected unchanged source input SHA-256s, freshly checked by repair:
+  Cargo.lock: 97fe5dcdb45234b29a7849befe149ec72f4854c63e30c110f5b72eef89d1214b
+  Cargo.toml: 147e333f82b3edc050fc29dd49a92ce119d4b9a7b0b1b8689681777684421040
+  package-lock.json: 90a1a63852ecddda0b3ffa0b1a807d0759275cb3baff31ef08bb65aa579fdbf2
+  services/broker/package.json:
+    40e2f52f9bd7ce6e8a3901cb74ed430c47bbb0d1e9290cf13058b105d9c18bfa
+  services/broker/wrangler.jsonc:
+    b415db72c9277b3e9b5be61005171d1d3889bccf42004f72fff33eff2a8aa24f
+Record and compare locks/manifests before AND after packaging, fail on any drift.
+Using the SDK's actual Cargo argument passthrough, the future production build
+can bypass build-entry.sh's installation branch and add the missing lock gates:
+  cwd = P/crates/workers; CARGO_TARGET_DIR=P/target/entry-broker
+  "$WORKER_BUILD" --release --out-dir "$P/services/broker/build" \
+    -- --locked --offline --features broker-entry
+This is conditional command guidance, not an executed or tested packaging run.
+It keeps the production feature/no-strip/abort-handler contract above.
+
+Acceptance identity and upload reuse — NOT EXECUTED
+---------------------------------------------------
+W = T/node_modules/wrangler/bin/wrangler.js, with the entire private 4.123.0
+closure validated against the root Node lock. Invoke `node "$W"` directly;
+`npm run deploy` runs predeploy and rebuilds after acceptance. The original
+npm dry-run proposal is withdrawn. Under the offline controls above, proposed
+initial Wrangler packaging is:
+  cwd = P/services/broker
+  node "$W" deploy --config "$P/services/broker/wrangler.jsonc" \
+    --dry-run --outdir "$P/target/broker-package" --tag src-2098ced94a3faf78
+No configured Wrangler build.command exists in the current broker config.
+
+Freeze that output's actual entry module and all imported/additional modules
+(including wasm and any already-generated Node polyfills) under A/modules,
+preserving their relative import/module names. Do not treat the raw wasm as
+this package. A private A/wrangler.jsonc is derived from the inspected broker
+config, changing only packaging locations: main="modules/index.js",
+base_dir="modules", no_bundle=true, find_additional_modules=true; no build.command.
+Keep name, account target, host, compatibility date/flags, bindings, vars, rules
+and v1/v2 class migrations semantically identical. Document/hash the exact
+packaging-only config diff; do not silently change nodejs_compat to dodge a
+warning. These config fields and --no-bundle are supported by the locally
+inspected Wrangler 4.123.0 schema/implementation. No private config is created
+by this repair.
+
+Run a second offline dry-run on that FINAL frozen no-bundle configuration:
+  node "$W" deploy --config "$A/wrangler.jsonc" --no-bundle \
+    --dry-run --outdir "$P/target/broker-upload-check" --tag src-2098ced94a3faf78
+Wrangler's no-bundle path copies the entry and collects additional modules;
+it does not recompile Cargo or re-bundle JS. Verify every upload module name,
+type and content hash equals the frozen input. Missing wasm/imports/polyfills,
+unexpected module enumeration or compatibility failures block acceptance.
+Generated timestamped README output is diagnostic, not a Worker module; exclude
+it from module identity, not an actual uploaded module. Test the FINAL no-bundle
+package/config in bounded synthetic workerd HTTP/MCP, receipt/reopen and
+rollback-contract acceptance, without test-seams or a setup hook that rebuilds.
+Existing Wrangler prebuiltWorkerDir support is an available loading path, not
+proof that the current test scripts already meet this no-rebuild requirement.
+
+The immutable acceptance manifest must name platform commit b918144, source
+input/lock hashes, exact config bytes/diff, sorted upload module names/types/
+SHA-256s, all helper path/version/hash entries and toolchain/Node identities.
+Hash that manifest itself. Record the independently accepted manifest hash
+and final config hash in the operator form below; both remain NOT PRODUCED.
+Make inputs read-only/exclusively owned through upload, compare their bytes to
+the accepted hashes immediately before upload and again after, and stop on drift.
+The actual upload must consume that frozen config and those same modules:
+  node "$W" deploy --config "$A/wrangler.jsonc" --no-bundle \
+    --tag src-2098ced94a3faf78
+This is a future DEPLOY-ONLY command, gated below, not rollout consent. It writes
+a Worker version/deployment and applies declared bindings/class lifecycle config;
+it does not execute provision's roster POST. Existing secrets are not deleted
+by deployment; supply no new --secrets-file merely because source changed.
+
+If this reuse path cannot be validated, STOP rather than fall back to npm deploy.
+Any required rebuild must finish BEFORE upload; its final modules/config/helper
+manifest must match the accepted immutable hashes exactly or undergo new bounded
+independent package acceptance before upload. A changing deploy prehook is not
+acceptable. SystemTools::source_tag is only HEAD plus service/crates diffs and
+untracked source content: root-lock drift and helper versions are not covered.
+src-2098ced94a3faf78 is a source annotation, NEVER a package/config identity.
+
+Broker auth and safe-output gate — NOT EXECUTED
+----------------------------------------------
+The next live check, only after the human resolves the broker-specific session,
+is P/target/debug/wapps-ops broker provision --plan with the same account/host/
+domain/admin argv recorded above. No agent silently performs cloudflared login.
+The existing gw.meapps.dev read session does not authenticate broker administration.
+Resolve the historical 403s and privately match the existing roster row to
+svc:<BROKER_AGENT_TOKEN_ID>; emit neither that credential nor the derived principal.
+The grant row/delta remains UNKNOWN. No recipient, addition, revocation or row
+replacement is selected; the proposed default is preserve the verified existing
+row. If it differs from read/claim/report, present the exact privately observed
+verb delta to the owner separately. Do not add answer/administer or narrow an
+existing holder automatically. Preserve Access app/policies, ADMIN_PRINCIPALS
+and human:adnan@wapps.co; secret-name presence is not admin-anchor proof.
+
+For plan, status checks and any eventual upload, gate exec maps the stored
+provision token to CLOUDFLARE_API_TOKEN only in memory. The upload process also
+sets CLOUDFLARE_ACCOUNT_ID=7456aa24ee87823999383dc294780a21 and disables metrics;
+the plan's account argv does not implicitly scope Wrangler. No shell secret
+value, secret argv, env dump, plaintext sink, new auth or new secret file.
+
+Mandatory output contract: capture BOTH stdout and stderr in process memory
+for the entire outer gate-exec invocation and all nested children before anything
+reaches the transcript/receipt, with stdin=/dev/null. Do not inherit streams,
+tee logs, write raw captures or print exception/command tails.
+Provision source prints adopted client IDs and broker svc principals, including
+status/failure details. Suppress those raw details even on success, nonzero exit,
+timeout, spawn failure or parser error. Safest receipt is exit/status plus a
+fixed allowlist of step number/resource name/action enum; no raw provider body,
+status sentence, principal, credential, headers or recovery detail. Unknown
+messages become a constant "diagnostic suppressed", not an echoed fragment.
+If any diagnostic text is deliberately retained, redact known injected values,
+adopted client IDs and derived svc principals in memory first and apply the same
+allowlist; mere secret injection or an environment denylist is insufficient.
+Synthetic success/failure stdout/stderr sentinels can validate this boundary;
+never test it with actual secret data. This is an operator-wrapper requirement,
+not a claimed source fix or assurance about every historical log.
+
+Immediate deployment consequence and smallest operator decision form
+--------------------------------------------------------------------
+There is no independent later keyed-write activation stage. Deploying this source
+immediately admits operationKey on creation schemas for authorized callers and
+makes SQL 010 lazy MissionDO initialization available on subsequent construction.
+The owner must choose ONE timing arrangement before deploy:
+  IMMEDIATE: explicitly accept authorized callers using keyed behavior from
+    deployment time, including the live acceptance window; or
+  EXTERNAL_QUIESCENCE: identify every affected writer/client, the concrete
+    external mechanism that blocks creation writes, its operator and evidence
+    of enforcement before deployment, maintained through acceptance and explicit
+    resume. Unimplemented project pause/unpause is NOT enforcement. A request
+    to wait, or assuming existing clients never send keys, is not quiescence.
+If neither is accepted/established, defer deployment. No feature flag is proposed.
+Quiescence does not make code deployment or lazy DO initialization reversible.
+
+Fill this form only AFTER package acceptance, functioning broker owner auth and
+a fresh captured/redacted plan/target/grant check; blank hashes mean NOT READY:
+  action = DEFER | DEPLOY_ONLY
+  platform_commit = b9181445fce94f969a5d04f4f43e5c46368f12aa
+  account = 7456aa24ee87823999383dc294780a21
+  worker / host = wapps-broker / broker.meapps.dev
+  accepted_package_manifest_sha256 = <not produced>
+  accepted_final_config_sha256 = <not produced>
+  timing = IMMEDIATE | EXTERNAL_QUIESCENCE
+  if EXTERNAL_QUIESCENCE: clients/mechanism/operator/evidence/resume criterion
+    = <not selected or established>
+  consequence accepted = immediate keyed-schema availability; lazy per-mission
+    SQL 010; mission-lifetime receipts without pruning; after ambiguous keyed
+    writes, stop/reconcile/roll forward, not an unverified code-only rollback.
+Scope is deploy-only with existing D1/DO, Access, secret and verified grant
+identities unchanged. Any desired change needs a separate concrete decision.
+This form records a proposal, not an approval. No populated form exists here.
+
+Independent live acceptance would additionally require an owner-selected exact
+disposable mission, existing testing principals, permitted operations, duration
+and retention/cleanup scope BEFORE any write. No real mission, lease, question,
+result acknowledgement or receipt deletion is authorized by this record. Local
+synthetic acceptance cannot prove live owner/agent Access and verbs. Verify the
+uploaded version's module/config identity and bindings against the manifest,
+then only perform specifically approved live acceptance. Any quiesced clients
+stay blocked until its explicit resume criterion. Historical version
+d50d64fc-e3c8-4228-a7e5-a6010420efab is NOT a safe fallback guarantee/data backup.
+
+Full provision apply remains a broader separate choice: omitting --plan can
+create D1 resources, edit wrangler.jsonc, create Access apps/policies/tokens,
+write a token sink, upload missing secrets, apply D1 CREATE statements, deploy
+and replace a roster row. Do not remove --plan after an exit-1 check.
+Migration/cutover requires its own current private source/target manifest,
+lease/principal, snapshot access and reconciliation/rollback contract; historical
+OD10 lists grant no access to current production records. Models/auth/spend,
+remaining quota/resume/transcript/installer details and retirement are not
+selected by this rollout document. SQL 010 remains DO-local, never D1 apply.
+
+CLI v0.24 source-readiness inventory, not a release
+--------------------------------------------------
+Historical hosted observation for this record's fixed CLI base b5149f5:
+  https://github.com/wappsdev/wapps-cli/actions/runs/37402530730
+  Go test/vet/build: success; Rust ubuntu: success; cargo-deny: success.
+  Rust macOS: FAILED in cargo test, not fmt/clippy, on
+  broker::config::tests::stalled_dns_is_bounded_before_any_mcp_call:
+    started.elapsed() < Duration::from_millis(150)
+This is NOT the current-main DNS status. Read-only local Git inspection now
+finds main and origin/main at 36212eca96ec89c567dd2d0c799b52b1e7717da4,
+merging independently verified 40a3441f59efe8def6cbba97fcf7f40165bb31c9.
+The coordinator's existing session evidence records eight complete post-merge
+local gates with exit 0 and the push of 36212ec. This repair did not rerun those
+gates or contact/restart the DNS lane. Hosted combined CI for 36212ec remains
+PENDING/unverified in this record, not falsely green and not still failing on
+the old b514 test. The record worktree stays fixed at b5149f5; platform source
+stays b918144; deployed metadata above stays the historical version observation.
+Source manifest/installed CLI were 0.23.0 at preparation; no 0.24 edit ran here.
+
+Selective current-main broker/mod.rs inspection still shows the same runtime
+boundary: CLI integrates daemon/owner subsets and pure execution components, but
+broker/mod.rs does not register execution. agent_submit, agent_cancel,
+agent_attach and agent_report still advertise ACTION_UNAVAILABLE. Pure wire,
+scrub and parsing tests are not a worker runtime. Owner pause/unpause and role
+apply remain dependency-gated. Enrollment does not install roles/harnesses.
+Source skill preparation is not production Rust embedding/selection/refresh;
+PIO-17 remains unresolved. No installer activation or plugin removal ran.
+
+The remaining nine package areas remain distinct: project/mission binding,
+role ceilings/provider routing, real execution, quota/resume, transcripts,
+explore, installer, owner remainder, and migration/cutover. This preflight
+completes none of those runtime packages and does not run real workers.
+Pending current hosted CI and the runtime gaps block a full-port v0.24 claim;
+the historical macOS failure is not evidence of a current failure. A smaller
+core-only release would require a separately approved accurate scope and all
+release gates; it must not imply execution completion.
+
+Automation inspection: CLI .github/workflows/ci.yml runs on main push/PR and
+manual dispatch. release.yml runs on v* tag push, invoking GoReleaser and the
+Homebrew tap token. No tag/push occurred. No tracked .github workflow is present
+in platform b918144; package deploy/predeploy scripts are the identified upload
+path. Account-side build triggers were not exhaustively inventoried; none were
+configured or triggered here. No primary checkout edit was made; the existing
+untracked CLI .wrangler/ directory was preserved.
+
+Handoff integrity
+-----------------
+Only this English text record is staged. Platform tracked/unstaged/index diffs
+were checked empty in the original preparation and again during this repair.
+Ignored historical build outputs are local, not published or committed; repair
+created no build/package/tool output. Final staged tree/blob identity and the
+exact path are returned in the structured handoff, not self-referentially here.
+
+Old claim -> repaired contract, traced against the rejected journal/source:
+  offline npm dry-run -> separate tool acquisition; pinned paths/hashes plus
+    denied-network, Cargo offline/locked and immutable lock checks; prerequisites
+    explicitly missing, no install/download performed.
+  later keyed activation -> immediate deploy consequence or proven external
+    write quiescence; no feature flag/unimplemented pause assumption.
+  accepted source tag -> actual frozen upload modules/config/helper manifest;
+    direct pinned no-bundle upload, or match hashes/retest BEFORE any upload.
+  credential injection alone -> outer/inner stdout/stderr memory capture,
+    fixed allowlist and suppression including status/principal/failure details.
+  arbitrary ASCII keys -> exact case-sensitive/untrimmed grammar above.
+  old DNS failure as current -> historical b514 evidence, current 36212ec pushed
+    with recorded eight local gates; current hosted CI pending/unverified here.
+
+Repair validation was bounded and synthetic: 16 key cases against the exact
+source grammar; two fake subprocess success/nonzero stdout/stderr captures;
+five allowlisted receipt-state fixtures including synthetic timeout/spawn/parser
+failures. No real credentials, Worker or production wrapper were exercised;
+these fixtures prove the stated suppression example, not shipped enforcement.
+Whitespace/path/index/hash checks complete the stage-only handoff. Gates retain
+the actual broker-auth blocker and UNKNOWN grant row; no operational decision
+or real acceptance mission is selected. Independent record/package reacceptance
+and mutation-bearing rollout remain pending.
+
+Historical Cloudflare reference URLs consulted by original preparation:
+  https://developers.cloudflare.com/workers/wrangler/configuration/
+  https://developers.cloudflare.com/agents/runtime/operations/configuration/
+  https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/
+  https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/
