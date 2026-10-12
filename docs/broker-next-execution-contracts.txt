@@ -1,0 +1,801 @@
+Broker execution completion proposal
+====================================
+Preparation record; recommendations are NOT owner decisions.
+Date: 2026-10-06.
+
+Goal: deliver one working Rust path from an explicitly bound project/repo/mission,
+through cloud admission and owned provider execution, to scrubbed progress/result
+and verified cancellation. Then extend that working path, not a collection of
+unregistered helpers.
+
+Authority and scope
+-------------------
+The genuine latest human message is "onaylıyorum yapabilirsin" (approval to
+continue in principle). It does not select worker models, authentication backend,
+spend, role profiles, grant recipients/verbs, replay mappings, retention changes,
+release/deployment, or a destructive compatibility policy. Obtain the concrete
+bundle below before implementation that resolves those choices. This record does
+not authorize any operational action.
+
+Sole record writer:
+  /Users/adnankurt/Documents/Projects/.worktrees/broker-approved-execution-contracts
+  branch lane/broker-approved-execution-contracts
+  base b5149f521aaaea75fd2e99f44f8cd15b4d46fa32
+Only owned/staged product-repository path: docs/broker-next-execution-contracts.txt.
+No source edit, commit, push, installation, grant/credential operation, model call,
+real-store read, deployment, release, replay or plugin removal is performed here.
+No coordinator cwd change, EnterWorktree call, agent resumption or broad killing.
+
+This repair reuses the existing reserved worktree without switching session cwd.
+Before editing, HEAD/branch, staged tree bb9cd0adb6da7ee1cfef12853305106767a2664a,
+blob 8c99418bf5e07e1b8d672dfe56ee65bd2345d82d and working/indexed byte equality
+were checked. Only the record changes; other record writers are not contacted.
+Future build lanes need exclusive private trees and outputs, never another
+lane's mutable gen/build/target. No platform build is performed in this repair.
+The DNS fix is merged on current main 36212ec; the old active-lane narrative is
+historical, not current status. No config.rs change or worker resume is proposed.
+
+Source identity and citation convention
+---------------------------------------
+C = the assigned CLI worktree above, at b5149f521aaaea75fd2e99f44f8cd15b4d46fa32.
+P = /Users/adnankurt/Documents/Projects/wapps-platform,
+    b9181445fce94f969a5d04f4f43e5c46368f12aa.
+O = /Users/adnankurt/Documents/Projects/dual-orchestrator-agent-broker,
+    c6d7e09fa0df9d8ad231fd56520a14fee4432ba5.
+M = /Users/adnankurt/Documents/Projects/wapps-cli,
+    current main 36212eca96ec89c567dd2d0c799b52b1e7717da4 (DNS merge observed).
+C/P/O references retain their pinned identities; M is only current-main status.
+Symbols are the durable anchors. The disputed admission, production schema-loader
+and CLI command/parity seams were selectively reread for this repair.
+No library or provider capability is newly claimed from memory.
+
+Current implementation, not historical readiness claims
+------------------------------------------------------
+1. C/rust/crates/cli/src/broker/mod.rs:19-47 catalog and
+   C/rust/crates/cli/src/broker/forward.rs:12-64 validate explicitly return
+   ACTION_UNAVAILABLE for agent_submit/cancel/attach/report. mod.rs does not
+   register execution. The four execution source files are path-imported by
+   tests. Their existence is not an engine. No provider/runtime is available.
+2. C/docs/broker-daemon-port.md has TWO Section 10 headings: historical
+   "What I did not measure" at 2018, and the integration update at 2071.
+   Read the latter for readiness; neither headings nor old source counts prove
+   current deployment. The update preserves pending binding, profiles, ceilings,
+   routing, shutdown/resume, quota and transcript decisions.
+3. C/rust/crates/cli/src/broker/owner/project.rs:1-172 enroll writes ONLY the
+   strict version-1 projects.json root registry. It canonicalizes roots and
+   rejects overlap/symlink/state/config hazards. Pause/unpause/role apply refuse.
+   Its success text explicitly says no mission, role, harness or pause changed.
+   Enrollment cannot supply a repo id, mission binding or approved spawn profile.
+4. C/rust/crates/cli/src/broker/owner/mod.rs:114 onward guards human authority;
+   owner/http.rs:21 onward loads cached human SSO, not an agent service-token
+   fallback. Existing commands require --mission and retain exact work-item
+   selectors. Cloud identity/grants still decide authorization; a TTY or decoded
+   token shape is not proof of owner consent or a hostile-same-UID boundary.
+5. C/.../execution/types.rs defines Provider, LeaseAuthority (secret + public
+   fencing epoch), JobAuthority (job id + secret, no epoch), and categorical
+   CloudError/MutationOutcome. Only explicit borrowed wire views serialize
+   capabilities. Preserve that separation; do not make capability DTOs loggable.
+6. C/.../execution/cloud_wire.rs:12-147 encodes Dispatch/Attach/Progress/Finish/
+   Cancel/Register. Dispatch ceilings: task 200,000 UTF-16 units, dispatchKey
+   200; progress note 500; finish output 200,000/error 20,000. This is not the
+   transcript's 8,192 bound. Registration is explicit HTTP, not an MCP tool.
+   decode_dispatch:248 returns Created(JobAuthority) only with reserved state;
+   Existing carries NO secret. decode_attach:302 requires ok:true and exact job/
+   resume identities. Other public success projections omit ok. The attached
+   task can exceed the original task limit after cloud instructions are appended.
+   decode_register:442 compares requested mission/repo with the actual row.
+   HTTP/RPC/protocol loss is Unknown, not evidence a mutation did not happen.
+7. P/crates/workers/src/catalog_lane/registry.rs::register_mission uses INSERT
+   OR IGNORE plus read-back in one batch. broker_handlers.rs:1133 compares the
+   held repo and rejects reuse under another repo. Registration requires Claim
+   at Estate; caller-supplied registeredBy is not accepted. broker_routes/
+   registration.rs::look_up requires an actual registry answer before entering
+   mission routes. Claiming a typo is no longer implicit mission creation.
+8. P/crates/workers/src/broker_handlers.rs:769 resolves the estate role ceiling
+   before dispatch and removes body role/workerProvider before passing the job
+   plus ceiling into the critical section. catalog_lane/roles.rs validates the
+   closed vocabulary; core/src/broker/roles.rs::TOOLS is
+   read,grep,find,ls,bash,write,edit. Cloud declarations contain role/provider/
+   tools, NOT model/effort/prompt/skills. Local tools cannot widen this authority.
+9. P/crates/workers/src/mission_lane/payload.rs:1048-1174 defines NewJob,
+   RoleCeiling, Dispatched and Attached. methods.rs:2421-2555 dispatch_locked
+   stores role and worker_provider FROM the admitted ceiling. It does NOT store
+   its tools. Replay checks same_dispatch and never returns the capability again.
+   methods.rs:2873 attach_locked returns task/binds/deadline/resumeFrom, but NOT
+   admitted provider/tools/model/effort. A new GET roles_list does not reconstruct
+   the ceiling admitted for an old job. A post-dispatch snapshot prevents unsafe
+   execution, NOT unsupported reservation. The proposed pre-insert expected-ceiling
+   check below is new platform work, not a property of local preflight.
+10. P/.../methods.rs:2581 review_bind_refusal checks the read-tool ceiling,
+    review_pending subject and exclusive reviewer holder. It does NOT require
+    a different worker provider. O/src/roles/route.ts FULL implementation diverges
+    from its introductory strict-independence claim: requested provider returns
+    first, and a sole subject-provider variant can still review. Do not port that
+    loophole accidentally or describe stricter routing as already approved.
+11. O/src/process/runtime.ts (all 1,071 lines inspected) records dispatch model/
+    effort from the chosen local variant, observes model/session from events,
+    tracks active adapters, routes reviews/delegation through broker-managed
+    workers, and scrubs record/note/terminal paths. Its lease-based local terminal
+    writes and recovery behavior are NOT the cloud job-capability protocol.
+    It may automatically resume at claim and reuse/fallback worktrees; neither
+    automatic spending nor silent fresh-conversation replacement is selected here.
+12. C/.../daemon/mod.rs:21-23 IDLE=600 seconds, DRAIN=12 seconds; run_at counts
+    connections, not provider jobs. drain deliberately stops joining unfinished
+    HTTP threads after its bound. This currently contains no provider Child.
+    Test-fixture owned Child cleanup is not production worker supervision.
+    sessions.rs caches per-mission lease ownership in memory; MCP request
+    cancellation currently cancels forwarding polls, not provider jobs.
+
+Already decided invariants (preserve, do not ask again)
+------------------------------------------------------
+C/docs/broker-daemon-port.md Section 8 OD1-OD16 and Section 10 update establish:
+- Rust production execution/Worker behavior; only wasm-bindgen glue may be JS.
+- One agent Access principal, no handoff tools; owner answer/accept/confirm remain
+  separate. P-b's recorded read/claim/report grants are not authority to edit
+  grants now, nor evidence any grant is currently deployed.
+- Runtime agent secret is a 0600 file, not environment. Rotation belongs to the
+  configured secret store. Never fetch/display raw secret values.
+- Cloud owns schemas/admission/lease/job state; missionId remains required on
+  EVERY MCP call. Keep independent project id, repo id and mission id; no
+  project=mission shortcut or cwd-derived mission. WorkItemId/jobId remain exact.
+- Local per-project role spawn specs have NO tools (OD7); cloud supplies ceilings.
+  Undefined cloud ceiling fails closed. No invented default model/effort.
+- Blocking ureq + bounded threads; tokio remains banned (OD11). Existing
+  serde_json/ring/rustix/libc/url facilities precede any dependency proposal.
+- OD5 is CONDITIONAL: public Claude flags plus hook IF skills/effort behavior is
+  measured; otherwise version-pinned SDK control protocol. PATH Claude and a
+  measured version floor are OD6. Do not silently declare that condition met.
+- Native hand-back stays in the eventual product (OD12), not a reason to treat
+  parent-reported review/delegation as independently observed output.
+- Explorer uses cloud work/jobs and LOCAL scrubbed transcripts (OD8); quota is
+  daemon memory. Explorer must not consume cloud result reads that mark read.
+- Installer name wapps-broker, owner user-scope targets, shipped skill (OD13/14).
+  Accepted skill asset/content tests do not mean production Rust selection,
+  installation or refresh is activated (PIO-17 remains unresolved).
+- Scrub daemon/worker-authored note, finish output/error, transcript before send/
+  store (OD15), including the measured Bash assignment anchor; preserve owner/
+  orchestrator-authored work text. This is heuristic masking, not proof of recall.
+- Owner leaseless file/move door under answer (OD16); never agent answer authority.
+- OD10 selects open-work replay for four named projects, excluding platform.
+  It does not choose concrete current source/target records or authorize replay.
+- Rust binary distribution is the direction (R0), not v0.24 tag/release consent.
+
+Concrete decision bundle to present to the owner
+------------------------------------------------
+Approve the design choices D1-D5 together so implementers have one coherent target.
+D6 is a separately completed operational form; leaving it unapproved means ZERO
+real probes. Recommendation != approval. No arbitrary role/model table is supplied.
+
+D1. Explicit binding and registration lifecycle.
+Recommend a separate owner-written bindings.json beside the unchanged enrollment
+registry: version 1, bindings keyed by missionId, each entry containing projectId
+and explicit repo. Multiple missions can use one enrolled project/repo; one
+mission cannot silently move to another. Resolve a requested mission through this
+binding, recanonicalize its enrolled root, and verify cloud repo before execution.
+An explicit owner "mission bind" operation registers {missionId,repo}, validates
+the returned identity, then atomically publishes the local binding. A timeout
+publishes no binding and asks for read-back reconciliation, not blind POST retry.
+Enrollment and orchestrator_claim never register implicitly. Names of the human
+command are engineering; using SSO Claim at Estate is the existing cloud door,
+not a grant change. Current owner/http.rs::Client::request always builds a
+mission-scoped URL; I must add an explicit estate registration request, not
+encode registration as a mission suffix. Owner supplies the mapping on apply.
+Material alternative: implicit first-claim registration, which hides typos and
+changes authority behavior; NOT recommended. Changing projects.json's version or
+rewriting existing enrollment is unnecessary for this slice.
+
+D2. Exact spawn profiles and truthful provider enforcement.
+Recommend owner-authored roles.json version 1 at the already planned local
+project state path, keyed by role then declared provider. Each variant REQUIRES
+model (nonempty exact provider selection), effort (validated supported level),
+mode, prompt reference, skills array and executionBackend. No tools field and no
+ambient-model/effort/auth fallback. Proposed supported executionBackend values:
+claude-public (conditional OD5-A), claude-control (OD5-B), codex-mcp (original
+Codex seam). A provider-mismatched backend refuses. Unsupported remote/API
+backends refuse rather than become speculative adapters. The owner supplies the
+actual variant values; workflow Sol/Astra preferences supply none of these.
+
+Resolve immutable prompt, rulebook and skill content outside worker-writeable
+paths; hash with existing ring. Skills have explicit source identity and content
+hash. Missing required content refuses before reserving. Snapshot the selected
+model/effort/backend/mode/prompt/skills at admission and never reread mutable roles
+as the current job's policy. Subsequent dispatches can read a new owner revision.
+Auth stays with the explicitly authorized provider login/backend, NEVER the
+broker agent service secret; no inheritance of arbitrary agent credential env.
+No user configuration or authentication is changed by validating a profile.
+
+Recommend admit ONLY profiles whose actual adapter can enforce the advertised
+ceiling/mode; otherwise ACTION_UNAVAILABLE with a categorical capability gap.
+Content injection counts as delivered methods, not native skill preload. Native
+Skill/helper/delegation adds tool surface not present in cloud TOOLS: it must not
+be silently granted. Required native skill invocation is unavailable until its
+ceiling/protocol design is separately accepted and measured. Do not assume all
+current profile tool sets are executable on Codex, which rejects narrowing.
+Material alternative: instruction-only ceilings/pause with a visible warning;
+that permits weaker authority and requires explicit separate owner selection.
+Existing public-hook failure-open behavior is not solved by writing deny prose.
+Recommend the expected-effective-ceiling precondition specified below, preserving
+no unsupported NEW reservation instead of relying on a post-dispatch comparison.
+This precondition and snapshot protocol are proposals, NOT approved/implemented.
+
+D3. Review independence, including explicit-provider requests.
+Recommend different-provider review mandatory for reviewsJobId, including when
+the caller requests the subject's provider or the role has only that side.
+Unknown subject provenance and absent independent declared side refuse BEFORE
+reservation. No same-provider/native hand-back self-certification. Continue to
+require cloud read-ceiling eligibility and exclusive review holder. Keep reviewer
+verdict based on provider output the daemon actually read, bound to subject job/
+artifact identity. This is stricter than both original routing and current cloud
+admission; do not claim current source already enforces it. Mirror it in platform
+admission if accepted, not only a bypassable local convenience check.
+Material alternative: retain sole-side/explicit same-provider reviews as source
+allows. It preserves availability but proves only separation from orchestrator,
+not provider independence. This is a real owner outcome, not code style.
+
+D4. Quota selection/freshness without an invented throttle.
+Recommend in-memory newest observation per (provider,window), account-wide, with
+observedAt and age. Retain raw reset seconds/status and report freshness as known
+age, not a guessed TTL. Unknown/missing/expired observations do not mean healthy
+quota. Derive displayed numerical warning from >=90%; retain provider rejection
+as a fact, and distinguish provider status from display judgement. Use reset
+expiry as an explicit observation, not as automatic admission/spend authority.
+No automatic provider switch, job resume or budget enforcement from quota.
+Add a local quotaDigest beside, not inside or in place of, the cloud mission
+digest; cloud-digest polling and wait bounds remain unchanged. A quota event can
+be returned on the next local projection without forging a cloud work change.
+
+Source divergence: O/src/storage/jobs.ts:884-936 keeps five readings per provider
+and selects MAX(id) per provider, losing simultaneous windows. O/process/quota.ts
+comments describe numerical warnings, but readQuota retains allowed_warning.
+C/.../execution/quota.rs parses that behavior and chooses NO storage/freshness/
+attention policy. Per-window display and warning projection are new choices.
+Material alternative: newest reading per provider, as actual source selects;
+smaller shape, but a later week-window observation hides a five-hour constraint.
+
+D5. Local transcript retention and provenance header.
+Recommend the source's newest 2,000 EVENT rows per job, scrubbed before storage,
+with immutable metadata excluded from the cap and monotonically increasing seq.
+Keep an explicit discarded-through/count marker distinct from page omitted-count.
+A latest-page response must not say it shows all lifetime history after eviction.
+This is a retained-history cap, not merely a page limit. Use one per-job JSONL
+file with owner-only mode and atomic compaction under one writer; do not keep an
+unbounded hidden archive that defeats the cap. No time-based deletion or global
+quota is selected. Owner must expressly confirm this correction to the old
+"no retention, as today" sentence in Section 13.9.
+
+Evidence: O/src/storage/jobs.ts:556 TRANSCRIPT_KEPT_PER_JOB=2_000;
+recordTranscript:787-800 DELETEs older rows on every append; latestJobTranscript
+only counts rows still present. C/.../scrub.rs uses 8,192 UTF-16 units per stored
+string, not 8,192 bytes, and never truncates full finish output/error. Its
+astral-cut U+FFFD boundary is documented, not UTF-16 byte identity.
+
+Header: missionId, projectId, repo, jobId, binds, base/head, admitted provider/
+tools snapshot, local profile digest and exact requested model/effort/backend/
+mode, prompt/skill hashes, execution mode and worktree identity. No capabilities,
+SSO/Access token, raw environment or secret-bearing content. Observed model/run
+id and resume provenance arrive as sequenced metadata events; do not rewrite an
+immutable header claiming those were known at dispatch. Scrub string values in
+metadata too. Unknown observed model stays unknown, not the requested model.
+Material alternative: unbounded per-job JSONL preserving all scrubbed events;
+this buys full lifetime history with unbounded disk growth and is a real retention
+choice. Neither alternative permits deleting historical stores now.
+
+Separate shipped-row choice (not silently included in D1-D5).
+Recommend preserving old jobs, representing absent admitted-ceiling provenance
+explicitly as unknown, and refusing execution/reattachment/resume that requires
+that unverifiable snapshot. Never backfill from today's role registry. Owner must
+choose the exact additive schema, old-row read/attach/resume behavior and authorized
+recovery path before P implements shipped-store treatment. Alternatives require
+an explicit operational/compatibility decision; no reset, deletion, guessed tools
+or default provider/model is selected here. Synthetic legacy rows are enough for
+design tests; real-store inspection/application remains separately closed.
+
+D6. Bounded real probes (separate, initially closed).
+Recommend synthetic shim/offline acceptance FIRST, then an owner-approved single
+read-only real job on an explicitly selected locally authenticated backend and
+exact model/effort from an approved profile. No subscription/API/proxy switching,
+no grant/token provisioning, no real repo/store input, no automatic reviewer.
+Proposed maximum one job, concurrency one, hard wall deadline 60 seconds, zero
+automatic retries/resumes. The wall bound is an experiment bound, NOT a new
+production total-duration timeout. Proposed maximum incremental charge USD 1;
+run only if the selected backend can establish/enforce this cap before a call.
+If native subscription execution cannot enforce a dollar cap, STOP and ask for
+a separately stated subscription-use bound; do not advertise USD 1 enforcement.
+
+Owner must fill: exact provider + executionBackend, actual authentication source
+(native existing login or explicitly named store-backed reference, no values),
+exact model id/effort, spending/subscription bound and enforcement, disposable
+fixture target, allowed tools, version/hash and experiment count. No concrete
+model name is invented from old orchestrator literals or this workflow's model.
+An OD5 effort/skills A/B/C experiment needs its own explicit bounded call count;
+one smoke job cannot close all OD5 protocol/containment claims. Alternative is
+remain fully synthetic, with live adapter capability explicitly unverified.
+
+One-shot owner confirmation to request: select D1 explicit binding/registration;
+D2 exact immutable profiles plus the pre-insert expected-ceiling contract;
+D3 different-provider review; D4 per-provider/window quota with visible age;
+D5 newest 2,000 events with explicit eviction. Separately accept or defer the
+preserve/unknown/refuse old-row proposal and its exact schema/recovery behavior.
+Leave D6 and all operational forms closed. These are recommendations, not recorded
+consent. Selection enables synthetic development/review, NOT installation or calls.
+
+Smallest complete vertical slice and ordinary engineering mechanics
+-------------------------------------------------------------------
+G0: bundle accepted; exact future file reservations granted; pinned private trees.
+G1: production Rust MCP submit -> local preflight -> cloud admission -> attach ->
+    one protocol adapter -> heartbeat -> scrubbed finish/result, plus cancel/stop,
+    tested end-to-end with synthetic cloud and an owned executable shim.
+G2: same path validated against the private platform workerd build and a bounded
+    real backend only AFTER its D6 form is accepted. Not a fixture-only engine.
+G3: native hand-back, resume, quota/attention, transcripts/explorer, installer and
+    owner remainder extend that path. Rollout/replay/release remain later gates.
+
+Proposed admission ordering (NOT implemented or approved)
+---------------------------------------------------------
+Choose an expected-effective-ceiling precondition, not weaker post-reservation
+cancellation, to meet the stated no unsupported NEW reservation invariant.
+Authority remains P/crates/workers/src/catalog_lane/roles.rs::resolve_ceiling
+(:254-318), called by P/crates/workers/src/broker_handlers.rs::dispatch_job
+(:769-806) before MissionDO. P/crates/workers/src/mission_lane/methods.rs::
+dispatch_locked (:2423-2554) is the pre-insert check/store seam. Local roles_list
+is only expectation evidence, never admission authority.
+
+Fingerprint proposal: expectedCeilingFingerprint is the exact compact ASCII JSON
+encoding of ["wapps-effective-ceiling-v1",role,provider,tools]. It is a versioned,
+collision-free canonical tuple, not a digest needing a new hash dependency.
+Validate the RESOLVED role with core::broker::roles::is_role_name; provider must
+be exactly claude/codex. Treat tools as a set, reject empty/unknown tokens, collapse
+duplicates, then order by the existing TOOLS constant
+[read,grep,find,ls,bash,write,edit]. Do not trim/case-fold resolved identifiers or
+invent tools. Encode with compact serde_json array serialization, no whitespace;
+bound the wire fingerprint to 512 ASCII bytes and reject noncanonical input.
+Cloud lookup may normalize the request as it already does; fingerprint the
+canonical returned ceiling, not the raw requested role. Local and cloud fixtures
+must use the same canonical bytes, including tool permutation/duplicate cases.
+
+Check order:
+1. Local binding/profile/content and adapter capability checks pass against the
+   observed ceiling; freeze that profile and its expected canonical fingerprint.
+   Send it with the stable dispatchKey and lease authority; never silently refresh
+   it after cloud refusal or use it as a caller-supplied authoritative ceiling.
+2. Cloud schema/auth gates validate the request. The handler resolves the ceiling
+   independently and passes this authoritative value plus the caller expectation
+   as separate arguments. No await is added inside dispatch_locked.
+3. Inside the existing MissionDO critical section: validate lease; inspect exact
+   dispatchKey. For a matching replay, compare expectation with STORED provenance
+   and return the original snapshot, never a new capability or today's tools.
+   Existing authorization/registry gates may refuse a replay; they cannot rewrite
+   it. Missing old provenance follows the separately selected old-row policy.
+4. For a new job, canonicalize the authoritative resolved ceiling and compare its
+   fingerprint to the expectation BEFORE INSERT. Missing/malformed/mismatched
+   expectation refuses with no new job row. Then enforce binds/review rules and
+   insert job plus that exact ceiling/fingerprint together in the same critical
+   section. Dispatch/attach/read projections return the stored snapshot.
+5. Local dispatch/attach comparisons remain defense in depth; no task is fed until
+   confirmed attachment agrees with the frozen admission/profile. Lost responses
+   retain the existing owned-child stop/cancel/unknown-state reconciliation rules.
+
+The cloud role-resolution read is the policy observation point. A registry change
+AFTER that read affects later dispatches, not this captured admitted snapshot.
+This guarantees expectation equals what is inserted, NOT latest-registry-at-INSERT
+semantics, revocation of already admitted work, or a D1/MissionDO cross-store
+transaction. No retry is authorized by a mismatch. The simpler weaker alternative
+is explicitly no task execution, followed by owned stop plus authorized cancellation
+and unknown-outcome read-back; it is NOT the selected recommendation here.
+
+Deterministic fixture: local preflight observes role r/provider p/tools [read];
+shim supports that set only. Commit a synthetic registry redeclaration to
+[read,write] through a test barrier BEFORE the handler's resolve_ceiling read;
+then dispatch with the original fingerprint. Assert categorical mismatch, zero
+job rows for its key, zero attach/task/spawn and no issued capability in response.
+A subsequent explicitly re-preflighted unsupported set refuses locally. A matching
+supported dispatch stores its original snapshot; later redeclaration cannot change
+its successful replay/attach/read provenance. No sleep-based race or live registry.
+
+G1 contains these operations together (not a helper-count completion metric):
+1. Parse missionId plus exact selectors. Resolve binding/root and approved local
+   profile, requested provider/backend/model/effort and rule/skill provenance.
+   Locally known protocol/ceiling/pause gaps refuse before dispatch; registry drift
+   refuses new reservation via the proposed authoritative precondition above.
+   Agent tools cannot apply roles, enroll roots or register missions as a side effect.
+2. Resolve base/head against the intended repository, use an exclusively owned
+   checkout for writing work, and verify path containment including symlinks.
+   Never reuse another writer's tree or remove uncommitted work. For the first
+   read-only fixture, a disposable pinned tree still makes observed bytes stable.
+3. Send dispatch with lease authority and stable dispatchKey. Platform freezes
+   its OWN admitted role/provider/tools into the job; local model/effort/profile
+   metadata is a distinct provenance claim, not caller-supplied cloud authority.
+   Required proposed fields: expectedCeilingFingerprint on dispatch input;
+   stored admittedCeiling {role,provider,tools} and its fingerprint on dispatch,
+   attach and read-job output. Read-job must expose attached worktree identity:
+   current JobView includes providerRunId but NOT worktree. Snapshot and job are
+   inserted together after the precondition. Successful replay returns ORIGINAL
+   provenance, not today's roles. Do not log authority envelopes.
+   Local header holds profile provenance; cloud need not store prompt/transcript
+   content to carry hashes. Unexpected/missing returned provenance means no task;
+   stop/reap any owned idle child and request lease-authorized cancellation of
+   that exact job. Unknown cancel remains unresolved until read-back, never a
+   local success or fallback to today's registry. Old missing provenance is a
+   separately approved shipped-row choice, not an invented default.
+4. Created gets one JobAuthority; journal categorical phase/identity/profile
+   digest with no secret, and retain job secret only in daemon memory. Existing
+   never launches another child. Lost dispatch response may have committed:
+   read exact dispatch/job state to reconcile; if its once-issued capability was
+   lost, do not recreate, steal, or duplicate the job. Display unresolved reserved
+   job and require an explicitly authorized cloud cancellation/recovery action.
+5. Allocate run identity before task input where protocol allows. Attach with job
+   authority/worktree; compare every brief identity and admitted ceiling against
+   the frozen record. Task starts only after confirmed attachment. For Codex's
+   runtime-generated handle use a broker attempt id for attachment and record the
+   real session_configured handle as observed metadata; do not label them equal.
+   Unknown attach outcome: stop/reap the owned idle child and preserve its run
+   record; read job to reconcile running/providerRunId/worktree. Never blindly
+   attach twice or feed a task. Claude protocols unable to hold task execution
+   until this acknowledgement remain unavailable rather than reversing the order.
+6. A JobRun owns the Child and pipes, cancel flag, join handles, heartbeat and
+   frozen policy. Parent MCP EOF does NOT imply daemon-owned job cancellation.
+   Job cancel is an authorized agent_cancel operation, distinct from cancelling
+   a JSON-RPC wait. HTTP report heartbeat uses job authority, not a stale lease.
+   Note-less heartbeat preserves liveness even without visible provider progress.
+7. Read bounded NDJSON/MCP frames; drain stderr independently; reserve one owner
+   of each stream. Require terminal message AND process outcome. EOF without
+   result, nonzero exit after success, malformed frame, deadline, cancellation
+   and transport loss are distinguishable. Record requested vs observed model.
+   No raw parser/provider error contents escape to diagnostics. Codex silence
+   resets on actual codex/event notifications; a total call timeout is not a
+   silence timeout. Reuse original ten-minute silence behavior as the port target,
+   not this probe's 60-second total bound; test with an injected clock.
+8. Scrub every sender and store, not just the pure codec. Central transport
+   accepts ScrubbedOutbound/ScrubbedText for daemon-authored text. Feed known
+   runtime/job/lease secrets internally, without fetching unrelated values.
+   Progress normalization may use the named 200-unit helper; cloud note limit
+   remains 500. Finish output/error stays full until cloud ceiling validation:
+   over-limit data refuses explicitly, never silently becomes a transcript tail.
+   Malformed JSON-shaped outbound input rejects the batch with a categorical
+   error. Never log rejected raw text. Drop an unsafe note but keep note-less
+   heartbeat; unsafe finish is not reported completed. Mark local reconciliation
+   and preserve cloud truth if a safe failure report cannot be acknowledged.
+9. Cloud report/finish acknowledgements determine actual state, including
+   review_pending; provider completed != work delivered. Verify finish subject
+   identity for reviews beyond decode_finish's vocabulary checks. Cancellation
+   racing a verdict retains observed cloud subject state; no invented settlement.
+   Unknown finish cannot be retried or converted into success just because the
+   Child exited. Read status/result for reconciliation without consuming result
+   read markers in the explorer, and expose unresolved state explicitly.
+10. Stop admission before shutdown; account for active jobs in idle detection.
+    Request provider-specific stop, close task input, signal only the still-owned
+    direct Child (or freshly created dedicated group whose ownership is proven),
+    bounded graceful wait then escalation, reap and join/drain. Child ownership
+    alone does not prove descendant cleanup; fixture descendant cases must prove
+    it or mark that adapter unavailable. Never kill from PID files, borrowed job
+    handles, socket paths or broad pkill/process-name patterns. Do not announce
+    daemon shutdown success with an unreaped known child. The existing 12-second
+    HTTP drain alone is insufficient for new provider processes.
+
+Sender coverage required in the acceptance test
+-----------------------------------------------
+Observe bytes at fake cloud HTTP and local file/stderr/MCP exits, not just calls
+to scrub_outbound. Inject SYNTHETIC markers, never actual token material, into:
+provider prose/tool result/command stderr; normal progress; startup/preflight/
+worktree/skill failure; pause and quota notice; result output/error; malformed
+JSON; timeout/cancel; hook/protocol rejection; terminal-write failure; resume
+failure; native report; transcript payload/header/metadata; unknown-outcome
+response. Assert markers absent from every disallowed sink and full nonsecret
+finish text retained. Secret fields/escaped JSON keys are covered. Preserve
+orchestrator work prose byte-for-byte except already established runtime-secret
+rejection. Heuristics cannot guarantee arbitrary secret discovery, nested JSON
+string decoding, zeroization, hostile-same-UID isolation or universal resource
+bounds; do not turn a planted-marker pass into those claims.
+
+Provider source constraints, not permission defaults
+----------------------------------------------------
+O/src/process/claude_agent_sdk.ts was inspected completely: it supplies model,
+agent effort, skills content and rulebook, settingSources:[], and a PreToolUse
+callback. Its bypassPermissions choice is source HISTORY, not authorization to
+copy it to Rust/harness settings. Bare allowedTools can shadow canUseTool.
+C/docs/preparation/worker-cli-13-5/research.txt records that public command-hook
+missing binary/timeouts/malformed/non-2 failures can be nonblocking. Thus OD5-A
+is STILL conditional; help/--agents JSON acceptance and init fields do not prove
+main-thread effective effort/native skills or fail-closed containment. Require
+actual request effort evidence where supported; aliases/fallback need truthful
+observed model data. OD5-B requires a version-pinned control exchange, not a
+Rust wrapper around JS SDK and not an unreviewed private-message guess.
+
+O/src/process/codex_mcp.ts was inspected completely: codex mcp-server is one
+outstanding codex tool call with codex/event notifications; session_configured
+names the running conversation. It rejects narrowed requestedTools; read-only/
+workspace-write sandbox is coarser than a per-command tool ceiling. Skills are
+prompt content, not a native mechanism; extra MCP/web tool surface is explicitly
+disabled. Event-observed cancellation cannot prevent the already-announced action.
+Across processes codex-reply cannot resume the prior server's thread. The source
+starts a fresh conversation over the same checkout and says so; exec resume is
+a DIFFERENT protocol/event vocabulary. First complete codex-mcp with honest
+capability checks; do not secretly add exec-resume or claim native continuity.
+
+Resume extension: a successor is explicit, lease-admitted, keyed once by source
+job, and bound to mission/role/provider/head/owned worktree and stored provenance.
+No automatic claim-time spending. Revalidate profile/ceiling compatibility;
+require owner decision before changed model/backend/policy can reuse a session.
+Cloud resumeFrom and local ownership must both match; missing original tree or
+provider handle is a refusal, not a fresh task pretending to be resumed.
+
+Exclusive-file implementation DAG after bundle acceptance
+----------------------------------------------------------
+The following are PROPOSED reservations, not current agent assignments. Resolve
+against the then-current accepted CLI/platform bases in separate worktrees. One
+writer owns each file; integrator imports reviewed commits, never mutable outputs.
+".../" in this table means rust/crates/cli/src/broker/ in C. Paths beginning
+tests/ are relative to C/rust/crates/cli/. New files are explicit proposals.
+C/.../config.rs is outside these reservations; its DNS regression is merged.
+Do not reopen settled OD decisions or treat these proposals as active assignments.
+
+Foundation F (small, integrated transaction; owns seams, not a separate product):
+  C .../execution/types.rs, .../execution/cloud_wire.rs,
+    .../execution/mod.rs (new), tests/broker_execution_types.rs,
+    tests/broker_execution_cloud_wire.rs.
+  Freeze expected fingerprint/canonicalization and AdmittedCeiling, BoundMission,
+  SpawnProfileSnapshot, OwnedRunIdentity, ReconcilePhase/UnknownOutcome contracts.
+  Keep secret views separate. Test absent/wrong snapshot, original-snapshot replay,
+  backend/provider mismatch, exact selectors and capability non-disclosure.
+  No new dependency assumed; P owns the cloud side of the same contract.
+  Until G1 passes, existing execution tools keep ACTION_UNAVAILABLE.
+
+Parallel tranche after F and D1-D5; EACH feeds G1's one end-to-end fixture:
+B Binding lane:
+  .../execution/binding.rs (new), tests/broker_execution_binding.rs (new).
+  Resolve bindings.json + accepted enrollment into BoundMission; mismatch,
+  overlap, root drift, absent binding and project!=mission cases. Does not edit
+  owner/project.rs or register remotely; owner command integration belongs I.
+L Local profile lane:
+  .../execution/profile.rs (new), tests/broker_execution_profile.rs (new).
+  Load explicit fields/content, freeze hashes, validate required skills and
+  adapters' capability requirements. No role installation/registry fallback.
+P Platform admission lane (one platform writer owns all affected cloud seams):
+  P/crates/workers/src/mission_lane/{methods,payload,rows}.rs,
+  P/crates/workers/src/mission_lane.rs,
+  P/crates/workers/src/broker_handlers.rs,
+  P/crates/workers/src/broker_entry.rs,
+  P/crates/core/src/broker/{body,job,roles}.rs,
+  P/services/broker/migrations/011_job_admission.sql (new),
+  P/services/broker/test/job-admission.test.ts (new),
+  P/crates/core/tests/broker_job_admission.rs (new).
+  Add validated expectation input, canonical pre-insert comparison, immutable
+  stored/output snapshot and authoritative D3. broker_entry.rs::MISSION_SCHEMA
+  explicitly lists seven files today (:42-51); 011 is NOT auto-discovered.
+  P alone updates that production loader and its schema/MissionDO::new lifecycle
+  (:80-89,119-123). Schema application must be idempotent across reopen and block
+  service on failure; never assume repeated ALTER statements are safe.
+  Acceptance loads the private production broker-entry module (wrangler.jsonc
+  main build/index.js), opens a fresh real MissionDO via its normal fetch door,
+  dispatches/attaches/reads, then evicts/reopens that SAME persisted object and
+  proves the snapshot and data survived. No manual test application of 011 may
+  substitute for production initialization. Test schema failure, deterministic
+  preflight/dispatch registry drift, replay without capability, strict review and
+  synthetic old rows. Implement exact old-row loader/read/attach/resume treatment
+  only AFTER its separate choice is accepted; no guessed backfill/drop/reset.
+  Future live schema application/data scope remains a separate operational gate.
+T Transport/sender lane:
+  .../execution/transport.rs (new), tests/broker_execution_transport.rs (new).
+  Bounded ureq HTTP/MCP with the actual codecs; categorical unknown outcomes;
+  typed scrubbed sends and internal authority serialization only. Redirect/proxy/
+  retry remain off. Pure scrub/codec leaves are consumed, not rewritten.
+S Owned supervisor lane:
+  .../execution/supervisor.rs (new), tests/broker_execution_supervisor.rs (new).
+  Child/pipes/attempt ownership, single lifecycle result, bounded stop/reap,
+  cancel race, stderr backpressure, descendant ownership and join discipline.
+  Test two jobs plus unrelated fixture child; stopping one never touches others.
+X Codex adapter lane:
+  .../execution/codex.rs (new), tests/broker_execution_codex.rs (new).
+  Implements codex-mcp handshake/call/events/result/silence and capability
+  refusal with synthetic executable. Input names exact model/effort/backend.
+  No cross-process codex-reply fallback or extra runtime mode.
+Y Claude adapter lane:
+  .../execution/claude.rs (new), tests/broker_execution_claude.rs (new).
+  Implements measured OD5 protocol only; synthetic control/stream/hook cases
+  come first. Conditional public path stays unavailable until OD5 proved.
+  No permission-setting edits or fabricated version floor. Can remain blocked
+  while X supplies the first vertical fixture; not a claimed completed adapter.
+R Review routing lane:
+  .../execution/review.rs (new), tests/broker_execution_review.rs (new).
+  Subject/provider/artifact validation, caller-request precedence cannot bypass
+  D3, no eligible independent variant refusal. P mirrors authoritative rule.
+
+Integration I (one owner of every shared entrypoint):
+  .../execution/runtime.rs (new), .../execution/mod.rs,
+  .../mod.rs, .../forward.rs, .../daemon/{mod,sessions}.rs,
+  .../owner/{mod,http,project}.rs, C/rust/crates/cli/src/main.rs,
+  C/rust/crates/cli/src/cli.rs, C/rust/crates/cli/tests/helpaxis.rs,
+  .../cloud-tools.json only for measured local schema rewrites,
+  tests/broker_execution_runtime.rs (new), tests/broker_execution_e2e.rs (new),
+  existing tests/broker_{mcp,daemon,owner,owner_boundaries,catalog}.rs.
+  I exclusively owns command construction/registration and its parity tests:
+  cli.rs:998 builds broker, :1012-1025 builds skill; helpaxis.rs:118-147 checks
+  the EXACT added Rust-only node list. For proposed spelling broker mission bind,
+  add ONLY broker mission and broker mission bind to that explicit list. Any
+  other selected spelling/node requires its exact named exception; never exempt
+  all broker/skill commands or weaken byte-for-byte legacy help comparisons.
+  Own submit/attach/report/cancel, binding integration, active-job idle/stop,
+  authority and outcome reconciliation. Before leaf expansion, I supplies G1's
+  failing production MCP -> authority -> owned Child -> scrubbed sender -> terminal
+  fixture. F hands execution/mod.rs to I once (sequential ownership, no co-write).
+  I consumes B/L/P/T/S/X/R; leaf completion is provisional until G1 exercises that
+  real path. Bring Y only when its own gate passes.
+
+G1 unlocks independently reserved extensions; integrate each into the same path:
+Q Quota:
+  .../execution/quota_state.rs (new), tests/broker_execution_quota_state.rs (new).
+  Per-window memory/clock/projection and local quotaDigest; I alone wires entry.
+N Transcript:
+  .../execution/transcript.rs (new), tests/broker_execution_transcript.rs (new).
+  Header/metadata/sequences/scrub/cap/atomic compaction/latest omission. First
+  test appends 2,001 events and proves oldest loss is visible and header survives.
+U Resume:
+  .../execution/resume.rs (new), tests/broker_execution_resume.rs (new).
+  Explicit successor ownership/provenance, competing claims, source-tree missing,
+  changed profile and process-local conversation refusal. I owns claim wiring.
+V Explorer:
+  .../explorer.rs (new), tests/broker_explorer.rs (new).
+  Cloud work/job reads + N transcript + Q quota; mission/workItemId/jobId
+  selectors, width/control-character-safe output, no cloud result-read mutation.
+  Human move uses existing owner door. I owns command registration only.
+W Installer/skill:
+  .../install.rs (new), tests/broker_install.rs (new),
+  C/rust/crates/cli/src/skill.rs (existing Rust skill module),
+  tests/broker_skill_content.rs and tests/skill.rs (existing).
+  Production Rust embedding/selection/refresh, known wapps-broker entry and
+  provider hint; preserve unrelated config and fail on ambiguous conflicts.
+  W consumes I's command interface; only I edits main.rs/cli.rs/helpaxis.rs or
+  command schemas. W is NOT a second schema writer. Asset content is already
+  accepted, not a license to rewrite internal/skill/assets/agent-broker/SKILL.md.
+  Review PIO-17 selection/refresh before declaring H3 delivery done.
+O Owner remainder:
+  .../owner/execution.rs (new), tests/broker_owner_execution.rs (new).
+  Pause/unpause actual worker enforcement and role apply immutable profiles,
+  human guard negative cases. I alone updates existing owner/project.rs/mod.rs.
+M Replay executor (after runtime/platform gates AND separate approved manifest):
+  .../replay.rs (new), tests/broker_replay.rs (new).
+  Rust implementation consumes explicit private source/target mapping, keys,
+  receipt journal and final-content reconciliation. Existing Python preparation
+  remains an oracle, NOT a runtime or implied migration approval. I owns CLI hook.
+
+DAG: accepted bundle -> F -> {B,L,P,T,S,X,Y,R};
+     {F,B,L,P,T,S,X,R} -> I -> G1;
+     G1 -> {Q,N,U,W,O}; {N,Q,G1} -> V;
+     {G1, private platform proof, approved D6} -> G2;
+     {G2,U,W,O,V, explicit replay/rollout approvals} -> M/cutover;
+     accepted combined gates + exact release approval -> v0.24 release.
+Blocked Y does not prevent a working synthetic X vertical path, but G1 is NOT
+proof real X execution works and no production ceiling gap is waived for G2.
+
+Acceptance commands and failure scenarios (future implementation)
+-----------------------------------------------------------------
+These are commands to run in the newly reserved implementation/integration trees,
+NOT evidence they were run for this record. Let CLI be an absolute private CLI
+worktree and PLATFORM an absolute private platform worktree created from the
+accepted source identity; build artifacts must remain private to each lane.
+
+Focused synthetic regressions (future commands; not rerun by this repair):
+  cargo test --manifest-path "$CLI/rust/Cargo.toml" -p wapps --release \
+    --locked --offline --test broker_execution_types \
+    --test broker_execution_cloud_wire --test broker_execution_quota \
+    --test broker_execution_scrub --test json_ingress_precision
+
+After I creates the named tests:
+  cargo test --manifest-path "$CLI/rust/Cargo.toml" -p wapps --release \
+    --locked --offline --test broker_execution_e2e \
+    --test broker_execution_runtime --test broker_execution_supervisor
+  cargo test --manifest-path "$CLI/rust/Cargo.toml" --workspace --release \
+    --locked --offline -- --nocapture
+  cargo fmt --manifest-path "$CLI/rust/Cargo.toml" --all -- --check
+  cargo clippy --manifest-path "$CLI/rust/Cargo.toml" --workspace \
+    --all-targets --locked --offline -- -D warnings
+  cargo deny --manifest-path "$CLI/rust/Cargo.toml" --offline --locked check
+  python3 -B "$CLI/docs/preparation/verify.py"
+Run Go build/vet/race tests from a fresh indexed export too, as existing CI
+requires; Go remains the oracle, not the released implementation.
+
+Platform admission proof must run actual private-built wasm inside workerd:
+  cargo test --manifest-path "$PLATFORM/Cargo.toml" -p wapps-core \
+    --locked --offline --test broker_job_admission
+  cargo test --manifest-path "$PLATFORM/Cargo.toml" -p wapps-workers \
+    --locked --offline
+  (cd "$PLATFORM" && crates/workers/workerd/build.sh && \
+    crates/workers/workerd/build-entry.sh broker)
+  (cd "$PLATFORM/services/broker" && npm test -- \
+    test/job-admission.test.ts test/job-family-lane.test.ts \
+    test/catalog-d1-contract.test.ts test/mcp.test.ts test/registry.test.ts)
+Read build.sh/build-entry.sh package/lock/tool version requirements first; they
+write gen/build/tools and may install tools if absent. In preparation do not run
+them against the primary or someone else's worktree. Native cargo alone cannot
+prove Worker behavior. No broad mutation/proof sweep is proposed.
+
+Permanent G1/G2 negative scenarios:
+- project p and mission m differ; two missions share repo without authority leak;
+  exact workItemId and jobId remain bound; cloud/local repo mismatch refuses.
+- absent profile/model/effort/backend/skill/ceiling, unsupported effort, escaped
+  root/symlink and unknown tool refuse before spawn; registry change between
+  preflight and dispatch-resolution refuses before NEW reservation. A later role
+  edit never widens the stored snapshot. No default lower-priced model fallback.
+- lost dispatch acknowledgment, duplicate key and different payload; once-issued
+  capability never reappears; no duplicate child on reconnect or concurrent call.
+- lost attach acknowledgment and mismatched brief/provider/tools/resume/worktree:
+  no provider task before reconciliation; lost finish is not local success.
+- cancelled RPC wait leaves its job alone; authorized job cancel actually reaps
+  owned child; provider success racing cancel never revives cancelled cloud job.
+- busy daemon with zero clients stays alive; SIGTERM/stop stops admission and
+  reaps jobs; pipe backpressure/noncooperative child/fake descendant cannot leak
+  children or signal an unrelated process. No disk-PID shutdown claims.
+- same-provider explicit review, sole-side and unknown subject refuse if D3
+  accepted; concurrent reviewer conflict; unreadable verdict not accepted;
+  cancelled review subject preserves the actual returned state.
+- malformed hook/timeout/missing executable, unexpected MCP/tools, path escape
+  and skill discovery prove actual capability gap; successful text is not
+  evidence an enforced permission boundary or effective effort exists.
+- quota simultaneous windows, rejected without percent, old resets/missing data,
+  wall-clock changes, restarted empty memory and unchanged cloud digest.
+- transcript 2,001 events, torn final line, append/compaction interruption, hidden
+  eviction, newest-page ordering, astral string boundary and wrong mission read.
+- absent resume tree/session, profile drift, cross-process Codex thread, concurrent
+  successors and lease fence changes; no automatic paid retry/resume.
+- native parent cannot attest an independent review; user config conflict is
+  preserved; nonhuman owner path cannot install/apply/pause via TTY overrides.
+
+Rollout and remaining owner approvals
+-------------------------------------
+Development bundle approval does not select these operational forms:
+1. Exact broker deployment identity/configuration and grants; current principals,
+   verbs, target endpoint, token storage backend and rollback ownership.
+2. Exact owner project/repo/mission mapping and approved local role values;
+   actual supported backend/version/model/effort/skills/enforcement proof.
+3. D6 probe authorization, billing/subscription bound and protocol fault cases.
+4. Installer target files/conflict handling and activation/refresh decision;
+   no config/skill installation performed by this record.
+5. Deployed-store admitted-snapshot schema handling. This project has shipped;
+   do not infer destructive compatibility removal from the global rule for
+   undeployed projects. Propose the exact schema/data treatment, then ask owner.
+6. Private immutable replay snapshots, manifest entries (OD10's project names
+   are not concrete source-to-target ids), lease/principal/keyed-recovery checks,
+   reconciliation and cutover/rollback boundary. Never commit real snapshots.
+7. Platform rollout and v0.24 release/tag/publish consent; plugin retirement only
+   after accepted parity/cutover and explicit removal approval.
+Store future generated/received secrets via the project's .wapps.yaml backend
+with apply-only handling; agent Access file stays 0600 at runtime. No actual
+secret value belongs in records, chat, logs, argv, memory or committed files.
+
+Evidence and repair limits (not runtime completion)
+---------------------------------------------------
+- Actual Astra rejection read in full, execution review result line 9:
+  /Users/adnankurt/.claude/projects/-Users-adnankurt-Documents-Projects-wapps-cli/37332331-3dd9-4038-adf0-bffa80654761/subagents/workflows/wf_c131f968-8ac/journal.jsonl.
+  Its three findings are the admission race and missing P/I reservations.
+  This repair changes only those contracts and their stale status/approval text.
+- Earlier builder and Astra independently passed the 69 pure tests at C's base;
+  builder log /private/tmp/broker-contract-preflight.ndmFou/pure-tests.log.
+  Historical CI https://github.com/wappsdev/wapps-cli/actions/runs/37402530730
+  failed the macOS DNS timing assertion at b5149f5. These are historical evidence,
+  not tests/CI run by this repair or proof of an execution engine.
+- Latest actual M source/log has DNS merge 36212ec, including 40a3441's resolver
+  ordering test (M/rust/crates/cli/src/broker/config.rs:218 onward), not the old
+  elapsed<150ms claim. The harness reports pushed main/local eight-gate PASS and
+  hosted CI pending; those gates were not rerun/refreshed here. No hosted green
+  or pending DNS fix is claimed.
+- No source edits, tests/sweeps, build/tool installation, model/worker call, live
+  store/auth/credential/grant operation, snapshot/replay, deployment, publication,
+  commit/push, release or retirement. Selective source and record/Git checks only.
+- New staged tree/blob/byte equality and exact single-file/no-source-change checks
+  belong in the structured handoff. Astra must review that NEW identity; repairing
+  the reported findings is not independent acceptance. New names remain proposals.
+
+Completion accounting
+---------------------
+Prepared: one source-grounded decision/implementation record with a working
+vertical target, exclusive-file DAG and explicit operational gates. Already
+integrated: daemon/owner subset/pure components/skill source/test-owned cleanup,
+within their recorded exclusions. NOT complete: real execution, native adapters,
+resume/quota projection, production transcripts/explorer/installer/owner remainder,
+replay/cutover, broker rollout and v0.24. No invented percentage or schedule.
+Next: coordinator requests the one-shot D1-D5 selection and separate old-row
+choice above. On selection, reserve F/P/I and the disjoint consumers; I's failing
+production-path G1 fixture comes BEFORE leaf expansion. Every leaf feeds that
+same authority/owned-Child/scrubbed-sender/terminal path. Defer old-row implementation
+until its exact schema/recovery choice is accepted. D6 and all operational forms
+remain closed unless the human concretely fills/approves them.
