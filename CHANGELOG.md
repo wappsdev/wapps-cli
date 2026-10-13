@@ -4,6 +4,9 @@ All notable changes to wapps-cli. Format: [Keep a Changelog](https://keepachange
 
 ## [Unreleased]
 
+### Removed — BREAKING
+- **The `wapps` CLI left this repository (2026-10-13).** The Rust CLI now lives in the private `wapps-platform` repository (`crates/cli`) and is installed from there. This repository removed the Go CLI (`main.go`, `cmd/`, `internal/`, `go.mod`, `go.sum`), the stale Rust copy (`rust/`), `.goreleaser.yml` and the tag-triggered release workflow. No new release or Homebrew cask is published from here; existing releases stay as they are. The Go oracle tests went with the Go code. CI now tests only the secrets gate Worker (`worker/`: `npm ci`, `npm run typecheck`, `npm test`). The Worker code did not change.
+
 ### Changed — BREAKING
 - **The release ships the Rust `wapps`; the Go binary is retired from it.** `.goreleaser.yml` builds `rust/crates/cli` for the same four platforms the Go release shipped (Darwin/Linux × arm64/x86_64; Linux is a static musl binary, as the `CGO_ENABLED=0` Go one was). `wapps --version` is `rust/crates/cli/Cargo.toml`'s version, and a tag that differs fails the release before anything is built. The Go source stays in the repo as the differential's oracle and is still vetted and tested in CI; it is no longer built for a release, and `go install` is no longer an install path.
 - **Homebrew: a cask instead of a formula.** GoReleaser deprecated `brews`, so `goreleaser check` failed on it. The cask generates bash/zsh/fish completion from the installed binary, and removes macOS's quarantine attribute in a preflight (the binary is not notarized; macOS kills a quarantined copy, and the completion generation runs it before any postflight). Formula installs move to the cask on `brew update` through the tap's `tap_migrations.json`, which the first cask release adds together with deleting `Formula/wapps.rb`.

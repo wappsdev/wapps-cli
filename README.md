@@ -1,62 +1,27 @@
 # wapps-cli
 
-Umbrella CLI for the wappsdev estate. Wraps:
+This repository holds the **secrets gate**: the Cloudflare Worker
+(`secrets-gate`, `gw.meapps.dev`) under [`worker/`](worker/). It decrypts
+secret values server-side, after CF Access and Google-group policy checks.
+Nothing encrypted is stored in a project repository.
 
-- **the secrets gate** — values are decrypted server-side and fetched on demand;
-  nothing encrypted is ever stored in a repo
-- **Tofu** — `wapps tofu` runs it with the project's secrets injected
-- **Coolify v4 REST API** — gap shim for the SierraJC Tofu provider's limits
-- **deploys** — through the company deploy-proxy
-- **doctor** — end-to-end dependency + access check
+The `wapps` CLI is no longer here. It moved to the private `wapps-platform`
+repository (`crates/cli`), and it is installed from there. The Go CLI and the
+earlier Rust copy were removed from this repository on 2026-10-13. The git
+history still contains them.
 
-Secrets are AI-safe by construction: agents use apply-only commands and never
-see a raw value. Value-printing and irreversible verbs refuse to run in an
-agent/CI context.
-
-## Install
+## Worker
 
 ```bash
-brew tap wappsdev/tap
-brew install wapps
+cd worker
+npm ci
+npm run typecheck
+npm test            # local workerd pool; no Cloudflare account needed
 ```
 
-`wapps` ships as a Homebrew cask (macOS and Linux, arm64 and x86_64); an
-install that came from the old formula moves to the cask on the next
-`brew update`. Or build it from a checkout:
-
-```bash
-cargo install --locked --path rust/crates/cli
-```
-
-The released binary is the Rust one under `rust/`. The Go source at the repo
-root is no longer released; it stays as the differential test's oracle.
-
-## First run
-
-```bash
-wapps doctor              # check deps + access
-wapps login               # CF Access SSO (needs cloudflared)
-# then just use it — an unbound repo asks once whether to bind itself
-```
-
-## Usage
-
-```bash
-wapps secrets list                        # key names (never values)
-wapps secrets apply                       # write declared targets (.env.local, …)
-wapps secrets exec -- pnpm dev            # inject secrets into a subprocess
-wapps tofu plan                           # tofu with the project's secrets injected
-wapps secrets set <KEY>                   # masked prompt → straight to the gate
-wapps secrets sync --dry-run              # what would change, by name
-wapps projects list                       # which projects exist
-wapps deploy gateway --wait               # deploy through the proxy
-```
-
-Every read verb takes `--project <name>` or `--config <path>/.wapps.yaml`, so you
-never have to `cd` into the project first.
+Deploys come only from an admin workstation, never from CI.
 
 ## Docs
 
-- [onboarding.md](docs/onboarding.md) — first 10 minutes, operator-facing
 - [architecture.md](docs/architecture.md) — how the system works
 - [CHANGELOG.md](CHANGELOG.md) — what shipped when
