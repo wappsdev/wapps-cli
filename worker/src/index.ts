@@ -45,7 +45,7 @@ import { AuditLogDO } from "./audit-do.js";
 import { SchedulerDO } from "./scheduler-do.js";
 import { scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
 import { checkRateLimit } from "./ratelimit.js";
-import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME } from "./audit.js";
+import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME, AUDIT_FIELD_MAX } from "./audit.js";
 import { handleTokenMint } from "./token.js";
 import { handleAdmin, AdminContext } from "./admin.js";
 import { fireAlert, ALERT } from "./alerts.js";
@@ -676,7 +676,9 @@ async function handleRead(
     token_jti: rctx.principal.kind === "machine" ? rctx.principal.jti : null,
   }));
   try {
-    await auditAppendBatch(env.AUDIT_LOG, rows);
+    // One id per read attempt: doStubFetch retries of this call reuse it, so a retry
+    // after the DO committed is deduped instead of logging the read twice.
+    await auditAppendBatch(env.AUDIT_LOG, rows, { requestId: crypto.randomUUID() });
   } catch {
     fireAlert(ctx, env, ALERT.A8, "audit DO unavailable on plaintext read", { project });
     return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable — plaintext refused");
@@ -700,6 +702,10 @@ async function dispatchWrite(
   op: WriteOp,
   auditVerb: string,
 ): Promise<Response> {
+  // The intent header lands in audit rows; the audit DO refuses a longer field.
+  if ((request.headers.get(INTENT_HEADER) ?? "").length > AUDIT_FIELD_MAX) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${AUDIT_FIELD_MAX} characters`);
+  }
   const doHeaders: Record<string, string> = {
     "content-type": "application/json",
     "x-principal-id": rctx.authz.id,

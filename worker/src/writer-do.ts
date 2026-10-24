@@ -27,7 +27,7 @@ import {
   SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
 import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL } from "./storage.js";
-import { auditAppendSync, auditAppendBatch, AuditRow, PrincipalType } from "./audit.js";
+import { auditAppendSync, auditAppendBatch, AuditAppendError, AuditRow, AUDIT_FIELD_MAX, PrincipalType } from "./audit.js";
 import { sha256Hex } from "./crypto/encoding.js";
 import {
   EscrowConfig,
@@ -96,10 +96,10 @@ interface PendingPointerEvent {
   body: string;
 }
 
-/** PendingOutcome, CAS sonrası yazılamayan per-key outcome batch'i (case c recovery). */
+/** PendingOutcome is a per-key outcome batch that could not be written after the CAS (case c recovery). */
 interface PendingOutcome {
   rows: AuditRow[];
-  idempotencyKey: string; // `${project}:${epoch}` — batch dedup marker
+  idempotencyKey: string; // `${project}:${epoch}:${manifestSha}`, the batch dedup marker
 }
 
 export class ProjectWriterDO {
@@ -346,10 +346,13 @@ export class ProjectWriterDO {
       if (updated === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { reason: "pointer CAS lost (out-of-band mutation)" });
     }
 
-    // 9. Audit OUTCOME (SENKRON, YALNIZCA pointer CAS başarısından SONRA): bulk
-    // op'lar için BİR SATIR / ANAHTAR, tek /append-batch ack'i (§6.4 — aggregate
-    // keys:N outcome YASAK; ledger offboard rotate oracle'ıdır). Idempotency-key
-    // `${project}:${epoch}` → post-CAS crash retry'ı çift satır üretmez (case c).
+    // 9. Audit OUTCOME (SYNC, ONLY after the pointer CAS succeeded): bulk ops write
+    // ONE ROW PER KEY with one /append-batch ack (§6.4: an aggregate keys:N outcome is
+    // FORBIDDEN; the ledger is the offboard rotate oracle). Idempotency key
+    // `${project}:${epoch}:${manifestSha}`: a post-CAS crash retry does not double the
+    // rows (case c). The manifest hash makes the key unique per commit: a deleted and
+    // re-created project restarts at epoch 1, and `${project}:1` alone would collide
+    // with the old project's receipt.
     const outcomeRows: AuditRow[] = touched.map((k) => ({
       principal: meta.principalId,
       principal_type: meta.principalType,
@@ -378,12 +381,16 @@ export class ProjectWriterDO {
         token_jti: meta.tokenJti,
       });
     }
-    const idemKey = `${project}:${epoch}`;
+    const idemKey = `${project}:${epoch}:${newManifestSha}`;
     try {
       await auditAppendBatch(this.auditLog, outcomeRows, { idempotencyKey: idemKey });
     } catch (err) {
-      console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
-      await this.enqueuePendingOutcome(project, epoch, outcomeRows, idemKey);
+      if (isTerminalRefusal(err)) {
+        await this.outcomeRefused(idemKey, err);
+      } else {
+        console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
+        await this.enqueuePendingOutcome(outcomeRows, idemKey);
+      }
     }
 
     // 10. Append-only pointer event (fail-soft; commit ZATEN kalıcı — retry marker).
@@ -445,11 +452,22 @@ export class ProjectWriterDO {
     });
   }
 
-  /** enqueuePendingOutcome, CAS sonrası yazılamayan outcome batch'ini kalıcılaştırır (case c). */
-  private async enqueuePendingOutcome(project: string, epoch: number, rows: AuditRow[], idempotencyKey: string): Promise<void> {
+  /** enqueuePendingOutcome persists an outcome batch that could not be written after
+   * the CAS (case c). It is keyed by the full idempotency key, so the outcome of a
+   * re-created project (whose epochs restart at 1) never overwrites an older one. */
+  private async enqueuePendingOutcome(rows: AuditRow[], idempotencyKey: string): Promise<void> {
     const rec: PendingOutcome = { rows, idempotencyKey };
-    await this.ctx.storage.put(`${PENDING_OUTCOME_PREFIX}${project}:${epoch}`, rec);
+    await this.ctx.storage.put(`${PENDING_OUTCOME_PREFIX}${idempotencyKey}`, rec);
     await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
+  }
+
+  /** outcomeRefused handles a deliberate refusal from the audit DO (409: the same key
+   * already holds a DIFFERENT input; 400: a row field is invalid). No retry can
+   * succeed: alert and stop; never loop. */
+  private async outcomeRefused(idempotencyKey: string, err: unknown): Promise<void> {
+    const code = err instanceof AuditAppendError && err.status === 400 ? "ROW_INVALID" : "IDEMPOTENCY_MISMATCH";
+    console.error(`writer-do: audit outcome refused with ${code}, dropped (${idempotencyKey})`);
+    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, ALERT.A8, `audit outcome refused: ${code}; outcome rows not written`, { idempotencyKey }).catch(() => {});
   }
 
   /** enqueuePendingPointerEvent, yazılamayan pointer-event'i pending işaretler + alarm kurar. */
@@ -480,9 +498,14 @@ export class ProjectWriterDO {
     const pendingOutcomes = await this.ctx.storage.list<PendingOutcome>({ prefix: PENDING_OUTCOME_PREFIX });
     for (const [storageKey, rec] of pendingOutcomes) {
       try {
-        await auditAppendBatch(this.auditLog, rec.rows, { idempotencyKey: rec.idempotencyKey });
+        await auditAppendBatch(this.auditLog, rec.rows.map(clampLegacyIntent), { idempotencyKey: rec.idempotencyKey });
         await this.ctx.storage.delete(storageKey);
       } catch (err) {
+        if (isTerminalRefusal(err)) {
+          await this.ctx.storage.delete(storageKey);
+          await this.outcomeRefused(rec.idempotencyKey, err);
+          continue;
+        }
         remaining++;
         console.error(`writer-do: audit outcome retry still failing (${storageKey})`, err);
       }
@@ -493,6 +516,24 @@ export class ProjectWriterDO {
     remaining += escrowRemaining;
     if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + Math.min(POINTER_EVENT_RETRY_MS, escrowRetryMs));
   }
+}
+
+/**
+ * clampLegacyIntent shortens the intent of a pending outcome queued before the
+ * AUDIT_FIELD_MAX cap existed (its X-Wapps-Intent had no bound then). The cut is
+ * explicit: the text ends with "…[truncated from N]", N = the original length.
+ * New commits never need it: the edge refuses a longer intent header.
+ */
+function clampLegacyIntent(row: AuditRow): AuditRow {
+  const intent = row.intent;
+  if (typeof intent !== "string" || intent.length <= AUDIT_FIELD_MAX) return row;
+  const marker = `…[truncated from ${intent.length}]`;
+  return { ...row, intent: intent.slice(0, AUDIT_FIELD_MAX - marker.length) + marker };
+}
+
+/** isTerminalRefusal: the audit DO refused on purpose (400 ROW_INVALID, 409 IDEMPOTENCY_MISMATCH); a retry cannot succeed. */
+function isTerminalRefusal(err: unknown): boolean {
+  return err instanceof AuditAppendError && (err.status === 400 || err.status === 409);
 }
 
 /** emptyToNull, boş/absent header string'ini null'a çevirir (audit alanları). */

@@ -196,7 +196,7 @@ export async function resetWorld(): Promise<void> {
   try {
     await env.AUDIT_DB.prepare(`DELETE FROM audit`).run();
   } catch {
-    /* şema henüz yok — ilk erişimde kurulur */
+    /* schema does not exist yet; the first append creates it */
   }
   // Audit DO storage'ını DOĞRULAYARAK sıfırla: deleteAll transient invalidation'da
   // sessizce başarısız kalırsa eski `idem:<project>:<epoch>` marker'ları yaşar ve

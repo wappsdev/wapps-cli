@@ -27,6 +27,23 @@ export interface AuditRow {
   token_jti?: string | null;
 }
 
+/** AUDIT_FIELD_MAX caps every text field of an audit row (UTF-16 code units). The
+ * audit DO refuses a longer field with 400 before any write; edge handlers check
+ * caller-supplied text (X-Wapps-Intent, rotate-plan identity) against it first. */
+export const AUDIT_FIELD_MAX = 512;
+
+/** AuditAppendError is a refused or failed append. 400 (ROW_INVALID) and 409
+ * (IDEMPOTENCY_MISMATCH) = the DO refused it on purpose: a retry with the same input
+ * cannot succeed. */
+export class AuditAppendError extends Error {
+  constructor(
+    route: string,
+    readonly status: number,
+  ) {
+    super(`audit ${route} failed: ${status}`);
+  }
+}
+
 export interface AppendResult {
   seq: number;
   hash: string;
@@ -49,29 +66,31 @@ export async function auditAppendSync(ns: DurableObjectNamespace, row: AuditRow,
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ row, idempotencyKey }),
   });
-  if (!res.ok) throw new Error(`audit append failed: ${res.status}`);
+  if (!res.ok) throw new AuditAppendError("append", res.status);
   return (await res.json()) as AppendResult;
 }
 
 /**
- * auditAppendBatch, birden çok satırı TEK exclusive turda append eder — bulk
- * op'ların per-key satırları için TEK zincir append, TEK ack, TEK DO round-trip
- * (§6.4). idempotencyKey verilirse (örn. commit outcome `project:epoch`) DO tüm
- * batch'i dedup eder (crash-recovery retry çift satır üretmez). batchCounter
- * ingest-liveness için (A8 backlog/silence).
+ * auditAppendBatch appends many rows in ONE exclusive turn: the per-key rows of a
+ * bulk op get one chain append, one ack, one DO round trip (§6.4). With an
+ * idempotencyKey (e.g. the commit outcome `project:epoch:manifestSha`) the DO dedups
+ * the whole batch for good (a crash-recovery retry does not double the rows). A
+ * requestId dedups only for a short time: it covers the worker→DO retries of one
+ * call. batchCounter is for ingest liveness (A8 backlog/silence). Throws
+ * AuditAppendError.
  */
 export async function auditAppendBatch(
   ns: DurableObjectNamespace,
   rows: AuditRow[],
-  opts?: { batchCounter?: number; idempotencyKey?: string },
+  opts?: { batchCounter?: number; idempotencyKey?: string; requestId?: string },
 ): Promise<void> {
   if (rows.length === 0) return;
   const res = await doStubFetch(makeAuditStub(ns), "https://audit/append-batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ rows, batchCounter: opts?.batchCounter, idempotencyKey: opts?.idempotencyKey }),
+    body: JSON.stringify({ rows, batchCounter: opts?.batchCounter, idempotencyKey: opts?.idempotencyKey, requestId: opts?.requestId }),
   });
-  if (!res.ok) throw new Error(`audit append-batch failed: ${res.status}`);
+  if (!res.ok) throw new AuditAppendError("append-batch", res.status);
 }
 
 /**

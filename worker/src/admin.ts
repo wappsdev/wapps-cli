@@ -1,18 +1,19 @@
-// Admin/control-plane rotaları (SPEC §7.6 write-AUD path kümesi: /v1/admin/*).
-// ZK tasarımın pending-ops töre kuyruğu SİLİNDİ (§0.2) — policy düzenlemeleri
-// DOĞRUDAN admin yazımlarıdır (§4.5). Rotalar:
-//   GET  /v1/admin/policy           → aktif policy (admin verb)
-//   PUT  /v1/admin/policy           → CAS'lı policy yazımı (§4.1/§4.4), audit + A9
-//   DELETE /v1/admin/projects/{p}   → projenin TÜM verisini kaldırır
+// Admin/control-plane routes (SPEC §7.6 write-AUD path set: /v1/admin/*).
+// The ZK design's pending-ops queue was DELETED (§0.2); policy edits are DIRECT
+// admin writes (§4.5). Routes:
+//   GET  /v1/admin/policy           → active policy (admin verb)
+//   PUT  /v1/admin/policy           → CAS policy write (§4.1/§4.4), audit + A9
+//   DELETE /v1/admin/projects/{p}   → removes ALL data of a project
 //   GET  /v1/admin/rotate-plan      → audit ledger = rotate-set oracle (§6.3)
 //   POST /v1/admin/token/revoke     → minted-token jti revoke (§5.3)
-//   POST /v1/admin/rewrap-kek       → MASTER_KEK rotasyonu re-wrap turu (§2.5)
+//   POST /v1/admin/rewrap-kek       → MASTER_KEK rotation re-wrap round (§2.5)
 //   POST /v1/admin/scheduler/arm    → SchedulerDO one-shot bootstrap (P2.4, §8.3)
+//   POST /v1/admin/audit/reconcile  → adopt a pinned legacy audit suffix (root admin only)
 //
-// `admin` verb'i GLOBAL op'ları kapsar (§4.2: policy edit, rotate-plan, token
-// revoke, rewrap-kek) — bu yüzden admin kontrolü selector+verb üzerindendir
-// (proje glob'ları global op'ta anlamsız); kök çapa ADMIN_EMAILS (§4.5). Tüm bu
-// rotalar Access WRITE app'inin (15 dk + WebAuthn) arkasındadır (§3.2).
+// The `admin` verb covers GLOBAL ops (§4.2: policy edit, rotate-plan, token revoke,
+// rewrap-kek), so the admin check is on selector+verb (project globs mean nothing for
+// a global op); the root anchor is ADMIN_EMAILS (§4.5). All these routes sit behind
+// the Access WRITE app (15 min + WebAuthn) (§3.2).
 
 import { HTTP, jsonError, jsonOK } from "./errors.js";
 import { Env, Principal } from "./auth.js";
@@ -31,7 +32,7 @@ import {
 import { deleteProjectObjects, deriveProjects, getObject, keyCurrent, keyManifest, validProject } from "./storage.js";
 import { parseCurrentPointer, parseManifest } from "./manifest.js";
 import { ensureSchema } from "./schema.js";
-import { auditAppendSync, auditReadAsync, AuditRow, ipOf, rayOf } from "./audit.js";
+import { auditAppendSync, auditReadAsync, AuditRow, AUDIT_DO_NAME, AUDIT_FIELD_MAX, ipOf, rayOf } from "./audit.js";
 import { revokeJti } from "./token.js";
 import { fireAlert, ALERT } from "./alerts.js";
 import { doStubFetch } from "./do-util.js";
@@ -161,6 +162,7 @@ export async function handleAdmin(
     const url = new URL(request.url);
     const identity = url.searchParams.get("identity") ?? "";
     if (!identity) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "identity required");
+    if (identity.length > AUDIT_FIELD_MAX) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `identity exceeds ${AUDIT_FIELD_MAX} characters`);
     const since = url.searchParams.get("since");
     if (since && Number.isNaN(Date.parse(since))) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "since not RFC3339");
     const assumePolicy = url.searchParams.get("assume_policy") === "1";
@@ -332,6 +334,48 @@ export async function handleAdmin(
       return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable");
     }
     return jsonOK(body);
+  }
+
+  // POST /v1/admin/audit/reconcile {seq, hash}: adopt a legacy D1 suffix that no
+  // append intent covers (rows the pre-intent code left after a canceled append).
+  // The chain hash has no key, so only a human admin may vouch for such rows: they
+  // read the last row from D1, check it independently and pin it here. The DO adopts
+  // it only when it is D1's last row and the chain from the DO head recomputes to it.
+  if (parts[2] === "audit" && parts[3] === "reconcile" && parts.length === 4 && request.method === "POST") {
+    if (principal.kind !== "human") {
+      auditReadAsync(ctx, env.AUDIT_LOG, { ...adminRow(actx.authz.id, principal, "audit.reconcile", request), decision: "deny", intent: "human_required" });
+      return jsonError(HTTP.FORBIDDEN, "HUMAN_REQUIRED", "audit reconcile needs a human admin; service tokens are refused");
+    }
+    // Root admins only (ADMIN_EMAILS, §4.5): a group rule that grants `admin` lives in
+    // policy.json, and the policy is itself an object an attacker may try to bend.
+    if (!actx.adminEmails.includes(principal.email)) {
+      auditReadAsync(ctx, env.AUDIT_LOG, { ...adminRow(actx.authz.id, principal, "audit.reconcile", request), decision: "deny", intent: "root_admin_required" });
+      return jsonError(HTTP.FORBIDDEN, "ROOT_ADMIN_REQUIRED", "audit reconcile needs a root admin (ADMIN_EMAILS)");
+    }
+    let body: { seq?: unknown; hash?: unknown };
+    try {
+      body = (await request.json()) as { seq?: unknown; hash?: unknown };
+    } catch {
+      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
+    }
+    const { seq, hash } = body;
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1 || typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) {
+      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body must be {seq: positive integer, hash: 64 lowercase hex}");
+    }
+    let res: Response;
+    try {
+      res = await doStubFetch(() => env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME)), "https://audit/reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ seq, hash, row: adminRow(actx.authz.id, principal, "audit.reconcile", request) }),
+      });
+    } catch {
+      return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit DO unavailable");
+    }
+    const out = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.status === HTTP.OK) return jsonOK(out);
+    if (res.status === HTTP.CONFLICT) return jsonError(HTTP.CONFLICT, "RECONCILE_REFUSED", String(out.message ?? "reconcile refused"));
+    return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", String(out.message ?? "audit DO error"));
   }
 
   return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown admin route");
