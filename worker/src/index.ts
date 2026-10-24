@@ -678,7 +678,7 @@ async function handleRead(
   try {
     // One id per read attempt: doStubFetch retries of this call reuse it, so a retry
     // after the DO committed is deduped instead of logging the read twice.
-    await auditAppendBatch(env.AUDIT_LOG, rows, { idempotencyKey: `read:${crypto.randomUUID()}` });
+    await auditAppendBatch(env.AUDIT_LOG, rows, { requestId: crypto.randomUUID() });
   } catch {
     fireAlert(ctx, env, ALERT.A8, "audit DO unavailable on plaintext read", { project });
     return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit unavailable — plaintext refused");

@@ -4,11 +4,12 @@
 //
 // The chain hash has NO key: anyone who can write D1 and knows the head can build
 // rows that verify. So the DO never adopts rows just because they chain. It adopts
-// only (a) rows that match its OWN durable intent, written before the D1 write, or
-// (b) a legacy suffix that a human admin pins with {seq, hash} via reconcile.
+// only (a) rows that match its OWN durable intent (current or abandoned), written
+// before the D1 write, or (b) a legacy suffix that a root admin pins with
+// {seq, hash} via reconcile.
 
 import { beforeAll, beforeEach, afterEach, describe, it, expect } from "vitest";
-import { env } from "cloudflare:test";
+import { env, runDurableObjectAlarm } from "cloudflare:test";
 import {
   ensureJwks,
   resetWorld,
@@ -50,11 +51,46 @@ beforeEach(async () => {
   groupsByEmail.set("writer@wapps.dev", ["developers@wapps.co"]);
 });
 afterEach(async () => {
-  // A test may set escrow on the shared DO instance; never let it leak.
+  // A test may set escrow or a D1 hook on the shared DO instance; never let it leak.
   await runInDoRetry(auditStub(), (instance: unknown) => {
     (instance as { escrow: EscrowConfig | null }).escrow = null;
   });
+  if (restoreDb) await restoreDb();
+  restoreDb = null;
 });
+
+let restoreDb: (() => Promise<void>) | null = null;
+
+/** hookDb replaces the audit DO's D1 binding with a wrapper built from the real one
+ * (fault and race injection at the D1 boundary). afterEach restores it. */
+async function hookDb(make: (real: D1Database) => Partial<D1Database>): Promise<void> {
+  let saved: D1Database | undefined;
+  await runInDoRetry(auditStub(), (instance: unknown) => {
+    const i = instance as { db: D1Database };
+    saved = i.db;
+    const real = i.db;
+    i.db = { prepare: (sql: string) => real.prepare(sql), batch: (s: D1PreparedStatement[]) => real.batch(s), ...make(real) } as D1Database;
+  });
+  restoreDb = async () => {
+    await runInDoRetry(auditStub(), (instance: unknown) => {
+      if (saved) (instance as { db: D1Database }).db = saved;
+    });
+  };
+}
+
+/** failNextBatch makes the DO's next D1 batch fail once: "drop" = it never runs
+ * (rolled back); "commit" = it runs, then the call is canceled. */
+async function failNextBatch(mode: "drop" | "commit"): Promise<void> {
+  let armed = true;
+  await hookDb((real) => ({
+    batch: async (stmts: D1PreparedStatement[]) => {
+      if (!armed) return real.batch(stmts);
+      armed = false;
+      if (mode === "commit") await real.batch(stmts);
+      throw new Error("injected: D1 batch canceled");
+    },
+  }));
+}
 
 function auditStub(): DurableObjectStub {
   return env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME));
@@ -214,6 +250,7 @@ describe("legacy suffix: rows in D1 beyond the head with no intent (the live inc
     expect(rec.intent).toContain(`${old.seq}:${old.hash}`);
     expect(rec.intent).toContain(`${old.seq + 2}:${h2}`);
     expectContinuousChain(rows);
+    expect(discordCalls.some((c) => c.body.includes("A8") && c.body.includes("audit chain reconciled"))).toBe(true);
 
     const rd = await readValue("DATABASE_URL");
     expect(rd.status).toBe(200);
@@ -238,19 +275,117 @@ describe("legacy suffix: rows in D1 beyond the head with no intent (the live inc
     }
   });
 
-  it("RECONCILE AUTHZ: a non-admin human and an admin-granted service token are refused; nothing changes", async () => {
+  it("RECONCILE AUTHZ: a non-admin human, an admin-granted service token and a group admin are refused, and each refusal is audited", async () => {
+    // Healthy chain: the deny rows CAN be written, so their presence is a real check.
     await seedPolicy([...defaultRules(), { service: "svc-ops", projects: ["*"], keys: ["*"], verbs: ["*"] }]);
+    groupsByEmail.set("boss@wapps.dev", ["admins@wapps.co"]);
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    const pin = { seq: old.seq, hash: old.hash };
+
+    const human = await reconcile(pin, validClaimsWrite("writer@wapps.dev"));
+    expect(human.status).toBe(403);
+    const svc = await reconcile(pin, serviceTokenClaims("svc-ops", { aud: [AUD_WRITE] }));
+    expect(svc.status).toBe(403);
+    expect(((await svc.json()) as { error: string }).error).toBe("HUMAN_REQUIRED");
+    const groupAdmin = await reconcile(pin, validClaimsWrite("boss@wapps.dev"));
+    expect(groupAdmin.status).toBe(403);
+    expect(((await groupAdmin.json()) as { error: string }).error).toBe("ROOT_ADMIN_REQUIRED");
+
+    const rows = await allAuditRows();
+    const denies = rows.filter((r) => r.decision === "deny");
+    expect(denies.some((r) => r.principal === "human:writer@wapps.dev")).toBe(true);
+    expect(denies.some((r) => r.principal === "service:svc-ops" && r.verb === "audit.reconcile")).toBe(true);
+    expect(denies.some((r) => r.principal === "human:boss@wapps.dev" && r.verb === "audit.reconcile")).toBe(true);
+    expect(rows.filter((r) => r.verb === "audit.reconcile" && r.decision === "allow")).toEqual([]);
+    expectContinuousChain(rows);
+  });
+
+  it("RECONCILE TOCTOU: D1 replaced with another valid continuation after verification never becomes the head or escrow", async () => {
+    expect((await appendBatch([row("K0")])).status).toBe(200);
+    await setEscrow();
+    const original = new Map<number, string>();
+    let prev = (await doHead()).hash;
+    for (let seq = 2; seq <= 251; seq++) {
+      prev = await writeRawRow(seq, prev, row(`K${seq}`));
+      original.set(seq, prev);
+    }
+    const pin = { seq: 251, hash: prev };
+
+    // After the third suffix page read (the end of a full verification pass), a D1
+    // writer swaps rows 102..251 for a forged continuation that still chains from 101.
+    const forged = new Set<string>();
+    let pageReads = 0;
+    await hookDb((real) => ({
+      prepare: (sql: string) => {
+        const stmt = real.prepare(sql);
+        if (!/WHERE seq > \? AND seq <= \?/.test(sql)) return stmt;
+        return {
+          bind: (...args: unknown[]) => ({
+            all: async () => {
+              const res = await stmt.bind(...args).all();
+              if (++pageReads === 3) {
+                await real.prepare("DELETE FROM audit WHERE seq >= 102").run();
+                let h = original.get(101)!;
+                for (let seq = 102; seq <= 251; seq++) {
+                  h = await writeRawRow(seq, h, row(`K${seq}`, { principal: "human:forger@wapps.dev" }));
+                  forged.add(h);
+                }
+              }
+              return res;
+            },
+          }),
+        } as unknown as D1PreparedStatement;
+      },
+    }));
+
+    await reconcile(pin);
+    expect(forged.size).toBe(150);
+    const head = await doHead();
+    expect(forged.has(head.hash)).toBe(false);
+    const segs = await pendingSegments();
+    expect(segs.filter((s) => forged.has(s.hash))).toEqual([]);
+    for (const s of segs) if (original.has(s.seq)) expect(s.hash).toBe(original.get(s.seq));
+  });
+
+  it("RECONCILE ROW DROPPED: if the audit.reconcile write rolls back, the next append writes it first", async () => {
     expect((await appendBatch([row("K1")])).status).toBe(200);
     const old = await doHead();
     const h2 = await writeRawRow(2, old.hash, row("K2"));
+    await failNextBatch("drop");
+    expect((await reconcile({ seq: 2, hash: h2 })).status).toBe(503);
 
-    const human = await reconcile({ seq: 2, hash: h2 }, validClaimsWrite("writer@wapps.dev"));
-    expect(human.status).toBe(403);
-    const svc = await reconcile({ seq: 2, hash: h2 }, serviceTokenClaims("svc-ops", { aud: [AUD_WRITE] }));
-    expect(svc.status).toBe(403);
-    expect(((await svc.json()) as { error: string }).error).toBe("HUMAN_REQUIRED");
-    expect(await doHead()).toEqual(old);
-    expect((await allAuditRows()).filter((r) => r.verb === "audit.reconcile")).toEqual([]);
+    const next = await appendBatch([row("K3")]);
+    expect(next.status).toBe(200);
+    const rows = await allAuditRows();
+    expect(rows.map((r) => r.verb)).toEqual(["value.read", "value.read", "audit.reconcile", "value.read"]);
+    expect(rows[2].principal).toBe(`human:${ADMIN_EMAIL}`);
+    expectContinuousChain(rows);
+
+    // A retry of the same pin returns the completed result instead of 409.
+    const retry = await reconcile({ seq: 2, hash: h2 });
+    expect(retry.status).toBe(200);
+    expect(((await retry.json()) as { row: { seq: number } }).row.seq).toBe(3);
+    expect((await allAuditRows()).filter((r) => r.verb === "audit.reconcile").length).toBe(1);
+  });
+
+  it("RECONCILE ROW COMMITTED, CALL CANCELED: a retry of the same pin returns the result; the row is written once", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    const h2 = await writeRawRow(2, old.hash, row("K2"));
+    await failNextBatch("commit");
+    expect((await reconcile({ seq: 2, hash: h2 })).status).toBe(503);
+
+    const retry = await reconcile({ seq: 2, hash: h2 });
+    expect(retry.status).toBe(200);
+    const body = (await retry.json()) as { from: { seq: number }; to: { seq: number }; row: { seq: number } };
+    expect(body.from.seq).toBe(1);
+    expect(body.to.seq).toBe(2);
+    expect(body.row.seq).toBe(3);
+    expect((await appendBatch([row("K4")])).status).toBe(200);
+    const rows = await allAuditRows();
+    expect(rows.filter((r) => r.verb === "audit.reconcile").length).toBe(1);
+    expectContinuousChain(rows);
   });
 
   it("RECONCILE BAD LINK: a pinned tail whose chain from the head does not recompute is refused", async () => {
@@ -363,6 +498,47 @@ describe("intent: the DO's own record of an append, written before the D1 write"
     expect((await appendBatch([row("K4")])).status).toBe(503);
     expect(await doHead()).toEqual(old);
   });
+
+  it("LATE LANDING: a batch that commits after its intent was given up is still adopted by the next append", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    // Batch A is canceled before D1 ran it. The next append (B) finds no rows and
+    // gives up A's intent; A's D1 batch then lands late, just before B's.
+    let saved: D1PreparedStatement[] | null = null;
+    let calls = 0;
+    await hookDb((real) => ({
+      batch: async (stmts: D1PreparedStatement[]) => {
+        calls++;
+        if (calls === 1) {
+          saved = stmts;
+          throw new Error("injected: canceled before D1 ran it");
+        }
+        if (calls === 2 && saved) await real.batch(saved);
+        return real.batch(stmts);
+      },
+    }));
+    expect((await appendBatch([row("A2"), row("A3")])).status).toBe(503);
+    expect((await appendBatch([row("B2")])).status).toBe(503); // B collides with A's late rows
+
+    const c = await appendBatch([row("C4")]);
+    expect(c.status).toBe(200);
+    expect(((await c.json()) as { seq: number }).seq).toBe(4);
+    const rows = await allAuditRows();
+    expect(rows.map((r) => r.key)).toEqual(["K1", "A2", "A3", "C4"]);
+    expectContinuousChain(rows);
+  });
+
+  it("INTENT SIZE: the pending intent of a 2500-row batch stays far below the 128 KiB DO value limit, and recovers", async () => {
+    const rows = Array.from({ length: 2500 }, (_, i) => row(`B${i}`));
+    await injectCommitFault();
+    expect((await appendBatch(rows)).status).toBe(503);
+    const intent = await runInDoRetry(auditStub(), (_i: unknown, state: DurableObjectState) => state.storage.get("intent"));
+    expect(intent).toBeTruthy();
+    expect(JSON.stringify(intent).length).toBeLessThan(1024);
+
+    const next = await appendBatch([row("after")]);
+    expect(next.status).toBe(200);
+    expect(((await next.json()) as { seq: number }).seq).toBe(2501);
+  });
 });
 
 describe("boundary: D1's last row must be the head, on every append", () => {
@@ -473,5 +649,88 @@ describe("idempotency receipts", () => {
     expect(failed).toBe(true);
     const reads = (await allAuditRows()).slice(before).filter((r) => r.verb === "value.read");
     expect(reads.length).toBe(1);
+  });
+
+  it("TWO READS: two separate plaintext reads produce two audit rows", async () => {
+    await putValue("DATABASE_URL", "v");
+    const before = (await allAuditRows()).length;
+    expect((await readValue("DATABASE_URL")).status).toBe(200);
+    expect((await readValue("DATABASE_URL")).status).toBe(200);
+    const reads = (await allAuditRows()).slice(before).filter((r) => r.verb === "value.read");
+    expect(reads.length).toBe(2);
+  });
+
+  it("READ RECEIPTS ARE BOUNDED: a read leaves no permanent receipt in DO storage", async () => {
+    await putValue("DATABASE_URL", "v");
+    for (let i = 0; i < 3; i++) expect((await readValue("DATABASE_URL")).status).toBe(200);
+    const keys = await runInDoRetry(auditStub(), async (_i: unknown, state: DurableObjectState) => [...(await state.storage.list({ prefix: "idem:read:" })).keys()]);
+    expect(keys).toEqual([]);
+  });
+
+  it("LEGACY RECEIPT: a receipt written before payload binding (no inputDigest) still dedups", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const head = await doHead();
+    await runInDoRetry(auditStub(), (_i: unknown, state: DurableObjectState) => state.storage.put("idem:vaulter:3", { seq: head.seq, hash: head.hash }));
+    const res = await appendBatch([row("K9", { verb: "key.set" })], "vaulter:3");
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { deduped?: boolean }).deduped).toBe(true);
+    expect((await allAuditRows()).length).toBe(1);
+  });
+});
+
+describe("writer outcome retries", () => {
+  function writerStub(): DurableObjectStub {
+    return env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName("vaulter"));
+  }
+  afterEach(async () => {
+    await runInDoRetry(writerStub(), (_i: unknown, state: DurableObjectState) => state.storage.deleteAll());
+  });
+
+  it("TERMINAL 409: an outcome retry refused with IDEMPOTENCY_MISMATCH is dropped and alerted, not retried forever", async () => {
+    await putValue("DATABASE_URL", "v");
+    expect((await appendBatch([row("OTHER", { verb: "key.set" })], "vaulter:77:abc")).status).toBe(200);
+    await runInDoRetry(writerStub(), async (_i: unknown, state: DurableObjectState) => {
+      await state.storage.put("pending-audit-outcome:vaulter:77:abc", { rows: [row("MINE", { verb: "key.set" })], idempotencyKey: "vaulter:77:abc" });
+      await state.storage.setAlarm(Date.now() + 60_000);
+    });
+    expect(await runDurableObjectAlarm(writerStub())).toBe(true);
+    const left = await runInDoRetry(writerStub(), async (_i: unknown, state: DurableObjectState) => [...(await state.storage.list({ prefix: "pending-audit-outcome:" })).keys()]);
+    expect(left).toEqual([]);
+    expect(discordCalls.some((c) => c.body.includes("A8") && c.body.includes("IDEMPOTENCY_MISMATCH"))).toBe(true);
+  });
+
+  it("PENDING KEY: a queued outcome is stored under project:epoch:manifestSha, so a re-created project cannot overwrite it", async () => {
+    const realNs = env.AUDIT_LOG;
+    const outcomeDown = {
+      idFromName: (n: string) => realNs.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const real = realNs.get(id);
+        return {
+          fetch: async (input: string, init?: RequestInit) => {
+            if (input.endsWith("/append-batch")) throw new Error("audit down");
+            return real.fetch(input, init);
+          },
+        };
+      },
+    } as unknown as DurableObjectNamespace;
+    let saved: DurableObjectNamespace | undefined;
+    await runInDoRetry(writerStub(), (instance: unknown) => {
+      const w = instance as { auditLog: DurableObjectNamespace };
+      saved = w.auditLog;
+      w.auditLog = outcomeDown;
+    });
+    try {
+      const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
+      const w = await callGate("/v1/projects/vaulter/keys/DATABASE_URL", { method: "PUT", headers: authHeader(jwt), body: JSON.stringify({ value: "v" }) });
+      expect(w.status).toBe(200);
+      const { manifestSha256 } = (await w.json()) as { manifestSha256: string };
+      const keys = await runInDoRetry(writerStub(), async (_i: unknown, state: DurableObjectState) => [...(await state.storage.list({ prefix: "pending-audit-outcome:" })).keys()]);
+      expect(keys).toEqual([`pending-audit-outcome:vaulter:1:${manifestSha256}`]);
+    } finally {
+      await runInDoRetry(writerStub(), (instance: unknown) => {
+        if (saved) (instance as { auditLog: DurableObjectNamespace }).auditLog = saved;
+      });
+      await runInDoRetry(writerStub(), (_i: unknown, state: DurableObjectState) => state.storage.deleteAll());
+    }
   });
 });

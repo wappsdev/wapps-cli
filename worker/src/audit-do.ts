@@ -10,16 +10,23 @@
 // Crash safety (incident 2026-10-24: a canceled append left rows in D1 beyond the
 // head, and every later append hit a seq conflict). The chain hash has NO key, so
 // anyone who can write D1 and knows the head can build rows that verify. The DO
-// therefore never adopts rows only because they chain. One append is:
-//   1. put an INTENT in DO storage: the seq range and the hash of every row;
+// therefore adopts D1 rows only against a commitment it holds itself. One append is:
+//   1. put an INTENT in DO storage: seq range + the hash of its LAST row. Because each
+//      hash covers the previous one, that hash commits to every row of the range, so
+//      the intent has a fixed size whatever the batch size;
 //   2. write all rows to D1 in ONE batch (a D1 batch is one transaction);
-//   3. ONE DO storage transaction: new head + idempotency receipt + escrow outbox,
-//      and delete the intent.
-// Before every append the DO resolves a pending intent: D1 holds exactly the
-// intent's rows → adopt; D1 holds none of them → drop the intent; anything else →
-// fail closed. Then D1's last row must be the head (same seq, same hash). Rows that
-// no intent covers (the legacy suffix of the incident, or a forgery) stay
-// fail-closed (503 + alert A8) until a human admin pins them with reconcile.
+//   3. ONE DO storage transaction: new head + receipt + escrow outbox, delete intent.
+// recover() runs before every append. D1 rows beyond the head are adopted only when
+// they are exactly the range of the current intent or of a recently abandoned one
+// (a batch that landed after its intent was given up). An intent with none of its
+// rows in D1 is abandoned, not forgotten. Anything else fails closed (503 + A8).
+// Then D1's last row must be the head (same seq, same hash).
+//
+// A suffix that no intent covers (the incident's rows, written by the pre-intent
+// code) is adopted only through reconcile: a root admin pins {seq, hash}; the DO
+// verifies the chain from its head to the pin in ONE read and adopts exactly the
+// links it verified. The adoption and a durable reconcile record commit together;
+// recover() writes the record's audit.reconcile row before any other append.
 
 import { sha256Hex, utf8, bytesToB64 } from "./crypto/encoding.js";
 import { ensureSchema } from "./schema.js";
@@ -56,13 +63,19 @@ interface ChainLink {
   values: (string | number | null)[];
 }
 
-/** Intent is the DO's durable record of an append, written BEFORE its D1 write. */
-interface Intent {
+/** Ticket names the caller of an append for dedup: a durable idempotencyKey (writer
+ * outcomes, kept forever) or a short-lived requestId (one plaintext read attempt). */
+interface Ticket {
   idempotencyKey: string | null;
+  requestId: string | null;
   inputDigest: string;
+}
+
+/** Intent is the DO's durable commitment to an append, written BEFORE its D1 write. */
+interface Intent extends Ticket {
   firstSeq: number;
   lastSeq: number;
-  rowHashes: string[]; // one per row, in seq order; the last one is the new head hash
+  lastHash: string;
 }
 
 /** Receipt is stored with the head, per idempotency key. inputDigest is absent in
@@ -71,6 +84,26 @@ interface Receipt {
   seq: number;
   hash: string;
   inputDigest?: string;
+}
+
+/** RecentRequest is a requestId receipt in the bounded ring. */
+interface RecentRequest extends Receipt {
+  id: string;
+}
+
+/** ReconcileRecord is a reconcile whose adoption is committed but whose own audit
+ * row may not be written yet. recover() finishes it before any other append. */
+interface ReconcileRecord {
+  from: ChainHead;
+  to: ChainHead;
+  key: string; // idempotency key of the audit.reconcile row
+  row: AuditRow & { ts: string };
+}
+
+interface ReconcileResult {
+  from: ChainHead;
+  to: ChainHead;
+  row: ChainHead;
 }
 
 /** StoredRow is the shape of a D1 `audit` row as the DO reads it back. */
@@ -88,11 +121,20 @@ class AuditRefused extends Error {
 
 const HEAD_KEY = "head";
 const INTENT_KEY = "intent";
+const ABANDONED_KEY = "abandoned-intents";
+const ABANDONED_MAX = 4;
 const RECEIPT_PREFIX = "idem:";
+const RECENT_KEY = "recent-requests";
+// A requestId only has to survive the worker→DO retries of one call (milliseconds).
+// If it is evicted anyway, the cost is one duplicate audit row, never a lost one.
+const RECENT_MAX = 64;
+const RECONCILE_KEY = "reconcile:pending";
+const RECONCILE_DONE_PREFIX = "reconcile:done:";
+// reconcile holds the verified links in memory and adopts them in one transaction.
+const RECONCILE_MAX_ROWS = 1000;
 const INGEST_TS_KEY = "ingest:lastTs";
 const INGEST_COUNTER_KEY = "ingest:lastCounter";
-// reconcile reads the legacy suffix in pages of this many rows; memory stays bounded.
-const RECONCILE_PAGE = 100;
+const READ_PAGE = 100;
 
 const ROW_COLUMNS = "seq, ts, principal, principal_type, project, key, verb, decision, intent, ip, cf_ray, token_jti, prev_hash, hash";
 const INSERT_ROW_SQL = `INSERT INTO audit (${ROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
@@ -101,7 +143,7 @@ const ROWS_AFTER_SQL = `SELECT ${ROW_COLUMNS} FROM audit WHERE seq > ? AND seq <
 
 /**
  * chainLink applies the pinned chain rule. It is the ONLY place that builds
- * row_json: appends, intent recovery and reconcile all call it, so they cannot diverge.
+ * row_json: appends, recovery and reconcile all call it, so they cannot diverge.
  */
 function chainLink(seq: number, prevHash: string, row: AuditRow & { ts: string }): ChainLink {
   // The order is FIXED (§6.5 chain rule): 12 fields, null = absent.
@@ -123,9 +165,8 @@ function chainLink(seq: number, prevHash: string, row: AuditRow & { ts: string }
   return { seq, prevHash, rowJson, hash: sha256Hex(utf8(prevHash + "\n" + rowJson)), values };
 }
 
-/** linkMatches: a stored row is exactly the link the chain rule gives for it. */
-function linkMatches(r: StoredRow, link: ChainLink): boolean {
-  return r.seq === link.seq && r.prev_hash === link.prevHash && r.hash === link.hash;
+function sameHead(a: ChainHead, b: ChainHead): boolean {
+  return a.seq === b.seq && a.hash === b.hash;
 }
 
 export class AuditLogDO {
@@ -166,13 +207,13 @@ export class AuditLogDO {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/append" && request.method === "POST") {
-        const { row, idempotencyKey } = (await request.json()) as { row: AuditRow; idempotencyKey?: string };
-        const res = await this.runExclusive(() => this.appendOne(row, idempotencyKey));
+        const b = (await request.json()) as { row: AuditRow; idempotencyKey?: string; requestId?: string };
+        const res = await this.runExclusive(() => this.appendOne(b.row, b));
         return json(res);
       }
       if (url.pathname === "/append-batch" && request.method === "POST") {
-        const { rows, batchCounter, idempotencyKey } = (await request.json()) as { rows: AuditRow[]; batchCounter?: number; idempotencyKey?: string };
-        const res = await this.runExclusive(() => this.appendBatch(rows, batchCounter, idempotencyKey));
+        const b = (await request.json()) as { rows: AuditRow[]; batchCounter?: number; idempotencyKey?: string; requestId?: string };
+        const res = await this.runExclusive(() => this.appendBatch(b.rows, b.batchCounter, b));
         return json(res);
       }
       if (url.pathname === "/reconcile" && request.method === "POST") {
@@ -200,36 +241,44 @@ export class AuditLogDO {
     return (await this.ctx.storage.get<ChainHead>(HEAD_KEY)) ?? { seq: 0, hash: GENESIS_HASH };
   }
 
-  /** appendOne appends one row; with an idempotencyKey a repeat does not insert again. */
-  private async appendOne(row: AuditRow, idempotencyKey?: string): Promise<{ seq: number; hash: string; deduped?: boolean }> {
-    const r = await this.append([row], idempotencyKey, {});
+  private async tail(): Promise<ChainHead | null> {
+    return this.db.prepare(TAIL_SQL).first<ChainHead>();
+  }
+
+  /** appendOne appends one row; with an idempotencyKey/requestId a repeat does not insert again. */
+  private async appendOne(row: AuditRow, ids: { idempotencyKey?: string; requestId?: string }): Promise<{ seq: number; hash: string; deduped?: boolean }> {
+    await ensureSchema(this.db);
+    const r = await this.appendAt(await this.recover(), [row], ids, {});
     return r.deduped ? { seq: r.head.seq, hash: r.head.hash, deduped: true } : { seq: r.head.seq, hash: r.head.hash };
   }
 
   /** appendBatch appends many rows in one exclusive turn. Batch idempotency (§6.4 bulk
    * outcome recovery): a repeated key dedups the WHOLE batch (no doubled per-key rows). */
-  private async appendBatch(rows: AuditRow[], batchCounter?: number, idempotencyKey?: string): Promise<{ appended: number; seq: number; hash: string; deduped?: boolean }> {
+  private async appendBatch(rows: AuditRow[], batchCounter: number | undefined, ids: { idempotencyKey?: string; requestId?: string }): Promise<{ appended: number; seq: number; hash: string; deduped?: boolean }> {
+    await ensureSchema(this.db);
     // Ingest liveness (A8 backlog/silence, §6.5): last batch time + counter.
     const ingest: Record<string, unknown> = { [INGEST_TS_KEY]: new Date().toISOString() };
     if (typeof batchCounter === "number") ingest[INGEST_COUNTER_KEY] = batchCounter;
-    const r = await this.append(rows, idempotencyKey, ingest);
+    const r = await this.appendAt(await this.recover(), rows, ids, ingest);
     if (r.deduped) return { appended: 0, seq: r.head.seq, hash: r.head.hash, deduped: true };
     return { appended: rows.length, seq: r.head.seq, hash: r.head.hash };
   }
 
-  /** append runs one append (intent → D1 batch → head commit) after recover(). */
-  private async append(rows: AuditRow[], idempotencyKey: string | undefined, extra: Record<string, unknown>): Promise<{ head: ChainHead; deduped: boolean }> {
-    await ensureSchema(this.db);
-    const base = await this.recover();
-    const inputDigest = sha256Hex(utf8(JSON.stringify(rows)));
-    if (idempotencyKey) {
-      const receipt = await this.ctx.storage.get<Receipt>(RECEIPT_PREFIX + idempotencyKey);
-      if (receipt) {
-        if (receipt.inputDigest !== undefined && receipt.inputDigest !== inputDigest) {
-          throw new AuditRefused("IDEMPOTENCY_MISMATCH", "idempotency key reused with a different input");
-        }
-        return { head: { seq: receipt.seq, hash: receipt.hash }, deduped: true };
+  /** appendAt runs one append after `base` (which recover() returned): dedup, intent,
+   * one D1 batch, one head commit. */
+  private async appendAt(
+    base: ChainHead,
+    rows: AuditRow[],
+    ids: { idempotencyKey?: string; requestId?: string },
+    extra: Record<string, unknown>,
+  ): Promise<{ head: ChainHead; deduped: boolean }> {
+    const ticket: Ticket = { idempotencyKey: ids.idempotencyKey ?? null, requestId: ids.requestId ?? null, inputDigest: sha256Hex(utf8(JSON.stringify(rows))) };
+    const receipt = await this.findReceipt(ticket);
+    if (receipt) {
+      if (receipt.inputDigest !== undefined && receipt.inputDigest !== ticket.inputDigest) {
+        throw new AuditRefused("IDEMPOTENCY_MISMATCH", "idempotency key reused with a different input");
       }
+      return { head: { seq: receipt.seq, hash: receipt.hash }, deduped: true };
     }
     const links: ChainLink[] = [];
     let head = base;
@@ -238,27 +287,40 @@ export class AuditLogDO {
       links.push(link);
       head = { seq: link.seq, hash: link.hash };
     }
-    const key = idempotencyKey ?? null;
     if (links.length > 0) {
-      const intent: Intent = { idempotencyKey: key, inputDigest, firstSeq: base.seq + 1, lastSeq: head.seq, rowHashes: links.map((l) => l.hash) };
+      const intent: Intent = { ...ticket, firstSeq: base.seq + 1, lastSeq: head.seq, lastHash: head.hash };
       await this.ctx.storage.put(INTENT_KEY, intent);
       // A D1 batch is ONE transaction: if any statement fails, nothing is written.
       // On any error the intent stays; the next recover() decides from D1.
       await this.db.batch(links.map((l) => this.db.prepare(INSERT_ROW_SQL).bind(...l.values, l.prevHash, l.hash)));
     }
-    await this.commitHead(head, links, key, inputDigest, extra);
+    await this.commitHead(head, links, ticket, extra);
     return { head, deduped: false };
   }
 
+  private async findReceipt(t: Ticket): Promise<Receipt | null> {
+    if (t.idempotencyKey) return (await this.ctx.storage.get<Receipt>(RECEIPT_PREFIX + t.idempotencyKey)) ?? null;
+    if (t.requestId) {
+      const recent = (await this.ctx.storage.get<RecentRequest[]>(RECENT_KEY)) ?? [];
+      return recent.find((r) => r.id === t.requestId) ?? null;
+    }
+    return null;
+  }
+
   /**
-   * commitHead moves the head, stores the receipt, queues the rows' escrow segments
-   * and deletes the intent, in ONE DO storage transaction: a crash cannot keep one
-   * of them and lose another.
+   * commitHead moves the head, stores the ticket's receipt, queues the rows' escrow
+   * segments, writes `extra` and deletes the intent, in ONE DO storage transaction:
+   * a crash cannot keep one of them and lose another.
    */
-  private async commitHead(head: ChainHead, links: ChainLink[], idempotencyKey: string | null, inputDigest: string, extra: Record<string, unknown>): Promise<void> {
+  private async commitHead(head: ChainHead, links: ChainLink[], ticket: Ticket | null, extra: Record<string, unknown>): Promise<void> {
     await this.ctx.storage.transaction(async (txn) => {
       const entries: Record<string, unknown> = { [HEAD_KEY]: head, ...extra };
-      if (idempotencyKey) entries[RECEIPT_PREFIX + idempotencyKey] = { seq: head.seq, hash: head.hash, inputDigest } satisfies Receipt;
+      const receipt: Receipt = { seq: head.seq, hash: head.hash, inputDigest: ticket?.inputDigest };
+      if (ticket?.idempotencyKey) entries[RECEIPT_PREFIX + ticket.idempotencyKey] = receipt;
+      if (ticket?.requestId) {
+        const recent = (await txn.get<RecentRequest[]>(RECENT_KEY)) ?? [];
+        entries[RECENT_KEY] = [...recent, { ...receipt, id: ticket.requestId }].slice(-RECENT_MAX);
+      }
       await txn.put(entries);
       await txn.delete(INTENT_KEY);
       if (!this.escrow || links.length === 0) return;
@@ -273,95 +335,132 @@ export class AuditLogDO {
     });
   }
 
-  /** recover resolves a pending intent, then requires D1's last row to be the head. */
+  /**
+   * recover brings the DO to a state where an append may follow, or throws (503 + A8):
+   * adopt or abandon the pending intent, require D1's last row to be the head, and
+   * finish a pending reconcile.
+   */
   private async recover(): Promise<ChainHead> {
     let head = await this.head();
-    const intent = await this.ctx.storage.get<Intent>(INTENT_KEY);
-    if (intent) head = await this.resolveIntent(head, intent);
-    const tail = await this.db.prepare(TAIL_SQL).first<ChainHead>();
+    const intent = (await this.ctx.storage.get<Intent>(INTENT_KEY)) ?? null;
+    const abandoned = (await this.ctx.storage.get<Intent[]>(ABANDONED_KEY)) ?? [];
+    const tail = await this.tail();
     const tailSeq = tail?.seq ?? 0;
-    if (tailSeq > head.seq) return this.chainBroken("D1 has rows beyond the DO head that no intent covers (reconcile needed)", { headSeq: head.seq, tailSeq });
+    if (tailSeq > head.seq) {
+      // Rows beyond the head: adopt them only as the exact range of an intent we hold.
+      const candidates = [...(intent ? [intent] : []), ...abandoned].filter((c) => c.firstSeq === head.seq + 1 && c.lastSeq === tailSeq);
+      let adopted: { c: Intent; links: ChainLink[] } | null = null;
+      for (const c of candidates) {
+        const links = await this.verifiedLinks(head, { seq: c.lastSeq, hash: c.lastHash });
+        if (links) {
+          adopted = { c, links };
+          break;
+        }
+      }
+      if (!adopted) return this.chainBroken("D1 has rows beyond the DO head that no intent covers (reconcile needed)", { headSeq: head.seq, tailSeq });
+      const rest = abandoned.filter((a) => a !== adopted.c);
+      // commitHead also deletes the current intent: if it was not the adopted one, its
+      // seq range is taken now, so its D1 batch can never commit.
+      head = { seq: adopted.c.lastSeq, hash: adopted.c.lastHash };
+      await this.commitHead(head, adopted.links, adopted.c, rest.length !== abandoned.length ? { [ABANDONED_KEY]: rest } : {});
+      console.warn(`audit-do: adopted pending append ${adopted.c.firstSeq}..${adopted.c.lastSeq} from its intent`);
+    } else if (intent) {
+      // D1 holds none of the intent's rows: its batch did not commit, or not yet.
+      // Keep it as abandoned, so a batch that lands late is still adopted.
+      await this.ctx.storage.transaction(async (txn) => {
+        await txn.put(ABANDONED_KEY, [...abandoned, intent].slice(-ABANDONED_MAX));
+        await txn.delete(INTENT_KEY);
+      });
+    }
     if (tailSeq < head.seq) return this.chainBroken("D1 tail is behind the DO head", { headSeq: head.seq, tailSeq });
     if (tail && tail.hash !== head.hash) return this.chainBroken("D1 row at the head seq has a different hash", { headSeq: head.seq });
+    const rec = await this.ctx.storage.get<ReconcileRecord>(RECONCILE_KEY);
+    if (rec) head = await this.finishReconcile(head, rec);
     return head;
   }
 
   /**
-   * resolveIntent finishes an append that stopped between its D1 write and its head
-   * commit. D1 holds exactly the intent's rows → adopt them; none → drop the intent
-   * (the D1 transaction did not commit); anything else → fail closed.
+   * verifiedLinks reads D1 rows head.seq+1..end.seq (in pages) and returns their
+   * links if each one is exactly what the chain rule gives and the chain ends at
+   * end.hash; otherwise null. The caller commits THESE links, never a second read.
    */
-  private async resolveIntent(head: ChainHead, intent: Intent): Promise<ChainHead> {
-    const n = intent.rowHashes.length;
-    if (intent.firstSeq !== head.seq + 1 || intent.lastSeq !== head.seq + n) {
-      return this.chainBroken("pending intent does not start at the DO head", { headSeq: head.seq, firstSeq: intent.firstSeq });
-    }
-    // n + 1 rows: one row more than the intent covers reveals extra rows beyond it.
-    const page = await this.db.prepare(ROWS_AFTER_SQL).bind(head.seq, intent.lastSeq + 1, n + 1).all<StoredRow>();
-    const rows = page.results ?? [];
-    if (rows.length === 0) {
-      await this.ctx.storage.delete(INTENT_KEY);
-      return head;
-    }
-    if (rows.length !== n) return this.chainBroken("D1 holds a different number of rows than the pending intent", { headSeq: head.seq, intentRows: n, d1Rows: rows.length });
+  private async verifiedLinks(head: ChainHead, end: ChainHead): Promise<ChainLink[] | null> {
     const links: ChainLink[] = [];
     let cur = head;
-    for (let i = 0; i < n; i++) {
-      const link = chainLink(cur.seq + 1, cur.hash, rows[i]);
-      if (!linkMatches(rows[i], link) || link.hash !== intent.rowHashes[i]) {
-        return this.chainBroken("D1 row differs from the pending intent", { headSeq: head.seq, seq: rows[i].seq });
+    while (cur.seq < end.seq) {
+      const page = await this.db.prepare(ROWS_AFTER_SQL).bind(cur.seq, end.seq, READ_PAGE).all<StoredRow>();
+      const rows = page.results ?? [];
+      if (rows.length === 0) return null;
+      for (const r of rows) {
+        const link = chainLink(cur.seq + 1, cur.hash, r);
+        if (r.seq !== link.seq || r.prev_hash !== link.prevHash || r.hash !== link.hash) return null;
+        links.push(link);
+        cur = { seq: link.seq, hash: link.hash };
       }
-      links.push(link);
-      cur = { seq: link.seq, hash: link.hash };
     }
-    await this.commitHead(cur, links, intent.idempotencyKey, intent.inputDigest, {});
-    console.warn(`audit-do: recovered pending append ${head.seq + 1}..${cur.seq} from its intent`);
-    return cur;
+    return cur.hash === end.hash ? links : null;
   }
 
   /**
    * reconcile adopts a legacy D1 suffix that no intent covers (rows the pre-intent
-   * code left behind). A human admin pins the expected last row {seq, hash}, read
-   * from D1 and checked independently. The DO adopts it ONLY when it is D1's last
-   * row and the chain from the DO head to it recomputes exactly. Its own audit row
-   * (audit.reconcile, old and new head) is the first row after the adopted suffix.
+   * code left behind). A root admin pins the expected last row {seq, hash}, read from
+   * D1 and checked independently. The DO adopts it ONLY when it is D1's last row and
+   * the chain from the DO head recomputes to it. Its own audit row (audit.reconcile,
+   * old and new head) is the first row after the suffix. A retry of the same pin
+   * returns the completed result.
    */
-  private async reconcile(target: ChainHead, row: AuditRow): Promise<{ from: ChainHead; to: ChainHead; row: ChainHead }> {
+  private async reconcile(target: ChainHead, row: AuditRow): Promise<ReconcileResult> {
     await ensureSchema(this.db);
-    let from = await this.head();
-    const intent = await this.ctx.storage.get<Intent>(INTENT_KEY);
-    if (intent) from = await this.resolveIntent(from, intent);
-    const tail = await this.db.prepare(TAIL_SQL).first<ChainHead>();
-    if (!tail || tail.seq !== target.seq || tail.hash !== target.hash) {
-      throw new AuditRefused("RECONCILE_REFUSED", "the pinned {seq, hash} is not D1's last row");
+    const doneKey = `${RECONCILE_DONE_PREFIX}${target.seq}:${target.hash}`;
+    const done = async () => (await this.ctx.storage.get<ReconcileResult>(doneKey)) ?? null;
+    let result = await done();
+    if (result) return result;
+    if (await this.ctx.storage.get(RECONCILE_KEY)) {
+      await this.recover(); // finishes the pending reconcile (this pin or an earlier one)
+      result = await done();
+      if (result) return result;
     }
+    const from = await this.head();
+    const tail = await this.tail();
+    if (!tail || !sameHead(tail, target)) throw new AuditRefused("RECONCILE_REFUSED", "the pinned {seq, hash} is not D1's last row");
     if (target.seq <= from.seq) throw new AuditRefused("RECONCILE_REFUSED", "D1 has no rows beyond the DO head");
-    // Verify the WHOLE suffix first, so a bad row anywhere means nothing is adopted;
-    // then walk it again and adopt page by page (each page re-verified).
-    await this.walkSuffix(from, target, null);
-    await this.walkSuffix(from, target, (h, links) => this.commitHead(h, links, null, "", {}));
+    if (target.seq - from.seq > RECONCILE_MAX_ROWS) {
+      throw new AuditRefused("RECONCILE_REFUSED", `the suffix has ${target.seq - from.seq} rows; one reconcile adopts at most ${RECONCILE_MAX_ROWS}`);
+    }
+    const links = await this.verifiedLinks(from, target);
+    if (!links) throw new AuditRefused("RECONCILE_REFUSED", "the chain from the DO head does not recompute to the pinned row");
+    const rec: ReconcileRecord = {
+      from,
+      to: target,
+      key: `reconcile:${target.seq}:${target.hash}`,
+      row: { ...row, ts: new Date().toISOString(), intent: `reconcile ${from.seq}:${from.hash} -> ${target.seq}:${target.hash}` },
+    };
+    // The adoption and the record commit in ONE transaction. A pending intent is
+    // superseded: its seq range belongs to the adopted rows now.
+    await this.commitHead(target, links, null, { [RECONCILE_KEY]: rec });
     console.warn(`audit-do: reconciled legacy suffix ${from.seq + 1}..${target.seq}`);
-    const rec = await this.append([{ ...row, intent: `reconcile ${from.seq}:${from.hash} -> ${target.seq}:${target.hash}` }], undefined, {});
-    return { from, to: target, row: rec.head };
+    await this.finishReconcile(target, rec);
+    result = await done();
+    if (!result) throw new Error("reconcile: completed record missing");
+    return result;
   }
 
-  /** walkSuffix verifies D1 rows from.seq+1..target.seq in pages; onPage adopts a verified page. */
-  private async walkSuffix(from: ChainHead, target: ChainHead, onPage: ((h: ChainHead, links: ChainLink[]) => Promise<void>) | null): Promise<void> {
-    let cur = from;
-    while (cur.seq < target.seq) {
-      const page = await this.db.prepare(ROWS_AFTER_SQL).bind(cur.seq, target.seq, RECONCILE_PAGE).all<StoredRow>();
-      const rows = page.results ?? [];
-      if (rows.length === 0) throw new AuditRefused("RECONCILE_REFUSED", `D1 has no row after seq ${cur.seq}`);
-      const links: ChainLink[] = [];
-      for (const r of rows) {
-        const link = chainLink(cur.seq + 1, cur.hash, r);
-        if (!linkMatches(r, link)) throw new AuditRefused("RECONCILE_REFUSED", `D1 row ${r.seq} does not link to seq ${cur.seq} under the chain rule`);
-        links.push(link);
-        cur = { seq: link.seq, hash: link.hash };
-      }
-      if (onPage) await onPage(cur, links);
+  /** finishReconcile writes the record's audit.reconcile row (once, by its key),
+   * stores the result and clears the record. recover() calls it before any append. */
+  private async finishReconcile(head: ChainHead, rec: ReconcileRecord): Promise<ChainHead> {
+    let rowHead = await this.ctx.storage.get<Receipt>(RECEIPT_PREFIX + rec.key);
+    if (!rowHead) {
+      if (!sameHead(head, rec.to)) return this.chainBroken("pending reconcile does not match the DO head", { headSeq: head.seq, toSeq: rec.to.seq });
+      head = (await this.appendAt(head, [rec.row], { idempotencyKey: rec.key }, {})).head;
+      rowHead = head;
     }
-    if (cur.hash !== target.hash) throw new AuditRefused("RECONCILE_REFUSED", "the recomputed chain does not end at the pinned hash");
+    const result: ReconcileResult = { from: rec.from, to: rec.to, row: { seq: rowHead.seq, hash: rowHead.hash } };
+    await this.ctx.storage.transaction(async (txn) => {
+      await txn.put(`${RECONCILE_DONE_PREFIX}${rec.to.seq}:${rec.to.hash}`, result);
+      await txn.delete(RECONCILE_KEY);
+    });
+    await this.discordAlert(ALERT.A8, `audit chain reconciled by ${rec.row.principal}: ${rec.from.seq} -> ${rec.to.seq}; appends resume`, { from: rec.from, to: rec.to, row: result.row });
+    return head;
   }
 
   /** chainBroken fires alert A8 (fail-closed path signal, §0.1) and throws → 503. */

@@ -8,7 +8,7 @@
 //   POST /v1/admin/token/revoke     → minted-token jti revoke (§5.3)
 //   POST /v1/admin/rewrap-kek       → MASTER_KEK rotation re-wrap round (§2.5)
 //   POST /v1/admin/scheduler/arm    → SchedulerDO one-shot bootstrap (P2.4, §8.3)
-//   POST /v1/admin/audit/reconcile  → adopt a human-pinned legacy audit suffix (human admin only)
+//   POST /v1/admin/audit/reconcile  → adopt a pinned legacy audit suffix (root admin only)
 //
 // The `admin` verb covers GLOBAL ops (§4.2: policy edit, rotate-plan, token revoke,
 // rewrap-kek), so the admin check is on selector+verb (project globs mean nothing for
@@ -344,6 +344,12 @@ export async function handleAdmin(
     if (principal.kind !== "human") {
       auditReadAsync(ctx, env.AUDIT_LOG, { ...adminRow(actx.authz.id, principal, "audit.reconcile", request), decision: "deny", intent: "human_required" });
       return jsonError(HTTP.FORBIDDEN, "HUMAN_REQUIRED", "audit reconcile needs a human admin; service tokens are refused");
+    }
+    // Root admins only (ADMIN_EMAILS, §4.5): a group rule that grants `admin` lives in
+    // policy.json, and the policy is itself an object an attacker may try to bend.
+    if (!actx.adminEmails.includes(principal.email)) {
+      auditReadAsync(ctx, env.AUDIT_LOG, { ...adminRow(actx.authz.id, principal, "audit.reconcile", request), decision: "deny", intent: "root_admin_required" });
+      return jsonError(HTTP.FORBIDDEN, "ROOT_ADMIN_REQUIRED", "audit reconcile needs a root admin (ADMIN_EMAILS)");
     }
     let body: { seq?: unknown; hash?: unknown };
     try {

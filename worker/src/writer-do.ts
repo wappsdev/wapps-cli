@@ -27,7 +27,7 @@ import {
   SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
 import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL } from "./storage.js";
-import { auditAppendSync, auditAppendBatch, AuditRow, PrincipalType } from "./audit.js";
+import { auditAppendSync, auditAppendBatch, AuditAppendError, AuditRow, PrincipalType } from "./audit.js";
 import { sha256Hex } from "./crypto/encoding.js";
 import {
   EscrowConfig,
@@ -385,8 +385,12 @@ export class ProjectWriterDO {
     try {
       await auditAppendBatch(this.auditLog, outcomeRows, { idempotencyKey: idemKey });
     } catch (err) {
-      console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
-      await this.enqueuePendingOutcome(project, epoch, outcomeRows, idemKey);
+      if (isTerminalRefusal(err)) {
+        await this.outcomeRefused(idemKey);
+      } else {
+        console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
+        await this.enqueuePendingOutcome(outcomeRows, idemKey);
+      }
     }
 
     // 10. Append-only pointer event (fail-soft; commit ZATEN kalıcı — retry marker).
@@ -448,11 +452,20 @@ export class ProjectWriterDO {
     });
   }
 
-  /** enqueuePendingOutcome, CAS sonrası yazılamayan outcome batch'ini kalıcılaştırır (case c). */
-  private async enqueuePendingOutcome(project: string, epoch: number, rows: AuditRow[], idempotencyKey: string): Promise<void> {
+  /** enqueuePendingOutcome persists an outcome batch that could not be written after
+   * the CAS (case c). It is keyed by the full idempotency key, so the outcome of a
+   * re-created project (whose epochs restart at 1) never overwrites an older one. */
+  private async enqueuePendingOutcome(rows: AuditRow[], idempotencyKey: string): Promise<void> {
     const rec: PendingOutcome = { rows, idempotencyKey };
-    await this.ctx.storage.put(`${PENDING_OUTCOME_PREFIX}${project}:${epoch}`, rec);
+    await this.ctx.storage.put(`${PENDING_OUTCOME_PREFIX}${idempotencyKey}`, rec);
     await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
+  }
+
+  /** outcomeRefused handles a 409 from the audit DO: the same key already holds a
+   * DIFFERENT input, so no retry can succeed. Alert and stop; never loop. */
+  private async outcomeRefused(idempotencyKey: string): Promise<void> {
+    console.error(`writer-do: audit outcome refused with IDEMPOTENCY_MISMATCH, dropped (${idempotencyKey})`);
+    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, ALERT.A8, "audit outcome refused: IDEMPOTENCY_MISMATCH; outcome rows not written", { idempotencyKey }).catch(() => {});
   }
 
   /** enqueuePendingPointerEvent, yazılamayan pointer-event'i pending işaretler + alarm kurar. */
@@ -486,6 +499,11 @@ export class ProjectWriterDO {
         await auditAppendBatch(this.auditLog, rec.rows, { idempotencyKey: rec.idempotencyKey });
         await this.ctx.storage.delete(storageKey);
       } catch (err) {
+        if (isTerminalRefusal(err)) {
+          await this.ctx.storage.delete(storageKey);
+          await this.outcomeRefused(rec.idempotencyKey);
+          continue;
+        }
         remaining++;
         console.error(`writer-do: audit outcome retry still failing (${storageKey})`, err);
       }
@@ -496,6 +514,11 @@ export class ProjectWriterDO {
     remaining += escrowRemaining;
     if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + Math.min(POINTER_EVENT_RETRY_MS, escrowRetryMs));
   }
+}
+
+/** isTerminalRefusal: the audit DO refused on purpose (409); a retry cannot succeed. */
+function isTerminalRefusal(err: unknown): boolean {
+  return err instanceof AuditAppendError && err.status === 409;
 }
 
 /** emptyToNull, boş/absent header string'ini null'a çevirir (audit alanları). */
