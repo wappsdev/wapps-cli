@@ -195,20 +195,25 @@ const ESCROW_RETRY_MS = 30_000;
 const ESCROW_ALERT_AFTER = 3; // 3 denemeden sonra A4 (§6.8)
 
 /**
- * enqueueEscrowPushes, verilen immutable objeleri DO storage'a "pending-escrow"
- * olarak kuyruklar ve bir drenaj alarm'ı zamanlar. Bu, commit'in KRİTİK
- * BÖLÜMÜNDE (blockConcurrencyWhile) çağrılır ama YALNIZCA yerel storage yazar —
- * B2 write path'te DEĞİLDİR (§9.2.4). Gerçek push alarm()'da olur.
+ * enqueueEscrowPushes queues the given immutable objects in DO storage as
+ * "pending-escrow" and schedules a drain alarm. It runs inside the commit's
+ * critical section but writes ONLY local storage; B2 is NOT on the write path
+ * (§9.2.4). The real push happens in alarm(). It accepts a storage transaction,
+ * so a caller can commit the queue entries atomically with its own state.
  */
-export async function enqueueEscrowPushes(storage: DurableObjectStorage, items: EscrowPushItem[]): Promise<void> {
+export async function enqueueEscrowPushes(storage: Pick<DurableObjectTransaction, "put" | "getAlarm" | "setAlarm">, items: EscrowPushItem[]): Promise<void> {
   if (items.length === 0) return;
   for (const item of items) {
     const rec: PendingEscrow = { item, attempts: 0 };
     await storage.put(PENDING_ESCROW_PREFIX + item.b2Key, rec);
   }
-  // Drenaj alarm'ı (pointer-event fail-soft deseniyle aynı gecikme). Anlık değil
-  // ama RPO ≈ dakikalar (§9.2.4) içinde; gerçek push alarm()'da write-path DIŞINDA.
-  await storage.setAlarm(Date.now() + ESCROW_RETRY_MS);
+  // Drain alarm (same delay as the pointer-event fail-soft pattern). Not instant,
+  // but within RPO ≈ minutes (§9.2.4); the real push runs in alarm(), off the write path.
+  // A DO has ONE alarm: never move an earlier one later, or a steady stream of
+  // enqueues would postpone the drain forever.
+  const due = Date.now() + ESCROW_RETRY_MS;
+  const current = await storage.getAlarm();
+  if (current === null || current > due) await storage.setAlarm(due);
 }
 
 /**

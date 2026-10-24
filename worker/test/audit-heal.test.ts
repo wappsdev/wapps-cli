@@ -1,0 +1,477 @@
+// Audit chain crash-safety tests (incident 2026-10-24: a canceled append-batch left
+// rows in D1 beyond the DO head, so every later append hit a seq conflict and the
+// gate refused every read).
+//
+// The chain hash has NO key: anyone who can write D1 and knows the head can build
+// rows that verify. So the DO never adopts rows just because they chain. It adopts
+// only (a) rows that match its OWN durable intent, written before the D1 write, or
+// (b) a legacy suffix that a human admin pins with {seq, hash} via reconcile.
+
+import { beforeAll, beforeEach, afterEach, describe, it, expect } from "vitest";
+import { env } from "cloudflare:test";
+import {
+  ensureJwks,
+  resetWorld,
+  validClaims,
+  validClaimsWrite,
+  serviceTokenClaims,
+  authHeader,
+  callGate,
+  seedPolicy,
+  defaultRules,
+  groupsByEmail,
+  allAuditRows,
+  settleAudit,
+  AuditRowDb,
+  runInDoRetry,
+  discordCalls,
+  ADMIN_EMAIL,
+  AUD_WRITE,
+} from "./helpers.js";
+import { AUDIT_DO_NAME, AuditRow, GENESIS_HASH } from "../src/audit.js";
+import { sha256Hex, utf8 } from "../src/crypto/encoding.js";
+import { EscrowConfig } from "../src/escrow.js";
+
+const TEST_ESCROW: EscrowConfig = {
+  endpoint: "s3.test-region.backblazeb2.com",
+  region: "test-region",
+  bucket: "wapps-secrets-escrow",
+  keyId: "0004b2keyid",
+  appKey: "K004appkeysecret",
+};
+
+let signer: Awaited<ReturnType<typeof ensureJwks>>;
+beforeAll(async () => {
+  signer = await ensureJwks();
+});
+beforeEach(async () => {
+  await resetWorld();
+  await seedPolicy(defaultRules());
+  groupsByEmail.set("writer@wapps.dev", ["developers@wapps.co"]);
+});
+afterEach(async () => {
+  // A test may set escrow on the shared DO instance; never let it leak.
+  await runInDoRetry(auditStub(), (instance: unknown) => {
+    (instance as { escrow: EscrowConfig | null }).escrow = null;
+  });
+});
+
+function auditStub(): DurableObjectStub {
+  return env.AUDIT_LOG.get(env.AUDIT_LOG.idFromName(AUDIT_DO_NAME));
+}
+
+function row(key: string, extra: Partial<AuditRow> = {}): AuditRow {
+  return { principal: "human:t@wapps.dev", principal_type: "human", project: "vaulter", key, verb: "value.read", decision: "allow", ...extra };
+}
+
+async function appendBatch(rows: AuditRow[], idempotencyKey?: string): Promise<Response> {
+  return auditStub().fetch("https://audit/append-batch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ rows, idempotencyKey }),
+  });
+}
+
+async function appendOne(r: AuditRow, idempotencyKey?: string): Promise<Response> {
+  return auditStub().fetch("https://audit/append", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ row: r, idempotencyKey }),
+  });
+}
+
+async function doHead(): Promise<{ seq: number; hash: string }> {
+  const res = await auditStub().fetch("https://audit/head");
+  return (await res.json()) as { seq: number; hash: string };
+}
+
+/** rowJson, an independent copy of the pinned chain rule (12 fields, null = absent). */
+function rowJson(seq: number, ts: string, r: AuditRow): string {
+  return JSON.stringify([seq, ts, r.principal, r.principal_type, r.project ?? null, r.key ?? null, r.verb, r.decision, r.intent ?? null, r.ip ?? null, r.cf_ray ?? null, r.token_jti ?? null]);
+}
+function linkHash(prevHash: string, json: string): string {
+  return sha256Hex(utf8(prevHash + "\n" + json));
+}
+
+const RAW_TS = "2026-10-24T19:32:56.862Z";
+
+/** writeRawRow writes one row straight into D1 with a valid chain link: what the old
+ * code left behind, and exactly what a forger with D1 write access can produce. */
+async function writeRawRow(seq: number, prevHash: string, r: AuditRow, hashOverride?: string): Promise<string> {
+  const hash = hashOverride ?? linkHash(prevHash, rowJson(seq, RAW_TS, r));
+  await env.AUDIT_DB.prepare(
+    `INSERT INTO audit (seq, ts, principal, principal_type, project, key, verb, decision, intent, ip, cf_ray, token_jti, prev_hash, hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(seq, RAW_TS, r.principal, r.principal_type, r.project ?? null, r.key ?? null, r.verb, r.decision, r.intent ?? null, r.ip ?? null, r.cf_ray ?? null, r.token_jti ?? null, prevHash, hash)
+    .run();
+  return hash;
+}
+
+/** expectContinuousChain checks seq 1..n with no gap and every link recomputed. */
+function expectContinuousChain(rows: AuditRowDb[]): void {
+  let prev = GENESIS_HASH;
+  rows.forEach((r, i) => {
+    const rr = r as unknown as AuditRow & { seq: number; ts: string };
+    expect(r.seq).toBe(i + 1);
+    expect(r.prev_hash).toBe(prev);
+    expect(r.hash).toBe(linkHash(prev, rowJson(r.seq, r.ts, rr)));
+    prev = r.hash;
+  });
+}
+
+/** injectCommitFault makes the NEXT commit of the head fail once, after the D1 write
+ * already happened: the 2026-10-24 cancellation, reproduced. */
+async function injectCommitFault(): Promise<void> {
+  await runInDoRetry(auditStub(), (instance: unknown) => {
+    const storage = (instance as { ctx: DurableObjectState }).ctx.storage as unknown as Record<string, (...a: unknown[]) => unknown>;
+    const put = storage.put.bind(storage);
+    const transaction = storage.transaction.bind(storage);
+    const restore = () => {
+      storage.put = put;
+      storage.transaction = transaction;
+    };
+    storage.put = (k: unknown, ...rest: unknown[]) => {
+      if (k === "head" || (typeof k === "object" && k !== null && "head" in k)) {
+        restore();
+        throw new Error("injected: canceled after the D1 write");
+      }
+      return put(k, ...rest);
+    };
+    storage.transaction = () => {
+      restore();
+      throw new Error("injected: canceled after the D1 write");
+    };
+  });
+}
+
+function chainAlerts(): { body: string }[] {
+  return discordCalls.filter((c) => c.body.includes("A8") && c.body.includes("audit chain"));
+}
+
+async function pendingSegments(): Promise<{ seq: number; prev_hash: string; hash: string }[]> {
+  return runInDoRetry(auditStub(), async (_i: unknown, state: DurableObjectState) => {
+    const m = await state.storage.list<{ item: { bodyB64: string } }>({ prefix: "pending-escrow-push:audit/segments/" });
+    return [...m.values()].map((v) => JSON.parse(atob(v.item.bodyB64)) as { seq: number; prev_hash: string; hash: string }).sort((a, b) => a.seq - b.seq);
+  });
+}
+
+async function setEscrow(): Promise<void> {
+  await runInDoRetry(auditStub(), (instance: unknown) => {
+    (instance as { escrow: EscrowConfig | null }).escrow = TEST_ESCROW;
+  });
+}
+
+async function reconcile(body: unknown, jwtClaims: Record<string, unknown> = validClaimsWrite(ADMIN_EMAIL)): Promise<Response> {
+  const jwt = await signer.makeJWT(jwtClaims);
+  return callGate("/v1/admin/audit/reconcile", { method: "POST", headers: authHeader(jwt), body: JSON.stringify(body) });
+}
+
+async function readValue(key: string, envOverride: Record<string, unknown> = {}): Promise<Response> {
+  const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
+  return callGate("/v1/projects/vaulter/read", { method: "POST", headers: authHeader(jwt), body: JSON.stringify({ keys: [key] }) }, envOverride);
+}
+
+async function putValue(key: string, value: string): Promise<void> {
+  const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
+  const w = await callGate(`/v1/projects/vaulter/keys/${key}`, { method: "PUT", headers: authHeader(jwt), body: JSON.stringify({ value }) });
+  expect(w.status).toBe(200);
+  await settleAudit("vaulter", (r) => r.some((x) => x.verb === "key.set" && x.decision === "allow"));
+}
+
+describe("legacy suffix: rows in D1 beyond the head with no intent (the live incident)", () => {
+  it("INCIDENT REPLAY: reads stay 503 until a human admin reconciles the exact tail; then they resume", async () => {
+    await putValue("DATABASE_URL", "v");
+    const old = await doHead();
+    const h1 = await writeRawRow(old.seq + 1, old.hash, row("DATABASE_URL"));
+    const h2 = await writeRawRow(old.seq + 2, h1, row("DATABASE_URL"));
+
+    // Fail-closed: no automatic adoption, alert A8.
+    expect((await readValue("DATABASE_URL")).status).toBe(503);
+    expect(chainAlerts().length).toBeGreaterThanOrEqual(1);
+    expect(await doHead()).toEqual(old);
+
+    // Wrong hash, and a correct hash for a row that is not D1's tail: both refused.
+    const wrong = await reconcile({ seq: old.seq + 2, hash: "a".repeat(64) });
+    expect(wrong.status).toBe(409);
+    const notTail = await reconcile({ seq: old.seq + 1, hash: h1 });
+    expect(notTail.status).toBe(409);
+    expect(await doHead()).toEqual(old);
+
+    const ok = await reconcile({ seq: old.seq + 2, hash: h2 });
+    expect(ok.status).toBe(200);
+    const body = (await ok.json()) as { from: { seq: number; hash: string }; to: { seq: number; hash: string }; row: { seq: number } };
+    expect(body.from).toEqual(old);
+    expect(body.to).toEqual({ seq: old.seq + 2, hash: h2 });
+    expect(body.row.seq).toBe(old.seq + 3);
+
+    // The reconcile writes its own audit row, the first row after the adopted tail.
+    const rows = await allAuditRows();
+    const rec = rows[old.seq + 2];
+    expect(rec.seq).toBe(old.seq + 3);
+    expect(rec.verb).toBe("audit.reconcile");
+    expect(rec.principal).toBe(`human:${ADMIN_EMAIL}`);
+    expect(rec.intent).toContain(`${old.seq}:${old.hash}`);
+    expect(rec.intent).toContain(`${old.seq + 2}:${h2}`);
+    expectContinuousChain(rows);
+
+    const rd = await readValue("DATABASE_URL");
+    expect(rd.status).toBe(200);
+    expect(((await rd.json()) as { values: Record<string, string> }).values.DATABASE_URL).toBe("v");
+    expectContinuousChain(await allAuditRows());
+  });
+
+  it("RECONCILE ESCROW: the adopted legacy rows and the reconcile row are queued as audit segments", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    await setEscrow();
+    const old = await doHead();
+    const h2 = await writeRawRow(2, old.hash, row("K2"));
+    const h3 = await writeRawRow(3, h2, row("K3"));
+    expect((await reconcile({ seq: 3, hash: h3 })).status).toBe(200);
+
+    const segs = await pendingSegments();
+    expect(segs.map((s) => s.seq)).toEqual([2, 3, 4]);
+    const rows = await allAuditRows();
+    for (const s of segs) {
+      expect(s.hash).toBe(rows[s.seq - 1].hash);
+      expect(s.prev_hash).toBe(rows[s.seq - 1].prev_hash);
+    }
+  });
+
+  it("RECONCILE AUTHZ: a non-admin human and an admin-granted service token are refused; nothing changes", async () => {
+    await seedPolicy([...defaultRules(), { service: "svc-ops", projects: ["*"], keys: ["*"], verbs: ["*"] }]);
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    const h2 = await writeRawRow(2, old.hash, row("K2"));
+
+    const human = await reconcile({ seq: 2, hash: h2 }, validClaimsWrite("writer@wapps.dev"));
+    expect(human.status).toBe(403);
+    const svc = await reconcile({ seq: 2, hash: h2 }, serviceTokenClaims("svc-ops", { aud: [AUD_WRITE] }));
+    expect(svc.status).toBe(403);
+    expect(((await svc.json()) as { error: string }).error).toBe("HUMAN_REQUIRED");
+    expect(await doHead()).toEqual(old);
+    expect((await allAuditRows()).filter((r) => r.verb === "audit.reconcile")).toEqual([]);
+  });
+
+  it("RECONCILE BAD LINK: a pinned tail whose chain from the head does not recompute is refused", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    const h2 = await writeRawRow(2, "e".repeat(64), row("K2")); // does not link to the head
+    const res = await reconcile({ seq: 2, hash: h2 });
+    expect(res.status).toBe(409);
+    expect(await doHead()).toEqual(old);
+  });
+
+  it("RECONCILE LARGE GAP: a tail longer than one read page is verified and adopted in pages", async () => {
+    expect((await appendBatch([row("K0")])).status).toBe(200);
+    let prev = (await doHead()).hash;
+    for (let seq = 2; seq <= 251; seq++) prev = await writeRawRow(seq, prev, row(`K${seq}`));
+    expect((await reconcile({ seq: 251, hash: prev })).status).toBe(200);
+    const rows = await allAuditRows();
+    expect(rows.length).toBe(252);
+    expectContinuousChain(rows);
+  });
+
+  it("RECONCILE LARGE GAP, BAD LATE ROW: one bad row in a later page means nothing is adopted", async () => {
+    expect((await appendBatch([row("K0")])).status).toBe(200);
+    const old = await doHead();
+    let prev = old.hash;
+    for (let seq = 2; seq <= 251; seq++) prev = await writeRawRow(seq, prev, row(`K${seq}`), seq === 240 ? "c".repeat(64) : undefined);
+    expect((await reconcile({ seq: 251, hash: prev })).status).toBe(409);
+    expect(await doHead()).toEqual(old);
+  });
+
+  it("FORGED SUFFIX: rows that chain perfectly but have no intent are never adopted by an append", async () => {
+    expect((await appendBatch([row("K1"), row("K2")])).status).toBe(200);
+    const old = await doHead();
+    const h3 = await writeRawRow(3, old.hash, row("K3", { principal: "human:someone-else@wapps.dev" }));
+    await writeRawRow(4, h3, row("K4"));
+
+    expect((await appendBatch([row("K5")])).status).toBe(503);
+    expect((await appendOne(row("K5"))).status).toBe(503);
+    expect(await doHead()).toEqual(old);
+    expect((await allAuditRows()).length).toBe(4);
+    expect(chainAlerts().length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("intent: the DO's own record of an append, written before the D1 write", () => {
+  it("FULLY COMMITTED: a cancel after the D1 commit is recovered; the next append continues the chain", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    await setEscrow();
+    await injectCommitFault();
+    expect((await appendBatch([row("K2"), row("K3")])).status).toBe(503);
+
+    const res = await appendBatch([row("K4")]);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { seq: number }).seq).toBe(4);
+    const rows = await allAuditRows();
+    expect(rows.map((r) => r.key)).toEqual(["K1", "K2", "K3", "K4"]);
+    expectContinuousChain(rows);
+    expect((await pendingSegments()).map((s) => s.seq)).toEqual([2, 3, 4]);
+  });
+
+  it("NOTHING COMMITTED: a failed D1 transaction leaves no partial rows; the intent is dropped and appends continue", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    // Row 2 violates the principal_type CHECK constraint, after row 1 of the batch is valid.
+    const bad = row("K3", { principal_type: "robot" as AuditRow["principal_type"] });
+    expect((await appendBatch([row("K2"), bad])).status).toBe(503);
+    expect((await allAuditRows()).length).toBe(1);
+    expect(await doHead()).toEqual(old);
+
+    const ok = await appendBatch([row("K2")]);
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { seq: number }).seq).toBe(2);
+    expectContinuousChain(await allAuditRows());
+  });
+
+  it("PARTIAL: D1 holds only part of the intent's rows → fail closed + A8", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    await injectCommitFault();
+    expect((await appendBatch([row("K2"), row("K3")])).status).toBe(503);
+    await env.AUDIT_DB.prepare("DELETE FROM audit WHERE seq = 3").run();
+
+    expect((await appendBatch([row("K4")])).status).toBe(503);
+    expect(await doHead()).toEqual(old);
+    expect(chainAlerts().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("DIFFERENT ROWS: D1 holds rows for the intent's range that chain but differ from the intent → fail closed", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    await injectCommitFault();
+    expect((await appendBatch([row("K2")])).status).toBe(503);
+    // Replace the committed row with a forged one that still links to the head.
+    await env.AUDIT_DB.prepare("DELETE FROM audit WHERE seq = 2").run();
+    await writeRawRow(2, old.hash, row("K2", { principal: "human:forger@wapps.dev" }));
+
+    expect((await appendBatch([row("K3")])).status).toBe(503);
+    expect(await doHead()).toEqual(old);
+    expect(chainAlerts().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("EXTRA ROWS: D1 holds the intent's rows plus more beyond them → fail closed", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    await injectCommitFault();
+    expect((await appendBatch([row("K2")])).status).toBe(503);
+    const h2 = (await allAuditRows())[1].hash;
+    await writeRawRow(3, h2, row("K3"));
+
+    expect((await appendBatch([row("K4")])).status).toBe(503);
+    expect(await doHead()).toEqual(old);
+  });
+});
+
+describe("boundary: D1's last row must be the head, on every append", () => {
+  it("REPLACED TAIL: D1's last row at head.seq with a different hash fails closed", async () => {
+    expect((await appendBatch([row("K1"), row("K2")])).status).toBe(200);
+    const old = await doHead();
+    await env.AUDIT_DB.prepare("UPDATE audit SET hash = ? WHERE seq = 2").bind("d".repeat(64)).run();
+
+    expect((await appendBatch([row("K3")])).status).toBe(503);
+    expect((await allAuditRows()).length).toBe(2);
+    expect(await doHead()).toEqual(old);
+    expect(chainAlerts().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("D1 BEHIND HEAD: MAX(seq) < head.seq fails closed; nothing is appended", async () => {
+    expect((await appendBatch([row("K1"), row("K2"), row("K3")])).status).toBe(200);
+    const old = await doHead();
+    await env.AUDIT_DB.prepare("DELETE FROM audit WHERE seq = 3").run();
+
+    expect((await appendBatch([row("K4")])).status).toBe(503);
+    expect((await appendOne(row("K4"))).status).toBe(503);
+    expect((await allAuditRows()).map((r) => r.seq)).toEqual([1, 2]);
+    expect(await doHead()).toEqual(old);
+    expect(chainAlerts().length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("idempotency receipts", () => {
+  it("BATCH RETRY, SAME INPUT: a retry after a cancel that followed the D1 commit is deduped, not doubled", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const batch = [row("K2", { verb: "key.set" }), row("K3", { verb: "key.set" })];
+    await injectCommitFault();
+    expect((await appendBatch(batch, "vaulter:7")).status).toBe(503);
+
+    const retry = await appendBatch(batch, "vaulter:7");
+    expect(retry.status).toBe(200);
+    const body = (await retry.json()) as { seq: number; deduped?: boolean };
+    expect(body.deduped).toBe(true);
+    expect(body.seq).toBe(3);
+    const rows = await allAuditRows();
+    expect(rows.length).toBe(3);
+    expectContinuousChain(rows);
+  });
+
+  it("SAME KEY, DIFFERENT INPUT: refused with 409; nothing is appended", async () => {
+    expect((await appendBatch([row("K1", { verb: "key.set" })], "vaulter:8")).status).toBe(200);
+    const res = await appendBatch([row("K9", { verb: "key.set" })], "vaulter:8");
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe("IDEMPOTENCY_MISMATCH");
+    expect((await allAuditRows()).length).toBe(1);
+  });
+
+  it("SINGLE RETRY: /append with a key is deduped after the same cancel", async () => {
+    expect((await appendOne(row("K1"))).status).toBe(200);
+    await injectCommitFault();
+    expect((await appendOne(row("K2", { verb: "commit.attempt" }), "vaulter:9:attempt")).status).toBe(503);
+
+    const retry = await appendOne(row("K2", { verb: "commit.attempt" }), "vaulter:9:attempt");
+    expect(retry.status).toBe(200);
+    expect(((await retry.json()) as { deduped?: boolean }).deduped).toBe(true);
+    const rows = await allAuditRows();
+    expect(rows.length).toBe(2);
+    expectContinuousChain(rows);
+  });
+
+  it("RE-CREATED PROJECT: the first commit after a project delete is audited (its epoch restarts at 1)", async () => {
+    await putValue("DATABASE_URL", "v1");
+    const jwt = await signer.makeJWT(validClaimsWrite(ADMIN_EMAIL));
+    const del = await callGate("/v1/admin/projects/vaulter", { method: "DELETE", headers: authHeader(jwt), body: JSON.stringify({ confirm: "vaulter" }) });
+    expect(del.status).toBe(200);
+
+    const w = await callGate("/v1/projects/vaulter/keys/OTHER_KEY", {
+      method: "PUT",
+      headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))),
+      body: JSON.stringify({ value: "v2" }),
+    });
+    expect(w.status).toBe(200);
+    expect(((await w.json()) as { epoch: number }).epoch).toBe(1);
+    const rows = await settleAudit("vaulter", (r) => r.some((x) => x.verb === "key.set" && x.decision === "allow" && x.key === "OTHER_KEY"));
+    expect(rows.some((x) => x.verb === "key.set" && x.decision === "allow" && x.key === "OTHER_KEY")).toBe(true);
+  });
+
+  it("READ RPC RETRY: one plaintext read is audited once, even when the worker→DO call is retried", async () => {
+    await putValue("DATABASE_URL", "v");
+    const before = (await allAuditRows()).length;
+    // The DO completes the append, then the stub reports a transient reset, so
+    // doStubFetch retries the SAME request.
+    let failed = false;
+    const flaky = {
+      idFromName: (n: string) => env.AUDIT_LOG.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const real = env.AUDIT_LOG.get(id);
+        return {
+          fetch: async (input: string, init?: RequestInit) => {
+            const res = await real.fetch(input, init);
+            if (!failed && input.endsWith("/append-batch")) {
+              failed = true;
+              throw new Error("Durable Object reset because its code was updated.");
+            }
+            return res;
+          },
+        };
+      },
+    } as unknown as DurableObjectNamespace;
+
+    const rd = await readValue("DATABASE_URL", { AUDIT_LOG: flaky });
+    expect(rd.status).toBe(200);
+    expect(failed).toBe(true);
+    const reads = (await allAuditRows()).slice(before).filter((r) => r.verb === "value.read");
+    expect(reads.length).toBe(1);
+  });
+});

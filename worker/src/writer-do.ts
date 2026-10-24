@@ -96,10 +96,10 @@ interface PendingPointerEvent {
   body: string;
 }
 
-/** PendingOutcome, CAS sonrası yazılamayan per-key outcome batch'i (case c recovery). */
+/** PendingOutcome is a per-key outcome batch that could not be written after the CAS (case c recovery). */
 interface PendingOutcome {
   rows: AuditRow[];
-  idempotencyKey: string; // `${project}:${epoch}` — batch dedup marker
+  idempotencyKey: string; // `${project}:${epoch}:${manifestSha}`, the batch dedup marker
 }
 
 export class ProjectWriterDO {
@@ -346,10 +346,13 @@ export class ProjectWriterDO {
       if (updated === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { reason: "pointer CAS lost (out-of-band mutation)" });
     }
 
-    // 9. Audit OUTCOME (SENKRON, YALNIZCA pointer CAS başarısından SONRA): bulk
-    // op'lar için BİR SATIR / ANAHTAR, tek /append-batch ack'i (§6.4 — aggregate
-    // keys:N outcome YASAK; ledger offboard rotate oracle'ıdır). Idempotency-key
-    // `${project}:${epoch}` → post-CAS crash retry'ı çift satır üretmez (case c).
+    // 9. Audit OUTCOME (SYNC, ONLY after the pointer CAS succeeded): bulk ops write
+    // ONE ROW PER KEY with one /append-batch ack (§6.4: an aggregate keys:N outcome is
+    // FORBIDDEN; the ledger is the offboard rotate oracle). Idempotency key
+    // `${project}:${epoch}:${manifestSha}`: a post-CAS crash retry does not double the
+    // rows (case c). The manifest hash makes the key unique per commit: a deleted and
+    // re-created project restarts at epoch 1, and `${project}:1` alone would collide
+    // with the old project's receipt.
     const outcomeRows: AuditRow[] = touched.map((k) => ({
       principal: meta.principalId,
       principal_type: meta.principalType,
@@ -378,7 +381,7 @@ export class ProjectWriterDO {
         token_jti: meta.tokenJti,
       });
     }
-    const idemKey = `${project}:${epoch}`;
+    const idemKey = `${project}:${epoch}:${newManifestSha}`;
     try {
       await auditAppendBatch(this.auditLog, outcomeRows, { idempotencyKey: idemKey });
     } catch (err) {

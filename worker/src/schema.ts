@@ -1,8 +1,8 @@
-// D1 şema tanımı (SPEC §6.4 audit). v2 delta: grants/mirror_state/pending_ops/
-// trust_pin tabloları trust-spine ile birlikte SİLİNDİ (§0.2) — authz kaynağı
-// artık R2'deki policy.json'dır (§4). Kalan tek tablo hash-zincirli `audit`
-// ledger'ıdır; TEK yazarı AuditLogDO'dur ve ASLA GC'lenmez. Bu ledger aynı
-// zamanda offboard rotate-set oracle'ıdır (§6.3).
+// D1 schema (SPEC §6.4 audit). v2 delta: the grants/mirror_state/pending_ops/
+// trust_pin tables were DELETED together with the trust spine (§0.2); the authz
+// source is now policy.json in R2 (§4). The only table left is the hash-chained
+// `audit` ledger. Its ONLY writer is AuditLogDO, and it is NEVER garbage-collected.
+// The ledger is also the offboard rotate-set oracle (§6.3).
 
 const DDL: string[] = [
   `CREATE TABLE IF NOT EXISTS audit (
@@ -27,12 +27,12 @@ const DDL: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_audit_jti ON audit(token_jti)`,
 ];
 
-// İzolat başına tek-sefer flag; IF NOT EXISTS olsa da gereksiz round-trip'i keser.
+// One-shot flag per isolate. IF NOT EXISTS is idempotent; this only saves round-trips.
 let schemaReady: WeakSet<D1Database> | null = null;
 
 /**
- * ensureSchema, D1 audit tablosunu idempotent kurar. AuditLogDO ilk append'ten
- * önce çağırır; Worker rotate-plan sorgusundan önce çağırabilir.
+ * ensureSchema creates the D1 audit tables idempotently. AuditLogDO calls it before
+ * its first append; the Worker may call it before the rotate-plan query.
  */
 export async function ensureSchema(db: D1Database): Promise<void> {
   if (!schemaReady) schemaReady = new WeakSet();
@@ -41,7 +41,7 @@ export async function ensureSchema(db: D1Database): Promise<void> {
   schemaReady.add(db);
 }
 
-/** __resetSchemaCache, testler arası izolasyon (yeni izolat simülasyonu) içindir. */
+/** __resetSchemaCache isolates tests from each other (it simulates a new isolate). */
 export function __resetSchemaCache(): void {
   schemaReady = null;
 }

@@ -181,6 +181,19 @@ describe("drainEscrowPushes — retry + A4 (§8.3)", () => {
     expect(b2Puts.some((p) => p.includes("audit/segments/1.json"))).toBe(true);
   });
 
+  it("ALARM: an enqueue never postpones an earlier alarm, and pulls a later one in", async () => {
+    const storage = new FakeStorage();
+    const item = (n: number): EscrowPushItem[] => [{ b2Key: `audit/segments/${n}.json`, bodyB64: btoa("x"), contentType: "application/json" }];
+    const soon = Date.now() + 1_000;
+    storage.alarmAt = soon;
+    await enqueueEscrowPushes(storage as unknown as DurableObjectStorage, item(1));
+    expect(storage.alarmAt).toBe(soon);
+
+    storage.alarmAt = Date.now() + 3_600_000;
+    await enqueueEscrowPushes(storage as unknown as DurableObjectStorage, item(2));
+    expect(storage.alarmAt).toBeLessThanOrEqual(Date.now() + 30_000);
+  });
+
   it("no config → items stay pending (cannot drain), no throw", async () => {
     const storage = new FakeStorage();
     await enqueueEscrowPushes(storage as unknown as DurableObjectStorage, [{ b2Key: "audit/segments/2.json", bodyB64: btoa("x"), contentType: "application/json" }]);
