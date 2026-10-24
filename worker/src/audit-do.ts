@@ -24,9 +24,10 @@
 //
 // A suffix that no intent covers (the incident's rows, written by the pre-intent
 // code) is adopted only through reconcile: a root admin pins {seq, hash}; the DO
-// verifies the chain from its head to the pin in ONE read and adopts exactly the
-// links it verified. The adoption and a durable reconcile record commit together;
-// recover() writes the record's audit.reconcile row before any other append.
+// verifies the chain from its head to the pin, keeping one end hash per page, then
+// adopts page by page and commits a page only if its recomputed end hash matches.
+// A durable reconcile record is written before the first page; recover() resumes the
+// adoption and writes the record's audit.reconcile row before any other append.
 
 import { sha256Hex, utf8, bytesToB64 } from "./crypto/encoding.js";
 import { ensureSchema } from "./schema.js";
@@ -166,8 +167,6 @@ const RECENT_KEY = "recent-requests";
 const RECENT_MAX = 64;
 const RECONCILE_KEY = "reconcile:pending";
 const RECONCILE_DONE_PREFIX = "reconcile:done:";
-// reconcile holds the verified links in memory and adopts them in one transaction.
-const RECONCILE_MAX_ROWS = 1000;
 const INGEST_TS_KEY = "ingest:lastTs";
 const INGEST_COUNTER_KEY = "ingest:lastCounter";
 const READ_PAGE = 100;
@@ -376,6 +375,10 @@ export class AuditLogDO {
    */
   private async recover(): Promise<ChainHead> {
     let head = await this.head();
+    // A reconcile whose paged adoption stopped part-way: the head is on a verified
+    // prefix of the pinned chain. Resume it before anything else.
+    const rec = await this.ctx.storage.get<ReconcileRecord>(RECONCILE_KEY);
+    if (rec && head.seq < rec.to.seq) head = await this.adoptPinned(head, rec.to, null);
     const intent = (await this.ctx.storage.get<Intent>(INTENT_KEY)) ?? null;
     const abandoned = (await this.ctx.storage.get<Intent[]>(ABANDONED_KEY)) ?? [];
     const tail = await this.tail();
@@ -395,7 +398,6 @@ export class AuditLogDO {
     }
     if (tailSeq < head.seq) return this.chainBroken("D1 tail is behind the DO head", { headSeq: head.seq, tailSeq });
     if (tail && tail.hash !== head.hash) return this.chainBroken("D1 row at the head seq has a different hash", { headSeq: head.seq });
-    const rec = await this.ctx.storage.get<ReconcileRecord>(RECONCILE_KEY);
     if (rec) head = await this.finishReconcile(head, rec);
     return head;
   }
@@ -439,15 +441,10 @@ export class AuditLogDO {
     const links: ChainLink[] = [];
     let cur = head;
     while (cur.seq < end.seq) {
-      const page = await this.db.prepare(ROWS_AFTER_SQL).bind(cur.seq, end.seq, READ_PAGE).all<StoredRow>();
-      const rows = page.results ?? [];
-      if (rows.length === 0) return null;
-      for (const r of rows) {
-        const link = chainLink(cur.seq + 1, cur.hash, r);
-        if (r.seq !== link.seq || r.prev_hash !== link.prevHash || r.hash !== link.hash) return null;
-        links.push(link);
-        cur = { seq: link.seq, hash: link.hash };
-      }
+      const page = await this.readPage(cur, end.seq);
+      if (!page) return null;
+      links.push(...page);
+      cur = { seq: page[page.length - 1].seq, hash: page[page.length - 1].hash };
     }
     return cur.hash === end.hash ? links : null;
   }
@@ -485,26 +482,79 @@ export class AuditLogDO {
       throw new AuditRefused("RECONCILE_REFUSED", "the pinned suffix overlaps an append intent whose rows D1 does not hold exactly");
     }
     if (target.seq === from.seq) throw new AuditRefused("RECONCILE_REFUSED", "the rows beyond the DO head were an append's own rows and are recovered; nothing to reconcile");
-    if (target.seq - from.seq > RECONCILE_MAX_ROWS) {
-      throw new AuditRefused("RECONCILE_REFUSED", `the suffix has ${target.seq - from.seq} rows; one reconcile adopts at most ${RECONCILE_MAX_ROWS}`);
-    }
-    const links = await this.verifiedLinks(from, target);
-    if (!links) throw new AuditRefused("RECONCILE_REFUSED", "the chain from the DO head does not recompute to the pinned row");
+    const ends = await this.pageEnds(from, target);
+    if (!ends) throw new AuditRefused("RECONCILE_REFUSED", "the chain from the DO head does not recompute to the pinned row");
     const rec: ReconcileRecord = {
       from,
       to: target,
       key: `reconcile:${target.seq}:${target.hash}`,
       row: { ...row, ts: new Date().toISOString(), intent: `reconcile ${from.seq}:${from.hash} -> ${target.seq}:${target.hash}` },
     };
-    // The adoption and the record commit in ONE transaction. No held intent starts
-    // at `from` (checked above), so any intent still stored is stale: its first seq
-    // is taken, and it can never commit.
-    await this.commitHead(target, links, null, { [RECONCILE_KEY]: rec });
+    // The record is durable BEFORE the first page is adopted: from here on, recover()
+    // resumes the adoption and writes audit.reconcile before any other append. No held
+    // intent starts at `from` (checked above), so any intent still stored is stale.
+    await this.ctx.storage.put(RECONCILE_KEY, rec);
+    await this.adoptPinned(from, target, ends);
     console.warn(`audit-do: reconciled legacy suffix ${from.seq + 1}..${target.seq}`);
     await this.finishReconcile(target, rec);
     result = await done();
     if (!result) throw new Error("reconcile: completed record missing");
     return result;
+  }
+
+  /**
+   * pageEnds verifies the D1 suffix head.seq+1..to.seq in pages of READ_PAGE rows and
+   * returns the end hash of each page, or null unless the chain recomputes exactly to
+   * to.hash. Memory: one hash per page, whatever the suffix length.
+   */
+  private async pageEnds(head: ChainHead, to: ChainHead): Promise<string[] | null> {
+    const ends: string[] = [];
+    let cur = head;
+    while (cur.seq < to.seq) {
+      const links = await this.readPage(cur, to.seq);
+      if (!links) return null;
+      cur = { seq: links[links.length - 1].seq, hash: links[links.length - 1].hash };
+      ends.push(cur.hash);
+    }
+    return cur.hash === to.hash ? ends : null;
+  }
+
+  /**
+   * adoptPinned adopts the pinned suffix head.seq+1..to.seq page by page. Each page is
+   * committed only if its recomputed end hash equals the one the verify pass stored
+   * (`ends`; null = run the verify pass now, e.g. when recover() resumes). So the head
+   * only ever moves along a prefix of the pinned chain. A mismatch fails closed (A8).
+   */
+  private async adoptPinned(head: ChainHead, to: ChainHead, ends: string[] | null): Promise<ChainHead> {
+    const expected = ends ?? (await this.pageEnds(head, to));
+    if (!expected) return this.chainBroken("pending reconcile: D1 no longer recomputes to the pinned row", { headSeq: head.seq, toSeq: to.seq });
+    let cur = head;
+    for (const end of expected) {
+      const links = await this.readPage(cur, to.seq);
+      if (!links || links[links.length - 1].hash !== end) {
+        return this.chainBroken("pending reconcile: D1 changed after verification", { headSeq: cur.seq, toSeq: to.seq });
+      }
+      cur = { seq: links[links.length - 1].seq, hash: end };
+      await this.commitHead(cur, links, null, {});
+    }
+    return cur;
+  }
+
+  /** readPage reads up to READ_PAGE D1 rows after cur (at most maxSeq) and returns their
+   * links if each one is exactly what the chain rule gives; otherwise null. */
+  private async readPage(cur: ChainHead, maxSeq: number): Promise<ChainLink[] | null> {
+    const page = await this.db.prepare(ROWS_AFTER_SQL).bind(cur.seq, maxSeq, READ_PAGE).all<StoredRow>();
+    const rows = page.results ?? [];
+    if (rows.length === 0) return null;
+    const links: ChainLink[] = [];
+    let prev = cur;
+    for (const r of rows) {
+      const link = chainLink(prev.seq + 1, prev.hash, r);
+      if (r.seq !== link.seq || r.prev_hash !== link.prevHash || r.hash !== link.hash) return null;
+      links.push(link);
+      prev = { seq: link.seq, hash: link.hash };
+    }
+    return links;
   }
 
   /** finishReconcile writes the record's audit.reconcile row (once, by its key),

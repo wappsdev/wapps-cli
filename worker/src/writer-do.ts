@@ -27,7 +27,7 @@ import {
   SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
 import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL } from "./storage.js";
-import { auditAppendSync, auditAppendBatch, AuditAppendError, AuditRow, PrincipalType } from "./audit.js";
+import { auditAppendSync, auditAppendBatch, AuditAppendError, AuditRow, AUDIT_FIELD_MAX, PrincipalType } from "./audit.js";
 import { sha256Hex } from "./crypto/encoding.js";
 import {
   EscrowConfig,
@@ -498,7 +498,7 @@ export class ProjectWriterDO {
     const pendingOutcomes = await this.ctx.storage.list<PendingOutcome>({ prefix: PENDING_OUTCOME_PREFIX });
     for (const [storageKey, rec] of pendingOutcomes) {
       try {
-        await auditAppendBatch(this.auditLog, rec.rows, { idempotencyKey: rec.idempotencyKey });
+        await auditAppendBatch(this.auditLog, rec.rows.map(clampLegacyIntent), { idempotencyKey: rec.idempotencyKey });
         await this.ctx.storage.delete(storageKey);
       } catch (err) {
         if (isTerminalRefusal(err)) {
@@ -516,6 +516,19 @@ export class ProjectWriterDO {
     remaining += escrowRemaining;
     if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + Math.min(POINTER_EVENT_RETRY_MS, escrowRetryMs));
   }
+}
+
+/**
+ * clampLegacyIntent shortens the intent of a pending outcome queued before the
+ * AUDIT_FIELD_MAX cap existed (its X-Wapps-Intent had no bound then). The cut is
+ * explicit: the text ends with "…[truncated from N]", N = the original length.
+ * New commits never need it: the edge refuses a longer intent header.
+ */
+function clampLegacyIntent(row: AuditRow): AuditRow {
+  const intent = row.intent;
+  if (typeof intent !== "string" || intent.length <= AUDIT_FIELD_MAX) return row;
+  const marker = `…[truncated from ${intent.length}]`;
+  return { ...row, intent: intent.slice(0, AUDIT_FIELD_MAX - marker.length) + marker };
 }
 
 /** isTerminalRefusal: the audit DO refused on purpose (400 ROW_INVALID, 409 IDEMPOTENCY_MISMATCH); a retry cannot succeed. */

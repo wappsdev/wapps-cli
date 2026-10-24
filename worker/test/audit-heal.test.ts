@@ -678,6 +678,51 @@ describe("idempotency receipts", () => {
   });
 });
 
+describe("reconcile of a long suffix", () => {
+  /** writeRawSuffix writes rows from..to straight into D1 (in D1 batches), chained from prevHash. */
+  async function writeRawSuffix(from: number, to: number, prevHash: string): Promise<string> {
+    let prev = prevHash;
+    const stmts: D1PreparedStatement[] = [];
+    for (let seq = from; seq <= to; seq++) {
+      const r = row(`L${seq}`);
+      const hash = linkHash(prev, rowJson(seq, RAW_TS, r));
+      stmts.push(
+        env.AUDIT_DB.prepare(
+          `INSERT INTO audit (seq, ts, principal, principal_type, project, key, verb, decision, intent, ip, cf_ray, token_jti, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(seq, RAW_TS, r.principal, r.principal_type, r.project ?? null, r.key ?? null, r.verb, r.decision, null, null, null, null, prev, hash),
+      );
+      prev = hash;
+    }
+    for (let i = 0; i < stmts.length; i += 200) await env.AUDIT_DB.batch(stmts.slice(i, i + 200));
+    return prev;
+  }
+
+  it("OVER 1000 ROWS: one pin of the final tail adopts a 1200-row suffix in pages", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const last = await writeRawSuffix(2, 1201, (await doHead()).hash);
+    const res = await reconcile({ seq: 1201, hash: last });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { row: { seq: number } }).row.seq).toBe(1202);
+    const rows = await allAuditRows();
+    expect(rows.length).toBe(1202);
+    expectContinuousChain(rows);
+  });
+
+  it("INTERRUPTED ADOPTION: a page commit that fails mid-reconcile is resumed by the next append, which writes audit.reconcile first", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const last = await writeRawSuffix(2, 251, (await doHead()).hash);
+    await injectCommitFault();
+    expect((await reconcile({ seq: 251, hash: last })).status).toBe(503);
+
+    const next = await appendBatch([row("after")]);
+    expect(next.status).toBe(200);
+    const rows = await allAuditRows();
+    expect(rows[251].verb).toBe("audit.reconcile");
+    expect(rows[252].key).toBe("after");
+    expectContinuousChain(rows);
+  });
+});
+
 describe("reconcile and held intents", () => {
   it("INTENT ROWS KEEP THEIR RECEIPT: reconcile adopts an intent's committed rows with its ticket; the retry dedups", async () => {
     expect((await appendBatch([row("K1")])).status).toBe(200);
@@ -782,6 +827,24 @@ describe("writer outcome retries", () => {
     const left = await runInDoRetry(writerStub(), async (_i: unknown, state: DurableObjectState) => [...(await state.storage.list({ prefix: "pending-audit-outcome:" })).keys()]);
     expect(left).toEqual([]);
     expect(discordCalls.some((c) => c.body.includes("A8") && c.body.includes("IDEMPOTENCY_MISMATCH"))).toBe(true);
+  });
+
+  it("LEGACY LONG INTENT: a pending outcome with a 600-char intent is appended once, clamped with a visible marker, and cleared", async () => {
+    await putValue("DATABASE_URL", "v");
+    const long = "s".repeat(600);
+    await runInDoRetry(writerStub(), async (_i: unknown, state: DurableObjectState) => {
+      await state.storage.put("pending-audit-outcome:vaulter:88", { rows: [row("LEGACY", { verb: "key.set", intent: long })], idempotencyKey: "vaulter:88" });
+      await state.storage.setAlarm(Date.now() + 60_000);
+    });
+    expect(await runDurableObjectAlarm(writerStub())).toBe(true);
+
+    const rows = (await allAuditRows()).filter((r) => r.key === "LEGACY");
+    expect(rows.length).toBe(1);
+    expect(rows[0].intent!.length).toBeLessThanOrEqual(512);
+    expect(rows[0].intent!.endsWith("…[truncated from 600]")).toBe(true);
+    expect(long.startsWith(rows[0].intent!.slice(0, -"…[truncated from 600]".length))).toBe(true);
+    const left = await runInDoRetry(writerStub(), async (_i: unknown, state: DurableObjectState) => [...(await state.storage.list({ prefix: "pending-audit-outcome:" })).keys()]);
+    expect(left).toEqual([]);
   });
 
   it("PENDING KEY: a queued outcome is stored under project:epoch:manifestSha, so a re-created project cannot overwrite it", async () => {
