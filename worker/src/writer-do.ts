@@ -386,7 +386,7 @@ export class ProjectWriterDO {
       await auditAppendBatch(this.auditLog, outcomeRows, { idempotencyKey: idemKey });
     } catch (err) {
       if (isTerminalRefusal(err)) {
-        await this.outcomeRefused(idemKey);
+        await this.outcomeRefused(idemKey, err);
       } else {
         console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
         await this.enqueuePendingOutcome(outcomeRows, idemKey);
@@ -461,11 +461,13 @@ export class ProjectWriterDO {
     await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
   }
 
-  /** outcomeRefused handles a 409 from the audit DO: the same key already holds a
-   * DIFFERENT input, so no retry can succeed. Alert and stop; never loop. */
-  private async outcomeRefused(idempotencyKey: string): Promise<void> {
-    console.error(`writer-do: audit outcome refused with IDEMPOTENCY_MISMATCH, dropped (${idempotencyKey})`);
-    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, ALERT.A8, "audit outcome refused: IDEMPOTENCY_MISMATCH; outcome rows not written", { idempotencyKey }).catch(() => {});
+  /** outcomeRefused handles a deliberate refusal from the audit DO (409: the same key
+   * already holds a DIFFERENT input; 400: a row field is invalid). No retry can
+   * succeed: alert and stop; never loop. */
+  private async outcomeRefused(idempotencyKey: string, err: unknown): Promise<void> {
+    const code = err instanceof AuditAppendError && err.status === 400 ? "ROW_INVALID" : "IDEMPOTENCY_MISMATCH";
+    console.error(`writer-do: audit outcome refused with ${code}, dropped (${idempotencyKey})`);
+    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, ALERT.A8, `audit outcome refused: ${code}; outcome rows not written`, { idempotencyKey }).catch(() => {});
   }
 
   /** enqueuePendingPointerEvent, yazılamayan pointer-event'i pending işaretler + alarm kurar. */
@@ -501,7 +503,7 @@ export class ProjectWriterDO {
       } catch (err) {
         if (isTerminalRefusal(err)) {
           await this.ctx.storage.delete(storageKey);
-          await this.outcomeRefused(rec.idempotencyKey);
+          await this.outcomeRefused(rec.idempotencyKey, err);
           continue;
         }
         remaining++;
@@ -516,9 +518,9 @@ export class ProjectWriterDO {
   }
 }
 
-/** isTerminalRefusal: the audit DO refused on purpose (409); a retry cannot succeed. */
+/** isTerminalRefusal: the audit DO refused on purpose (400 ROW_INVALID, 409 IDEMPOTENCY_MISMATCH); a retry cannot succeed. */
 function isTerminalRefusal(err: unknown): boolean {
-  return err instanceof AuditAppendError && err.status === 409;
+  return err instanceof AuditAppendError && (err.status === 400 || err.status === 409);
 }
 
 /** emptyToNull, boş/absent header string'ini null'a çevirir (audit alanları). */

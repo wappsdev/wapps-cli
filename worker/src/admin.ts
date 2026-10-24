@@ -32,7 +32,7 @@ import {
 import { deleteProjectObjects, deriveProjects, getObject, keyCurrent, keyManifest, validProject } from "./storage.js";
 import { parseCurrentPointer, parseManifest } from "./manifest.js";
 import { ensureSchema } from "./schema.js";
-import { auditAppendSync, auditReadAsync, AuditRow, AUDIT_DO_NAME, ipOf, rayOf } from "./audit.js";
+import { auditAppendSync, auditReadAsync, AuditRow, AUDIT_DO_NAME, AUDIT_FIELD_MAX, ipOf, rayOf } from "./audit.js";
 import { revokeJti } from "./token.js";
 import { fireAlert, ALERT } from "./alerts.js";
 import { doStubFetch } from "./do-util.js";
@@ -162,6 +162,7 @@ export async function handleAdmin(
     const url = new URL(request.url);
     const identity = url.searchParams.get("identity") ?? "";
     if (!identity) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "identity required");
+    if (identity.length > AUDIT_FIELD_MAX) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `identity exceeds ${AUDIT_FIELD_MAX} characters`);
     const since = url.searchParams.get("since");
     if (since && Number.isNaN(Date.parse(since))) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "since not RFC3339");
     const assumePolicy = url.searchParams.get("assume_policy") === "1";

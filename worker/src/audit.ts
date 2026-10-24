@@ -27,8 +27,14 @@ export interface AuditRow {
   token_jti?: string | null;
 }
 
-/** AuditAppendError is a refused or failed append. status 409 = the DO refused it
- * on purpose (IDEMPOTENCY_MISMATCH): a retry with the same input cannot succeed. */
+/** AUDIT_FIELD_MAX caps every text field of an audit row (UTF-16 code units). The
+ * audit DO refuses a longer field with 400 before any write; edge handlers check
+ * caller-supplied text (X-Wapps-Intent, rotate-plan identity) against it first. */
+export const AUDIT_FIELD_MAX = 512;
+
+/** AuditAppendError is a refused or failed append. 400 (ROW_INVALID) and 409
+ * (IDEMPOTENCY_MISMATCH) = the DO refused it on purpose: a retry with the same input
+ * cannot succeed. */
 export class AuditAppendError extends Error {
   constructor(
     route: string,

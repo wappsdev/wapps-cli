@@ -678,6 +678,91 @@ describe("idempotency receipts", () => {
   });
 });
 
+describe("reconcile and held intents", () => {
+  it("INTENT ROWS KEEP THEIR RECEIPT: reconcile adopts an intent's committed rows with its ticket; the retry dedups", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const outcome = [row("K2", { verb: "key.set" }), row("K3", { verb: "key.set" })];
+    await injectCommitFault();
+    expect((await appendBatch(outcome, "vaulter:5:sha")).status).toBe(503);
+    const committed = await allAuditRows();
+    const h4 = await writeRawRow(4, committed[2].hash, row("K4")); // a legacy row after the intent's rows
+
+    expect((await reconcile({ seq: 4, hash: h4 })).status).toBe(200);
+    const same = await appendBatch(outcome, "vaulter:5:sha");
+    expect(same.status).toBe(200);
+    expect(((await same.json()) as { deduped?: boolean }).deduped).toBe(true);
+    const other = await appendBatch([row("K9", { verb: "key.set" })], "vaulter:5:sha");
+    expect(other.status).toBe(409);
+    expect(((await other.json()) as { error: string }).error).toBe("IDEMPOTENCY_MISMATCH");
+    const rows = await allAuditRows();
+    expect(rows.map((r) => r.key)).toEqual(["K1", "K2", "K3", "K4", null]);
+    expect(rows[4].verb).toBe("audit.reconcile");
+    expectContinuousChain(rows);
+  });
+
+  it("INTENT RANGE MISMATCH: a pinned suffix over an intent's range that D1 does not match is refused", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    await injectCommitFault();
+    expect((await appendBatch([row("K2"), row("K3")], "vaulter:6:sha")).status).toBe(503);
+    // Replace the intent's rows with a forged continuation that still links to the head.
+    await env.AUDIT_DB.prepare("DELETE FROM audit WHERE seq >= 2").run();
+    const f2 = await writeRawRow(2, old.hash, row("K2", { principal: "human:forger@wapps.dev" }));
+    const f3 = await writeRawRow(3, f2, row("K3"));
+
+    expect((await reconcile({ seq: 3, hash: f3 })).status).toBe(409);
+    expect(await doHead()).toEqual(old);
+  });
+});
+
+describe("row bounds: checked before the intent and the D1 write", () => {
+  it("OVERSIZED FIELD: a row field over 512 chars is refused with 400 before D1 is touched; the chain stays healthy", async () => {
+    expect((await appendBatch([row("K1")])).status).toBe(200);
+    const old = await doHead();
+    const res = await appendBatch([row("K2"), row("K3", { intent: "x".repeat(513) })]);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("ROW_INVALID");
+    expect((await allAuditRows()).length).toBe(1);
+    expect(await doHead()).toEqual(old);
+    const intent = await runInDoRetry(auditStub(), (_i: unknown, state: DurableObjectState) => state.storage.get("intent"));
+    expect(intent).toBeUndefined();
+
+    expect((await appendOne(row("K2", { key: "k".repeat(513) }))).status).toBe(400);
+    expect((await appendBatch([row("K2")])).status).toBe(200);
+    expectContinuousChain(await allAuditRows());
+  });
+
+  it("NON-STRING FIELD: a row field that is not a string is refused with 400", async () => {
+    const res = await appendBatch([{ ...row("K1"), intent: { nested: "x".repeat(10) } as unknown as string }]);
+    expect(res.status).toBe(400);
+    expect((await allAuditRows()).length).toBe(0);
+  });
+
+  it("WORST-CASE ROW: every free-text field at the cap with the worst JSON escaping still fits the segment bound", async () => {
+    await setEscrow();
+    const worst = String.fromCharCode(1).repeat(512); // each char escapes to \u0001, twice
+    const r: AuditRow = { ...row(worst), principal: worst, project: worst, intent: worst, ip: worst, cf_ray: worst, token_jti: worst, ts: worst };
+    expect((await appendBatch([r])).status).toBe(200);
+    const bodies = await runInDoRetry(auditStub(), async (_i: unknown, state: DurableObjectState) => {
+      const m = await state.storage.list<{ item: { bodyB64: string } }>({ prefix: "pending-escrow-push:audit/segments/" });
+      return [...m.values()].map((v) => v.item.bodyB64.length);
+    });
+    expect(bodies.length).toBe(1);
+    expect(bodies[0]).toBeLessThanOrEqual(128 * 1024);
+  });
+
+  it("EDGE: an X-Wapps-Intent header over 512 chars is refused with 400 before any commit", async () => {
+    const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
+    const res = await callGate("/v1/projects/vaulter/keys/DATABASE_URL", {
+      method: "PUT",
+      headers: authHeader(jwt, { "X-Wapps-Intent": "i".repeat(513) }),
+      body: JSON.stringify({ value: "v" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await allAuditRows()).filter((r) => r.verb === "commit.attempt")).toEqual([]);
+  });
+});
+
 describe("writer outcome retries", () => {
   function writerStub(): DurableObjectStub {
     return env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName("vaulter"));

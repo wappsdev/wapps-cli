@@ -30,7 +30,7 @@
 
 import { sha256Hex, utf8, bytesToB64 } from "./crypto/encoding.js";
 import { ensureSchema } from "./schema.js";
-import { AuditRow, GENESIS_HASH } from "./audit.js";
+import { AUDIT_FIELD_MAX, AuditRow, GENESIS_HASH } from "./audit.js";
 import { ALERT } from "./alerts.js";
 import {
   EscrowConfig,
@@ -109,14 +109,50 @@ interface ReconcileResult {
 /** StoredRow is the shape of a D1 `audit` row as the DO reads it back. */
 type StoredRow = AuditRow & { seq: number; ts: string; prev_hash: string; hash: string };
 
-/** AuditRefused is a deliberate refusal (409), not an outage (503). */
+/** AuditRefused is a deliberate refusal (400/409), not an outage (503). */
 class AuditRefused extends Error {
+  readonly status: number;
   constructor(
-    readonly code: "IDEMPOTENCY_MISMATCH" | "RECONCILE_REFUSED",
+    readonly code: "ROW_INVALID" | "IDEMPOTENCY_MISMATCH" | "RECONCILE_REFUSED",
     message: string,
   ) {
     super(message);
+    this.status = code === "ROW_INVALID" ? 400 : 409;
   }
+}
+
+// The text fields of AuditRow. Each must be a string (or absent/null for the optional
+// ones) of at most AUDIT_FIELD_MAX code units.
+const ROW_TEXT_FIELDS = ["ts", "principal", "principal_type", "project", "key", "verb", "decision", "intent", "ip", "cf_ray", "token_jti"] as const;
+// A segment of a row at the field cap stays far below this (12 fields x 512 units x
+// 6 bytes of JSON escaping, escaped again inside the segment, then base64 ≈ 99 KB).
+// The check runs before the intent and the D1 write, so a head commit can never
+// fail on size after D1 has committed.
+const SEGMENT_MAX_B64 = 128 * 1024;
+
+/** validateRows refuses (400) a row with a non-string or oversized text field. It
+ * never truncates: an audit row says exactly what happened, or it is not written. */
+function validateRows(rows: unknown): asserts rows is AuditRow[] {
+  if (!Array.isArray(rows)) throw new AuditRefused("ROW_INVALID", "rows must be an array");
+  rows.forEach((r, i) => {
+    if (typeof r !== "object" || r === null) throw new AuditRefused("ROW_INVALID", `row ${i} is not an object`);
+    for (const f of ROW_TEXT_FIELDS) {
+      const v = (r as Record<string, unknown>)[f];
+      if (v === undefined || v === null) continue;
+      if (typeof v !== "string") throw new AuditRefused("ROW_INVALID", `row ${i}: field ${f} is not a string`);
+      if (v.length > AUDIT_FIELD_MAX) throw new AuditRefused("ROW_INVALID", `row ${i}: field ${f} exceeds ${AUDIT_FIELD_MAX} characters`);
+    }
+  });
+}
+
+/** segmentItem is the escrow outbox item of one link (§6.8): the FULL material chain
+ * verification needs, {seq, prev_hash, row_json, hash}. */
+function segmentItem(l: ChainLink): { b2Key: string; bodyB64: string; contentType: string } {
+  return {
+    b2Key: keyEscrowAuditSegment(l.seq),
+    bodyB64: bytesToB64(utf8(JSON.stringify({ schema: "wapps.audit-segment.v1", seq: l.seq, prev_hash: l.prevHash, row_json: l.rowJson, hash: l.hash }))),
+    contentType: "application/json",
+  };
 }
 
 const HEAD_KEY = "head";
@@ -231,7 +267,7 @@ export class AuditLogDO {
       }
       return json({ error: "NOT_FOUND" }, 404);
     } catch (e) {
-      if (e instanceof AuditRefused) return json({ error: e.code, message: e.message }, 409);
+      if (e instanceof AuditRefused) return json({ error: e.code, message: e.message }, e.status);
       // Any other error inside the audit DO → 503; the write path turns it into AUDIT_UNAVAILABLE.
       return json({ error: "AUDIT_DO_ERROR", message: String(e) }, 503);
     }
@@ -272,6 +308,7 @@ export class AuditLogDO {
     ids: { idempotencyKey?: string; requestId?: string },
     extra: Record<string, unknown>,
   ): Promise<{ head: ChainHead; deduped: boolean }> {
+    validateRows(rows);
     const ticket: Ticket = { idempotencyKey: ids.idempotencyKey ?? null, requestId: ids.requestId ?? null, inputDigest: sha256Hex(utf8(JSON.stringify(rows))) };
     const receipt = await this.findReceipt(ticket);
     if (receipt) {
@@ -286,6 +323,9 @@ export class AuditLogDO {
       const link = chainLink(head.seq + 1, head.hash, { ...row, ts: row.ts ?? new Date().toISOString() });
       links.push(link);
       head = { seq: link.seq, hash: link.hash };
+    }
+    for (const l of links) {
+      if (segmentItem(l).bodyB64.length > SEGMENT_MAX_B64) throw new AuditRefused("ROW_INVALID", `row ${l.seq}: escrow segment exceeds ${SEGMENT_MAX_B64} bytes`);
     }
     if (links.length > 0) {
       const intent: Intent = { ...ticket, firstSeq: base.seq + 1, lastSeq: head.seq, lastHash: head.hash };
@@ -324,14 +364,8 @@ export class AuditLogDO {
       await txn.put(entries);
       await txn.delete(INTENT_KEY);
       if (!this.escrow || links.length === 0) return;
-      // §6.8 escrow outbox. A segment holds the FULL material that chain verification
-      // needs: {seq, prev_hash, row_json, hash}. The B2 push itself is fail-soft (alarm).
-      const items = links.map((l) => ({
-        b2Key: keyEscrowAuditSegment(l.seq),
-        bodyB64: bytesToB64(utf8(JSON.stringify({ schema: "wapps.audit-segment.v1", seq: l.seq, prev_hash: l.prevHash, row_json: l.rowJson, hash: l.hash }))),
-        contentType: "application/json",
-      }));
-      await enqueueEscrowPushes(txn, items);
+      // §6.8 escrow outbox, committed with the head. The B2 push itself is fail-soft (alarm).
+      await enqueueEscrowPushes(txn, links.map(segmentItem));
     });
   }
 
@@ -348,22 +382,9 @@ export class AuditLogDO {
     const tailSeq = tail?.seq ?? 0;
     if (tailSeq > head.seq) {
       // Rows beyond the head: adopt them only as the exact range of an intent we hold.
-      const candidates = [...(intent ? [intent] : []), ...abandoned].filter((c) => c.firstSeq === head.seq + 1 && c.lastSeq === tailSeq);
-      let adopted: { c: Intent; links: ChainLink[] } | null = null;
-      for (const c of candidates) {
-        const links = await this.verifiedLinks(head, { seq: c.lastSeq, hash: c.lastHash });
-        if (links) {
-          adopted = { c, links };
-          break;
-        }
-      }
+      const adopted = await this.adoptHeldIntent(head, (c) => c.lastSeq === tailSeq);
       if (!adopted) return this.chainBroken("D1 has rows beyond the DO head that no intent covers (reconcile needed)", { headSeq: head.seq, tailSeq });
-      const rest = abandoned.filter((a) => a !== adopted.c);
-      // commitHead also deletes the current intent: if it was not the adopted one, its
-      // seq range is taken now, so its D1 batch can never commit.
-      head = { seq: adopted.c.lastSeq, hash: adopted.c.lastHash };
-      await this.commitHead(head, adopted.links, adopted.c, rest.length !== abandoned.length ? { [ABANDONED_KEY]: rest } : {});
-      console.warn(`audit-do: adopted pending append ${adopted.c.firstSeq}..${adopted.c.lastSeq} from its intent`);
+      head = adopted;
     } else if (intent) {
       // D1 holds none of the intent's rows: its batch did not commit, or not yet.
       // Keep it as abandoned, so a batch that lands late is still adopted.
@@ -377,6 +398,36 @@ export class AuditLogDO {
     const rec = await this.ctx.storage.get<ReconcileRecord>(RECONCILE_KEY);
     if (rec) head = await this.finishReconcile(head, rec);
     return head;
+  }
+
+  /** heldIntentsAt returns the intents we hold (current + abandoned) that start right
+   * after head. Older ones can never commit: their first seq is taken. */
+  private async heldIntentsAt(head: ChainHead): Promise<{ all: Intent[]; abandoned: Intent[]; atHead: Intent[] }> {
+    const intent = (await this.ctx.storage.get<Intent>(INTENT_KEY)) ?? null;
+    const abandoned = (await this.ctx.storage.get<Intent[]>(ABANDONED_KEY)) ?? [];
+    const all = [...(intent ? [intent] : []), ...abandoned];
+    return { all, abandoned, atHead: all.filter((c) => c.firstSeq === head.seq + 1) };
+  }
+
+  /**
+   * adoptHeldIntent adopts the D1 rows of a held intent that starts right after head
+   * and passes `fits`, if D1 holds exactly its rows. It commits with the intent's OWN
+   * ticket, so the caller's receipt survives. Returns the new head, or null.
+   */
+  private async adoptHeldIntent(head: ChainHead, fits: (c: Intent) => boolean): Promise<ChainHead | null> {
+    const { abandoned, atHead } = await this.heldIntentsAt(head);
+    for (const c of atHead.filter(fits)) {
+      const end = { seq: c.lastSeq, hash: c.lastHash };
+      const links = await this.verifiedLinks(head, end);
+      if (!links) continue;
+      const rest = abandoned.filter((a) => a !== c);
+      // commitHead also deletes the current intent: if it was not the adopted one, its
+      // seq range is taken now, so its D1 batch can never commit.
+      await this.commitHead(end, links, c, rest.length !== abandoned.length ? { [ABANDONED_KEY]: rest } : {});
+      console.warn(`audit-do: adopted pending append ${c.firstSeq}..${c.lastSeq} from its intent`);
+      return end;
+    }
+    return null;
   }
 
   /**
@@ -420,10 +471,20 @@ export class AuditLogDO {
       result = await done();
       if (result) return result;
     }
-    const from = await this.head();
+    let from = await this.head();
     const tail = await this.tail();
     if (!tail || !sameHead(tail, target)) throw new AuditRefused("RECONCILE_REFUSED", "the pinned {seq, hash} is not D1's last row");
     if (target.seq <= from.seq) throw new AuditRefused("RECONCILE_REFUSED", "D1 has no rows beyond the DO head");
+    // Rows that an intent we hold covers are that append's own rows: adopt them first,
+    // with the intent's ticket, so its idempotency receipt is kept. Reconcile adopts
+    // only rows that no intent covers; any other overlap with an intent is refused.
+    for (let next = await this.adoptHeldIntent(from, (c) => c.lastSeq <= target.seq); next; next = await this.adoptHeldIntent(from, (c) => c.lastSeq <= target.seq)) {
+      from = next;
+    }
+    if ((await this.heldIntentsAt(from)).atHead.length > 0) {
+      throw new AuditRefused("RECONCILE_REFUSED", "the pinned suffix overlaps an append intent whose rows D1 does not hold exactly");
+    }
+    if (target.seq === from.seq) throw new AuditRefused("RECONCILE_REFUSED", "the rows beyond the DO head were an append's own rows and are recovered; nothing to reconcile");
     if (target.seq - from.seq > RECONCILE_MAX_ROWS) {
       throw new AuditRefused("RECONCILE_REFUSED", `the suffix has ${target.seq - from.seq} rows; one reconcile adopts at most ${RECONCILE_MAX_ROWS}`);
     }
@@ -435,8 +496,9 @@ export class AuditLogDO {
       key: `reconcile:${target.seq}:${target.hash}`,
       row: { ...row, ts: new Date().toISOString(), intent: `reconcile ${from.seq}:${from.hash} -> ${target.seq}:${target.hash}` },
     };
-    // The adoption and the record commit in ONE transaction. A pending intent is
-    // superseded: its seq range belongs to the adopted rows now.
+    // The adoption and the record commit in ONE transaction. No held intent starts
+    // at `from` (checked above), so any intent still stored is stale: its first seq
+    // is taken, and it can never commit.
     await this.commitHead(target, links, null, { [RECONCILE_KEY]: rec });
     console.warn(`audit-do: reconciled legacy suffix ${from.seq + 1}..${target.seq}`);
     await this.finishReconcile(target, rec);
