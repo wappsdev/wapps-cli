@@ -20,7 +20,7 @@ import {
   ADMIN_EMAIL,
 } from "./helpers.js";
 import { PolicyRule } from "../src/policy.js";
-import { deriveProjects, keyBlob, keyCurrent, keyManifest } from "../src/storage.js";
+import { deriveProjects, keyBlob, keyCurrent, keyManifest, validSharedId } from "../src/storage.js";
 import { runGC } from "../src/gc.js";
 import { sha256Hex, utf8 } from "../src/crypto/encoding.js";
 import {
@@ -348,7 +348,9 @@ describe("malformed ids are refused", () => {
     const cases: { path: string; status: number; error: string }[] = [
       // a/b/c: the id is always two segments, so `c` is read as an unknown kind.
       { path: "/v1/shared/a/b/c/keys/K", status: 404, error: "NOT_FOUND" },
-      // apple/: an empty name leaves no id at all.
+      // The router drops empty segments, so this path reads as id `apple/keys` with
+      // the unknown kind `K`: the 404 comes from the route table, not from an id
+      // check. The id `apple/` itself is refused by validSharedId (asserted below).
       { path: "/v1/shared/apple//keys/K", status: 404, error: "NOT_FOUND" },
       { path: "/v1/shared/~/asc/keys/K", status: 422, error: "PROJECT_MISMATCH" },
       { path: "/v1/shared/apple~asc/x/keys/K", status: 422, error: "PROJECT_MISMATCH" },
@@ -367,6 +369,11 @@ describe("malformed ids are refused", () => {
     expect(read.status).toBe(422);
     expect(await r2Keys("secrets/")).toEqual([]);
     expect(await r2Keys("pointer-events/")).toEqual([]);
+  });
+
+  it("the id grammar itself refuses a/b/c, apple/, /asc and ~", () => {
+    for (const id of ["a/b/c", "apple/", "/asc", "~", "apple~asc"]) expect(validSharedId(id), id).toBe(false);
+    expect(validSharedId("apple/asc")).toBe(true);
   });
 });
 
