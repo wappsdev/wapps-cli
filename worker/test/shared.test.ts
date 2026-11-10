@@ -412,6 +412,57 @@ describe("read audit carries X-Wapps-Intent", () => {
   });
 });
 
+// The label is client text that lands in the ledger: only printable ASCII
+// (0x20-0x7e) is accepted, so no control byte (ESC, DEL, TAB) or non-ASCII byte
+// can reach an audit row or a terminal that renders it.
+describe("X-Wapps-Intent accepts only printable ASCII", () => {
+  const BAD: [string, string][] = [
+    ["ESC", "use:\x1b[31mred"],
+    ["DEL", "use:x\x7f"],
+    ["TAB", "use:a\tb"],
+    ["BEL", "use:\x07"],
+    ["latin-1", "use:café"],
+  ];
+
+  it("a read with a control or non-ASCII byte in the label is refused with 400 and returns no value", async () => {
+    await seedAsc();
+    for (const [name, label] of BAD) {
+      const res = await readAs("rel@wapps.dev", "/v1/shared/apple/asc", ["ASC_KEY_ID"], { "X-Wapps-Intent": label });
+      expect(res.status, name).toBe(400);
+      const txt = await res.text();
+      expect(JSON.parse(txt).error, name).toBe("BAD_REQUEST");
+      expect(txt, name).not.toContain(ASC.ASC_KEY_ID);
+    }
+    expect((await allAuditRows()).some((r) => r.verb.startsWith("value.read"))).toBe(false);
+  });
+
+  it("a set, import or delete with a control byte in the label is refused with 400 before any commit", async () => {
+    await seedAsc();
+    const h = authHeader(await jwt("boss@wapps.dev"), { "X-Wapps-Intent": "sync\x1b" });
+    const put = await callGate("/v1/shared/apple/asc/keys/ASC_KEY_ID", { method: "PUT", headers: h, body: JSON.stringify({ value: "x" }) });
+    const imp = await callGate("/v1/shared/apple/asc/import", { method: "POST", headers: h, body: JSON.stringify({ values: { ASC_KEY_ID: "x" } }) });
+    const del = await callGate("/v1/shared/apple/asc/keys/ASC_KEY_ID", { method: "DELETE", headers: h });
+    for (const res of [put, imp, del]) {
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("BAD_REQUEST");
+    }
+    const rows = await allAuditRows();
+    expect(rows.filter((r) => r.verb === "commit.attempt").length).toBe(1); // the seed import only
+    expect(rows.some((r) => (r.intent ?? "").includes("\x1b"))).toBe(false);
+  });
+
+  it("every printable ASCII character is accepted and recorded as sent", async () => {
+    await seedAsc();
+    let printable = "";
+    for (let c = 0x21; c <= 0x7e; c++) printable += String.fromCharCode(c);
+    const label = `use: ${printable}`;
+    const res = await readAs("rel@wapps.dev", "/v1/shared/apple/asc", ["ASC_KEY_ID"], { "X-Wapps-Intent": label });
+    expect(res.status).toBe(200);
+    const rows = await allAuditRows();
+    expect(rows.some((r) => r.verb === "value.read" && r.intent === label)).toBe(true);
+  });
+});
+
 describe("keys and read on a store name with no data (CLI contract)", () => {
   it("granted: keys 200 empty, read 404 NOT_FOUND; not granted: both 403 GRANT_DENIED", async () => {
     const keys = async (email: string, base: string) => callGate(`${base}/keys`, { headers: authHeader(await jwt(email)) });

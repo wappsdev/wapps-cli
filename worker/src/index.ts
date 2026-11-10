@@ -62,8 +62,14 @@ export const TOPOLOGY: Topology = "primary";
 
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
 const ROTATION_HEADER = "X-Wapps-Rotation"; // §6.4 rotate.step intent'i (bilgilendirici)
-// Audit label: "sync" on an import → key.sync verb; on a read, recorded in the row's intent.
+// X-Wapps-Intent is an audit label ("sync", "epoch-reset", "use:<consumer>"). It is
+// SELF-REPORTED for every principal: nothing ties it to the token, so `principal`
+// is the trusted field of a row and the label is only what the caller said. "sync"
+// on an import also selects the key.sync verb.
 const INTENT_HEADER = "X-Wapps-Intent";
+// Printable ASCII only: no control byte (ESC, DEL, TAB) or non-ASCII byte reaches
+// the ledger or a terminal that renders it.
+const INTENT_RE = /^[\x20-\x7e]*$/;
 
 /** RequestCtx, bir isteğin çözülmüş kimlik + policy bağlamı. */
 interface RequestCtx {
@@ -71,6 +77,8 @@ interface RequestCtx {
   authz: AuthzPrincipal;
   policy: LoadedPolicy;
   adminEmails: string[];
+  // The validated X-Wapps-Intent label; null when absent or blank.
+  intent: string | null;
 }
 
 export default {
@@ -119,6 +127,10 @@ export default {
         });
       }
 
+      // The label lands in audit rows, so a malformed one stops the request here.
+      const intent = parseIntent(request);
+      if (intent instanceof Response) return intent;
+
       // OPSİYONEL mint katmanı (§5.3): service principal Bearer minted-token
       // sunarsa scope-pinli machine principal'a daralır (asla genişlemez).
       // PRINCIPAL BINDING: minted sub, DIŞ CF-Access-doğrulanmış principal'a
@@ -164,7 +176,7 @@ export default {
         }
         throw e;
       }
-      const rctx: RequestCtx = { principal, authz, policy, adminEmails };
+      const rctx: RequestCtx = { principal, authz, policy, adminEmails, intent };
 
       // --- Control plane: /v1/policy + /v1/admin/* (write-AUD) ------------------
       if (isWriteApp) {
@@ -274,6 +286,19 @@ function parseAdminEmails(raw: string | undefined): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s !== "");
+}
+
+/** parseIntent reads X-Wapps-Intent: null when absent or blank, the label when it is
+ * printable ASCII within AUDIT_FIELD_MAX, a 400 response otherwise. */
+function parseIntent(request: Request): string | null | Response {
+  const raw = request.headers.get(INTENT_HEADER) ?? "";
+  if (raw.length > AUDIT_FIELD_MAX) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${AUDIT_FIELD_MAX} characters`);
+  }
+  if (!INTENT_RE.test(raw)) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} must be printable ASCII (0x20-0x7e)`);
+  }
+  return raw.trim() === "" ? null : raw;
 }
 
 function ptypeOf(p: Principal): "human" | "machine" {
@@ -582,13 +607,6 @@ async function handleRead(
   rctx: RequestCtx,
   masters: MasterKey[],
 ): Promise<Response> {
-  // X-Wapps-Intent (e.g. `use:<consumer-project>` on a shared read) lands in the
-  // read rows: authoritative for a service principal, self-reported for a human.
-  const intentHeader = request.headers.get(INTENT_HEADER) ?? "";
-  if (intentHeader.length > AUDIT_FIELD_MAX) {
-    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${AUDIT_FIELD_MAX} characters`);
-  }
-  const intent = intentHeader.trim() === "" ? null : intentHeader;
   let body: { keys?: unknown };
   try {
     body = (await request.json()) as { keys?: unknown };
@@ -692,7 +710,8 @@ async function handleRead(
     key: k,
     verb,
     decision: "allow",
-    intent,
+    // The caller's label (e.g. `use:<consumer-project>` on a shared read); self-reported.
+    intent: rctx.intent,
     ip: ipOf(request),
     cf_ray: rayOf(request),
     token_jti: rctx.principal.kind === "machine" ? rctx.principal.jti : null,
@@ -724,16 +743,12 @@ async function dispatchWrite(
   op: WriteOp,
   auditVerb: string,
 ): Promise<Response> {
-  // The intent header lands in audit rows; the audit DO refuses a longer field.
-  if ((request.headers.get(INTENT_HEADER) ?? "").length > AUDIT_FIELD_MAX) {
-    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${AUDIT_FIELD_MAX} characters`);
-  }
   const doHeaders: Record<string, string> = {
     "content-type": "application/json",
     "x-principal-id": rctx.authz.id,
     "x-principal-type": ptypeOf(rctx.principal),
     "x-token-jti": rctx.principal.kind === "machine" ? rctx.principal.jti : "",
-    "x-intent": request.headers.get(INTENT_HEADER) ?? "",
+    "x-intent": rctx.intent ?? "",
     "x-audit-verb": auditVerb,
     "x-policy-version": String(rctx.policy.version),
     "x-cf-ip": ipOf(request) ?? "",
