@@ -21,6 +21,7 @@ import {
   getObject,
   deriveProjects,
   validProject,
+  validSharedId,
   validKeyName,
   mapPool,
   BLOB_POOL,
@@ -206,16 +207,28 @@ export default {
         return await handleProjectsList(request, env, ctx, rctx);
       }
 
-      // --- projects/{p}/... --------------------------------------------------------
+      // --- projects/{p}/... and shared/{ns}/{name}/... ----------------------------
+      // One store name (a project or a shared id like `apple/asc`) and the rest of
+      // the path. Both forms reach the same handlers; a shared id is always two
+      // segments, so `/v1/shared/a/b/c/keys` reads `c` as an unknown kind.
+      let project: string | null = null;
+      let rest: string[] = [];
       if (parts[1] === "projects" && parts.length >= 4) {
-        const project = parts[2];
+        project = parts[2];
         if (!validProject(project)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid project segment");
-        const kind = parts[3];
+        rest = parts.slice(3);
+      } else if (parts[1] === "shared" && parts.length >= 5) {
+        project = `${parts[2]}/${parts[3]}`;
+        if (!validSharedId(project)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid shared id segment");
+        rest = parts.slice(4);
+      }
+      if (project !== null) {
+        const kind = rest[0];
 
-        if (kind === "keys" && parts.length === 4 && request.method === "GET") {
+        if (kind === "keys" && rest.length === 1 && request.method === "GET") {
           return await handleKeysList(request, env, ctx, project, rctx, masters);
         }
-        if (kind === "read" && parts.length === 4 && request.method === "POST") {
+        if (kind === "read" && rest.length === 1 && request.method === "POST") {
           return await handleRead(request, env, ctx, project, rctx, masters);
         }
         // MIGRATION_FREEZE (§7.5/§8.2) — BİLİNÇLİ ERTELEME: per-proje soak
@@ -223,17 +236,17 @@ export default {
         // fazının mekanizmasıdır (rollout adım 7; freeze migration kaydında deklare
         // edilir) ve `wapps migrate` tooling'iyle birlikte gelecektir. Worker
         // çekirdeğinde şimdilik YOKTUR — spec changelog rev 3'te not düşüldü.
-        if (kind === "keys" && parts.length === 5 && request.method === "PUT") {
-          return await handleSet(request, env, ctx, project, parts[4], rctx);
+        if (kind === "keys" && rest.length === 2 && request.method === "PUT") {
+          return await handleSet(request, env, ctx, project, rest[1], rctx);
         }
-        if (kind === "keys" && parts.length === 5 && request.method === "DELETE") {
-          return await handleDelete(request, env, ctx, project, parts[4], rctx);
+        if (kind === "keys" && rest.length === 2 && request.method === "DELETE") {
+          return await handleDelete(request, env, ctx, project, rest[1], rctx);
         }
-        if (kind === "import" && parts.length === 4 && request.method === "POST") {
+        if (kind === "import" && rest.length === 1 && request.method === "POST") {
           return await handleImport(request, env, ctx, project, rctx);
         }
-        if (kind === "manifests" && parts.length === 5 && request.method === "GET") {
-          return await handleManifestRead(request, env, ctx, project, parts[4], rctx);
+        if (kind === "manifests" && rest.length === 2 && request.method === "GET") {
+          return await handleManifestRead(request, env, ctx, project, rest[1], rctx);
         }
       }
       return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
