@@ -27,7 +27,7 @@ import {
   SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
 import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL } from "./storage.js";
-import { auditAppendSync, auditAppendBatch, AuditAppendError, AuditRow, AUDIT_FIELD_MAX, PrincipalType } from "./audit.js";
+import { auditAppendSync, auditAppendBatch, AuditAppendError, AuditRow, AUDIT_FIELD_MAX, PrincipalType, denyIntent } from "./audit.js";
 import { sha256Hex } from "./crypto/encoding.js";
 import {
   EscrowConfig,
@@ -445,7 +445,7 @@ export class ProjectWriterDO {
       key,
       verb: meta.auditVerb,
       decision: "deny",
-      intent: e.code, // başarısız check'in adı
+      intent: denyIntent(e.code, meta.intent), // failed check, then the caller's label
       ip: meta.ip,
       cf_ray: meta.cfRay,
       token_jti: meta.tokenJti,

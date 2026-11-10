@@ -463,6 +463,69 @@ describe("X-Wapps-Intent accepts only printable ASCII", () => {
   });
 });
 
+// Deny rows: `intent` = `<reason>|<label>`. The reason is a server word with no `|`,
+// so the first `|` splits it from the caller's label; no label leaves `<reason>`.
+// The label cap (448 = AUDIT_FIELD_MAX - 64) keeps room for the reason.
+describe("deny rows keep the reason and the label apart", () => {
+  const LABEL_MAX = 448;
+
+  it("an edge read and list deny record <reason>|<label>; no label records <reason>", async () => {
+    await seedAsc();
+    const label = "use:wapps-tv-remote";
+    expect((await readAs("tv@wapps.dev", "/v1/shared/apple/asc", ["ASC_KEY_ID"], { "X-Wapps-Intent": label })).status).toBe(403);
+    expect((await readAs("tv@wapps.dev", "/v1/shared/apple/asc", ["ASC_ISSUER_ID"])).status).toBe(403);
+    const list = await callGate("/v1/shared/apple/asc/keys", { headers: authHeader(await jwt("tv@wapps.dev"), { "X-Wapps-Intent": label }) });
+    expect(list.status).toBe(403);
+
+    const deny = (await allAuditRows()).filter((r) => r.decision === "deny");
+    expect(deny.find((r) => r.verb === "value.read" && r.key === "ASC_KEY_ID")?.intent).toBe("project|use:wapps-tv-remote");
+    expect(deny.find((r) => r.verb === "value.read" && r.key === "ASC_ISSUER_ID")?.intent).toBe("project");
+    expect(deny.find((r) => r.verb === "key.list")?.intent).toBe("project|use:wapps-tv-remote");
+  });
+
+  it("an edge write deny records <reason>|<label>", async () => {
+    await seedAsc();
+    const put = await callGate("/v1/shared/apple/asc/keys/ASC_KEY_ID", {
+      method: "PUT",
+      headers: authHeader(await jwt("rel@wapps.dev"), { "X-Wapps-Intent": "sync" }),
+      body: JSON.stringify({ value: "x" }),
+    });
+    expect(put.status).toBe(403);
+    const row = (await allAuditRows()).find((r) => r.verb === "key.set" && r.decision === "deny");
+    expect(row?.intent).toBe("verb|sync");
+  });
+
+  it("a writer deny records <code>|<label>", async () => {
+    await seedAsc();
+    const put = await callGate("/v1/shared/apple/asc/keys/ASC_KEY_ID", {
+      method: "PUT",
+      headers: authHeader(await jwt("boss@wapps.dev"), { "X-Wapps-Intent": "use:release" }),
+      body: JSON.stringify({ value: "x", ifEpoch: 99 }),
+    });
+    expect(put.status).toBe(412);
+    const row = (await allAuditRows()).find((r) => r.verb === "key.set" && r.decision === "deny");
+    expect(row?.intent).toBe("EPOCH_CONFLICT|use:release");
+  });
+
+  it("a label of the full cap still fits a deny row; one character more is refused", async () => {
+    await seedAsc();
+    const label = "u".repeat(LABEL_MAX);
+    expect((await readAs("tv@wapps.dev", "/v1/shared/apple/asc", ["ASC_KEY_ID"], { "X-Wapps-Intent": label })).status).toBe(403);
+    const put = await callGate("/v1/shared/apple/asc/keys/ASC_KEY_ID", {
+      method: "PUT",
+      headers: authHeader(await jwt("boss@wapps.dev"), { "X-Wapps-Intent": label }),
+      body: JSON.stringify({ value: "x", ifEpoch: 99 }),
+    });
+    expect(put.status).toBe(412);
+    const deny = (await allAuditRows()).filter((r) => r.decision === "deny");
+    expect(deny.find((r) => r.verb === "value.read")?.intent).toBe(`project|${label}`);
+    expect(deny.find((r) => r.verb === "key.set")?.intent).toBe(`EPOCH_CONFLICT|${label}`);
+
+    const over = await readAs("rel@wapps.dev", "/v1/shared/apple/asc", ["ASC_KEY_ID"], { "X-Wapps-Intent": "u".repeat(LABEL_MAX + 1) });
+    expect(over.status).toBe(400);
+  });
+});
+
 describe("keys and read on a store name with no data (CLI contract)", () => {
   it("granted: keys 200 empty, read 404 NOT_FOUND; not granted: both 403 GRANT_DENIED", async () => {
     const keys = async (email: string, base: string) => callGate(`${base}/keys`, { headers: authHeader(await jwt(email)) });

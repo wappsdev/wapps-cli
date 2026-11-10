@@ -46,7 +46,7 @@ import { AuditLogDO } from "./audit-do.js";
 import { SchedulerDO } from "./scheduler-do.js";
 import { scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
 import { checkRateLimit } from "./ratelimit.js";
-import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME, AUDIT_FIELD_MAX } from "./audit.js";
+import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME, INTENT_MAX, denyIntent } from "./audit.js";
 import { handleTokenMint } from "./token.js";
 import { handleAdmin, AdminContext } from "./admin.js";
 import { fireAlert, ALERT } from "./alerts.js";
@@ -119,7 +119,7 @@ export default {
       // Rate limit: her authenticated principal 60/dk; 429 deny olarak audit'lenir.
       const rl = await checkRateLimit(env, principal.id);
       if (!rl.allowed) {
-        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal.id, ptypeOf(principal), "rate_limit", null, null, null));
+        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal.id, ptypeOf(principal), "rate_limit", null, null, null, null));
         await countDenyBurst(ctx, env, principal.id);
         return new Response(JSON.stringify({ error: "RATE_LIMITED", message: "rate limit exceeded", retry_after: rl.retryAfter }), {
           status: HTTP.TOO_MANY,
@@ -142,7 +142,7 @@ export default {
           principal = await resolveMachinePrincipal(request, env, outerId);
         } catch (e) {
           if (e instanceof AuthFail && e.code === "TOKEN_PRINCIPAL_MISMATCH") {
-            auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, outerId, "machine", "token.use", null, null, "TOKEN_PRINCIPAL_MISMATCH"));
+            auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, outerId, "machine", "token.use", null, null, "TOKEN_PRINCIPAL_MISMATCH", intent));
             await countDenyBurst(ctx, env, outerId);
           }
           throw e;
@@ -289,11 +289,11 @@ function parseAdminEmails(raw: string | undefined): string[] {
 }
 
 /** parseIntent reads X-Wapps-Intent: null when absent or blank, the label when it is
- * printable ASCII within AUDIT_FIELD_MAX, a 400 response otherwise. */
+ * printable ASCII within INTENT_MAX, a 400 response otherwise. */
 function parseIntent(request: Request): string | null | Response {
   const raw = request.headers.get(INTENT_HEADER) ?? "";
-  if (raw.length > AUDIT_FIELD_MAX) {
-    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${AUDIT_FIELD_MAX} characters`);
+  if (raw.length > INTENT_MAX) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${INTENT_MAX} characters`);
   }
   if (!INTENT_RE.test(raw)) {
     return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} must be printable ASCII (0x20-0x7e)`);
@@ -305,6 +305,7 @@ function ptypeOf(p: Principal): "human" | "machine" {
   return p.kind === "human" ? "human" : "machine";
 }
 
+/** denyRow builds a deny row; its intent is `<reason>|<label>` (see denyIntent). */
 function denyRow(
   request: Request,
   principalId: string,
@@ -312,9 +313,10 @@ function denyRow(
   verb: string,
   project: string | null,
   key: string | null,
-  intent: string | null,
+  reason: string | null,
+  label: string | null,
 ): AuditRow {
-  return { principal: principalId, principal_type: ptype, project, key, verb, decision: "deny", intent, ip: ipOf(request), cf_ray: rayOf(request) };
+  return { principal: principalId, principal_type: ptype, project, key, verb, decision: "deny", intent: denyIntent(reason, label), ip: ipOf(request), cf_ray: rayOf(request) };
 }
 
 /**
@@ -472,7 +474,7 @@ async function handleKeysList(
   // key=null proje-metadata op'u: bir kural principal+read+project'i eşlemeli (§4.3.3).
   const projectGate = can(rctx, project, null, "read");
   if (!projectGate.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.list", project, null, projectGate.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.list", project, null, projectGate.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project", { dimension: projectGate.reason });
   }
@@ -521,7 +523,7 @@ async function handleManifestRead(
 ): Promise<Response> {
   const projectGate = can(rctx, project, null, "read");
   if (!projectGate.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "manifest.read", project, null, projectGate.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "manifest.read", project, null, projectGate.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project", { dimension: projectGate.reason });
   }
@@ -625,7 +627,7 @@ async function handleRead(
   for (const k of keys) {
     const d = can(rctx, project, k, "read");
     if (!d.allowed) {
-      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "value.read", project, k, d.reason ?? null));
+      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "value.read", project, k, d.reason ?? null, rctx.intent));
       await countDenyBurst(ctx, env, rctx.authz.id);
       return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "read denied", { key: k, dimension: d.reason });
     }
@@ -781,7 +783,7 @@ async function handleSet(request: Request, env: Env, ctx: ExecutionContext, proj
   if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
   const d = can(rctx, project, keyName, "write");
   if (!d.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.set", project, keyName, d.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.set", project, keyName, d.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
   }
@@ -819,7 +821,7 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
   for (const k of names) {
     const d = can(rctx, project, k, "write");
     if (!d.allowed) {
-      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.import", project, k, d.reason ?? null));
+      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.import", project, k, d.reason ?? null, rctx.intent));
       await countDenyBurst(ctx, env, rctx.authz.id);
       return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: k, dimension: d.reason });
     }
@@ -834,7 +836,7 @@ async function handleDelete(request: Request, env: Env, ctx: ExecutionContext, p
   // YETMEZ. Yazma geri alınabilir (eski değer yeniden set edilir), silme değil.
   const d = can(rctx, project, keyName, "delete");
   if (!d.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.delete", project, keyName, d.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.delete", project, keyName, d.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "delete denied", { key: keyName, dimension: d.reason });
   }
