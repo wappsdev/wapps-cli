@@ -126,6 +126,62 @@ describe("authorize (§4.3 normatif)", () => {
   });
 });
 
+// Shared named secrets (design 2026-11-11): a project glob matches a shared id only
+// if the glob holds exactly one `/`. `["*"]` never reaches a shared secret.
+describe("project globs and shared ids", () => {
+  const rel = (group: string): AuthzPrincipal => ({ kind: "human", id: `human:${group}`, groups: [group] });
+  const SHARED = doc([
+    { group: "tv@wapps.co", projects: ["wapps-tv-remote", "*"], keys: ["*"], verbs: ["read"] },
+    { group: "apple-all@wapps.co", projects: ["apple/*"], keys: ["*"], verbs: ["read"] },
+    { group: "all-shared@wapps.co", projects: ["*/*"], keys: ["*"], verbs: ["read"] },
+    { group: "apple-other@wapps.co", projects: ["apple/other"], keys: ["*"], verbs: ["read"] },
+    { group: "exact@wapps.co", projects: ["apple/asc"], keys: ["ASC_*"], verbs: ["read"] },
+    { group: "odd@wapps.co", projects: ["apple?asc", "apple/asc/x", "*/*/*", "**"], keys: ["*"], verbs: ["read"] },
+  ]);
+
+  it("a principal granted a project and [\"*\"] is refused on apple/asc (dimension project)", () => {
+    const d = authorize(SHARED, rel("tv@wapps.co"), "apple/asc", "ASC_KEY_ID", "read");
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toBe("project");
+    expect(authorize(SHARED, rel("tv@wapps.co"), "apple/asc", null, "read").allowed).toBe(false);
+    // The same rule still reaches every project.
+    expect(authorize(SHARED, rel("tv@wapps.co"), "wapps-tv-remote", "K", "read").allowed).toBe(true);
+    expect(authorize(SHARED, rel("tv@wapps.co"), "emlak-radar", "K", "read").allowed).toBe(true);
+  });
+
+  it("apple/* and */* match apple/asc; apple/other does not", () => {
+    expect(authorize(SHARED, rel("apple-all@wapps.co"), "apple/asc", "ASC_KEY_ID", "read").allowed).toBe(true);
+    expect(authorize(SHARED, rel("all-shared@wapps.co"), "apple/asc", "ASC_KEY_ID", "read").allowed).toBe(true);
+    expect(authorize(SHARED, rel("all-shared@wapps.co"), "google/play", "K", "read").allowed).toBe(true);
+    expect(authorize(SHARED, rel("apple-all@wapps.co"), "google/play", "K", "read").allowed).toBe(false);
+    const d = authorize(SHARED, rel("apple-other@wapps.co"), "apple/asc", "ASC_KEY_ID", "read");
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toBe("project");
+  });
+
+  it("an exact shared id rule keeps its key globs", () => {
+    expect(authorize(SHARED, rel("exact@wapps.co"), "apple/asc", "ASC_KEY_ID", "read").allowed).toBe(true);
+    expect(authorize(SHARED, rel("exact@wapps.co"), "apple/asc", "OTHER", "read").allowed).toBe(false);
+  });
+
+  it("globs with a `/` never match a project name", () => {
+    for (const g of ["apple-all@wapps.co", "all-shared@wapps.co", "exact@wapps.co"]) {
+      expect(authorize(SHARED, rel(g), "apple", "K", "read").allowed, g).toBe(false);
+      expect(authorize(SHARED, rel(g), "apple-asc", "K", "read").allowed, g).toBe(false);
+    }
+  });
+
+  it("no slash-free glob and no glob with two `/` reaches a shared id", () => {
+    // `?` and `**` would match the `/` under plain globMatch; the rule refuses them.
+    expect(authorize(SHARED, rel("odd@wapps.co"), "apple/asc", "K", "read").allowed).toBe(false);
+  });
+
+  it("filterReadableKeys follows the same rule", () => {
+    expect(filterReadableKeys(SHARED, rel("tv@wapps.co"), "apple/asc", ["ASC_KEY_ID"])).toEqual([]);
+    expect(filterReadableKeys(SHARED, rel("apple-all@wapps.co"), "apple/asc", ["ASC_KEY_ID"])).toEqual(["ASC_KEY_ID"]);
+  });
+});
+
 describe("filterReadableKeys (§4.3.3)", () => {
   it("liste okunabilir anahtarlara indirgenir", () => {
     const keys = ["DATABASE_URL", "DB_PROD_URL", "API_KEY"];

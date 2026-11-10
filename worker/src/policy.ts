@@ -92,6 +92,18 @@ export function globMatch(glob: string, s: string): boolean {
 }
 
 /**
+ * projectGlobMatch matches a rule's project glob against a store name. A shared id
+ * (`apple/asc`) is reached only by a glob that holds exactly one `/`: `apple/asc`,
+ * `apple/` + `*`, or star-slash-star for all of them. `*` and `?` match `/` under
+ * globMatch, so without this rule a broad `["*"]` grant would reach every shared
+ * secret. A project name has no `/`, so a glob with a `/` never matches it.
+ */
+export function projectGlobMatch(glob: string, name: string): boolean {
+  if (name.includes("/") && glob.split("/").length !== 2) return false;
+  return globMatch(glob, name);
+}
+
+/**
  * keyGlobMatch, anahtar-ADI eşleşmesidir (§4.3) ve globMatch'i CASE-INSENSITIVE
  * uygular. Anahtar adları POSIX env-var olabildiğinden case-insensitive KİMLİKtir
  * (FOO ≡ foo — writer-DO farklı-case varyantı reddeder). Böylece bir `!*_PROD_*`
@@ -174,7 +186,7 @@ export function authorize(
     if (!expandVerbs(rule.verbs).has(verb)) continue;
     furthest = Math.max(furthest, 2);
     // 3. project
-    if (!rule.projects.some((g) => globMatch(g, project))) continue;
+    if (!rule.projects.some((g) => projectGlobMatch(g, project))) continue;
     furthest = Math.max(furthest, 3);
     // 4. key (null → proje-metadata op'u; adım atlanır)
     if (key !== null) {
