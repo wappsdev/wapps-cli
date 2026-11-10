@@ -20,8 +20,9 @@ import {
   ADMIN_EMAIL,
 } from "./helpers.js";
 import { PolicyRule } from "../src/policy.js";
-import { keyBlob, keyCurrent, keyManifest } from "../src/storage.js";
-import { utf8 } from "../src/crypto/encoding.js";
+import { deriveProjects, keyBlob, keyCurrent, keyManifest } from "../src/storage.js";
+import { runGC } from "../src/gc.js";
+import { sha256Hex, utf8 } from "../src/crypto/encoding.js";
 import {
   DataManifest,
   SCHEMA_CURRENT_POINTER,
@@ -306,16 +307,11 @@ describe("name isolation", () => {
       utf8(JSON.stringify({ schema: SCHEMA_CURRENT_POINTER, project: to, epoch, manifestSha256: manifestObjectHash(bytes) })),
     );
   }
-  async function currentManifest(name: string): Promise<DataManifest> {
-    const ptr = parseCurrentPointer(new Uint8Array(await (await env.SECRETS_BUCKET.get(keyCurrent(name)))!.arrayBuffer()));
-    return parseManifest(new Uint8Array(await (await env.SECRETS_BUCKET.get(keyManifest(name, ptr.epoch)))!.arrayBuffer()));
-  }
-
   it("bytes swapped between apple/asc and project apple-asc fail to decrypt, both ways", async () => {
     await seedAsc();
     expect((await importAs("boss@wapps.dev", "/v1/projects/apple-asc", { ASC_KEY_ID: "project-value-77" })).status).toBe(200);
-    const shared = await currentManifest("apple/asc");
-    const project = await currentManifest("apple-asc");
+    const shared = await currentManifestOf("apple/asc");
+    const project = await currentManifestOf("apple-asc");
 
     await transplant(shared, "apple-asc");
     await transplant(project, "apple/asc");
@@ -455,4 +451,28 @@ describe("store-wide admin ops cover shared ids", () => {
     expect(body.failed).toBe(0);
     expect(body.projects["apple/asc"]).toMatchObject({ epoch: 1, rewrapped: 0 });
   });
+
+  it("GC over deriveProjects collects an orphan blob of apple/asc and keeps the referenced ones", async () => {
+    await seedAsc();
+    const referenced = (await currentManifestOf("apple/asc")).entries.map((e) => e.blobHash);
+    const orphan = new Uint8Array(300).fill(7);
+    const orphanHash = sha256Hex(orphan);
+    await env.SECRETS_BUCKET.put(keyBlob("apple/asc", orphanHash), orphan);
+
+    const report = await runGC(env.SECRETS_BUCKET, await deriveProjects(env.SECRETS_BUCKET), {
+      now: new Date(Date.now() + 100 * 24 * 3600 * 1000),
+      enabledAt: new Date(Date.now() - 200 * 24 * 3600 * 1000),
+      escrowHas: async () => true,
+      auditDelete: async () => {},
+      alert: () => {},
+    });
+    expect(report.deleted).toEqual([{ project: "apple/asc", sha: orphanHash }]);
+    expect(await env.SECRETS_BUCKET.head(keyBlob("apple/asc", orphanHash))).toBeNull();
+    for (const h of referenced) expect(await env.SECRETS_BUCKET.head(keyBlob("apple/asc", h))).not.toBeNull();
+  });
 });
+
+async function currentManifestOf(name: string): Promise<DataManifest> {
+  const ptr = parseCurrentPointer(new Uint8Array(await (await env.SECRETS_BUCKET.get(keyCurrent(name)))!.arrayBuffer()));
+  return parseManifest(new Uint8Array(await (await env.SECRETS_BUCKET.get(keyManifest(name, ptr.epoch)))!.arrayBuffer()));
+}
