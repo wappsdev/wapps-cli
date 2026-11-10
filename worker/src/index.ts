@@ -62,7 +62,8 @@ export const TOPOLOGY: Topology = "primary";
 
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
 const ROTATION_HEADER = "X-Wapps-Rotation"; // §6.4 rotate.step intent'i (bilgilendirici)
-const INTENT_HEADER = "X-Wapps-Intent"; // "sync" → key.sync audit verb'ü
+// Audit label: "sync" on an import → key.sync verb; on a read, recorded in the row's intent.
+const INTENT_HEADER = "X-Wapps-Intent";
 
 /** RequestCtx, bir isteğin çözülmüş kimlik + policy bağlamı. */
 interface RequestCtx {
@@ -581,6 +582,13 @@ async function handleRead(
   rctx: RequestCtx,
   masters: MasterKey[],
 ): Promise<Response> {
+  // X-Wapps-Intent (e.g. `use:<consumer-project>` on a shared read) lands in the
+  // read rows: authoritative for a service principal, self-reported for a human.
+  const intentHeader = request.headers.get(INTENT_HEADER) ?? "";
+  if (intentHeader.length > AUDIT_FIELD_MAX) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${AUDIT_FIELD_MAX} characters`);
+  }
+  const intent = intentHeader.trim() === "" ? null : intentHeader;
   let body: { keys?: unknown };
   try {
     body = (await request.json()) as { keys?: unknown };
@@ -684,6 +692,7 @@ async function handleRead(
     key: k,
     verb,
     decision: "allow",
+    intent,
     ip: ipOf(request),
     cf_ray: rayOf(request),
     token_jti: rctx.principal.kind === "machine" ? rctx.principal.jti : null,

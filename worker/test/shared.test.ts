@@ -374,6 +374,48 @@ describe("malformed ids are refused", () => {
   });
 });
 
+describe("read audit carries X-Wapps-Intent", () => {
+  it("value.read rows record the intent; no header records null", async () => {
+    await seedAsc();
+    const bulk = await readAs("rel@wapps.dev", "/v1/shared/apple/asc", Object.keys(ASC), { "X-Wapps-Intent": "use:wapps-tv-remote" });
+    expect(bulk.status).toBe(200);
+    const one = await readAs("rel@wapps.dev", "/v1/shared/apple/asc", ["ASC_KEY_ID"], { "X-Wapps-Intent": "use:emlak-radar" });
+    expect(one.status).toBe(200);
+    const plain = await readAs("rel@wapps.dev", "/v1/shared/apple/asc", ["ASC_ISSUER_ID"]);
+    expect(plain.status).toBe(200);
+
+    const rows = (await allAuditRows()).filter((r) => r.decision === "allow" && r.verb.startsWith("value.read"));
+    const bulkRows = rows.filter((r) => r.verb === "value.read.bulk");
+    expect(bulkRows.map((r) => r.key).sort()).toEqual(Object.keys(ASC).sort());
+    for (const r of bulkRows) {
+      expect(r.project).toBe("apple/asc");
+      expect(r.intent).toBe("use:wapps-tv-remote");
+    }
+    const single = rows.filter((r) => r.verb === "value.read");
+    expect(single.map((r) => [r.key, r.intent])).toEqual([
+      ["ASC_KEY_ID", "use:emlak-radar"],
+      ["ASC_ISSUER_ID", null],
+    ]);
+  });
+
+  it("project reads record the intent too (one read handler)", async () => {
+    expect((await importAs("writer@wapps.dev", "/v1/projects/vaulter", { K: "v" })).status).toBe(200);
+    expect((await readAs("writer@wapps.dev", "/v1/projects/vaulter", ["K"], { "X-Wapps-Intent": "epoch-reset" })).status).toBe(200);
+    const rows = await allAuditRows();
+    expect(rows.some((r) => r.verb === "value.read" && r.project === "vaulter" && r.intent === "epoch-reset")).toBe(true);
+  });
+
+  it("an intent over 512 characters is refused with 400 and returns no value", async () => {
+    await seedAsc();
+    const res = await readAs("rel@wapps.dev", "/v1/shared/apple/asc", ["ASC_KEY_ID"], { "X-Wapps-Intent": "u".repeat(513) });
+    expect(res.status).toBe(400);
+    const txt = await res.text();
+    expect(JSON.parse(txt).error).toBe("BAD_REQUEST");
+    expect(txt).not.toContain(ASC.ASC_KEY_ID);
+    expect((await allAuditRows()).some((r) => r.verb.startsWith("value.read"))).toBe(false);
+  });
+});
+
 describe("keys and read on a store name with no data (CLI contract)", () => {
   it("granted: keys 200 empty, read 404 NOT_FOUND; not granted: both 403 GRANT_DENIED", async () => {
     const keys = async (email: string, base: string) => callGate(`${base}/keys`, { headers: authHeader(await jwt(email)) });
