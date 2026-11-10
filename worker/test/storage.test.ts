@@ -2,8 +2,20 @@
 // adıdır (karışık harf) — gerçek infra sırları (TF_VAR_<lower>, vaulter_pg_*_password,
 // lab_01_id) kabul edilmeli; boşluk/tire/nokta/lead-digit/non-ASCII reddedilmeli.
 
-import { describe, it, expect } from "vitest";
-import { validKeyName, validProject } from "../src/storage.js";
+import { beforeEach, describe, it, expect } from "vitest";
+import { env } from "cloudflare:test";
+import {
+  validKeyName,
+  validProject,
+  validSharedId,
+  keyBlob,
+  keyCurrent,
+  keyManifest,
+  keyPointerEvent,
+  deriveProjects,
+  deleteProjectObjects,
+} from "../src/storage.js";
+import { clearBucket } from "./helpers.js";
 
 describe("validKeyName", () => {
   it("accepts real infra key names (mixed case, tofu vars, outputs)", () => {
@@ -56,5 +68,117 @@ describe("validProject", () => {
 
   it("rejects uppercase / underscore / bad projects", () => {
     for (const p of ["", "Lab", "has_underscore", "-lead", "has space"]) expect(validProject(p), p).toBe(false);
+  });
+});
+
+// Shared named secrets (design 2026-11-11): `<namespace>/<name>`, each part
+// [a-z0-9][a-z0-9-]{0,30}, exactly one `/`. Project names have no `/`, so the two
+// grammars cannot collide.
+describe("validSharedId", () => {
+  it("accepts <namespace>/<name> with parts of 1 to 31 characters", () => {
+    for (const id of ["apple/asc", "a/b", "apple/app-store-connect", "0/9", `${"a".repeat(31)}/${"b".repeat(31)}`]) {
+      expect(validSharedId(id), id).toBe(true);
+    }
+  });
+
+  it("refuses malformed ids", () => {
+    for (const id of [
+      "",
+      "~",
+      "/",
+      "apple",
+      "apple/",
+      "/asc",
+      "a/b/c",
+      "apple//asc",
+      "apple~asc",
+      "Apple/asc",
+      "apple/ASC",
+      "-apple/asc",
+      "apple/-asc",
+      "apple/as_c",
+      "apple/as c",
+      `${"a".repeat(32)}/asc`,
+      `apple/${"b".repeat(32)}`,
+      "äpple/asc",
+    ]) {
+      expect(validSharedId(id), id).toBe(false);
+    }
+  });
+
+  it("no project name is a shared id and no shared id is a project name", () => {
+    for (const p of ["apple", "apple-asc", "vaulter"]) expect(validSharedId(p), p).toBe(false);
+    expect(validProject("apple/asc")).toBe(false);
+  });
+});
+
+describe("storage key encoding (one encoder: `/` -> `~`)", () => {
+  it("project names map to their own prefix unchanged", () => {
+    expect(keyCurrent("vaulter")).toBe("secrets/vaulter/current");
+    expect(keyManifest("vaulter", 3)).toBe("secrets/vaulter/manifests/3.json");
+    expect(keyBlob("vaulter", "ab")).toBe("secrets/vaulter/blobs/ab");
+    expect(keyPointerEvent("vaulter", 3)).toBe("pointer-events/vaulter/3.json");
+  });
+
+  it("a shared id maps to secrets/<ns>~<name>/", () => {
+    expect(keyCurrent("apple/asc")).toBe("secrets/apple~asc/current");
+    expect(keyManifest("apple/asc", 2)).toBe("secrets/apple~asc/manifests/2.json");
+    expect(keyBlob("apple/asc", "ab")).toBe("secrets/apple~asc/blobs/ab");
+    expect(keyPointerEvent("apple/asc", 2)).toBe("pointer-events/apple~asc/2.json");
+  });
+
+  it("refuses a name that could alias another prefix (`~`, extra `/`, empty part)", () => {
+    for (const bad of ["apple~asc", "~", "a/b/c", "apple/", "/asc", "Apple/asc"]) {
+      expect(() => keyCurrent(bad), bad).toThrow();
+      expect(() => keyBlob(bad, "ab"), bad).toThrow();
+      expect(() => keyManifest(bad, 1), bad).toThrow();
+      expect(() => keyPointerEvent(bad, 1), bad).toThrow();
+    }
+  });
+});
+
+describe("deriveProjects / deleteProjectObjects with shared ids", () => {
+  beforeEach(async () => {
+    await clearBucket();
+  });
+
+  async function seed(name: string): Promise<void> {
+    await env.SECRETS_BUCKET.put(keyCurrent(name), "c");
+    await env.SECRETS_BUCKET.put(keyBlob(name, "ab"), "b");
+  }
+
+  it("decodes `<ns>~<name>` back to the shared id next to project names", async () => {
+    await seed("apple");
+    await seed("apple/asc");
+    await seed("apple-asc");
+    expect((await deriveProjects(env.SECRETS_BUCKET)).sort()).toEqual(["apple", "apple-asc", "apple/asc"]);
+  });
+
+  it("skips a `~` prefix that does not decode to a valid shared id", async () => {
+    await seed("vaulter");
+    await env.SECRETS_BUCKET.put("secrets/a~b~c/current", "c");
+    await env.SECRETS_BUCKET.put("secrets/~/current", "c");
+    expect(await deriveProjects(env.SECRETS_BUCKET)).toEqual(["vaulter"]);
+  });
+
+  it("deleting project `apple` never touches secrets/apple~asc/", async () => {
+    await seed("apple");
+    await seed("apple/asc");
+    expect(await deleteProjectObjects(env.SECRETS_BUCKET, "apple")).toBe(2);
+    expect(await env.SECRETS_BUCKET.head(keyCurrent("apple/asc"))).not.toBeNull();
+    expect(await env.SECRETS_BUCKET.head(keyBlob("apple/asc", "ab"))).not.toBeNull();
+    expect(await deriveProjects(env.SECRETS_BUCKET)).toEqual(["apple/asc"]);
+  });
+
+  it("deleting shared `apple/asc` removes only its own prefix", async () => {
+    await seed("apple");
+    await seed("apple/asc");
+    await seed("apple/asc2");
+    expect(await deleteProjectObjects(env.SECRETS_BUCKET, "apple/asc")).toBe(2);
+    expect((await deriveProjects(env.SECRETS_BUCKET)).sort()).toEqual(["apple", "apple/asc2"]);
+  });
+
+  it("refuses to delete under a name that is not a store name", async () => {
+    await expect(deleteProjectObjects(env.SECRETS_BUCKET, "apple~asc")).rejects.toThrow();
   });
 });
