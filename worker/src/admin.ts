@@ -4,6 +4,7 @@
 //   GET  /v1/admin/policy           → active policy (admin verb)
 //   PUT  /v1/admin/policy           → CAS policy write (§4.1/§4.4), audit + A9
 //   DELETE /v1/admin/projects/{p}   → removes ALL data of a project
+//   DELETE /v1/admin/shared/{ns}/{name} → removes ALL data of a shared id
 //   GET  /v1/admin/rotate-plan      → audit ledger = rotate-set oracle (§6.3)
 //   POST /v1/admin/token/revoke     → minted-token jti revoke (§5.3)
 //   POST /v1/admin/rewrap-kek       → MASTER_KEK rotation re-wrap round (§2.5)
@@ -29,7 +30,7 @@ import {
   putPolicy,
   rulesFor,
 } from "./policy.js";
-import { deleteProjectObjects, deriveProjects, getObject, keyCurrent, keyManifest, validProject } from "./storage.js";
+import { deleteProjectObjects, deriveProjects, getObject, keyCurrent, keyManifest, validProject, validSharedId } from "./storage.js";
 import { parseCurrentPointer, parseManifest } from "./manifest.js";
 import { ensureSchema } from "./schema.js";
 import { auditAppendSync, auditReadAsync, AuditRow, AUDIT_DO_NAME, AUDIT_FIELD_MAX, ipOf, rayOf } from "./audit.js";
@@ -277,9 +278,19 @@ export async function handleAdmin(
   // yazımda doğar) yanlış ada yapılan bir silme sessizce başka bir şeyi götürür.
   // Bu yüzden per-key `delete` grant'i YETMEZ: global `admin` verb'i + write-AUD
   // (15 dk WebAuthn) ister ve gövdede proje adının TEKRAR yazılmasını şart koşar.
-  if (parts[2] === "projects" && parts.length === 4 && request.method === "DELETE") {
-    const project = parts[3];
-    if (!validProject(project)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid project segment");
+  //
+  // DELETE /v1/admin/shared/{ns}/{name} does the same for a shared id; the body
+  // repeats the full id (`{"confirm": "apple/asc"}`).
+  let purge: string | null = null;
+  if (request.method === "DELETE" && parts[2] === "projects" && parts.length === 4) {
+    purge = parts[3];
+    if (!validProject(purge)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid project segment");
+  } else if (request.method === "DELETE" && parts[2] === "shared" && parts.length === 5) {
+    purge = `${parts[3]}/${parts[4]}`;
+    if (!validSharedId(purge)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid shared id segment");
+  }
+  if (purge !== null) {
+    const project = purge;
 
     let body: Record<string, unknown>;
     try {
@@ -289,7 +300,7 @@ export async function handleAdmin(
     }
     // Çift-yazım onayı: istemci yanlış projeyi hedeflediyse burada durur.
     if (body.confirm !== project) {
-      return jsonError(HTTP.BAD_REQUEST, "CONFIRM_MISMATCH", "body.confirm must repeat the project name", { key: project });
+      return jsonError(HTTP.BAD_REQUEST, "CONFIRM_MISMATCH", "body.confirm must repeat the project name or shared id", { key: project });
     }
     // Var olmayan projeyi silmek SESSİZ BAŞARI değildir (rm <KEY> ile aynı çizgi).
     const existing = await deriveProjects(env.SECRETS_BUCKET);

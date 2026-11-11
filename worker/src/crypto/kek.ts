@@ -6,6 +6,8 @@
 //     hash girdisi ASLA ASCII hex string'i değil, hex-decode edilmiş ham baytlar).
 //   - KEK(project) = HKDF-SHA-256(ikm=MASTER_KEK, salt="wapps-secrets/kek/v1",
 //     info=project, L=32) (§2.3). İzolat-içi düz Map cache (KV/DO'ya ASLA yazılmaz).
+//     `project` is the store name: a project or a shared id (`apple/asc`), never
+//     its R2 segment (`apple~asc`). The KEK and the AAD bind the ciphertext to it.
 //   - DEK wrap: "WKW1" ‖ nonce(24) ‖ XChaCha20-Poly1305(KEK, nonce, DEK, AAD) —
 //     toplam 76 bayt; AAD = blob AEAD ile AYNI slot bağlaması (§2.4).
 //

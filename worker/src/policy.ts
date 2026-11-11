@@ -92,6 +92,18 @@ export function globMatch(glob: string, s: string): boolean {
 }
 
 /**
+ * projectGlobMatch matches a rule's project glob against a store name. A shared id
+ * (`apple/asc`) is reached only by a glob that holds exactly one `/`: `apple/asc`,
+ * `apple/` + `*`, or star-slash-star for all of them. `*` and `?` match `/` under
+ * globMatch, so without this rule a broad `["*"]` grant would reach every shared
+ * secret. A project name has no `/`, so a glob with a `/` never matches it.
+ */
+export function projectGlobMatch(glob: string, name: string): boolean {
+  if (name.includes("/") && glob.split("/").length !== 2) return false;
+  return globMatch(glob, name);
+}
+
+/**
  * keyGlobMatch, anahtar-ADI eşleşmesidir (§4.3) ve globMatch'i CASE-INSENSITIVE
  * uygular. Anahtar adları POSIX env-var olabildiğinden case-insensitive KİMLİKtir
  * (FOO ≡ foo — writer-DO farklı-case varyantı reddeder). Böylece bir `!*_PROD_*`
@@ -174,7 +186,7 @@ export function authorize(
     if (!expandVerbs(rule.verbs).has(verb)) continue;
     furthest = Math.max(furthest, 2);
     // 3. project
-    if (!rule.projects.some((g) => globMatch(g, project))) continue;
+    if (!rule.projects.some((g) => projectGlobMatch(g, project))) continue;
     furthest = Math.max(furthest, 3);
     // 4. key (null → proje-metadata op'u; adım atlanır)
     if (key !== null) {
@@ -351,6 +363,33 @@ export async function loadPolicy(bucket: R2Bucket, topology: Topology, adminEmai
   return loaded;
 }
 
+// Store names use [a-z0-9-] and one `/` (shared ids); the glob syntax adds * and ?.
+const PROJECT_GLOB_CHARS_RE = /^[a-z0-9*?/-]+$/;
+
+/** deadProjectGlob returns why a project glob can never match a store name, or null
+ * when it can: a character no name holds (`~`, uppercase, `_`), more than one `/`,
+ * an empty side of the `/`, or `**` (not in the pinned glob syntax). */
+function deadProjectGlob(g: string): string | null {
+  if (!PROJECT_GLOB_CHARS_RE.test(g)) return "holds a character no project or shared id can hold";
+  const sides = g.split("/");
+  if (sides.length > 2) return "holds more than one /";
+  if (sides.length === 2 && sides.some((s) => s === "")) return "has an empty side of the /";
+  if (g.includes("**")) return "holds ** (not in the glob syntax)";
+  return null;
+}
+
+/** refuseDeadProjectGlobs is a PUT-only check (422 POLICY_INVALID naming the rule).
+ * loadPolicy does not run it: a dead glob is deny-safe, and a stored policy that
+ * already holds one must keep loading, or a deploy would fail every request closed. */
+function refuseDeadProjectGlobs(doc: PolicyDoc): void {
+  doc.rules.forEach((r, i) => {
+    for (const g of r.projects) {
+      const why = deadProjectGlob(g);
+      if (why !== null) throw new PolicyValidationError(i, `rule[${i}].projects: glob ${JSON.stringify(g)} ${why}; it can never match`);
+    }
+  });
+}
+
 /** PolicyConflictError, CAS kaybı (412 POLICY_CONFLICT) — çağıran refetch+retry eder. */
 export class PolicyConflictError extends Error {}
 
@@ -363,6 +402,7 @@ export class PolicyConflictError extends Error {}
 export async function putPolicy(bucket: R2Bucket, doc: PolicyDoc, topology: Topology, adminEmails: string[]): Promise<LoadedPolicy> {
   // Doküman-içi doğrulama (fırlatırsa PolicyValidationError → 422).
   const valid = validatePolicy(doc, topology, adminEmails);
+  refuseDeadProjectGlobs(valid);
 
   const cur = await getObject(bucket, keyPolicyCurrent());
   const curVersion = cur ? (JSON.parse(new TextDecoder().decode(cur.bytes)) as CurrentPolicyPointer).version : 0;

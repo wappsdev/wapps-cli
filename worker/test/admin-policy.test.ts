@@ -97,6 +97,35 @@ describe("policy GET/PUT (§4.1/§4.4)", () => {
     expect(body.rule_index).toBe(3);
   });
 
+  // A project glob that can never match a store name is a silent dead rule: PUT
+  // refuses it, naming the rule and the glob.
+  it("PUT refuses dead project globs with 422 POLICY_INVALID naming the rule and the glob", async () => {
+    for (const glob of ["apple~asc", "apple/asc/", "*/*/*", "**", "apple/**", "apple/", "/asc", "Vaulter", "has_underscore", "a b"]) {
+      const doc = { schema: SCHEMA_POLICY, version: 2, rules: [...defaultRules(), { group: "x@y.z", projects: ["vaulter", glob], keys: ["*"], verbs: ["read"] }] };
+      const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
+      expect(res.status, glob).toBe(422);
+      const body = (await res.json()) as { error: string; rule_index: number; message: string };
+      expect(body.error, glob).toBe("POLICY_INVALID");
+      expect(body.rule_index, glob).toBe(3);
+      expect(body.message, glob).toContain(JSON.stringify(glob));
+    }
+    const get = await callGate("/v1/admin/policy", { headers: authHeader(await adminJwt()) });
+    expect(((await get.json()) as { version: number }).version).toBe(1);
+  });
+
+  it("PUT accepts live project globs, shared ids included", async () => {
+    const projects = ["*", "vaulter", "vibe-?ro", "lab*", "apple/asc", "apple/*", "*/*", "?/asc"];
+    const doc = { schema: SCHEMA_POLICY, version: 2, rules: [...defaultRules(), { group: "x@y.z", projects, keys: ["*"], verbs: ["read"] }] };
+    const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
+    expect(res.status).toBe(200);
+  });
+
+  it("a STORED policy with a dead glob still loads: the check is PUT-only, so a deploy cannot fail every request", async () => {
+    await seedPolicy([...defaultRules(), { group: "x@y.z", projects: ["**", "apple~asc"], keys: ["*"], verbs: ["read"] }], 1);
+    const res = await callGate("/v1/whoami", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))) });
+    expect(res.status).toBe(200);
+  });
+
   it("occupied version slot with IDENTICAL bytes → idempotent continue (liveness wedge recovery, §4.1)", async () => {
     // Önceki bir PUT'un slot-yazımı ile pointer-CAS'i ARASINDA düştüğünü simüle et:
     // versions/2.json aynı normalize baytlarla dolu, pointer hâlâ v1'de.

@@ -2,20 +2,44 @@
 // DO-free'dir; manifest/blob/pointer doğrudan Worker'dan R2'ye. v2 delta: trust/*
 // anahtarları SİLİNDİ (§0.2); policy/* anahtarları EKLENDİ (§4.1).
 
-// --- Anahtar düzeni ----------------------------------------------------------
+// --- Key layout ----------------------------------------------------------------
+//
+// A store name is a project (`vaulter`) or a shared id (`apple/asc`). Every R2 key
+// below goes through storeSegment, the ONE place that maps a name to its prefix:
+// a shared id becomes `<ns>~<name>` (`~` is in neither grammar), a project name is
+// unchanged. deriveProjects is the one place that maps a prefix back.
+
+/** storeSegment encodes a store name as one R2 path segment. It throws on a name
+ * that could alias another prefix: a `/` that is not a valid shared id, or any `~`. */
+function storeSegment(name: string): string {
+  if (name.includes("/")) {
+    if (!validSharedId(name)) throw new Error("invalid store name: malformed shared id");
+    return name.replace("/", "~");
+  }
+  if (name.includes("~")) throw new Error("invalid store name: `~` is reserved for shared ids");
+  return name;
+}
+
+/** decodeStoreSegment maps an R2 path segment back to its store name; null for a
+ * `~` segment that is not a valid shared id (no route can create one). */
+function decodeStoreSegment(seg: string): string | null {
+  if (!seg.includes("~")) return seg;
+  const id = seg.split("~").join("/");
+  return validSharedId(id) ? id : null;
+}
 
 export function keyBlob(project: string, sha256: string): string {
-  return `secrets/${project}/blobs/${sha256}`;
+  return `secrets/${storeSegment(project)}/blobs/${sha256}`;
 }
 export function keyManifest(project: string, epoch: number): string {
-  return `secrets/${project}/manifests/${epoch}.json`;
+  return `secrets/${storeSegment(project)}/manifests/${epoch}.json`;
 }
 export function keyCurrent(project: string): string {
-  return `secrets/${project}/current`;
+  return `secrets/${storeSegment(project)}/current`;
 }
 export function keyPointerEvent(project: string, epoch: number): string {
-  // Escrow tarafı append-only pointer-event akışı (§8.3).
-  return `pointer-events/${project}/${epoch}.json`;
+  // Append-only pointer-event stream on the escrow side (§8.3).
+  return `pointer-events/${storeSegment(project)}/${epoch}.json`;
 }
 export function keyPolicyCurrent(): string {
   return `policy/current`;
@@ -27,6 +51,9 @@ export function keyPolicyVersion(n: number): string {
 // --- Proje / anahtar-adı doğrulama -------------------------------------------
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+// Shared id: `<namespace>/<name>`, exactly one `/`. The namespace is the issuer of
+// the credential (`apple`), never a consumer.
+const SHARED_ID_RE = /^[a-z0-9][a-z0-9-]{0,30}\/[a-z0-9][a-z0-9-]{0,30}$/;
 // POSIX ortam-değişkeni adı: ilk karakter harf/altçizgi, sonrası alfanümerik/altçizgi
 // (karışık harf). Yalnız-BÜYÜK değil — gerçek infra sırları karışık harf kullanır
 // (tofu `TF_VAR_<lower>` sözleşmesi, `vaulter_pg_<role>_password` çıktıları). Anahtar
@@ -42,6 +69,9 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
 export function validProject(p: string): boolean {
   return PROJECT_RE.test(p);
+}
+export function validSharedId(id: string): boolean {
+  return SHARED_ID_RE.test(id);
 }
 export function validKeyName(k: string): boolean {
   return KEYNAME_RE.test(k) && !PROTO_SPECIAL.has(k);
@@ -119,7 +149,8 @@ const DELETE_MAX_ROUNDS = 1000;
  * temiz bir şekilde epoch 1'den başlar.
  */
 export async function deleteProjectObjects(bucket: R2Bucket, project: string): Promise<number> {
-  const prefix = `secrets/${project}/`;
+  // The trailing `/` keeps `apple` from matching `apple~asc` or `apple-asc`.
+  const prefix = `secrets/${storeSegment(project)}/`;
   let deleted = 0;
   // Cursor KULLANILMAZ: sildikçe listeyi baştan tazeliyoruz — bir cursor,
   // altından objeler silinince zaten geçersizleşir. Her tur bir sayfa (≤1000)
@@ -138,7 +169,9 @@ export async function deleteProjectObjects(bucket: R2Bucket, project: string): P
   throw new Error(`deleteProjectObjects(${project}): not converging after ${DELETE_MAX_ROUNDS} rounds`);
 }
 
-/** deriveProjects, R2'deki `secrets/<project>/` öneklerinden proje adlarını çıkarır. */
+/** deriveProjects returns every store name with data in R2 (`secrets/<segment>/`):
+ * project names and decoded shared ids. GC, rewrap, rotate-plan and the project
+ * list iterate it, so shared secrets are covered with no second code path. */
 export async function deriveProjects(bucket: R2Bucket): Promise<string[]> {
   const seen = new Set<string>();
   let cursor: string | undefined;
@@ -146,7 +179,8 @@ export async function deriveProjects(bucket: R2Bucket): Promise<string[]> {
     const l = await bucket.list({ prefix: "secrets/", delimiter: "/", cursor });
     for (const p of l.delimitedPrefixes ?? []) {
       const m = p.match(/^secrets\/([^/]+)\/$/);
-      if (m) seen.add(m[1]);
+      const name = m ? decodeStoreSegment(m[1]) : null;
+      if (name !== null) seen.add(name);
     }
     cursor = l.truncated ? l.cursor : undefined;
   } while (cursor);

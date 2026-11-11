@@ -21,6 +21,7 @@ import {
   getObject,
   deriveProjects,
   validProject,
+  validSharedId,
   validKeyName,
   mapPool,
   BLOB_POOL,
@@ -41,11 +42,12 @@ import {
 } from "./policy.js";
 import { IdentityError, createGroupResolver } from "./identity.js";
 import { ProjectWriterDO, WriteOp } from "./writer-do.js";
+import { CardPatch, isEmptyPatch, readCardPatch } from "./card.js";
 import { AuditLogDO } from "./audit-do.js";
 import { SchedulerDO } from "./scheduler-do.js";
 import { scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
 import { checkRateLimit } from "./ratelimit.js";
-import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME, AUDIT_FIELD_MAX } from "./audit.js";
+import { auditReadAsync, auditAppendBatch, AuditRow, ipOf, rayOf, AUDIT_DO_NAME, INTENT_MAX, denyIntent } from "./audit.js";
 import { handleTokenMint } from "./token.js";
 import { handleAdmin, AdminContext } from "./admin.js";
 import { fireAlert, ALERT } from "./alerts.js";
@@ -61,7 +63,14 @@ export const TOPOLOGY: Topology = "primary";
 
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
 const ROTATION_HEADER = "X-Wapps-Rotation"; // §6.4 rotate.step intent'i (bilgilendirici)
-const INTENT_HEADER = "X-Wapps-Intent"; // "sync" → key.sync audit verb'ü
+// X-Wapps-Intent is an audit label ("sync", "epoch-reset", "use:<consumer>"). It is
+// SELF-REPORTED for every principal: nothing ties it to the token, so `principal`
+// is the trusted field of a row and the label is only what the caller said. "sync"
+// on an import also selects the key.sync verb.
+const INTENT_HEADER = "X-Wapps-Intent";
+// Printable ASCII only: no control byte (ESC, DEL, TAB) or non-ASCII byte reaches
+// the ledger or a terminal that renders it.
+const INTENT_RE = /^[\x20-\x7e]*$/;
 
 /** RequestCtx, bir isteğin çözülmüş kimlik + policy bağlamı. */
 interface RequestCtx {
@@ -69,6 +78,8 @@ interface RequestCtx {
   authz: AuthzPrincipal;
   policy: LoadedPolicy;
   adminEmails: string[];
+  // The validated X-Wapps-Intent label; null when absent or blank.
+  intent: string | null;
 }
 
 export default {
@@ -109,13 +120,17 @@ export default {
       // Rate limit: her authenticated principal 60/dk; 429 deny olarak audit'lenir.
       const rl = await checkRateLimit(env, principal.id);
       if (!rl.allowed) {
-        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal.id, ptypeOf(principal), "rate_limit", null, null, null));
+        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, principal.id, ptypeOf(principal), "rate_limit", null, null, null, null));
         await countDenyBurst(ctx, env, principal.id);
         return new Response(JSON.stringify({ error: "RATE_LIMITED", message: "rate limit exceeded", retry_after: rl.retryAfter }), {
           status: HTTP.TOO_MANY,
           headers: { "content-type": "application/json", "Retry-After": String(rl.retryAfter) },
         });
       }
+
+      // The label lands in audit rows, so a malformed one stops the request here.
+      const intent = parseIntent(request);
+      if (intent instanceof Response) return intent;
 
       // OPSİYONEL mint katmanı (§5.3): service principal Bearer minted-token
       // sunarsa scope-pinli machine principal'a daralır (asla genişlemez).
@@ -128,7 +143,7 @@ export default {
           principal = await resolveMachinePrincipal(request, env, outerId);
         } catch (e) {
           if (e instanceof AuthFail && e.code === "TOKEN_PRINCIPAL_MISMATCH") {
-            auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, outerId, "machine", "token.use", null, null, "TOKEN_PRINCIPAL_MISMATCH"));
+            auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, outerId, "machine", "token.use", null, null, "TOKEN_PRINCIPAL_MISMATCH", intent));
             await countDenyBurst(ctx, env, outerId);
           }
           throw e;
@@ -162,7 +177,7 @@ export default {
         }
         throw e;
       }
-      const rctx: RequestCtx = { principal, authz, policy, adminEmails };
+      const rctx: RequestCtx = { principal, authz, policy, adminEmails, intent };
 
       // --- Control plane: /v1/policy + /v1/admin/* (write-AUD) ------------------
       if (isWriteApp) {
@@ -206,16 +221,28 @@ export default {
         return await handleProjectsList(request, env, ctx, rctx);
       }
 
-      // --- projects/{p}/... --------------------------------------------------------
+      // --- projects/{p}/... and shared/{ns}/{name}/... ----------------------------
+      // One store name (a project or a shared id like `apple/asc`) and the rest of
+      // the path. Both forms reach the same handlers; a shared id is always two
+      // segments, so `/v1/shared/a/b/c/keys` reads `c` as an unknown kind.
+      let project: string | null = null;
+      let rest: string[] = [];
       if (parts[1] === "projects" && parts.length >= 4) {
-        const project = parts[2];
+        project = parts[2];
         if (!validProject(project)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid project segment");
-        const kind = parts[3];
+        rest = parts.slice(3);
+      } else if (parts[1] === "shared" && parts.length >= 5) {
+        project = `${parts[2]}/${parts[3]}`;
+        if (!validSharedId(project)) return jsonError(HTTP.UNPROCESSABLE, "PROJECT_MISMATCH", "invalid shared id segment");
+        rest = parts.slice(4);
+      }
+      if (project !== null) {
+        const kind = rest[0];
 
-        if (kind === "keys" && parts.length === 4 && request.method === "GET") {
+        if (kind === "keys" && rest.length === 1 && request.method === "GET") {
           return await handleKeysList(request, env, ctx, project, rctx, masters);
         }
-        if (kind === "read" && parts.length === 4 && request.method === "POST") {
+        if (kind === "read" && rest.length === 1 && request.method === "POST") {
           return await handleRead(request, env, ctx, project, rctx, masters);
         }
         // MIGRATION_FREEZE (§7.5/§8.2) — BİLİNÇLİ ERTELEME: per-proje soak
@@ -223,17 +250,20 @@ export default {
         // fazının mekanizmasıdır (rollout adım 7; freeze migration kaydında deklare
         // edilir) ve `wapps migrate` tooling'iyle birlikte gelecektir. Worker
         // çekirdeğinde şimdilik YOKTUR — spec changelog rev 3'te not düşüldü.
-        if (kind === "keys" && parts.length === 5 && request.method === "PUT") {
-          return await handleSet(request, env, ctx, project, parts[4], rctx);
+        if (kind === "keys" && rest.length === 2 && request.method === "PUT") {
+          return await handleSet(request, env, ctx, project, rest[1], rctx);
         }
-        if (kind === "keys" && parts.length === 5 && request.method === "DELETE") {
-          return await handleDelete(request, env, ctx, project, parts[4], rctx);
+        if (kind === "keys" && rest.length === 2 && request.method === "DELETE") {
+          return await handleDelete(request, env, ctx, project, rest[1], rctx);
         }
-        if (kind === "import" && parts.length === 4 && request.method === "POST") {
+        if (kind === "keys" && rest.length === 3 && rest[2] === "meta" && request.method === "PUT") {
+          return await handleMeta(request, env, ctx, project, rest[1], rctx);
+        }
+        if (kind === "import" && rest.length === 1 && request.method === "POST") {
           return await handleImport(request, env, ctx, project, rctx);
         }
-        if (kind === "manifests" && parts.length === 5 && request.method === "GET") {
-          return await handleManifestRead(request, env, ctx, project, parts[4], rctx);
+        if (kind === "manifests" && rest.length === 2 && request.method === "GET") {
+          return await handleManifestRead(request, env, ctx, project, rest[1], rctx);
         }
       }
       return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
@@ -262,10 +292,24 @@ function parseAdminEmails(raw: string | undefined): string[] {
     .filter((s) => s !== "");
 }
 
+/** parseIntent reads X-Wapps-Intent: null when absent or blank, the label when it is
+ * printable ASCII within INTENT_MAX, a 400 response otherwise. */
+function parseIntent(request: Request): string | null | Response {
+  const raw = request.headers.get(INTENT_HEADER) ?? "";
+  if (raw.length > INTENT_MAX) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${INTENT_MAX} characters`);
+  }
+  if (!INTENT_RE.test(raw)) {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} must be printable ASCII (0x20-0x7e)`);
+  }
+  return raw.trim() === "" ? null : raw;
+}
+
 function ptypeOf(p: Principal): "human" | "machine" {
   return p.kind === "human" ? "human" : "machine";
 }
 
+/** denyRow builds a deny row; its intent is `<reason>|<label>` (see denyIntent). */
 function denyRow(
   request: Request,
   principalId: string,
@@ -273,9 +317,10 @@ function denyRow(
   verb: string,
   project: string | null,
   key: string | null,
-  intent: string | null,
+  reason: string | null,
+  label: string | null,
 ): AuditRow {
-  return { principal: principalId, principal_type: ptype, project, key, verb, decision: "deny", intent, ip: ipOf(request), cf_ray: rayOf(request) };
+  return { principal: principalId, principal_type: ptype, project, key, verb, decision: "deny", intent: denyIntent(reason, label), ip: ipOf(request), cf_ray: rayOf(request) };
 }
 
 /**
@@ -433,7 +478,7 @@ async function handleKeysList(
   // key=null proje-metadata op'u: bir kural principal+read+project'i eşlemeli (§4.3.3).
   const projectGate = can(rctx, project, null, "read");
   if (!projectGate.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.list", project, null, projectGate.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.list", project, null, projectGate.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project", { dimension: projectGate.reason });
   }
@@ -450,10 +495,20 @@ async function handleKeysList(
     (k) => can(rctx, project, k, "read").allowed,
   );
   const entryByName = new Map<string, ManifestEntry>(loaded ? loaded.manifest.entries.map((e) => [e.keyName, e]) : []);
+  // Each listed key carries its card (only keys this principal can read are listed).
   const bodyStr = JSON.stringify({
     project,
     epoch: loaded?.epoch ?? 0,
-    keys: readable.map((k) => ({ keyName: k, keyVersion: entryByName.get(k)?.keyVersion ?? 0 })),
+    keys: readable.map((k) => {
+      const e = entryByName.get(k);
+      return {
+        keyName: k,
+        keyVersion: e?.keyVersion ?? 0,
+        ...(e?.note !== undefined ? { note: e.note } : {}),
+        ...(e?.expires !== undefined ? { expires: e.expires } : {}),
+        updatedAt: e?.updatedAt ?? null,
+      };
+    }),
   });
   const et = etagResponse(bodyStr, request.headers.get("if-none-match"));
   if (et instanceof Response) return et; // 304 → audit YOK (KEPT davranış)
@@ -482,7 +537,7 @@ async function handleManifestRead(
 ): Promise<Response> {
   const projectGate = can(rctx, project, null, "read");
   if (!projectGate.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "manifest.read", project, null, projectGate.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "manifest.read", project, null, projectGate.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "no read grant in project", { dimension: projectGate.reason });
   }
@@ -586,7 +641,7 @@ async function handleRead(
   for (const k of keys) {
     const d = can(rctx, project, k, "read");
     if (!d.allowed) {
-      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "value.read", project, k, d.reason ?? null));
+      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "value.read", project, k, d.reason ?? null, rctx.intent));
       await countDenyBurst(ctx, env, rctx.authz.id);
       return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "read denied", { key: k, dimension: d.reason });
     }
@@ -671,6 +726,8 @@ async function handleRead(
     key: k,
     verb,
     decision: "allow",
+    // The caller's label (e.g. `use:<consumer-project>` on a shared read); self-reported.
+    intent: rctx.intent,
     ip: ipOf(request),
     cf_ray: rayOf(request),
     token_jti: rctx.principal.kind === "machine" ? rctx.principal.jti : null,
@@ -702,16 +759,12 @@ async function dispatchWrite(
   op: WriteOp,
   auditVerb: string,
 ): Promise<Response> {
-  // The intent header lands in audit rows; the audit DO refuses a longer field.
-  if ((request.headers.get(INTENT_HEADER) ?? "").length > AUDIT_FIELD_MAX) {
-    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `${INTENT_HEADER} exceeds ${AUDIT_FIELD_MAX} characters`);
-  }
   const doHeaders: Record<string, string> = {
     "content-type": "application/json",
     "x-principal-id": rctx.authz.id,
     "x-principal-type": ptypeOf(rctx.principal),
     "x-token-jti": rctx.principal.kind === "machine" ? rctx.principal.jti : "",
-    "x-intent": request.headers.get(INTENT_HEADER) ?? "",
+    "x-intent": rctx.intent ?? "",
     "x-audit-verb": auditVerb,
     "x-policy-version": String(rctx.policy.version),
     "x-cf-ip": ipOf(request) ?? "",
@@ -744,28 +797,86 @@ async function handleSet(request: Request, env: Env, ctx: ExecutionContext, proj
   if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
   const d = can(rctx, project, keyName, "write");
   if (!d.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.set", project, keyName, d.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.set", project, keyName, d.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
   }
-  let body: { value?: unknown; ifEpoch?: unknown };
-  try {
-    body = (await request.json()) as { value?: unknown; ifEpoch?: unknown };
-  } catch {
-    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-  }
+  const body = await readJsonObject(request);
+  if (body instanceof Response) return body;
   if (typeof body.value !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "value must be a string");
-  const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  const card = cardPatchOf(body);
+  if (card instanceof Response) return card;
+  if (card !== undefined) {
+    const humanOnly = await refuseMachineCard(request, env, ctx, rctx, "key.set", project, keyName);
+    if (humanOnly) return humanOnly;
+  }
+  const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.set"));
 }
 
-async function handleImport(request: Request, env: Env, ctx: ExecutionContext, project: string, rctx: RequestCtx): Promise<Response> {
-  let body: { values?: unknown; ifEpoch?: unknown };
+/** readJsonObject parses the request body as a JSON object, or answers 400. */
+async function readJsonObject(request: Request): Promise<Record<string, unknown> | Response> {
+  let body: unknown;
   try {
-    body = (await request.json()) as { values?: unknown; ifEpoch?: unknown };
+    body = await request.json();
   } catch {
     return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
   }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body must be a JSON object");
+  return body as Record<string, unknown>;
+}
+
+/** cardPatchOf reads the optional card fields (note, expires) of a write body:
+ * undefined when there are none, a 400 naming the field when one is invalid. */
+function cardPatchOf(body: Record<string, unknown>): CardPatch | undefined | Response {
+  const r = readCardPatch(body);
+  if ("field" in r) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", r.message, { field: r.field });
+  return isEmptyPatch(r.patch) ? undefined : r.patch;
+}
+
+/** refuseMachineCard enforces the owner ruling that only a human writes a card: a
+ * card shows on every human's list and agents' `list --json`, so a service or
+ * minted-token principal that sends any card field (null included) gets 403
+ * card_human_only and a deny row. Null for a human. Its value writes still work. */
+async function refuseMachineCard(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  rctx: RequestCtx,
+  verb: string,
+  project: string,
+  key: string | null,
+): Promise<Response | null> {
+  if (rctx.principal.kind === "human") return null;
+  auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), verb, project, key, "card_human_only", rctx.intent));
+  await countDenyBurst(ctx, env, rctx.authz.id);
+  return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "only a human may write a key's card", { key, dimension: "card_human_only" });
+}
+
+/** handleMeta, PUT …/keys/{K}/meta: writes the key's information card. It needs
+ * `write` on the key and never changes the value or its version (audit key.meta). */
+async function handleMeta(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
+  if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
+  const d = can(rctx, project, keyName, "write");
+  if (!d.allowed) {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.meta", project, keyName, d.reason ?? null, rctx.intent));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
+  }
+  const body = await readJsonObject(request);
+  if (body instanceof Response) return body;
+  const card = cardPatchOf(body);
+  if (card instanceof Response) return card;
+  if (card === undefined) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "nothing to change: give note and/or expires");
+  const humanOnly = await refuseMachineCard(request, env, ctx, rctx, "key.meta", project, keyName);
+  if (humanOnly) return humanOnly;
+  const op: WriteOp = { op: "meta", key: keyName, card, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  return dispatchWrite(request, env, ctx, project, rctx, op, "key.meta");
+}
+
+async function handleImport(request: Request, env: Env, ctx: ExecutionContext, project: string, rctx: RequestCtx): Promise<Response> {
+  const body = await readJsonObject(request);
+  if (body instanceof Response) return body;
   if (typeof body.values !== "object" || body.values === null || Array.isArray(body.values)) {
     return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "values must be an object");
   }
@@ -778,16 +889,23 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
     if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
     if (typeof values[k] !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `value for ${k} must be a string`);
   }
+  // One card change for every imported key (e.g. one note for a credential's keys).
+  const card = cardPatchOf(body);
+  if (card instanceof Response) return card;
   // Policy: body'deki HER anahtar için write (§7.6).
   for (const k of names) {
     const d = can(rctx, project, k, "write");
     if (!d.allowed) {
-      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.import", project, k, d.reason ?? null));
+      auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.import", project, k, d.reason ?? null, rctx.intent));
       await countDenyBurst(ctx, env, rctx.authz.id);
       return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: k, dimension: d.reason });
     }
   }
-  const op: WriteOp = { op: "import", values: values as Record<string, string>, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  if (card !== undefined) {
+    const humanOnly = await refuseMachineCard(request, env, ctx, rctx, "key.import", project, null);
+    if (humanOnly) return humanOnly;
+  }
+  const op: WriteOp = { op: "import", values: values as Record<string, string>, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.import"));
 }
 
@@ -797,7 +915,7 @@ async function handleDelete(request: Request, env: Env, ctx: ExecutionContext, p
   // YETMEZ. Yazma geri alınabilir (eski değer yeniden set edilir), silme değil.
   const d = can(rctx, project, keyName, "delete");
   if (!d.allowed) {
-    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.delete", project, keyName, d.reason ?? null));
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.delete", project, keyName, d.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "delete denied", { key: keyName, dimension: d.reason });
   }

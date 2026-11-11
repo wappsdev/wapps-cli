@@ -53,6 +53,13 @@ describe("HKDF per-project KEK (§2.3, frozen)", () => {
   it("project isolation: different projects derive different KEKs", () => {
     expect(bytesToHex(deriveProjectKEK(master(), "vaulter"))).not.toBe(bytesToHex(deriveProjectKEK(master(), "lumira")));
   });
+
+  // Shared ids: the HKDF info is the shared id itself (`apple/asc`), never its
+  // storage segment (`apple~asc`). Values made with node:crypto hkdfSync.
+  it("a shared id derives its own KEK, bound to the id and not to a look-alike project", () => {
+    expect(bytesToHex(deriveProjectKEK(master(), "apple/asc"))).toBe("2bc6fa532972881c2bac5fcff08ba2f564e7e29598bc65c27fdd9900194c6401");
+    expect(bytesToHex(deriveProjectKEK(master(), "apple-asc"))).toBe("d6a869c7ee2071b454e7584dc3c4bd20d60e987e5a12bae17e774d52978f6c35");
+  });
 });
 
 describe("loadMasterKeys (§2.2/§2.5)", () => {
@@ -109,6 +116,15 @@ describe("WKW1 wrap/unwrap (§2.4)", () => {
     expect(() => unwrapDEK([master()], "vaulter", "API_KEY", 3, w)).toThrowError(WrapError);
     expect(() => unwrapDEK([master()], "lumira", "DATABASE_URL", 3, w)).toThrowError(WrapError);
     expect(() => unwrapDEK([master()], "vaulter", "DATABASE_URL", 4, w)).toThrowError(WrapError);
+  });
+
+  it("a wrap made for apple/asc does not open as project apple-asc or apple, and back", () => {
+    const shared = wrapDEK(master(), "apple/asc", "ASC_KEY_ID", 1, dek);
+    expect(bytesToHex(unwrapDEK([master()], "apple/asc", "ASC_KEY_ID", 1, shared))).toBe(bytesToHex(dek));
+    expect(() => unwrapDEK([master()], "apple-asc", "ASC_KEY_ID", 1, shared)).toThrowError(WrapError);
+    expect(() => unwrapDEK([master()], "apple", "ASC_KEY_ID", 1, shared)).toThrowError(WrapError);
+    const project = wrapDEK(master(), "apple-asc", "ASC_KEY_ID", 1, dek);
+    expect(() => unwrapDEK([master()], "apple/asc", "ASC_KEY_ID", 1, project)).toThrowError(WrapError);
   });
 
   it("rotation window (§2.5): prev-kid wrap unwraps while PREV installed, fails after removal", () => {

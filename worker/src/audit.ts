@@ -32,6 +32,17 @@ export interface AuditRow {
  * caller-supplied text (X-Wapps-Intent, rotate-plan identity) against it first. */
 export const AUDIT_FIELD_MAX = 512;
 
+/** INTENT_MAX caps the caller's X-Wapps-Intent label. A deny row stores
+ * `<reason>|<label>` in one field, so the cap leaves 64 characters for the reason. */
+export const INTENT_MAX = AUDIT_FIELD_MAX - 64;
+
+/** denyIntent builds the intent of a deny row: the server reason alone, or
+ * `<reason>|<label>` when the caller sent a label. Reasons are server words with
+ * no `|` (a deny dimension or an error code), so the first `|` splits the two. */
+export function denyIntent(reason: string | null, label: string | null): string | null {
+  return label === null ? reason : `${reason ?? ""}|${label}`;
+}
+
 /** AuditAppendError is a refused or failed append. 400 (ROW_INVALID) and 409
  * (IDEMPOTENCY_MISMATCH) = the DO refused it on purpose: a retry with the same input
  * cannot succeed. */
