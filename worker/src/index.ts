@@ -806,6 +806,10 @@ async function handleSet(request: Request, env: Env, ctx: ExecutionContext, proj
   if (typeof body.value !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "value must be a string");
   const card = cardPatchOf(body);
   if (card instanceof Response) return card;
+  if (card !== undefined) {
+    const humanOnly = await refuseMachineCard(request, env, ctx, rctx, "key.set", project, keyName);
+    if (humanOnly) return humanOnly;
+  }
   const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.set"));
 }
@@ -830,6 +834,25 @@ function cardPatchOf(body: Record<string, unknown>): CardPatch | undefined | Res
   return isEmptyPatch(r.patch) ? undefined : r.patch;
 }
 
+/** refuseMachineCard enforces the owner ruling that only a human writes a card: a
+ * card shows on every human's list and agents' `list --json`, so a service or
+ * minted-token principal that sends any card field (null included) gets 403
+ * card_human_only and a deny row. Null for a human. Its value writes still work. */
+async function refuseMachineCard(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  rctx: RequestCtx,
+  verb: string,
+  project: string,
+  key: string | null,
+): Promise<Response | null> {
+  if (rctx.principal.kind === "human") return null;
+  auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), verb, project, key, "card_human_only", rctx.intent));
+  await countDenyBurst(ctx, env, rctx.authz.id);
+  return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "only a human may write a key's card", { key, dimension: "card_human_only" });
+}
+
 /** handleMeta, PUT …/keys/{K}/meta: writes the key's information card. It needs
  * `write` on the key and never changes the value or its version (audit key.meta). */
 async function handleMeta(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
@@ -845,6 +868,8 @@ async function handleMeta(request: Request, env: Env, ctx: ExecutionContext, pro
   const card = cardPatchOf(body);
   if (card instanceof Response) return card;
   if (card === undefined) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "nothing to change: give note and/or expires");
+  const humanOnly = await refuseMachineCard(request, env, ctx, rctx, "key.meta", project, keyName);
+  if (humanOnly) return humanOnly;
   const op: WriteOp = { op: "meta", key: keyName, card, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
   return dispatchWrite(request, env, ctx, project, rctx, op, "key.meta");
 }
@@ -875,6 +900,10 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
       await countDenyBurst(ctx, env, rctx.authz.id);
       return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: k, dimension: d.reason });
     }
+  }
+  if (card !== undefined) {
+    const humanOnly = await refuseMachineCard(request, env, ctx, rctx, "key.import", project, null);
+    if (humanOnly) return humanOnly;
   }
   const op: WriteOp = { op: "import", values: values as Record<string, string>, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.import"));

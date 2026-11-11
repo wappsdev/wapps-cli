@@ -10,6 +10,7 @@ import {
   ensureJwks,
   resetWorld,
   validClaims,
+  serviceTokenClaims,
   authHeader,
   callGate,
   seedPolicy,
@@ -24,6 +25,7 @@ function cardRules(): PolicyRule[] {
     { group: "developers@wapps.co", projects: ["*", "*/*"], keys: ["*", "!*_PROD_*"], verbs: ["read", "write", "rotate"] },
     { group: "admins@wapps.co", projects: ["*", "*/*"], keys: ["*"], verbs: ["*"] },
     { group: "release@wapps.co", projects: ["apple/asc"], keys: ["*"], verbs: ["read"] },
+    { service: "svc-ci", projects: ["*", "*/*"], keys: ["*"], verbs: ["read", "write"] },
   ];
 }
 
@@ -200,6 +202,76 @@ describe("who may write and who may see a card", () => {
     const rel = await list("rel@wapps.dev", base);
     expect(rel.status).toBe(403);
     expect(rel.text).not.toContain("card");
+  });
+});
+
+// Owner ruling: only a human writes a card. A service principal or a minted token
+// with write may change values, but any card field it sends (null included) is
+// refused with 403 GRANT_DENIED, dimension card_human_only, and a deny row.
+describe("card writes are human-only", () => {
+  async function svc(): Promise<Record<string, string>> {
+    return authHeader(await signer.makeJWT(serviceTokenClaims("svc-ci")));
+  }
+
+  for (const base of BASES) {
+    it(`${base}: a service principal with write cannot write a card on meta, set or import`, async () => {
+      expect((await put("boss@wapps.dev", base, "API_KEY", { value: "v1" })).status).toBe(200);
+      expect((await meta("boss@wapps.dev", base, "API_KEY", { note: "human note", expires: "2027-01-01" })).status).toBe(200);
+      const epoch = (await list("boss@wapps.dev", base)).epoch;
+      const h = await svc();
+
+      const attempts: [string, Response][] = [
+        ["meta", await callGate(`${base}/keys/API_KEY/meta`, { method: "PUT", headers: h, body: JSON.stringify({ note: "service note" }) })],
+        ["meta clear", await callGate(`${base}/keys/API_KEY/meta`, { method: "PUT", headers: h, body: JSON.stringify({ expires: null }) })],
+        ["set", await callGate(`${base}/keys/API_KEY`, { method: "PUT", headers: h, body: JSON.stringify({ value: "v2", note: "service note" }) })],
+        ["import", await callGate(`${base}/import`, { method: "POST", headers: h, body: JSON.stringify({ values: { API_KEY: "v3", NEW_KEY: "n" }, expires: "2030-01-01" }) })],
+      ];
+      for (const [name, res] of attempts) {
+        expect(res.status, name).toBe(403);
+        expect(await res.json(), name).toMatchObject({ error: "GRANT_DENIED", dimension: "card_human_only" });
+      }
+
+      // Nothing changed: no epoch, the human's card, the old value.
+      expect((await list("boss@wapps.dev", base)).epoch).toBe(epoch);
+      expect(await card("boss@wapps.dev", base, "API_KEY")).toMatchObject({ keyVersion: 1, note: "human note", expires: "2027-01-01" });
+      expect(await value("boss@wapps.dev", base, "API_KEY")).toBe("v1");
+
+      const deny = (await allAuditRows()).filter((r) => r.decision === "deny" && r.principal === "service:svc-ci" && r.intent === "card_human_only");
+      expect(deny.map((r) => r.verb).sort()).toEqual(["key.import", "key.meta", "key.meta", "key.set"]);
+    });
+
+    it(`${base}: a value-only set and import by a service principal work and keep the card`, async () => {
+      expect((await put("boss@wapps.dev", base, "API_KEY", { value: "v1" })).status).toBe(200);
+      expect((await meta("boss@wapps.dev", base, "API_KEY", { note: "human note" })).status).toBe(200);
+      const h = await svc();
+      expect((await callGate(`${base}/keys/API_KEY`, { method: "PUT", headers: h, body: JSON.stringify({ value: "v2" }) })).status).toBe(200);
+      expect((await callGate(`${base}/import`, { method: "POST", headers: h, body: JSON.stringify({ values: { API_KEY: "v3" } }) })).status).toBe(200);
+      expect(await card("boss@wapps.dev", base, "API_KEY")).toMatchObject({ keyVersion: 3, note: "human note" });
+      expect(await value("boss@wapps.dev", base, "API_KEY")).toBe("v3");
+    });
+  }
+
+  it("a minted machine token with write cannot write a card either", async () => {
+    const base = "/v1/projects/vaulter";
+    expect((await put("boss@wapps.dev", base, "API_KEY", { value: "v1" })).status).toBe(200);
+    const h = await svc();
+    const mint = await callGate("/v1/token", {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ project: "vaulter", scope: { verbs: ["write"], keys: ["API_KEY"] } }),
+    });
+    expect(mint.status).toBe(200);
+    const { token } = (await mint.json()) as { token: string };
+    const res = await callGate(`${base}/keys/API_KEY/meta`, {
+      method: "PUT",
+      headers: { ...h, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ note: "machine note" }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: "GRANT_DENIED", dimension: "card_human_only" });
+    // The same token still writes the value.
+    const set = await callGate(`${base}/keys/API_KEY`, { method: "PUT", headers: { ...h, Authorization: `Bearer ${token}` }, body: JSON.stringify({ value: "v2" }) });
+    expect(set.status).toBe(200);
   });
 });
 
