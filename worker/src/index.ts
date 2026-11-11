@@ -42,6 +42,7 @@ import {
 } from "./policy.js";
 import { IdentityError, createGroupResolver } from "./identity.js";
 import { ProjectWriterDO, WriteOp } from "./writer-do.js";
+import { CardPatch, isEmptyPatch, readCardPatch } from "./card.js";
 import { AuditLogDO } from "./audit-do.js";
 import { SchedulerDO } from "./scheduler-do.js";
 import { scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
@@ -254,6 +255,9 @@ export default {
         }
         if (kind === "keys" && rest.length === 2 && request.method === "DELETE") {
           return await handleDelete(request, env, ctx, project, rest[1], rctx);
+        }
+        if (kind === "keys" && rest.length === 3 && rest[2] === "meta" && request.method === "PUT") {
+          return await handleMeta(request, env, ctx, project, rest[1], rctx);
         }
         if (kind === "import" && rest.length === 1 && request.method === "POST") {
           return await handleImport(request, env, ctx, project, rctx);
@@ -491,10 +495,20 @@ async function handleKeysList(
     (k) => can(rctx, project, k, "read").allowed,
   );
   const entryByName = new Map<string, ManifestEntry>(loaded ? loaded.manifest.entries.map((e) => [e.keyName, e]) : []);
+  // Each listed key carries its card (only keys this principal can read are listed).
   const bodyStr = JSON.stringify({
     project,
     epoch: loaded?.epoch ?? 0,
-    keys: readable.map((k) => ({ keyName: k, keyVersion: entryByName.get(k)?.keyVersion ?? 0 })),
+    keys: readable.map((k) => {
+      const e = entryByName.get(k);
+      return {
+        keyName: k,
+        keyVersion: e?.keyVersion ?? 0,
+        ...(e?.note !== undefined ? { note: e.note } : {}),
+        ...(e?.expires !== undefined ? { expires: e.expires } : {}),
+        updatedAt: e?.updatedAt ?? null,
+      };
+    }),
   });
   const et = etagResponse(bodyStr, request.headers.get("if-none-match"));
   if (et instanceof Response) return et; // 304 → audit YOK (KEPT davranış)
@@ -787,24 +801,57 @@ async function handleSet(request: Request, env: Env, ctx: ExecutionContext, proj
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
   }
-  let body: { value?: unknown; ifEpoch?: unknown };
-  try {
-    body = (await request.json()) as { value?: unknown; ifEpoch?: unknown };
-  } catch {
-    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-  }
+  const body = await readJsonObject(request);
+  if (body instanceof Response) return body;
   if (typeof body.value !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "value must be a string");
-  const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  const card = cardPatchOf(body);
+  if (card instanceof Response) return card;
+  const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.set"));
 }
 
-async function handleImport(request: Request, env: Env, ctx: ExecutionContext, project: string, rctx: RequestCtx): Promise<Response> {
-  let body: { values?: unknown; ifEpoch?: unknown };
+/** readJsonObject parses the request body as a JSON object, or answers 400. */
+async function readJsonObject(request: Request): Promise<Record<string, unknown> | Response> {
+  let body: unknown;
   try {
-    body = (await request.json()) as { values?: unknown; ifEpoch?: unknown };
+    body = await request.json();
   } catch {
     return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
   }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body must be a JSON object");
+  return body as Record<string, unknown>;
+}
+
+/** cardPatchOf reads the optional card fields (note, expires) of a write body:
+ * undefined when there are none, a 400 naming the field when one is invalid. */
+function cardPatchOf(body: Record<string, unknown>): CardPatch | undefined | Response {
+  const r = readCardPatch(body);
+  if ("field" in r) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", r.message, { field: r.field });
+  return isEmptyPatch(r.patch) ? undefined : r.patch;
+}
+
+/** handleMeta, PUT …/keys/{K}/meta: writes the key's information card. It needs
+ * `write` on the key and never changes the value or its version (audit key.meta). */
+async function handleMeta(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
+  if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
+  const d = can(rctx, project, keyName, "write");
+  if (!d.allowed) {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.meta", project, keyName, d.reason ?? null, rctx.intent));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
+  }
+  const body = await readJsonObject(request);
+  if (body instanceof Response) return body;
+  const card = cardPatchOf(body);
+  if (card instanceof Response) return card;
+  if (card === undefined) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "nothing to change: give note and/or expires");
+  const op: WriteOp = { op: "meta", key: keyName, card, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  return dispatchWrite(request, env, ctx, project, rctx, op, "key.meta");
+}
+
+async function handleImport(request: Request, env: Env, ctx: ExecutionContext, project: string, rctx: RequestCtx): Promise<Response> {
+  const body = await readJsonObject(request);
+  if (body instanceof Response) return body;
   if (typeof body.values !== "object" || body.values === null || Array.isArray(body.values)) {
     return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "values must be an object");
   }
@@ -817,6 +864,9 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
     if (!validKeyName(k)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `invalid key name: ${k}`);
     if (typeof values[k] !== "string") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", `value for ${k} must be a string`);
   }
+  // One card change for every imported key (e.g. one note for a credential's keys).
+  const card = cardPatchOf(body);
+  if (card instanceof Response) return card;
   // Policy: body'deki HER anahtar için write (§7.6).
   for (const k of names) {
     const d = can(rctx, project, k, "write");
@@ -826,7 +876,7 @@ async function handleImport(request: Request, env: Env, ctx: ExecutionContext, p
       return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: k, dimension: d.reason });
     }
   }
-  const op: WriteOp = { op: "import", values: values as Record<string, string>, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined };
+  const op: WriteOp = { op: "import", values: values as Record<string, string>, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.import"));
 }
 

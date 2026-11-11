@@ -39,6 +39,7 @@ import {
   escrowRetryMs,
 } from "./escrow.js";
 import { deliverAlert, ALERT } from "./alerts.js";
+import { CardPatch, applyCard } from "./card.js";
 
 interface DOEnv extends EscrowEnv {
   SECRETS_BUCKET: R2Bucket;
@@ -51,11 +52,14 @@ interface DOEnv extends EscrowEnv {
 
 /** WriteOp, Worker'dan DO'ya taşınan tipli mutasyon (§7.4 write API'lerinin iç şekli). */
 export interface WriteOp {
-  op: "set" | "import" | "delete" | "rewrap";
+  op: "set" | "import" | "delete" | "rewrap" | "meta";
   // set/import: plaintext değerler (TLS + internal DO fetch; C2 gereği ASLA loglanmaz).
   values?: Record<string, string>;
-  // delete: silinecek anahtar.
+  // delete / meta: the key.
   key?: string;
+  // meta: the card change; set/import: an optional card change for every written
+  // key (absent = each key keeps its card). Checked at the edge (card.ts).
+  card?: CardPatch;
   // Opsiyonel optimistic-concurrency: mevcut epoch bununla uyuşmazsa 412 (§7.4).
   ifEpoch?: number;
 }
@@ -210,6 +214,8 @@ export class ProjectWriterDO {
     }
 
     // 3. Mutasyonu uygula → yeni entry kümesi + yazılacak blob'lar.
+    // One commit time: the manifest's createdAt and every touched entry's updatedAt.
+    const now = new Date().toISOString();
     const byName = new Map(prevEntries.map((e) => [e.keyName, e]));
     const newBlobs: { hash: string; bytes: Uint8Array }[] = [];
     const touched: string[] = [];
@@ -232,7 +238,8 @@ export class ProjectWriterDO {
       const wrap = wrapDEK(this.masters![0], project, keyName, keyVersion, dek);
       dek.fill(0); // best-effort bellek temizliği
       newBlobs.push({ hash, bytes: blobBytes });
-      byName.set(keyName, { keyName, keyVersion, blobHash: hash, wrap, rotation: prev?.rotation });
+      // The card stays with the key unless the op carries a change for it.
+      byName.set(keyName, { keyName, keyVersion, blobHash: hash, wrap, rotation: prev?.rotation, ...applyCard(prev, op.card), updatedAt: now });
       touched.push(keyName);
     };
 
@@ -253,6 +260,15 @@ export class ProjectWriterDO {
         const key = op.key ?? "";
         if (!byName.has(key)) throw new CommitError(HTTP.NOT_FOUND, "NOT_FOUND", { key });
         byName.delete(key); // silme = yokluk (§2.6)
+        touched.push(key);
+        break;
+      }
+      case "meta": {
+        // Card only: value, version, blob and wrap stay as they are.
+        const key = op.key ?? "";
+        const prev = byName.get(key);
+        if (!prev) throw new CommitError(HTTP.NOT_FOUND, "NOT_FOUND", { key });
+        byName.set(key, { ...prev, ...applyCard(prev, op.card), updatedAt: now });
         touched.push(key);
         break;
       }
@@ -294,7 +310,7 @@ export class ProjectWriterDO {
       prevManifestSha256: prevSha,
       policyVersion: meta.policyVersion,
       writer: meta.principalId, // bilgilendirici; authz girdisi DEĞİL (§2.6)
-      createdAt: new Date().toISOString(),
+      createdAt: now,
       entries: [...byName.values()],
     };
     const manifestBytes = serializeManifest(manifest); // MANIFEST_TOO_LARGE burada fırlar

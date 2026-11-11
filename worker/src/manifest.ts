@@ -34,6 +34,13 @@ export interface ManifestEntry {
   blobHash: string; // çıplak-hex SHA-256 içerik adresi
   wrap: DekWrap; // tam olarak BİR wrap (§2.4)
   rotation?: unknown; // opak taşınır (ZK §8.6.2 şekli); Worker yorumlamaz
+  // Key information card (non-secret; see card.ts). Absent = no card field.
+  note?: string;
+  expires?: string; // YYYY-MM-DD
+  // Commit time (the manifest createdAt) of the last change to this entry's value
+  // or card. Set by the writer, never by the caller. Absent on entries written
+  // before the card existed.
+  updatedAt?: string;
 }
 
 export interface DataManifest {
@@ -66,6 +73,9 @@ function asUint(v: unknown, ctx: string): number {
 function asString(v: unknown, ctx: string): string {
   if (typeof v !== "string") throw new ManifestVerifyError("MANIFEST_MALFORMED", `${ctx}: not a string`);
   return v;
+}
+function optString(v: unknown, ctx: string): string | undefined {
+  return v === undefined ? undefined : asString(v, ctx);
 }
 
 /**
@@ -118,6 +128,9 @@ export function parseManifest(bytes: Uint8Array): DataManifest {
       blobHash: asString(e.blobHash, `entry[${i}].blobHash`),
       wrap: { recipient, kid, wrap: wrapB64 },
       rotation: e.rotation,
+      note: optString(e.note, `entry[${i}].note`),
+      expires: optString(e.expires, `entry[${i}].expires`),
+      updatedAt: optString(e.updatedAt, `entry[${i}].updatedAt`),
     };
   });
 
@@ -153,6 +166,9 @@ export function serializeManifest(m: DataManifest): Uint8Array {
       blobHash: e.blobHash,
       wrap: e.wrap,
       ...(e.rotation !== undefined ? { rotation: e.rotation } : {}),
+      ...(e.note !== undefined ? { note: e.note } : {}),
+      ...(e.expires !== undefined ? { expires: e.expires } : {}),
+      ...(e.updatedAt !== undefined ? { updatedAt: e.updatedAt } : {}),
     })),
   };
   const bytes = utf8(JSON.stringify(doc));
