@@ -23,6 +23,11 @@
   ],
   "r2_buckets": [ { "binding": "SECRETS_BUCKET", "bucket_name": "wapps-secrets-staging" } ],
   "d1_databases": [ { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit-staging", "database_id": "fb357598-42ce-490e-bd82-935ee7843ff4" } ],
+  // Per-principal rate limit (§6.1) — same contract as prod, own namespace_id so the
+  // counters are never shared with prod (prod uses 8101).
+  "ratelimits": [
+    { "name": "RATE_LIMITER", "namespace_id": "8102", "simple": { "limit": 60, "period": 60 } }
+  ],
   "kv_namespaces": [
     { "binding": "JTI_DENYLIST", "id": "d6df403f89234bdcbc641e86180868d6" },
     { "binding": "RATE", "id": "70c9197964f245f285959d35d62776a6" },

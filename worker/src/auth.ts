@@ -22,7 +22,10 @@ export interface Env {
   SCHEDULER: DurableObjectNamespace;
   AUDIT_DB: D1Database;
   JTI_DENYLIST: KVNamespace;
+  // A1/A2 burst-detector window counters (best-effort; errors are caught at the call site).
   RATE: KVNamespace;
+  // §6.1 per-principal limiter (Workers Rate Limiting binding; 60 per 60 s, see ratelimit.ts).
+  RATE_LIMITER: RateLimit;
   // §3.2 adım 3: get-identity sonuç cache'i (yalnızca GECİKME optimizasyonu —
   // grup-tazeliği sınırı DEĞİL; pinli: kendi namespace'i, §8.5).
   IDENTITY_CACHE: KVNamespace;

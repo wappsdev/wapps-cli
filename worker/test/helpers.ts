@@ -184,6 +184,7 @@ export async function clearBucket(): Promise<void> {
  * D1 audit + AUDIT_LOG DO storage + izolat cache'leri (policy/kek) + mock durumu.
  */
 export async function resetWorld(): Promise<void> {
+  testLimiter = createFakeRateLimiter();
   await clearBucket();
   for (const ns of [env.RATE, env.JTI_DENYLIST, env.IDENTITY_CACHE]) {
     let cursor: string | undefined;
@@ -237,12 +238,33 @@ export async function runInDoRetry<T>(stub: DurableObjectStub, fn: (instance: un
 }
 
 /**
+ * createFakeRateLimiter, Rate Limiting binding'inin deterministik taklidi: key başına
+ * `limit` çağrı geçer, fazlası success=false. Gerçek binding testler arası sıfırlanamaz
+ * ve tüm suite aynı principal'ı kullanır; bu yüzden callGate varsayılan olarak testLimiter
+ * enjekte eder ve resetWorld onu yenisiyle değiştirir (eski KV sayacının sıfırlanması gibi).
+ */
+export function createFakeRateLimiter(limit = 60): RateLimit & { calls: string[] } {
+  const seen = new Map<string, number>();
+  const calls: string[] = [];
+  return {
+    calls,
+    async limit({ key }) {
+      calls.push(key);
+      const n = (seen.get(key) ?? 0) + 1;
+      seen.set(key, n);
+      return { success: n <= limit };
+    },
+  };
+}
+let testLimiter = createFakeRateLimiter();
+
+/**
  * callGate, Worker'ın fetch handler'ını doğrudan çağırır. envOverride ile secret/var
  * geçici ezilebilir (ör. MASTER_KEK rotasyonu, audit DO enjeksiyonu).
  */
 export async function callGate(path: string, init: RequestInit, envOverride: Record<string, unknown> = {}): Promise<Response> {
   const ctx = createExecutionContext();
-  const res = await worker.fetch(new Request(`https://gate${path}`, init), { ...env, ...envOverride } as never, ctx);
+  const res = await worker.fetch(new Request(`https://gate${path}`, init), { ...env, RATE_LIMITER: testLimiter, ...envOverride } as never, ctx);
   await waitOnExecutionContext(ctx);
   return res;
 }

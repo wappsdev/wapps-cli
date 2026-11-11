@@ -52,7 +52,15 @@
     { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit", "database_id": "f33848e6-8e02-463c-8840-40abb45cdb6f" }
   ],
 
-  // KV: minted-token jti deny-list + rate-limit sayaçları + get-identity cache
+  // Per-principal rate limit (§6.1): 60 requests / 60 s, key = principal id.
+  // Workers Rate Limiting binding (replaces the KV counter, which threw on bursts:
+  // KV allows ~1 write/s/key). namespace_id is account-unique: prod 8101, staging 8102
+  // (wrangler.staging.jsonc) — never share counters between them.
+  "ratelimits": [
+    { "name": "RATE_LIMITER", "namespace_id": "8101", "simple": { "limit": 60, "period": 60 } }
+  ],
+
+  // KV: minted-token jti deny-list + A1/A2 burst-detector counters + get-identity cache
   // (§8.5 pinli: IDENTITY_CACHE kendi namespace'i; SADECE gecikme optimizasyonu §3.4).
   "kv_namespaces": [
     { "binding": "JTI_DENYLIST", "id": "34e96e44bea948a586634bc62be41aeb" },
