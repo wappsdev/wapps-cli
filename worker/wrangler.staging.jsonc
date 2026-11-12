@@ -37,7 +37,7 @@
   "vars": {
     "ACCESS_TEAM_DOMAIN": "wapps-dev.cloudflareaccess.com",
     "ACCESS_AUD_READ": "ac318093752e2119d46838b91ba59fcfc26e2f28d7c567b0303fa19878779e22",
-    "ACCESS_AUD_WRITE": "037398c1f0c4346648f0064c7ae01b0a30654efade8c1ef10728494b782eb626",
+    "ACCESS_AUD_WRITE": "89876865c47329dcbfc8aee85f14f2d98fcf2aca9e7c9bbdaa6cc670bed35831",
     "ADMIN_EMAILS": "adnankurt16@gmail.com",
     "DISCORD_WEBHOOK_URL": "",
     "B2_ENDPOINT": "",
