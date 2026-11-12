@@ -98,7 +98,12 @@ export default {
 
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter((p) => p !== "");
-    if (parts[0] !== "v1") return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
+    // Only the canonical path routes: no trailing slash, no doubled slash, no empty segment. The
+    // edge rate limit (infra/servers/projects/secrets-gate/ratelimit.tf) and the Access paths match
+    // exact paths, so a variant must never reach the same handler.
+    if (parts[0] !== "v1" || url.pathname !== "/" + parts.join("/")) {
+      return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown route");
+    }
 
     // Rota sınıfı → gereken AUD (§7.6): write-AUD YALNIZCA /v1/admin/* altındadır.
     //

@@ -258,3 +258,18 @@ describe("minted token on ADMIN routes — rejected (§5.3 scope-escalation guar
     expect(rows.some((r) => r.verb === "policy.read" && r.decision === "deny" && r.intent === "minted_token")).toBe(true);
   });
 });
+
+describe("only the canonical path routes (the edge rate limit matches /v1/token exactly)", () => {
+  it("a trailing slash, a doubled slash or an empty segment is NOT_FOUND, never a mint", async () => {
+    for (const path of ["/v1/token/", "//v1/token", "/v1//token", "/v1/token//"]) {
+      const res = await callGate(path, {
+        method: "POST",
+        headers: authHeader(await svcJwt()),
+        body: JSON.stringify({ project: "vaulter", keys: ["DEPLOY_TOKEN"], verbs: ["read"] }),
+      });
+      expect(res.status, path).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error, path).toBe("NOT_FOUND");
+    }
+  });
+});
