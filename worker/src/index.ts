@@ -270,6 +270,9 @@ export default {
         if (kind === "keys" && rest.length === 3 && rest[2] === "meta" && request.method === "PUT") {
           return await handleMeta(request, env, ctx, project, rest[1], rctx);
         }
+        if (kind === "keys" && rest.length === 3 && rest[2] === "code" && request.method === "POST") {
+          return await handleReserve(request, env, ctx, project, rest[1], rctx);
+        }
         if (kind === "import" && rest.length === 1 && request.method === "POST") {
           return await handleImport(request, env, ctx, project, rctx);
         }
@@ -886,6 +889,26 @@ async function handleSet(request: Request, env: Env, ctx: ExecutionContext, proj
   }
   const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.set"));
+}
+
+/**
+ * handleReserve, POST …/keys/{K}/code: the key's code before its value exists
+ * (owner request 2026-11-12: an issuer that cannot rename a credential needs its
+ * name `wapps-<CODE> <store> <KEY>` before the credential is created). The writer
+ * DO answers the existing key's code, else the code reserved for (store, key),
+ * else a fresh reserved code; the set that then creates the key takes that code
+ * (writer-do.ts, step 3b). Authorised exactly like a write of the key, with the
+ * same refusal; audited as key.reserve. Idempotent.
+ */
+async function handleReserve(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
+  if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
+  const d = can(rctx, project, keyName, "write");
+  if (!d.allowed) {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.reserve", project, keyName, d.reason ?? null, rctx.intent));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "write denied", { key: keyName, dimension: d.reason });
+  }
+  return dispatchWrite(request, env, ctx, project, rctx, { op: "reserve", key: keyName }, "key.reserve");
 }
 
 /** readJsonObject parses the request body as a JSON object, or answers 400. */

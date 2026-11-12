@@ -40,7 +40,7 @@ import {
 } from "./escrow.js";
 import { deliverAlert, ALERT } from "./alerts.js";
 import { CardPatch, applyCard } from "./card.js";
-import { reserveCodes } from "./keycode.js";
+import { reserveCode, reserveCodes, validCode } from "./keycode.js";
 
 interface DOEnv extends EscrowEnv {
   SECRETS_BUCKET: R2Bucket;
@@ -54,10 +54,11 @@ interface DOEnv extends EscrowEnv {
 /** WriteOp, Worker'dan DO'ya taşınan tipli mutasyon (§7.4 write API'lerinin iç şekli). */
 export interface WriteOp {
   // codes: the admin backfill; gives a key code to every key without one.
-  op: "set" | "import" | "delete" | "rewrap" | "meta" | "codes";
+  // reserve: answers a key's code before the key exists (no commit; see reserve()).
+  op: "set" | "import" | "delete" | "rewrap" | "meta" | "codes" | "reserve";
   // set/import: plaintext değerler (TLS + internal DO fetch; C2 gereği ASLA loglanmaz).
   values?: Record<string, string>;
-  // delete / meta: the key.
+  // delete / meta / reserve: the key.
   key?: string;
   // meta: the card change; set/import: an optional card change for every written
   // key (absent = each key keeps its card). Checked at the edge (card.ts).
@@ -96,6 +97,10 @@ const PENDING_POINTER_EVENT_PREFIX = "pending-pointer-event:";
 const PENDING_OUTCOME_PREFIX = "pending-audit-outcome:";
 const POINTER_EVENT_RETRY_MS = 30_000;
 const ESCROW_CONFIG_KEY = "escrow-config"; // test seam (dormant fallback)
+// Key code reservations (reserve()): `key-reservation:<KEY>` → the code. They live
+// in this DO's storage because this DO is the store's one serialized writer: a
+// reservation and the commit that consumes it never interleave.
+const RESERVATION_PREFIX = "key-reservation:";
 
 interface PendingPointerEvent {
   r2Key: string;
@@ -210,6 +215,8 @@ export class ProjectWriterDO {
       prevSha = ptr.manifestSha256;
     }
 
+    if (op.op === "reserve") return await this.reserve(project, meta, op.key ?? "", prevEntries);
+
     // 2. Optimistic-concurrency (§7.4 ifEpoch): istemci beklediği epoch'u pinlediyse.
     if (op.ifEpoch !== undefined && op.ifEpoch !== prevEpoch) {
       throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, expected: op.ifEpoch });
@@ -313,10 +320,13 @@ export class ProjectWriterDO {
         throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "unknown op" });
     }
 
-    // 3b. Key codes: each created key, or each key the backfill names, takes a
-    // fresh code from the gate-wide index (keycode.ts) before the manifest exists.
-    // The reservations run in parallel (one R2 round trip each).
-    const needCodes = op.op === "codes" ? touched : created;
+    // 3b. Key codes: a created key whose code was reserved (reserve()) takes that
+    // code; every other created key, or each key the backfill names, takes a fresh
+    // code from the gate-wide index (keycode.ts) before the manifest exists. The
+    // draws run in parallel (one R2 round trip each).
+    const reserved = created.length > 0 ? await this.reservations(created) : new Map<string, string>();
+    for (const [k, code] of reserved) byName.set(k, { ...byName.get(k)!, code });
+    const needCodes = (op.op === "codes" ? touched : created).filter((k) => !reserved.has(k));
     if (needCodes.length > 0) {
       let codes: Map<string, string>;
       try {
@@ -387,6 +397,16 @@ export class ProjectWriterDO {
     } else {
       const updated = await this.bucket.put(keyCurrent(project), pointerBody, { onlyIf: { etagMatches: prevCurrentEtag } });
       if (updated === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { reason: "pointer CAS lost (out-of-band mutation)" });
+    }
+
+    // 8b. The commit is durable: a consumed reservation goes, so a later key of the
+    // same name never takes the old code again. A deleted key's reservation goes
+    // too (one is left only when a crash fell between a CAS and this step).
+    const spent = [...reserved.keys(), ...(op.op === "delete" ? touched : [])];
+    for (const k of spent) {
+      await this.ctx.storage.delete(RESERVATION_PREFIX + k).catch((err) => {
+        console.error(`writer-do: reservation clear failed (project=${project})`, err);
+      });
     }
 
     // 9. Audit OUTCOME (SYNC, ONLY after the pointer CAS succeeded): bulk ops write
@@ -489,6 +509,69 @@ export class ProjectWriterDO {
       ...(op.op === "set" || op.op === "import" ? { created } : {}),
       ...(op.op === "rewrap" ? { rewrapped } : {}),
     });
+  }
+
+  /**
+   * reserve answers the code of `key` before its value exists (POST …/keys/<K>/code):
+   * the existing key's own code; else the code already reserved for the key; else a
+   * fresh code taken create-only in the gate-wide index (keycode.ts), kept as this
+   * DO's reservation. It runs inside blockConcurrencyWhile like a commit, so two
+   * concurrent reservations of one key answer one code, and the set that creates
+   * the key takes it (step 3b). A reservation never frees its code. Every answer is
+   * an allow row (intent `code:<C>`) written before the answer; a refusal is a
+   * deny row (fetch's CommitError path).
+   */
+  private async reserve(project: string, meta: ReqMeta, key: string, entries: ManifestEntry[]): Promise<Response> {
+    if (!validKeyName(key)) throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "invalid keyName", key });
+    const existing = entries.find((e) => e.keyName === key);
+    let code: string;
+    if (existing) {
+      if (existing.code === undefined) throw new CommitError(HTTP.CONFLICT, "KEY_CODE_MISSING", { key });
+      code = existing.code;
+    } else {
+      const held = (await this.reservations([key])).get(key);
+      if (held !== undefined) {
+        code = held;
+      } else {
+        try {
+          code = await reserveCode(this.bucket, project, key);
+        } catch (e) {
+          console.error(`writer-do: key code reservation failed (project=${project})`, e);
+          throw new CommitError(HTTP.MISCONFIGURED, "KEY_CODE_UNAVAILABLE", { key });
+        }
+        await this.ctx.storage.put(RESERVATION_PREFIX + key, code);
+      }
+    }
+    try {
+      await auditAppendSync(this.auditLog, {
+        principal: meta.principalId,
+        principal_type: meta.principalType,
+        project,
+        key,
+        verb: meta.auditVerb,
+        decision: "allow",
+        intent: `code:${code}`,
+        ip: meta.ip,
+        cf_ray: meta.cfRay,
+        token_jti: meta.tokenJti,
+      });
+    } catch {
+      throw new CommitError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", { reason: "audit DO unavailable" });
+    }
+    return jsonOK({ store: project, keyName: key, code });
+  }
+
+  /** reservations answers key → reserved code for those of `keys` that hold a
+   * reservation (a malformed stored code counts as none). */
+  private async reservations(keys: string[]): Promise<Map<string, string>> {
+    const wanted = new Set(keys);
+    const all = await this.ctx.storage.list<string>({ prefix: RESERVATION_PREFIX });
+    const out = new Map<string, string>();
+    for (const [sk, code] of all) {
+      const k = sk.slice(RESERVATION_PREFIX.length);
+      if (wanted.has(k) && typeof code === "string" && validCode(code)) out.set(k, code);
+    }
+    return out;
   }
 
   /** appendDeny, reddedilen bir mutasyon için deny satırı ekler (best-effort). */

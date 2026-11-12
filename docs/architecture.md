@@ -61,6 +61,21 @@ There are two directions: **ingest** (sources → store) and **materialize**
   and answers `done: true` when no store needs codes any more. The caller repeats
   it until `done`. It is additive and idempotent, and it is audited as
   `admin.key_code_backfill`, one row per key.
+  `POST …/keys/<KEY>/code` gives a key's code BEFORE its value exists, for an
+  issuer that cannot rename a credential: `wapps secrets set` calls it first and
+  prints the issuer name before it asks for the value. It is authorised exactly
+  like a write of the key (the `write` verb, minted scope included, the same 403).
+  It answers `{store, keyName, code}`: the existing key's code; else the code
+  already reserved for (store, key); else a fresh code, taken create-only in
+  `key-codes/` like any code and kept as a reservation in the store's writer
+  Durable Object (`key-reservation:<KEY>`). The writer serializes the reservation
+  and every commit of the store, so concurrent reservations of one key answer one
+  code. The `set` or `import` that creates the key takes the reserved code and
+  then clears the reservation (a delete of the key clears it too). A reservation
+  never frees its code, and the code resolves (`GET /v1/codes`) only when a key
+  holds it. Every answer is a `key.reserve` allow row (intent `code:<CODE>`); a
+  refusal is a `key.reserve` deny row. An existing key without a code gets 409
+  `KEY_CODE_MISSING` (run the backfill).
 - **Consumers** are *outputs* — where plaintext is materialized. Three kinds:
   `targets:` (local files like `.env.local`), Coolify app envs, and ephemeral
   subprocess env (`exec`).
