@@ -45,6 +45,20 @@ There are two directions: **ingest** (sources → store) and **materialize**
   per-project manifest chain. Each write produces a new **epoch** (epoch+1,
   chained by hash), serialized by a per-project Durable Object. Values move as
   plaintext over TLS inside Cloudflare Access; the client never unwraps anything.
+- **Each key carries non-secret metadata** on its manifest entry: a card (`note`,
+  `expires`) and a **key code**. The gate gives the code when the key is first
+  created: 6 random characters of Crockford base32 without I, L, O and U
+  (`K7Q2M4`). A value rotation keeps it. The code is unique across the whole gate,
+  every project and shared id: the R2 object `key-codes/<CODE>` is written
+  create-only and never deleted, so a deleted key's code is never given again. The
+  key's name at its issuer is `wapps-<CODE> <store id> <KEY>`, or
+  `wapps-<CODE>:<store id>:<KEY>` where the issuer refuses spaces.
+  `GET /v1/codes/<CODE>` (any letter case) answers the store, the key name and the
+  card, with the authorisation of reading that key's card. A caller who may not
+  read the key gets the same 404 as for an unknown code. `GET …/keys` lists each
+  key's `code`. `POST /v1/admin/key-codes/backfill` (the `admin` verb) gives a code
+  to every key that has none. It is additive and idempotent, and it is audited
+  as `admin.key_code_backfill`, one row per key.
 - **Consumers** are *outputs* — where plaintext is materialized. Three kinds:
   `targets:` (local files like `.env.local`), Coolify app envs, and ephemeral
   subprocess env (`exec`).
@@ -129,7 +143,9 @@ Read verbs that need nothing but the project name (`list`, `get`, `rm`,
 | `env [--write <f>] [--prefix P]` | materialize | Emit `export` lines. `--write` → file (silent); no flag → stdout (operator-only). |
 | `exec -- <cmd>` | materialize | Run a subprocess with the project's env injected. No file, no stdout leak. |
 | `get <KEY>` | read | Print one value to stdout. **Operator-only** (breaks the AI-safe rule by design). |
-| `list` | read | Print key names (no values). Filtered server-side to what you may read. |
+| `list` | read | Print key names (no values), each with its key code and issuer name. Filtered server-side to what you may read. |
+| `find <CODE>` | read | Resolve a key code to its store, key name and card (never the value). |
+| `backfill-codes` | admin | Give a key code to every key without one (`POST /v1/admin/key-codes/backfill`). Write-AUD; refused in agent mode. |
 | `wapps projects list` | read | Which projects exist in the store, filtered to what you may see. Names only. |
 | `wapps projects rm <P>` | admin | Remove a project and all its data. Needs the global `admin` verb + write-AUD. |
 | `policy show \| set \| lint` | admin | Read/edit `policy.json` (the authz document). Write-AUD; refused in agent mode. |

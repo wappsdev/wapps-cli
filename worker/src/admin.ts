@@ -247,28 +247,35 @@ export async function handleAdmin(
     const results: Record<string, unknown> = {};
     let failed = 0;
     for (const project of projects) {
-      const res = await doStubFetch(
-        () => env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName(project)),
-        `https://do/commit?project=${encodeURIComponent(project)}`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-principal-id": actx.authz.id,
-            "x-principal-type": principal.kind === "human" ? "human" : "machine",
-            "x-audit-verb": "admin.rewrap_kek",
-            "x-policy-version": String(actx.policy.version),
-            "x-cf-ip": ipOf(request) ?? "",
-            "x-cf-ray": rayOf(request) ?? "",
-          },
-          body: JSON.stringify({ op: "rewrap" }),
-        },
-      );
+      const res = await adminCommit(env, request, principal, actx, project, "admin.rewrap_kek", "rewrap");
       const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
       results[project] = res.status === HTTP.OK ? body : { error: body.error ?? res.status };
       if (res.status !== HTTP.OK) failed++;
     }
     return jsonOK({ projects: results, failed });
+  }
+
+  // POST /v1/admin/key-codes/backfill (keycode.ts): gives a key code to every key
+  // without one, in every project and shared id; existing codes never change. One
+  // commit per store that needs it (none for a store with nothing to do), audited
+  // by the writer: one admin.key_code_backfill row per key, intent `code:<CODE>`.
+  // Idempotent: a second run finds nothing to do.
+  if (parts[2] === "key-codes" && parts[3] === "backfill" && parts.length === 4 && request.method === "POST") {
+    const stores: Record<string, unknown> = {};
+    let assigned = 0;
+    let failed = 0;
+    for (const store of (await deriveProjects(env.SECRETS_BUCKET)).sort()) {
+      const res = await adminCommit(env, request, principal, actx, store, "admin.key_code_backfill", "codes");
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (res.status === HTTP.OK) {
+        stores[store] = body;
+        assigned += Object.keys((body.keyCodes as Record<string, string> | undefined) ?? {}).length;
+      } else {
+        stores[store] = { error: body.error ?? res.status };
+        failed++;
+      }
+    }
+    return jsonOK({ stores, assigned, failed });
   }
 
   // DELETE /v1/admin/projects/{p}: bir projenin TÜM verisini kaldırır.
@@ -390,6 +397,31 @@ export async function handleAdmin(
   }
 
   return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown admin route");
+}
+
+/** adminCommit sends one store-wide admin op (rewrap, codes) to the store's writer DO. */
+async function adminCommit(
+  env: Env,
+  request: Request,
+  principal: Principal,
+  actx: AdminContext,
+  store: string,
+  verb: string,
+  op: "rewrap" | "codes",
+): Promise<Response> {
+  return doStubFetch(() => env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName(store)), `https://do/commit?project=${encodeURIComponent(store)}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-principal-id": actx.authz.id,
+      "x-principal-type": principal.kind === "human" ? "human" : "machine",
+      "x-audit-verb": verb,
+      "x-policy-version": String(actx.policy.version),
+      "x-cf-ip": ipOf(request) ?? "",
+      "x-cf-ray": rayOf(request) ?? "",
+    },
+    body: JSON.stringify({ op }),
+  });
 }
 
 function adminRow(principalId: string, principal: Principal, verb: string, request: Request): AuditRow {

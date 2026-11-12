@@ -40,6 +40,7 @@ import {
 } from "./escrow.js";
 import { deliverAlert, ALERT } from "./alerts.js";
 import { CardPatch, applyCard } from "./card.js";
+import { reserveCode } from "./keycode.js";
 
 interface DOEnv extends EscrowEnv {
   SECRETS_BUCKET: R2Bucket;
@@ -52,7 +53,8 @@ interface DOEnv extends EscrowEnv {
 
 /** WriteOp, Worker'dan DO'ya taşınan tipli mutasyon (§7.4 write API'lerinin iç şekli). */
 export interface WriteOp {
-  op: "set" | "import" | "delete" | "rewrap" | "meta";
+  // codes: the admin backfill; gives a key code to every key without one.
+  op: "set" | "import" | "delete" | "rewrap" | "meta" | "codes";
   // set/import: plaintext değerler (TLS + internal DO fetch; C2 gereği ASLA loglanmaz).
   values?: Record<string, string>;
   // delete / meta: the key.
@@ -219,6 +221,8 @@ export class ProjectWriterDO {
     const byName = new Map(prevEntries.map((e) => [e.keyName, e]));
     const newBlobs: { hash: string; bytes: Uint8Array }[] = [];
     const touched: string[] = [];
+    // Keys this commit creates: each gets a key code below.
+    const created: string[] = [];
     let rewrapped = 0;
 
     const putValue = (keyName: string, value: string): void => {
@@ -238,9 +242,11 @@ export class ProjectWriterDO {
       const wrap = wrapDEK(this.masters![0], project, keyName, keyVersion, dek);
       dek.fill(0); // best-effort bellek temizliği
       newBlobs.push({ hash, bytes: blobBytes });
-      // The card stays with the key unless the op carries a change for it.
-      byName.set(keyName, { keyName, keyVersion, blobHash: hash, wrap, rotation: prev?.rotation, ...applyCard(prev, op.card), updatedAt: now });
+      // The card stays with the key unless the op carries a change for it; the
+      // key code always stays (a new value is a rotation, not a new key).
+      byName.set(keyName, { keyName, keyVersion, blobHash: hash, wrap, rotation: prev?.rotation, ...applyCard(prev, op.card), updatedAt: now, code: prev?.code });
       touched.push(keyName);
+      if (!prev) created.push(keyName);
     };
 
     switch (op.op) {
@@ -297,8 +303,27 @@ export class ProjectWriterDO {
         }
         break;
       }
+      case "codes": {
+        // The admin backfill: every key without a code, nothing else changes.
+        for (const e of byName.values()) if (e.code === undefined) touched.push(e.keyName);
+        if (touched.length === 0) return jsonOK({ project, epoch: prevEpoch, assigned: 0, noop: true });
+        break;
+      }
       default:
         throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "unknown op" });
+    }
+
+    // 3b. Key codes: each created key, or each key the backfill names, takes a
+    // fresh code from the gate-wide index (keycode.ts) before the manifest exists.
+    for (const k of op.op === "codes" ? touched : created) {
+      let code: string;
+      try {
+        code = await reserveCode(this.bucket, project, k);
+      } catch (e) {
+        console.error(`writer-do: key code reservation failed (project=${project} key=${k})`, e);
+        throw new CommitError(HTTP.MISCONFIGURED, "KEY_CODE_UNAVAILABLE", { key: k });
+      }
+      byName.set(k, { ...byName.get(k)!, code });
     }
 
     // 4. Yeni manifest'i kur (epoch+1, zincir, §2.6).
@@ -376,7 +401,8 @@ export class ProjectWriterDO {
       key: k,
       verb: op.op === "rewrap" ? "admin.rewrap_kek" : meta.auditVerb,
       decision: "allow",
-      intent: meta.intent,
+      // A backfill row names the code it gave.
+      intent: op.op === "codes" ? `code:${byName.get(k)?.code}` : meta.intent,
       ip: meta.ip,
       cf_ray: meta.cfRay,
       token_jti: meta.tokenJti,
@@ -443,12 +469,24 @@ export class ProjectWriterDO {
     }
 
     // 12. Yanıt: yeni epoch + manifest hash (+ set/import için yeni keyVersion'lar).
+    // keyCodes: the code of each touched key that has one; created (set/import):
+    // the keys this commit created, so the CLI can print their issuer names.
     const keyVersions: Record<string, number> = {};
+    const keyCodes: Record<string, string> = {};
     for (const k of touched) {
       const e = byName.get(k);
       if (e) keyVersions[k] = e.keyVersion;
+      if (e?.code !== undefined) keyCodes[k] = e.code;
     }
-    return jsonOK({ project, epoch, manifestSha256: newManifestSha, keyVersions, ...(op.op === "rewrap" ? { rewrapped } : {}) });
+    return jsonOK({
+      project,
+      epoch,
+      manifestSha256: newManifestSha,
+      keyVersions,
+      keyCodes,
+      ...(op.op === "set" || op.op === "import" ? { created } : {}),
+      ...(op.op === "rewrap" ? { rewrapped } : {}),
+    });
   }
 
   /** appendDeny, reddedilen bir mutasyon için deny satırı ekler (best-effort). */

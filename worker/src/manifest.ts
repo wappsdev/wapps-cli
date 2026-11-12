@@ -11,6 +11,7 @@
 import { sha256Hex, utf8, b64ToBytes } from "./crypto/encoding.js";
 import { DekWrap, WRAP_RECIPIENT, WRAP_TOTAL_LEN } from "./crypto/kek.js";
 import { validKeyName } from "./storage.js";
+import { validCode } from "./keycode.js";
 
 export const SCHEMA_DATA_MANIFEST = "wapps-secrets/data-manifest/v2";
 export const SCHEMA_CURRENT_POINTER = "wapps-secrets/current/v1";
@@ -41,6 +42,10 @@ export interface ManifestEntry {
   // or card. Set by the writer, never by the caller. Absent on entries written
   // before the card existed.
   updatedAt?: string;
+  // The key's code (keycode.ts): given by the writer when the key is first
+  // created, kept across rotations. Absent on an entry written before key codes
+  // until the admin backfill gives it one.
+  code?: string;
 }
 
 export interface DataManifest {
@@ -76,6 +81,12 @@ function asString(v: unknown, ctx: string): string {
 }
 function optString(v: unknown, ctx: string): string | undefined {
   return v === undefined ? undefined : asString(v, ctx);
+}
+
+function optCode(v: unknown, ctx: string): string | undefined {
+  const c = optString(v, ctx);
+  if (c !== undefined && !validCode(c)) throw new ManifestVerifyError("MANIFEST_MALFORMED", `${ctx}: not a key code`);
+  return c;
 }
 
 /**
@@ -131,6 +142,7 @@ export function parseManifest(bytes: Uint8Array): DataManifest {
       note: optString(e.note, `entry[${i}].note`),
       expires: optString(e.expires, `entry[${i}].expires`),
       updatedAt: optString(e.updatedAt, `entry[${i}].updatedAt`),
+      code: optCode(e.code, `entry[${i}].code`),
     };
   });
 
@@ -169,6 +181,7 @@ export function serializeManifest(m: DataManifest): Uint8Array {
       ...(e.note !== undefined ? { note: e.note } : {}),
       ...(e.expires !== undefined ? { expires: e.expires } : {}),
       ...(e.updatedAt !== undefined ? { updatedAt: e.updatedAt } : {}),
+      ...(e.code !== undefined ? { code: e.code } : {}),
     })),
   };
   const bytes = utf8(JSON.stringify(doc));

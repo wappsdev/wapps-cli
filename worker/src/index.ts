@@ -43,6 +43,7 @@ import {
 import { IdentityError, createGroupResolver } from "./identity.js";
 import { ProjectWriterDO, WriteOp } from "./writer-do.js";
 import { CardPatch, isEmptyPatch, readCardPatch } from "./card.js";
+import { normalizeCode, readCodeHolder } from "./keycode.js";
 import { AuditLogDO } from "./audit-do.js";
 import { SchedulerDO } from "./scheduler-do.js";
 import { scopeAllowsKey, scopeAllowsVerb } from "./mint.js";
@@ -224,6 +225,11 @@ export default {
       // list`in ad-görünür/değer-asla çizgisi proje düzeyinde de aynen geçerli.
       if (parts[1] === "projects" && parts.length === 2 && request.method === "GET") {
         return await handleProjectsList(request, env, ctx, rctx);
+      }
+
+      // --- GET /v1/codes/{CODE} (key code → store, key and card; keycode.ts) ------
+      if (parts[1] === "codes" && parts.length === 3 && request.method === "GET") {
+        return await handleCodeFind(request, env, ctx, parts[2], rctx);
       }
 
       // --- projects/{p}/... and shared/{ns}/{name}/... ----------------------------
@@ -512,6 +518,7 @@ async function handleKeysList(
         ...(e?.note !== undefined ? { note: e.note } : {}),
         ...(e?.expires !== undefined ? { expires: e.expires } : {}),
         updatedAt: e?.updatedAt ?? null,
+        ...(e?.code !== undefined ? { code: e.code } : {}),
       };
     }),
   });
@@ -528,6 +535,68 @@ async function handleKeysList(
     cf_ray: rayOf(request),
   });
   return new Response(bodyStr, { status: HTTP.OK, headers: { "content-type": "application/json", ETag: et.etag } });
+}
+
+// --- GET /v1/codes/{CODE} (key code lookup; keycode.ts) ----------------------------
+
+/**
+ * handleCodeFind resolves a key code (any letter case) to {code, store, keyName,
+ * keyVersion, card}: exactly what the key's row in GET …/keys shows, never a value.
+ * It is authorised like that row: `read` on the store (key=null) and on the key,
+ * minted scope included. A code that was never given, whose key was deleted or
+ * replaced, or whose key the caller may not read gets one and the same 404, so a
+ * code does not tell a caller that a key exists. Every refusal is a deny row
+ * (counted for A1, since guessing codes is a scan); an answer is a key.find row.
+ */
+async function handleCodeFind(request: Request, env: Env, ctx: ExecutionContext, raw: string, rctx: RequestCtx): Promise<Response> {
+  const code = normalizeCode(raw);
+  if (code === null) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "a key code is 6 characters of 0-9 and A-Z without I, L, O and U");
+
+  const refuse = async (store: string | null, key: string | null, reason: string): Promise<Response> => {
+    auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.find", store, key, reason, rctx.intent));
+    await countDenyBurst(ctx, env, rctx.authz.id);
+    return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown code");
+  };
+
+  const holder = await readCodeHolder(env.SECRETS_BUCKET, code);
+  if (!holder || !(validProject(holder.store) || validSharedId(holder.store)) || !validKeyName(holder.key)) return refuse(null, null, "unknown_code");
+  const { store, key } = holder;
+  for (const k of [null, key]) {
+    const d = can(rctx, store, k, "read");
+    if (!d.allowed) return refuse(store, key, d.reason ?? "denied");
+  }
+  let loaded;
+  try {
+    loaded = await loadCurrentManifest(env, store);
+  } catch (e) {
+    if (e instanceof ReadPathError) return e.toResponse();
+    throw e;
+  }
+  const e = loaded?.manifest.entries.find((x) => x.keyName === key);
+  // The index keeps a deleted key's code as a tombstone: only the entry that
+  // still carries the code answers.
+  if (!e || e.code !== code) return refuse(store, key, "unknown_code");
+
+  auditReadAsync(ctx, env.AUDIT_LOG, {
+    principal: rctx.authz.id,
+    principal_type: ptypeOf(rctx.principal),
+    project: store,
+    key,
+    verb: "key.find",
+    decision: "allow",
+    intent: rctx.intent,
+    ip: ipOf(request),
+    cf_ray: rayOf(request),
+  });
+  return jsonOK({
+    code,
+    store,
+    keyName: key,
+    keyVersion: e.keyVersion,
+    ...(e.note !== undefined ? { note: e.note } : {}),
+    ...(e.expires !== undefined ? { expires: e.expires } : {}),
+    updatedAt: e.updatedAt ?? null,
+  });
 }
 
 // --- GET /v1/projects/{p}/manifests/{current|epoch} (entries FİLTRELİ, §7.6) ---------
