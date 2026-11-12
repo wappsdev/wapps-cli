@@ -255,27 +255,43 @@ export async function handleAdmin(
     return jsonOK({ projects: results, failed });
   }
 
-  // POST /v1/admin/key-codes/backfill (keycode.ts): gives a key code to every key
-  // without one, in every project and shared id; existing codes never change. One
-  // commit per store that needs it (none for a store with nothing to do), audited
-  // by the writer: one admin.key_code_backfill row per key, intent `code:<CODE>`.
-  // Idempotent: a second run finds nothing to do.
+  // POST /v1/admin/key-codes/backfill (keycode.ts): gives a key code to keys
+  // without one; existing codes never change. One request commits at most ONE
+  // store: it walks the stores in name order, skips each with nothing to do, and
+  // sends the first that needs codes to its writer (audited there: one
+  // admin.key_code_backfill row per key, intent `code:<CODE>`). So a request stays
+  // short whatever the gate holds (prod 2026-11-12: one request for every store
+  // did not answer within the CLI's 20 s). The caller repeats until `done`: no
+  // store needs codes any more. A failed store stops the walk with done=false.
+  // Idempotent: a repeat after a lost answer finds that store done and goes on.
   if (parts[2] === "key-codes" && parts[3] === "backfill" && parts.length === 4 && request.method === "POST") {
     const stores: Record<string, unknown> = {};
     let assigned = 0;
     let failed = 0;
+    let committed = false;
+    let done = true;
     for (const store of (await deriveProjects(env.SECRETS_BUCKET)).sort()) {
+      if (!(await storeNeedsCodes(env.SECRETS_BUCKET, store))) continue;
+      if (committed) {
+        // A later store still needs codes: the caller must ask again.
+        done = false;
+        break;
+      }
       const res = await adminCommit(env, request, principal, actx, store, "admin.key_code_backfill", "codes");
       const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      if (res.status === HTTP.OK) {
-        stores[store] = body;
-        assigned += Object.keys((body.keyCodes as Record<string, string> | undefined) ?? {}).length;
-      } else {
+      if (res.status !== HTTP.OK) {
         stores[store] = { error: body.error ?? res.status };
-        failed++;
+        failed = 1;
+        done = false;
+        break;
       }
+      // noop: another writer gave the codes since the check; walk on.
+      if (body.noop === true) continue;
+      stores[store] = body;
+      assigned = Object.keys((body.keyCodes as Record<string, string> | undefined) ?? {}).length;
+      committed = true;
     }
-    return jsonOK({ stores, assigned, failed });
+    return jsonOK({ stores, assigned, failed, done });
   }
 
   // DELETE /v1/admin/projects/{p}: bir projenin TÜM verisini kaldırır.
@@ -397,6 +413,21 @@ export async function handleAdmin(
   }
 
   return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown admin route");
+}
+
+/** storeNeedsCodes: the store's current manifest has a key without a code. A
+ * store whose manifest cannot be read counts as needing codes, so its writer
+ * reports the error instead of the walk passing over it. */
+async function storeNeedsCodes(bucket: R2Bucket, store: string): Promise<boolean> {
+  const cur = await getObject(bucket, keyCurrent(store));
+  if (!cur) return false;
+  try {
+    const man = await getObject(bucket, keyManifest(store, parseCurrentPointer(cur.bytes).epoch));
+    if (!man) return true;
+    return parseManifest(man.bytes).entries.some((e) => e.code === undefined);
+  } catch {
+    return true;
+  }
 }
 
 /** adminCommit sends one store-wide admin op (rewrap, codes) to the store's writer DO. */

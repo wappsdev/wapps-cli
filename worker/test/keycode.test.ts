@@ -26,7 +26,7 @@ import {
   ADMIN_EMAIL,
 } from "./helpers.js";
 import { PolicyRule } from "../src/policy.js";
-import { CODE_ALPHABET, keyCodeIndex, normalizeCode, randomCode, reserveCode } from "../src/keycode.js";
+import { CODE_ALPHABET, keyCodeIndex, normalizeCode, randomCode, reserveCode, reserveCodes } from "../src/keycode.js";
 import { keyCurrent, keyManifest } from "../src/storage.js";
 import { SCHEMA_CURRENT_POINTER, manifestObjectHash, parseCurrentPointer, parseManifest, serializeManifest } from "../src/manifest.js";
 import { utf8 } from "../src/crypto/encoding.js";
@@ -147,6 +147,44 @@ describe("the uniqueness index", () => {
   it("gives up with an error when every draw collides", async () => {
     await reserveCode(env.SECRETS_BUCKET, "vaulter", "ONE", () => "CCCCCC");
     await expect(reserveCode(env.SECRETS_BUCKET, "vaulter", "TWO", () => "CCCCCC")).rejects.toThrow(/KEY_CODE_UNAVAILABLE/);
+  });
+
+  // Measured on prod 2026-11-12: a backfill of `lab` (134 keys) did not answer
+  // within the CLI's 20 s. A commit costs one R2 round trip per key reservation
+  // (create-only puts) and O(1) round trips for everything else (one audit batch,
+  // one manifest put, one pointer CAS). Locally R2 is in memory (150 sequential
+  // reservations took 68 ms, the 150-row audit batch 16 ms), so this test gives
+  // the bucket a real round trip: the reservations of many keys must overlap.
+  it("reserves many keys' codes in parallel, each code still taken create-only", async () => {
+    const ROUND_TRIP_MS = 10;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slow = {
+      put: async (key: string, body: string, opts: R2PutOptions) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, ROUND_TRIP_MS));
+        inFlight--;
+        return env.SECRETS_BUCKET.put(key, body, opts);
+      },
+    } as unknown as R2Bucket;
+    // The first 50 draws are one code: one key gets it, the others collide
+    // and draw again.
+    let n = 0;
+    const draw = (): string => (n++ < 50 ? "SAME00" : randomCode());
+    const keys = Array.from({ length: 150 }, (_, i) => `KEY_${i}`);
+    const t0 = Date.now();
+    const codes = await reserveCodes(slow, "lab", keys, draw);
+    const elapsed = Date.now() - t0;
+    expect([...codes.keys()].sort()).toEqual([...keys].sort());
+    expect(new Set(codes.values()).size).toBe(150);
+    expect([...codes.values()].filter((c) => c === "SAME00").length).toBe(1);
+    expect(maxInFlight).toBeGreaterThan(1);
+    // Sequential: at least 199 round trips (150 first draws + 49 redraws).
+    expect(elapsed).toBeLessThan((199 * ROUND_TRIP_MS) / 4);
+    for (const [k, c] of codes) {
+      expect(JSON.parse(await (await env.SECRETS_BUCKET.get(keyCodeIndex(c)))!.text())).toMatchObject({ store: "lab", key: k });
+    }
   });
 });
 
@@ -312,7 +350,53 @@ describe("GET /v1/codes/<CODE>", () => {
   });
 });
 
+interface Backfill {
+  stores: Record<string, Commit & { error?: unknown }>;
+  assigned: number;
+  failed: number;
+  done: boolean;
+}
+async function backfillBody(): Promise<Backfill> {
+  const res = await backfill();
+  expect(res.status).toBe(200);
+  return (await res.json()) as Backfill;
+}
+
 describe("POST /v1/admin/key-codes/backfill", () => {
+  // One request walks the stores in name order and commits at most ONE store
+  // that needs codes, so a request stays short whatever the gate holds (prod
+  // 2026-11-12: one request for every store did not answer within 20 s).
+  // `done` says whether any store still needs codes after this request.
+  it("commits one store per request, in name order, and says when no store needs codes", async () => {
+    expect((await imp("boss@wapps.dev", "/v1/projects/vaulter", { A: "a", B: "b" })).status).toBe(200);
+    expect((await imp("boss@wapps.dev", "/v1/shared/apple/asc", { ASC_KEY_ID: "k" })).status).toBe(200);
+    expect((await imp("boss@wapps.dev", "/v1/projects/coded", { X: "x" })).status).toBe(200);
+    await stripCodes("vaulter");
+    await stripCodes("apple/asc");
+
+    const first = await backfillBody();
+    expect(Object.keys(first.stores)).toEqual(["apple/asc"]);
+    expect(first).toMatchObject({ assigned: 1, failed: 0, done: false });
+    const second = await backfillBody();
+    expect(Object.keys(second.stores)).toEqual(["vaulter"]);
+    // vaulter was the last store that needed codes.
+    expect(second).toMatchObject({ assigned: 2, failed: 0, done: true });
+    const third = await backfillBody();
+    expect(third).toEqual({ stores: {}, assigned: 0, failed: 0, done: true });
+  });
+
+  it("gives a store of 150 keys its codes in one request", async () => {
+    const values = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [`LAB_KEY_${i}`, `v${i}`]));
+    expect((await imp("boss@wapps.dev", "/v1/projects/lab", values)).status).toBe(200);
+    await stripCodes("lab");
+    const body = await backfillBody();
+    expect(body).toMatchObject({ assigned: 150, failed: 0, done: true });
+    const listed = await keys("boss@wapps.dev", "/v1/projects/lab");
+    expect(listed.length).toBe(150);
+    for (const k of listed) expect(k.code, k.keyName).toMatch(CODE_RE);
+    expect(new Set(listed.map((k) => k.code)).size).toBe(150);
+  });
+
   it("gives every key without a code one, keeps every existing code, and is idempotent", async () => {
     expect((await imp("boss@wapps.dev", "/v1/projects/vaulter", { A: "a", B: "b" })).status).toBe(200);
     expect((await imp("boss@wapps.dev", "/v1/shared/apple/asc", { ASC_KEY_ID: "k" })).status).toBe(200);
@@ -322,12 +406,13 @@ describe("POST /v1/admin/key-codes/backfill", () => {
     const kept = (await codeOf("/v1/projects/vaulter", "C"))!;
     expect(await codeOf("/v1/projects/vaulter", "A")).toBeUndefined();
 
-    const res = await backfill();
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { stores: Record<string, Commit & { noop?: boolean }>; assigned: number; failed: number };
-    expect(body.failed).toBe(0);
-    expect(body.assigned).toBe(3);
-    expect(Object.keys(body.stores.vaulter.keyCodes ?? {}).sort()).toEqual(["A", "B"]);
+    const bodies: Backfill[] = [];
+    for (let i = 0; i < 5 && !bodies.at(-1)?.done; i++) bodies.push(await backfillBody());
+    expect(bodies.at(-1)?.done).toBe(true);
+    expect(bodies.reduce((n, b) => n + b.assigned, 0)).toBe(3);
+    expect(bodies.every((b) => b.failed === 0)).toBe(true);
+    const vaulter = bodies.find((b) => b.stores.vaulter)!.stores.vaulter;
+    expect(Object.keys(vaulter.keyCodes ?? {}).sort()).toEqual(["A", "B"]);
 
     const listed = await keys("boss@wapps.dev", "/v1/projects/vaulter");
     expect(listed.find((k) => k.keyName === "C")?.code).toBe(kept);
@@ -348,9 +433,7 @@ describe("POST /v1/admin/key-codes/backfill", () => {
 
     // Again: nothing to do, no new epoch.
     const epochBefore = ((await (await callGate("/v1/projects/vaulter/keys", { headers: await hdr("boss@wapps.dev") })).json()) as { epoch: number }).epoch;
-    const again = (await (await backfill()).json()) as { stores: Record<string, { noop?: boolean }>; assigned: number };
-    expect(again.assigned).toBe(0);
-    expect(again.stores.vaulter.noop).toBe(true);
+    expect(await backfillBody()).toEqual({ stores: {}, assigned: 0, failed: 0, done: true });
     const epochAfter = ((await (await callGate("/v1/projects/vaulter/keys", { headers: await hdr("boss@wapps.dev") })).json()) as { epoch: number }).epoch;
     expect(epochAfter).toBe(epochBefore);
   });

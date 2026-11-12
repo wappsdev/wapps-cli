@@ -40,7 +40,7 @@ import {
 } from "./escrow.js";
 import { deliverAlert, ALERT } from "./alerts.js";
 import { CardPatch, applyCard } from "./card.js";
-import { reserveCode } from "./keycode.js";
+import { reserveCodes } from "./keycode.js";
 
 interface DOEnv extends EscrowEnv {
   SECRETS_BUCKET: R2Bucket;
@@ -315,15 +315,17 @@ export class ProjectWriterDO {
 
     // 3b. Key codes: each created key, or each key the backfill names, takes a
     // fresh code from the gate-wide index (keycode.ts) before the manifest exists.
-    for (const k of op.op === "codes" ? touched : created) {
-      let code: string;
+    // The reservations run in parallel (one R2 round trip each).
+    const needCodes = op.op === "codes" ? touched : created;
+    if (needCodes.length > 0) {
+      let codes: Map<string, string>;
       try {
-        code = await reserveCode(this.bucket, project, k);
+        codes = await reserveCodes(this.bucket, project, needCodes);
       } catch (e) {
-        console.error(`writer-do: key code reservation failed (project=${project} key=${k})`, e);
-        throw new CommitError(HTTP.MISCONFIGURED, "KEY_CODE_UNAVAILABLE", { key: k });
+        console.error(`writer-do: key code reservation failed (project=${project})`, e);
+        throw new CommitError(HTTP.MISCONFIGURED, "KEY_CODE_UNAVAILABLE");
       }
-      byName.set(k, { ...byName.get(k)!, code });
+      for (const [k, code] of codes) byName.set(k, { ...byName.get(k)!, code });
     }
 
     // 4. Yeni manifest'i kur (epoch+1, zincir, §2.6).

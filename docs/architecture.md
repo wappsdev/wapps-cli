@@ -56,9 +56,11 @@ There are two directions: **ingest** (sources → store) and **materialize**
   `GET /v1/codes/<CODE>` (any letter case) answers the store, the key name and the
   card, with the authorisation of reading that key's card. A caller who may not
   read the key gets the same 404 as for an unknown code. `GET …/keys` lists each
-  key's `code`. `POST /v1/admin/key-codes/backfill` (the `admin` verb) gives a code
-  to every key that has none. It is additive and idempotent, and it is audited
-  as `admin.key_code_backfill`, one row per key.
+  key's `code`. `POST /v1/admin/key-codes/backfill` (the `admin` verb) gives codes
+  to the keys of ONE store that has keys without a code (the first in name order)
+  and answers `done: true` when no store needs codes any more. The caller repeats
+  it until `done`. It is additive and idempotent, and it is audited as
+  `admin.key_code_backfill`, one row per key.
 - **Consumers** are *outputs* — where plaintext is materialized. Three kinds:
   `targets:` (local files like `.env.local`), Coolify app envs, and ephemeral
   subprocess env (`exec`).

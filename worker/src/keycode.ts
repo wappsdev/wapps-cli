@@ -17,7 +17,9 @@
 // whose commit then failed leaves an index object no entry carries: harmless, the
 // code is simply never used.
 
-export const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+import { mapPool } from "./storage.js";
+
+export const CODE_ALPHABET ="0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 export const CODE_LEN = 6;
 const CODE_RE = /^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$/;
 const SCHEMA_KEY_CODE = "wapps-secrets/key-code/v1";
@@ -67,6 +69,22 @@ export async function reserveCode(bucket: R2Bucket, store: string, key: string, 
     if (put !== null) return code;
   }
   throw new Error(`KEY_CODE_UNAVAILABLE: ${MAX_DRAWS} draws were all taken`);
+}
+
+/** RESERVE_POOL: how many reservations of one commit are in flight at once. */
+const RESERVE_POOL = 24;
+
+/**
+ * reserveCodes takes a fresh code for each key of a store and returns key → code.
+ * A reservation costs one R2 round trip, so the reservations overlap (at most
+ * RESERVE_POOL at a time): a backfill of 150 keys sequentially did not answer in
+ * time on prod. Each code is still taken create-only by reserveCode, so two keys
+ * that draw the same code never both get it. If one key cannot get a code, the
+ * call throws; the codes already taken stay taken and are never used.
+ */
+export async function reserveCodes(bucket: R2Bucket, store: string, keys: string[], draw: () => string = randomCode): Promise<Map<string, string>> {
+  const codes = await mapPool(keys, RESERVE_POOL, (k) => reserveCode(bucket, store, k, draw));
+  return new Map(keys.map((k, i) => [k, codes[i]]));
 }
 
 /** readCodeHolder returns the store and key a code was given to; null when the
