@@ -144,7 +144,7 @@ Read verbs that need nothing but the project name (`list`, `get`, `rm`,
 | `exec -- <cmd>` | materialize | Run a subprocess with the project's env injected. No file, no stdout leak. |
 | `get <KEY>` | read | Print one value to stdout. **Operator-only** (breaks the AI-safe rule by design). |
 | `list` | read | Print key names (no values), each with its key code and issuer name. Filtered server-side to what you may read. |
-| `find <CODE>` | read | Resolve a key code to its store, key name and card (never the value). |
+| `find <CODE>` | read | Resolve a key code to its store, key name and card (never the value). An agent gets an answer only for its repo's project and `uses:` ids. |
 | `backfill-codes` | admin | Give a key code to every key without one (`POST /v1/admin/key-codes/backfill`). Write-AUD; refused in agent mode. |
 | `wapps projects list` | read | Which projects exist in the store, filtered to what you may see. Names only. |
 | `wapps projects rm <P>` | admin | Remove a project and all its data. Needs the global `admin` verb + write-AUD. |
