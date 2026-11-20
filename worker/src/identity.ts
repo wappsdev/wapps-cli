@@ -48,7 +48,7 @@ export type ShapeDriftAlert = (summary: string, detail?: Record<string, unknown>
 /**
  * extractGroups, get-identity dokümanından grup TANIMLAYICILARINI (Google grup
  * e-postaları) çıkarır. Toleranslı şekiller (§3.2 adım 2): `groups` düz string
- * dizisi VEYA {email|name|id} obje dizisi. Başka her şekil → şekil kayması (A10)
+ * dizisi VEYA {email, …} obje dizisi (email only, L4). Başka her şekil → şekil kayması (A10)
  * + fail-closed IdentityError. Alan hiç yoksa da şekil kayması sayılır: PRIMARY
  * topolojisi ancak gruplar bu şekilde görünüyorsa seçilir (§8.1 adım 8).
  */
@@ -63,10 +63,11 @@ export function extractGroups(doc: unknown): string[] {
       continue;
     }
     if (typeof g === "object" && g !== null && !Array.isArray(g)) {
-      const o = g as Record<string, unknown>;
-      const ident = o.email ?? o.name ?? o.id;
-      if (typeof ident === "string" && ident !== "") {
-        out.push(ident);
+      // L4: the group's email only. A display name or id is not what a policy group
+      // selector names, and a name equal to another group's email would match it.
+      const email = (g as Record<string, unknown>).email;
+      if (typeof email === "string" && email !== "") {
+        out.push(email);
         continue;
       }
     }

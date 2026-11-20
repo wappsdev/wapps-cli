@@ -2,7 +2,8 @@
 // reject (bad aud/iss, missing assertion, forged email header, expired, bad alg),
 // service-token şekli (v2: data-plane'e DOĞRUDAN kabul, §5.1).
 
-import { beforeAll, beforeEach, describe, it, expect } from "vitest";
+import { beforeAll, beforeEach, describe, it, expect, vi } from "vitest";
+import { __resetJwksCache, KID_REFETCH_COOLDOWN_MS } from "../src/auth.js";
 import {
   ensureJwks,
   resetWorld,
@@ -15,6 +16,7 @@ import {
   groupsByEmail,
   ISSUER,
   AUD_READ,
+  jwksCalls,
 } from "./helpers.js";
 
 let signer: Awaited<ReturnType<typeof ensureJwks>>;
@@ -111,6 +113,37 @@ describe("auth middleware (§3.1)", () => {
     const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(401);
     expect((await body(res)).error).toBe("AUTH_INVALID");
+  });
+
+  // L5: a token with an unknown kid must not make every request refetch the JWKS.
+  it("an unknown kid refetches the JWKS at most once per cooldown", async () => {
+    __resetJwksCache();
+    const ok = await callGate("/v1/whoami", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))) });
+    expect(ok.status).toBe(200);
+    const afterFirst = jwksCalls;
+    const unknownKid = async () =>
+      callGate("/v1/whoami", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"), { kid: "attacker-kid" })) });
+
+    for (let i = 0; i < 5; i++) {
+      const res = await unknownKid();
+      expect(res.status).toBe(401);
+      expect((await body(res)).error).toBe("AUTH_INVALID");
+    }
+    expect(jwksCalls).toBe(afterFirst); // inside the cooldown: no refetch
+
+    const real = Date.now();
+    const spy = vi.spyOn(Date, "now").mockReturnValue(real + KID_REFETCH_COOLDOWN_MS + 1000);
+    try {
+      expect((await unknownKid()).status).toBe(401);
+      expect(jwksCalls).toBe(afterFirst + 1); // past the cooldown: one refetch
+      expect((await unknownKid()).status).toBe(401);
+      expect(jwksCalls).toBe(afterFirst + 1); // and the cooldown starts again
+    } finally {
+      spy.mockRestore();
+      __resetJwksCache(); // drop the cache stamped with the mocked time
+    }
+    // A known kid keeps working from the cache.
+    expect((await callGate("/v1/whoami", { headers: authHeader(await signer.makeJWT(validClaims("writer@wapps.dev"))) })).status).toBe(200);
   });
 
   it("FAIL-CLOSED CONFIG: missing MASTER_KEK / ADMIN_EMAILS → 503 on every route (§3.1)", async () => {

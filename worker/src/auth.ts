@@ -71,6 +71,9 @@ export const FORGEABLE_EMAIL_HEADER = "Cf-Access-Authenticated-User-Email";
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
 const LEEWAY_SECONDS = 60;
 const JWKS_TTL_MS = 60 * 60 * 1000; // 1 saat (§6.1 step 3)
+/** KID_REFETCH_COOLDOWN_MS: an unknown kid refetches the JWKS only when the cached set
+ * is at least this old (L5). A real Access key rotation is seen within a minute. */
+export const KID_REFETCH_COOLDOWN_MS = 60 * 1000;
 
 /** loadAccessConfig, fail-closed config yükler; herhangi biri eksikse null. */
 export function loadAccessConfig(env: Env): AccessConfig | null {
@@ -179,7 +182,9 @@ async function resolveKid(certsURL: string, kid: string): Promise<CryptoKey | nu
   if (cached && fresh) {
     const k = cached.keys.get(kid);
     if (k) return k;
-    // Bilinmeyen kid → bir kez refetch (§6.1 step 3).
+    // Bilinmeyen kid → refetch (§6.1 step 3), but at most once per cooldown (L5):
+    // otherwise any caller could make every request fetch the JWKS with a made-up kid.
+    if (Date.now() - cached.fetchedAt < KID_REFETCH_COOLDOWN_MS) return null;
   }
   const keys = await fetchJwks(certsURL); // boş cache + fetch hatası → throw → fail-closed
   return keys.get(kid) ?? null;

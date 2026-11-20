@@ -275,8 +275,10 @@ describe("legacy suffix: rows in D1 beyond the head with no intent (the live inc
     }
   });
 
-  it("RECONCILE AUTHZ: a non-admin human, an admin-granted service token and a group admin are refused, and each refusal is audited", async () => {
+  it("RECONCILE AUTHZ: a non-admin human, a service token and a group admin are refused, and each refusal is audited", async () => {
     // Healthy chain: the deny rows CAN be written, so their presence is a real check.
+    // svc-ops holds every data verb; no service rule can hold admin (E-M1), so it stops
+    // at the admin gate before the reconcile handler's own human check.
     await seedPolicy([...defaultRules(), { service: "svc-ops", projects: ["*"], keys: ["*"], verbs: ["*"] }]);
     groupsByEmail.set("boss@wapps.dev", ["admins@wapps.co"]);
     expect((await appendBatch([row("K1")])).status).toBe(200);
@@ -287,7 +289,7 @@ describe("legacy suffix: rows in D1 beyond the head with no intent (the live inc
     expect(human.status).toBe(403);
     const svc = await reconcile(pin, serviceTokenClaims("svc-ops", { aud: [AUD_WRITE] }));
     expect(svc.status).toBe(403);
-    expect(((await svc.json()) as { error: string }).error).toBe("HUMAN_REQUIRED");
+    expect(((await svc.json()) as { error: string }).error).toBe("GRANT_DENIED");
     const groupAdmin = await reconcile(pin, validClaimsWrite("boss@wapps.dev"));
     expect(groupAdmin.status).toBe(403);
     expect(((await groupAdmin.json()) as { error: string }).error).toBe("ROOT_ADMIN_REQUIRED");
@@ -295,7 +297,7 @@ describe("legacy suffix: rows in D1 beyond the head with no intent (the live inc
     const rows = await allAuditRows();
     const denies = rows.filter((r) => r.decision === "deny");
     expect(denies.some((r) => r.principal === "human:writer@wapps.dev")).toBe(true);
-    expect(denies.some((r) => r.principal === "service:svc-ops" && r.verb === "audit.reconcile")).toBe(true);
+    expect(denies.some((r) => r.principal === "service:svc-ops" && r.verb === "admin.audit")).toBe(true);
     expect(denies.some((r) => r.principal === "human:boss@wapps.dev" && r.verb === "audit.reconcile")).toBe(true);
     expect(rows.filter((r) => r.verb === "audit.reconcile" && r.decision === "allow")).toEqual([]);
     expectContinuousChain(rows);

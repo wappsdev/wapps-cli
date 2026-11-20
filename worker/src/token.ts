@@ -7,8 +7,9 @@
 
 import { HTTP, jsonError, jsonOK } from "./errors.js";
 import { Env } from "./auth.js";
-import { authorize, LoadedPolicy, PolicyVerb } from "./policy.js";
-import { validKeyName } from "./storage.js";
+import { authorize, expandVerbs, LoadedPolicy, PolicyVerb, rulesFor } from "./policy.js";
+import { validKeyName, validProject, validSharedId } from "./storage.js";
+import { BODY_CAP, readBodyBounded } from "./body.js";
 import { mintToken, TokenScope, TTL_MAX_SECONDS } from "./mint.js";
 import { auditAppendSync, AuditRow, ipOf, rayOf } from "./audit.js";
 import { fireAlert, ALERT } from "./alerts.js";
@@ -34,19 +35,35 @@ export async function handleTokenMint(
   serviceCommonName: string,
   policy: LoadedPolicy,
 ): Promise<Response> {
-  let req: TokenRequest;
+  const principalId = `service:${serviceCommonName}`;
+  const p = { kind: "service" as const, id: principalId, groups: [] };
+
+  // E-M4: authorize before the body is read. A mint needs a policy row of this
+  // service that grants a mintable verb; without one no request body could succeed.
+  const canMint = rulesFor(policy.doc, p).some((r) => MINTABLE_VERBS.some((v) => expandVerbs(r.verbs).has(v)));
+  if (!canMint) {
+    await tryDenyAudit(env, principalId, null, "token.mint", "TOKEN_SCOPE_EXCEEDED:no_rule", request);
+    return jsonError(HTTP.FORBIDDEN, "TOKEN_SCOPE_EXCEEDED", "no policy row grants this service a mintable verb", { dimension: "no_rule" });
+  }
+
+  const bytes = await readBodyBounded(request, BODY_CAP.token);
+  if (bytes instanceof Response) return bytes;
+  let raw: unknown;
   try {
-    req = (await request.json()) as TokenRequest;
+    raw = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return jsonError(HTTP.BAD_REQUEST, "TOKEN_REQUEST_INVALID", "body not JSON");
   }
+  if (typeof raw !== "object" || raw === null) return jsonError(HTTP.BAD_REQUEST, "TOKEN_REQUEST_INVALID", "body must be a JSON object");
+  const req = raw as TokenRequest;
   const project = typeof req.project === "string" ? req.project : "";
   if (!project) return jsonError(HTTP.BAD_REQUEST, "TOKEN_REQUEST_INVALID", "project required");
+  // L2: only a real store name (project or shared id) may reach an audit row.
+  if (!validProject(project) && !validSharedId(project)) return jsonError(HTTP.BAD_REQUEST, "TOKEN_REQUEST_INVALID", "project is not a valid project or shared id");
   const verbs = Array.isArray(req.scope?.verbs) ? (req.scope!.verbs as unknown[]).filter((v): v is string => typeof v === "string") : [];
   const keys = Array.isArray(req.scope?.keys) ? (req.scope!.keys as unknown[]).filter((k): k is string => typeof k === "string") : [];
   if (verbs.length === 0 || keys.length === 0) return jsonError(HTTP.BAD_REQUEST, "TOKEN_REQUEST_INVALID", "scope.verbs and scope.keys required");
   const ttlReq = typeof req.ttl_seconds === "number" ? req.ttl_seconds : TTL_MAX_SECONDS;
-  const principalId = `service:${serviceCommonName}`;
 
   // Minted scope EXACT anahtar adları + kapalı verb kümesiyle sınırlı.
   for (const v of verbs) {
@@ -57,7 +74,6 @@ export async function handleTokenMint(
   }
 
   // Requested scope ⊆ policy satırları (§5.3): her (verb, key) çifti izinli olmalı.
-  const p = { kind: "service" as const, id: principalId, groups: [] };
   const offending: { verb: string; key: string }[] = [];
   for (const k of keys) {
     for (const v of verbs) {
@@ -124,8 +140,9 @@ export async function revokeJti(
   fireAlert(ctx, env, ALERT.A8, `token revoked jti=${jti}`, { jti, by: revokedBy });
 }
 
-/** tryDenyAudit, best-effort deny satırı (audit DO down ise yutulur). */
-async function tryDenyAudit(env: Env, principal: string, project: string, verb: string, intent: string, request: Request): Promise<void> {
+/** tryDenyAudit, best-effort deny satırı (audit DO down ise yutulur). `project` is a
+ * validated store name, or null when the refusal came before the body was read. */
+async function tryDenyAudit(env: Env, principal: string, project: string | null, verb: string, intent: string, request: Request): Promise<void> {
   try {
     await auditAppendSync(env.AUDIT_LOG, {
       principal,

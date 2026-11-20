@@ -68,6 +68,21 @@ describe("POST /v1/token (§5.3)", () => {
     expect(rows.some((r) => r.verb === "token.mint" && r.decision === "allow" && r.principal === "service:svc-ci")).toBe(true);
   });
 
+  // L2: the project lands in the deny row of an over-scope request, so a name that is
+  // no project or shared id is refused first and never reaches the ledger.
+  it("an invalid project is 400 TOKEN_REQUEST_INVALID and writes no audit row", async () => {
+    for (const project of ["Not A Project\u001b[31m", "a/b/c", "x".repeat(600)]) {
+      const res = await callGate("/v1/token", {
+        method: "POST",
+        headers: authHeader(await svcJwt()),
+        body: JSON.stringify({ project, scope: { verbs: ["write"], keys: ["DEPLOY_TOKEN"] } }),
+      });
+      expect(res.status, project).toBe(400);
+      expect(((await res.json()) as { error: string }).error, project).toBe("TOKEN_REQUEST_INVALID");
+    }
+    expect((await allAuditRows()).filter((r) => r.verb === "token.mint")).toEqual([]);
+  });
+
   it("scope exceeding the policy rows → TOKEN_SCOPE_EXCEEDED", async () => {
     const res = await callGate("/v1/token", {
       method: "POST",
@@ -227,7 +242,7 @@ describe("minted token PRINCIPAL BINDING — cross-principal use rejected", () =
 });
 
 describe("minted token on ADMIN routes — rejected (§5.3 scope-escalation guard)", () => {
-  it("minted token is DENIED admin even when the parent service row grants admin; bare service token passes", async () => {
+  it("minted token is DENIED admin on a parent service row with verbs [\"*\"]; the bare service token is denied too (E-M1)", async () => {
     await seedPolicy([
       { group: "developers@wapps.co", projects: ["*"], keys: ["*"], verbs: ["read", "write"] },
       { service: "svc-ci", projects: ["vaulter"], keys: ["DEPLOY_TOKEN"], verbs: ["*"] },
@@ -249,13 +264,16 @@ describe("minted token on ADMIN routes — rejected (§5.3 scope-escalation guar
     expect(denied.status).toBe(403);
     expect(((await denied.json()) as { error: string }).error).toBe("GRANT_DENIED");
 
-    // Kontrast: minted token OLMADAN service principal admin satırıyla GEÇER (§5.1).
-    const ok = await callGate("/v1/admin/policy", { headers: authHeader(writeSvcJwt) });
-    expect(ok.status).toBe(200);
+    // E-M1: the bare service token is refused too. Its row is project-scoped and a
+    // service selector, and "*" no longer expands to admin.
+    const bare = await callGate("/v1/admin/policy", { headers: authHeader(writeSvcJwt) });
+    expect(bare.status).toBe(403);
+    expect(((await bare.json()) as { error: string }).error).toBe("GRANT_DENIED");
 
-    // Deny, minted_token intent'iyle audit'lendi.
+    // Deny, minted_token intent'iyle audit'lendi; the bare deny with intent verb.
     const rows = await allAuditRows();
     expect(rows.some((r) => r.verb === "policy.read" && r.decision === "deny" && r.intent === "minted_token")).toBe(true);
+    expect(rows.some((r) => r.principal === "service:svc-ci" && r.verb === "policy.read" && r.decision === "deny" && r.intent === "verb")).toBe(true);
   });
 });
 

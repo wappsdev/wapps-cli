@@ -70,6 +70,8 @@ export function setIdentityMode(m: "ok" | "down" | "badshape"): void {
 }
 // get-identity'ye düşen çağrı sayısı (KV cache hit doğrulaması).
 export let identityCalls = 0;
+// JWKS (certs) fetches, for the unknown-kid refetch cooldown (L5).
+export let jwksCalls = 0;
 
 function decodeJwtEmail(cookieHeader: string): string {
   // Cookie: CF_Authorization=<jwt> → payload.email (mock; imza doğrulaması Worker'da yapıldı).
@@ -95,7 +97,14 @@ export async function ensureJwks(): Promise<AccessSigner> {
   if (!_mocksReady) {
     fetchMock.activate();
     fetchMock.disableNetConnect();
-    fetchMock.get(`https://${TEAM_DOMAIN}`).intercept({ path: "/cdn-cgi/access/certs" }).reply(200, _signer.jwks).persist();
+    fetchMock
+      .get(`https://${TEAM_DOMAIN}`)
+      .intercept({ path: "/cdn-cgi/access/certs" })
+      .reply(() => {
+        jwksCalls++;
+        return { statusCode: 200, data: _signer!.jwks };
+      })
+      .persist();
     // get-identity (§3.2): dinamik yanıt — identityMode + groupsByEmail'e göre.
     fetchMock
       .get(`https://${TEAM_DOMAIN}`)
@@ -153,7 +162,8 @@ export function serviceTokenClaims(commonName: string, extra: Record<string, unk
 export function defaultRules(): PolicyRule[] {
   return [
     { group: "developers@wapps.co", projects: ["*"], keys: ["*", "!*_PROD_*"], verbs: ["read", "write", "rotate"] },
-    { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*"] },
+    // "*" is the data verbs only; admin is named, on an all-wildcard group rule (E-M1).
+    { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*", "admin"] },
     { service: "svc-woodpecker", projects: ["vaulter"], keys: ["DEPLOY_*", "DB_*"], verbs: ["read"] },
   ];
 }

@@ -30,10 +30,15 @@ describe("extractGroups (§3.2 adım 2 — fixture şekilleri)", () => {
   it("plain string array", () => {
     expect(extractGroups({ email: "a@b.c", groups: ["g1@x.co", "g2@x.co"] })).toEqual(["g1@x.co", "g2@x.co"]);
   });
-  it("object array: email > name > id önceliği", () => {
-    expect(
-      extractGroups({ groups: [{ email: "g1@x.co", name: "G1" }, { name: "G2" }, { id: "0abc" }] }),
-    ).toEqual(["g1@x.co", "G2", "0abc"]);
+  it("object array: the email claim only", () => {
+    expect(extractGroups({ groups: [{ email: "g1@x.co", name: "G1", id: "0abc" }] })).toEqual(["g1@x.co"]);
+  });
+  // L4: a group selector names a group email. A display name or an id is not one, and
+  // a group whose name equals another group's email must not match that selector.
+  it("an object without an email (name or id only) is shape drift, never a group", () => {
+    expect(() => extractGroups({ groups: [{ name: "admins@wapps.co" }] })).toThrowError(IdentityError);
+    expect(() => extractGroups({ groups: [{ id: "admins@wapps.co" }] })).toThrowError(IdentityError);
+    expect(() => extractGroups({ groups: [{ email: "", name: "admins@wapps.co" }] })).toThrowError(IdentityError);
   });
   it("empty array geçerli (grupsuz kullanıcı edge'de zaten reddedilir)", () => {
     expect(extractGroups({ groups: [] })).toEqual([]);
