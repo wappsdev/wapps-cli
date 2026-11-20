@@ -731,9 +731,13 @@ async function handleRead(
 ): Promise<Response> {
   // E-M4: authorize before the body is read. Holding `read` on any key of the project
   // implies the key=null project gate, so this refuses no caller the per-key loop
-  // below would allow; it only stops one that has no read grant here at all.
+  // below would allow. A caller with no `read` grant anywhere (no_rule, verb) or a
+  // token minted for another scope (token_*) is refused here, before any body byte.
+  // A "project" miss means a rule grants `read` elsewhere: that caller may already
+  // send a capped body to its own project, so reading its capped body here costs no
+  // more, and the per-key loop below names the refused key in the deny body and row.
   const projectGate = can(rctx, project, null, "read");
-  if (!projectGate.allowed) {
+  if (!projectGate.allowed && projectGate.reason !== "project") {
     auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "value.read", project, null, projectGate.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
     return jsonError(HTTP.FORBIDDEN, "GRANT_DENIED", "read denied", { dimension: projectGate.reason });

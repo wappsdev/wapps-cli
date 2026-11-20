@@ -204,8 +204,14 @@ export function authorize(
       continue; // selector'süz kural (validation zaten reddeder) — asla eşleşmez
     }
     furthest = Math.max(furthest, 1);
-    // 2. verb (admin only through grantsAdmin, E-M1)
-    if (verb === "admin" ? !grantsAdmin(rule) : !expandVerbs(rule.verbs).has(verb)) continue;
+    // 2. verb. Admin is global: it is decided by grantsAdmin alone, regardless of the
+    // requested project/key, so authorize agrees with hasAdminVerb and the lockout guard
+    // (an all-wildcard ["*/*"] admin rule must hold admin on a plain project too).
+    if (verb === "admin") {
+      if (grantsAdmin(rule)) return { allowed: true };
+      continue;
+    }
+    if (!expandVerbs(rule.verbs).has(verb)) continue;
     furthest = Math.max(furthest, 2);
     // 3. project
     if (!rule.projects.some((g) => projectGlobMatch(g, project))) continue;
