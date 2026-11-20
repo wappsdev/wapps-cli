@@ -30,7 +30,7 @@ import {
   putPolicy,
   rulesFor,
 } from "./policy.js";
-import { deleteProjectObjects, deriveProjects, getObject, keyCurrent, keyManifest, validProject, validSharedId } from "./storage.js";
+import { deriveProjects, getObject, keyCurrent, keyManifest, validProject, validSharedId } from "./storage.js";
 import { parseCurrentPointer, parseManifest } from "./manifest.js";
 import { ensureSchema } from "./schema.js";
 import { auditAppendSync, auditReadAsync, AuditRow, AUDIT_DO_NAME, AUDIT_FIELD_MAX, ipOf, rayOf } from "./audit.js";
@@ -346,9 +346,16 @@ export async function handleAdmin(
       return jsonError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", "audit ledger unavailable — project deletion refused");
     }
 
-    const deleted = await deleteProjectObjects(env.SECRETS_BUCKET, project);
+    // The store's writer DO deletes the objects (L3): under its commit lock no commit
+    // sits between a manifest PUT and its pointer CAS while the objects go, and it
+    // drops a pending commit intent so no recovery rolls a purged commit forward.
+    const res = await doStubFetch(() => env.PROJECT_WRITER.get(env.PROJECT_WRITER.idFromName(project)), `https://do/purge?project=${encodeURIComponent(project)}`, {
+      method: "POST",
+    });
+    if (!res.ok) return jsonError(HTTP.MISCONFIGURED, "PURGE_INCOMPLETE", "store purge did not finish; retry", { key: project });
+    const { deleted_objects } = (await res.json()) as { deleted_objects: number };
     // pointer-events/<p>/ KORUNUR (append-only DR/escrow izi, §8.3).
-    return jsonOK({ project, deleted_objects: deleted, pointer_events_kept: true });
+    return jsonOK({ project, deleted_objects, pointer_events_kept: true });
   }
 
   // POST /v1/admin/scheduler/arm (P2.4): SchedulerDO alarm bootstrap'ı — one-shot,

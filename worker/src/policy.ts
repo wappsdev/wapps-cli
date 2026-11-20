@@ -18,7 +18,10 @@ export const SCHEMA_POLICY = "wapps-secrets/policy/v1";
 // ve rotate ⊅ delete — silme YALNIZCA açıkça `delete` (veya "*") veren bir
 // kuralla gelir. Yeni verb'ün eklenmesi mevcut policy.json'ları geriye dönük
 // KIRMAZ: delete rotası bugüne dek hiç bir CLI yüzeyinden çağrılmıyordu.
-export const POLICY_VERBS = ["read", "write", "rotate", "delete", "admin"] as const;
+// `create` (E-M3) permits create-only key writes (PUT with If-None-Match: *): the
+// principal may add a key that does not exist but never overwrite one. It implies
+// no other verb; `write` already covers a create-only write at the edge (index.ts).
+export const POLICY_VERBS = ["read", "write", "rotate", "delete", "admin", "create"] as const;
 export type PolicyVerb = (typeof POLICY_VERBS)[number];
 
 /** PolicyRule, §4.2 kural şekli. Tam olarak bir selector (group|service|aud). */

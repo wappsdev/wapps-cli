@@ -26,7 +26,7 @@ import {
   SCHEMA_CURRENT_POINTER,
   SCHEMA_DATA_MANIFEST,
 } from "./manifest.js";
-import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL } from "./storage.js";
+import { keyCurrent, keyManifest, keyBlob, keyPointerEvent, validKeyName, getObject, headEtag, mapPool, BLOB_POOL, deleteProjectObjects } from "./storage.js";
 import { auditAppendSync, auditAppendBatch, AuditAppendError, AuditRow, AUDIT_FIELD_MAX, PrincipalType, denyIntent } from "./audit.js";
 import { sha256Hex } from "./crypto/encoding.js";
 import {
@@ -65,6 +65,9 @@ export interface WriteOp {
   card?: CardPatch;
   // Opsiyonel optimistic-concurrency: mevcut epoch bununla uyuşmazsa 412 (§7.4).
   ifEpoch?: number;
+  // set only (E-M3): write the key only if it does not exist; else 409 KEY_EXISTS.
+  // Checked here, inside the serialized commit, so two racing creates cannot both land.
+  createOnly?: boolean;
 }
 
 /** ReqMeta, bir mutasyonun principal/audit metadatası (Worker internal header'ları). */
@@ -101,6 +104,24 @@ const ESCROW_CONFIG_KEY = "escrow-config"; // test seam (dormant fallback)
 // in this DO's storage because this DO is the store's one serialized writer: a
 // reservation and the commit that consumes it never interleave.
 const RESERVATION_PREFIX = "key-reservation:";
+// E-M2: the commit intent. Written before the manifest PUT, deleted once the commit
+// is finished (or found never to have landed). One at a time: commits are serialized.
+const COMMIT_INTENT_KEY = "commit-intent";
+
+/**
+ * CommitIntent is everything needed to finish a commit whose manifest may be
+ * written but whose pointer CAS may not have run: the CAS inputs, and the post-CAS
+ * work (reservation clears, outcome rows, pointer event, escrow items).
+ */
+interface CommitIntent {
+  project: string;
+  epoch: number;
+  manifestSha256: string;
+  prevCurrentEtag: string | null; // null = genesis (no pointer yet)
+  outcomeRows: AuditRow[];
+  spentReservations: string[];
+  blobHashes: string[];
+}
 
 interface PendingPointerEvent {
   r2Key: string;
@@ -141,10 +162,13 @@ export class ProjectWriterDO {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const project = url.searchParams.get("project") ?? "";
+    if (url.pathname === "/purge" && request.method === "POST") {
+      return this.ctx.blockConcurrencyWhile(() => this.purge(project));
+    }
     if (url.pathname !== "/commit" || request.method !== "POST") {
       return jsonError(HTTP.NOT_FOUND, "NOT_FOUND", "unknown DO route");
     }
-    const project = url.searchParams.get("project") ?? "";
     const meta: ReqMeta = {
       principalId: request.headers.get("x-principal-id") ?? "",
       principalType: (request.headers.get("x-principal-type") as PrincipalType) || "human",
@@ -182,6 +206,15 @@ export class ProjectWriterDO {
 
   private async commit(project: string, meta: ReqMeta, op: WriteOp): Promise<Response> {
     if (!this.masters) throw new CommitError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", { reason: "MASTER_KEK missing" });
+
+    // 0. A commit left half-done by a fault (E-M2) is finished or discarded first;
+    // until it is, the store's next epoch slot may be taken and this commit would lose.
+    try {
+      await this.recoverIntent();
+    } catch (e) {
+      console.error(`writer-do: commit intent recovery failed (project=${project})`, e);
+      throw new CommitError(HTTP.MISCONFIGURED, "COMMIT_RECOVERY_PENDING", { reason: "an earlier commit could not be finished yet; retry" });
+    }
 
     // 1. Mevcut durum: current pointer + manifest (zincir bütünlüğü fail-closed).
     const curObj = await getObject(this.bucket, keyCurrent(project));
@@ -256,10 +289,13 @@ export class ProjectWriterDO {
       if (!prev) created.push(keyName);
     };
 
+    if (op.createOnly && op.op !== "set") throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "createOnly applies to set only" });
     switch (op.op) {
       case "set": {
         const entries = Object.entries(op.values ?? {});
         if (entries.length !== 1) throw new CommitError(HTTP.BAD_REQUEST, "BAD_REQUEST", { reason: "set requires exactly one value" });
+        // Create-only (E-M3): decided against the state read above, inside the lock.
+        if (op.createOnly && byName.has(entries[0][0])) throw new CommitError(HTTP.CONFLICT, "KEY_EXISTS", { key: entries[0][0] });
         putValue(entries[0][0], entries[0][1]);
         break;
       }
@@ -381,41 +417,10 @@ export class ProjectWriterDO {
     //    ÖNCE; başarısızlıkta manifest yazılmaz → yazılmış blob'lar referanssız = GC-safe).
     await mapPool(newBlobs, BLOB_POOL, (b) => this.bucket.put(keyBlob(project, b.hash), b.bytes, { onlyIf: { etagDoesNotMatch: "*" } }));
 
-    // 7. Manifest yaz: onlyIf-absent (epoch slot'unu ilk yazan kazanır).
-    const manifestKey = keyManifest(project, epoch);
-    if (await headEtag(this.bucket, manifestKey)) {
-      throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, reason: "manifest already exists" });
-    }
-    const wrote = await this.bucket.put(manifestKey, manifestBytes, { onlyIf: { etagDoesNotMatch: "*" } });
-    if (wrote === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, reason: "manifest already exists" });
-
-    // 8. Pointer CAS: If-Match prev etag (genesis'te onlyIf-absent).
-    const pointerBody = utf8(JSON.stringify({ schema: SCHEMA_CURRENT_POINTER, project, epoch, manifestSha256: newManifestSha }));
-    if (prevCurrentEtag === null) {
-      const created = await this.bucket.put(keyCurrent(project), pointerBody, { onlyIf: { etagDoesNotMatch: "*" } });
-      if (created === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: 0, reason: "current already created" });
-    } else {
-      const updated = await this.bucket.put(keyCurrent(project), pointerBody, { onlyIf: { etagMatches: prevCurrentEtag } });
-      if (updated === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { reason: "pointer CAS lost (out-of-band mutation)" });
-    }
-
-    // 8b. The commit is durable: a consumed reservation goes, so a later key of the
-    // same name never takes the old code again. A deleted key's reservation goes
-    // too (one is left only when a crash fell between a CAS and this step).
-    const spent = [...reserved.keys(), ...(op.op === "delete" ? touched : [])];
-    for (const k of spent) {
-      await this.ctx.storage.delete(RESERVATION_PREFIX + k).catch((err) => {
-        console.error(`writer-do: reservation clear failed (project=${project})`, err);
-      });
-    }
-
-    // 9. Audit OUTCOME (SYNC, ONLY after the pointer CAS succeeded): bulk ops write
-    // ONE ROW PER KEY with one /append-batch ack (§6.4: an aggregate keys:N outcome is
-    // FORBIDDEN; the ledger is the offboard rotate oracle). Idempotency key
-    // `${project}:${epoch}:${manifestSha}`: a post-CAS crash retry does not double the
-    // rows (case c). The manifest hash makes the key unique per commit: a deleted and
-    // re-created project restarts at epoch 1, and `${project}:1` alone would collide
-    // with the old project's receipt.
+    // 7. Outcome rows, built before the CAS so the commit intent carries them: a
+    // commit rolled forward after a fault still gets its rows. Bulk ops write ONE ROW
+    // PER KEY (§6.4: an aggregate keys:N outcome is FORBIDDEN; the ledger is the
+    // offboard rotate oracle).
     const outcomeRows: AuditRow[] = touched.map((k) => ({
       principal: meta.principalId,
       principal_type: meta.principalType,
@@ -445,50 +450,50 @@ export class ProjectWriterDO {
         token_jti: meta.tokenJti,
       });
     }
-    const idemKey = `${project}:${epoch}:${newManifestSha}`;
-    try {
-      await auditAppendBatch(this.auditLog, outcomeRows, { idempotencyKey: idemKey });
-    } catch (err) {
-      if (isTerminalRefusal(err)) {
-        await this.outcomeRefused(idemKey, err);
-      } else {
-        console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
-        await this.enqueuePendingOutcome(outcomeRows, idemKey);
-      }
+
+    // 8. Manifest slot: onlyIf-absent (epoch slot'unu ilk yazan kazanır).
+    const manifestKey = keyManifest(project, epoch);
+    if (await headEtag(this.bucket, manifestKey)) {
+      throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, reason: "manifest already exists" });
     }
 
-    // 10. Append-only pointer event (fail-soft; commit ZATEN kalıcı — retry marker).
-    const eventR2Key = keyPointerEvent(project, epoch);
-    const eventBody = JSON.stringify({
-      schema: "wapps.pointer-event.v1",
+    // 9. Commit intent (E-M2), durable BEFORE the manifest PUT. A fault between the
+    // manifest PUT and the pointer CAS would otherwise leave epoch N+1 written with
+    // the pointer at N, and every later commit would lose the slot forever. The next
+    // commit and alarm() read the intent and finish or discard it (recoverIntent).
+    // Spent reservations: a consumed one goes once the commit is durable, so a later
+    // key of the same name never takes the old code again; a deleted key's goes too.
+    const intent: CommitIntent = {
       project,
       epoch,
       manifestSha256: newManifestSha,
-      committed_at: new Date().toISOString(),
-    });
+      prevCurrentEtag,
+      outcomeRows,
+      spentReservations: [...reserved.keys(), ...(op.op === "delete" ? touched : [])],
+      blobHashes: newBlobs.map((b) => b.hash),
+    };
+    await this.ctx.storage.put(COMMIT_INTENT_KEY, intent);
+
+    // 10. Manifest PUT, then the pointer CAS (If-Match prev etag; genesis'te
+    // onlyIf-absent). A typed refusal means this commit did not land: its intent
+    // goes. Any other fault keeps the intent and arms the alarm that finishes it.
     try {
-      await this.bucket.put(eventR2Key, utf8(eventBody), { onlyIf: { etagDoesNotMatch: "*" } });
-    } catch (err) {
-      console.error(`writer-do: pointer-event write failed, queued for retry (project=${project} epoch=${epoch})`, err);
-      await this.enqueuePendingPointerEvent(project, epoch, eventR2Key, eventBody);
+      const wrote = await this.bucket.put(manifestKey, manifestBytes, { onlyIf: { etagDoesNotMatch: "*" } });
+      if (wrote === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, reason: "manifest already exists" });
+      if (!(await this.casPointer(intent))) {
+        throw prevCurrentEtag === null
+          ? new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: 0, reason: "current already created" })
+          : new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { reason: "pointer CAS lost (out-of-band mutation)" });
+      }
+    } catch (e) {
+      if (e instanceof CommitError) await this.ctx.storage.delete(COMMIT_INTENT_KEY);
+      else await this.armAlarm(Date.now() + POINTER_EVENT_RETRY_MS).catch(() => {}); // keep the original fault
+      throw e;
     }
 
-    // 11. Escrow write-through (§8.3): manifest + yeni blob'lar + pointer event
-    // B2'ye kuyruklanır (FAIL-SOFT — gerçek push alarm()'da, write path DIŞINDA).
-    const escrowPushCfg = await this.effectiveEscrow();
-    if (escrowPushCfg) {
-      const items: EscrowPushItem[] = [
-        { b2Key: manifestKey, r2Key: manifestKey, contentType: "application/json" },
-        { b2Key: eventR2Key, r2Key: eventR2Key, contentType: "application/json" },
-      ];
-      for (const b of newBlobs) {
-        const bk = keyBlob(project, b.hash);
-        items.push({ b2Key: bk, r2Key: bk, contentType: "application/octet-stream" });
-      }
-      await enqueueEscrowPushes(this.ctx.storage, items).catch((err) => {
-        console.error(`writer-do: escrow enqueue failed (project=${project} epoch=${epoch})`, err);
-      });
-    }
+    // 11. The commit is durable: reservations, audit outcome, pointer event and
+    // escrow, then the intent goes (finishCommit).
+    await this.finishCommit(intent);
 
     // 12. Yanıt: yeni epoch + manifest hash (+ set/import için yeni keyVersion'lar).
     // keyCodes: the code of each touched key that has one; created (set/import):
@@ -500,7 +505,7 @@ export class ProjectWriterDO {
       if (e) keyVersions[k] = e.keyVersion;
       if (e?.code !== undefined) keyCodes[k] = e.code;
     }
-    return jsonOK({
+    const res = jsonOK({
       project,
       epoch,
       manifestSha256: newManifestSha,
@@ -509,6 +514,8 @@ export class ProjectWriterDO {
       ...(op.op === "set" || op.op === "import" ? { created } : {}),
       ...(op.op === "rewrap" ? { rewrapped } : {}),
     });
+    // A create-only write answers 201 Created (If-None-Match: * semantics).
+    return op.createOnly ? new Response(res.body, { status: HTTP.CREATED, headers: res.headers }) : res;
   }
 
   /**
@@ -559,6 +566,148 @@ export class ProjectWriterDO {
       throw new CommitError(HTTP.MISCONFIGURED, "AUDIT_UNAVAILABLE", { reason: "audit DO unavailable" });
     }
     return jsonOK({ store: project, keyName: key, code });
+  }
+
+  /** casPointer moves the store's pointer to the intent's manifest: If-Match the
+   * pointer etag the commit read, or create-only at genesis. False = CAS lost. */
+  private async casPointer(intent: CommitIntent): Promise<boolean> {
+    const { project, epoch, manifestSha256 } = intent;
+    const body = utf8(JSON.stringify({ schema: SCHEMA_CURRENT_POINTER, project, epoch, manifestSha256 }));
+    const onlyIf: R2Conditional = intent.prevCurrentEtag === null ? { etagDoesNotMatch: "*" } : { etagMatches: intent.prevCurrentEtag };
+    return (await this.bucket.put(keyCurrent(project), body, { onlyIf })) !== null;
+  }
+
+  /**
+   * finishCommit does a durable commit's post-CAS work, then deletes its intent.
+   * Each step is idempotent, so a recovery may run it again after a fault anywhere
+   * in it: reservation deletes; the outcome batch under the idempotency key
+   * `${project}:${epoch}:${manifestSha}` (a retry does not double the rows; the
+   * manifest hash keeps a re-created project's epoch 1 from colliding with the old
+   * one's); the onlyIf-absent pointer event; the escrow enqueue (keyed by B2 key).
+   */
+  private async finishCommit(intent: CommitIntent): Promise<void> {
+    const { project, epoch, manifestSha256 } = intent;
+    for (const k of intent.spentReservations) {
+      await this.ctx.storage.delete(RESERVATION_PREFIX + k).catch((err) => {
+        console.error(`writer-do: reservation clear failed (project=${project})`, err);
+      });
+    }
+
+    // Audit OUTCOME (SYNC, ONLY after the pointer CAS succeeded), one /append-batch ack.
+    const idemKey = `${project}:${epoch}:${manifestSha256}`;
+    try {
+      await auditAppendBatch(this.auditLog, intent.outcomeRows, { idempotencyKey: idemKey });
+    } catch (err) {
+      if (isTerminalRefusal(err)) {
+        await this.outcomeRefused(idemKey, err);
+      } else {
+        console.error(`writer-do: audit outcome append failed post-CAS, queued for retry (${idemKey})`, err);
+        await this.enqueuePendingOutcome(intent.outcomeRows, idemKey);
+      }
+    }
+
+    // Append-only pointer event (fail-soft; commit ZATEN kalıcı — retry marker).
+    const eventR2Key = keyPointerEvent(project, epoch);
+    const eventBody = JSON.stringify({
+      schema: "wapps.pointer-event.v1",
+      project,
+      epoch,
+      manifestSha256,
+      committed_at: new Date().toISOString(),
+    });
+    try {
+      await this.bucket.put(eventR2Key, utf8(eventBody), { onlyIf: { etagDoesNotMatch: "*" } });
+    } catch (err) {
+      console.error(`writer-do: pointer-event write failed, queued for retry (project=${project} epoch=${epoch})`, err);
+      await this.enqueuePendingPointerEvent(project, epoch, eventR2Key, eventBody);
+    }
+
+    // Escrow write-through (§8.3): manifest + yeni blob'lar + pointer event B2'ye
+    // kuyruklanır (FAIL-SOFT — gerçek push alarm()'da, write path DIŞINDA).
+    const escrowPushCfg = await this.effectiveEscrow();
+    if (escrowPushCfg) {
+      const manifestKey = keyManifest(project, epoch);
+      const items: EscrowPushItem[] = [
+        { b2Key: manifestKey, r2Key: manifestKey, contentType: "application/json" },
+        { b2Key: eventR2Key, r2Key: eventR2Key, contentType: "application/json" },
+      ];
+      for (const h of intent.blobHashes) {
+        const bk = keyBlob(project, h);
+        items.push({ b2Key: bk, r2Key: bk, contentType: "application/octet-stream" });
+      }
+      await enqueueEscrowPushes(this.ctx.storage, items).catch((err) => {
+        console.error(`writer-do: escrow enqueue failed (project=${project} epoch=${epoch})`, err);
+      });
+    }
+
+    await this.ctx.storage.delete(COMMIT_INTENT_KEY);
+  }
+
+  /**
+   * recoverIntent finishes or discards a commit left by a fault (E-M2). Callers hold
+   * the lock (blockConcurrencyWhile). The decision reads R2 only:
+   *  - the pointer already names the intended manifest → the CAS landed; finish.
+   *  - the pointer is still the one the commit read (same etag, or still absent at
+   *    genesis) and the intended epoch's manifest hashes to the intended hash → the
+   *    manifest PUT landed but the CAS did not; do the CAS, then finish.
+   *  - otherwise the commit never landed (no manifest, a different one, or the
+   *    pointer moved) → discard the intent. Nothing references its manifest.
+   * It throws on an R2 or storage error and leaves the intent for the next try.
+   */
+  private async recoverIntent(): Promise<void> {
+    const intent = await this.ctx.storage.get<CommitIntent>(COMMIT_INTENT_KEY);
+    if (!intent) return;
+    const { project, epoch, manifestSha256 } = intent;
+    const cur = await getObject(this.bucket, keyCurrent(project));
+    if (cur) {
+      let ptr: { epoch: number; manifestSha256: string } | null = null;
+      try {
+        ptr = parseCurrentPointer(cur.bytes);
+      } catch {
+        ptr = null; // a malformed pointer is not ours; the etag check below decides
+      }
+      if (ptr && ptr.epoch === epoch && ptr.manifestSha256 === manifestSha256) {
+        await this.finishCommit(intent);
+        return;
+      }
+    }
+    const pointerUnchanged = cur === null ? intent.prevCurrentEtag === null : cur.etag === intent.prevCurrentEtag;
+    if (pointerUnchanged) {
+      const man = await getObject(this.bucket, keyManifest(project, epoch));
+      if (man && manifestObjectHash(man.bytes) === manifestSha256 && (await this.casPointer(intent))) {
+        console.error(`writer-do: rolled a faulted commit forward (project=${project} epoch=${epoch})`);
+        await this.finishCommit(intent);
+        return;
+      }
+    }
+    console.error(`writer-do: discarded a commit intent that never landed (project=${project} epoch=${epoch})`);
+    await this.ctx.storage.delete(COMMIT_INTENT_KEY);
+  }
+
+  /** armAlarm schedules the alarm at `at` unless an earlier one is already set. */
+  private async armAlarm(at: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  /**
+   * purge deletes every data object of the store (L3, DELETE /v1/admin/projects/{p}
+   * and /v1/admin/shared/{ns}/{name}). It runs under the same lock as a commit, so
+   * no commit is between its manifest PUT and its CAS while the objects go. The
+   * intent goes first: a purge that stops part-way must never leave an intent that
+   * a recovery would roll forward onto a half-deleted store. The admin route has
+   * already written the audit row. Pointer events and pending audit/escrow records
+   * stay (append-only history, §8.3).
+   */
+  private async purge(project: string): Promise<Response> {
+    try {
+      await this.ctx.storage.delete(COMMIT_INTENT_KEY);
+      const deleted = await deleteProjectObjects(this.bucket, project);
+      return jsonOK({ project, deleted_objects: deleted });
+    } catch (e) {
+      console.error(`writer-do: purge failed (project=${project})`, e);
+      return jsonError(HTTP.MISCONFIGURED, "PURGE_INCOMPLETE", "store purge did not finish; retry");
+    }
   }
 
   /** reservations answers key → reserved code for those of `keys` that hold a
@@ -622,6 +771,19 @@ export class ProjectWriterDO {
    */
   async alarm(): Promise<void> {
     let remaining = 0;
+    // (0) A commit left between its manifest PUT and its CAS (E-M2): finished or
+    // discarded under the commit lock. Errors are caught inside the lock (a throw
+    // there resets the object) and leave the intent for the next alarm.
+    const recovered = await this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        await this.recoverIntent();
+        return true;
+      } catch (err) {
+        console.error("writer-do: commit intent recovery still failing", err);
+        return false;
+      }
+    });
+    if (!recovered) remaining++;
     // (1) Bekleyen pointer-event'ler.
     const pendingEvents = await this.ctx.storage.list<PendingPointerEvent>({ prefix: PENDING_POINTER_EVENT_PREFIX });
     for (const [storageKey, rec] of pendingEvents) {

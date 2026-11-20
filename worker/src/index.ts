@@ -870,9 +870,22 @@ function writeAuditVerb(request: Request, base: "key.set" | "key.import" | "key.
   return base;
 }
 
+/**
+ * handleSet, PUT …/keys/{K}. With `If-None-Match: *` the write is create-only
+ * (E-M3): the writer DO writes the key only if it does not exist, deciding inside
+ * its serialized commit (201, else 409 KEY_EXISTS). A create-only write needs the
+ * `create` verb or `write`; a plain write needs `write`. Any other If-None-Match
+ * value is refused: PUT takes no etag precondition.
+ */
 async function handleSet(request: Request, env: Env, ctx: ExecutionContext, project: string, keyName: string, rctx: RequestCtx): Promise<Response> {
   if (!validKeyName(keyName)) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "invalid key name");
-  const d = can(rctx, project, keyName, "write");
+  const ifNoneMatch = request.headers.get("if-none-match");
+  if (ifNoneMatch !== null && ifNoneMatch.trim() !== "*") {
+    return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "If-None-Match on PUT must be `*` (create-only)");
+  }
+  const createOnly = ifNoneMatch !== null;
+  let d = can(rctx, project, keyName, createOnly ? "create" : "write");
+  if (!d.allowed && createOnly && can(rctx, project, keyName, "write").allowed) d = { allowed: true };
   if (!d.allowed) {
     auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, rctx.authz.id, ptypeOf(rctx.principal), "key.set", project, keyName, d.reason ?? null, rctx.intent));
     await countDenyBurst(ctx, env, rctx.authz.id);
@@ -887,7 +900,7 @@ async function handleSet(request: Request, env: Env, ctx: ExecutionContext, proj
     const humanOnly = await refuseMachineCard(request, env, ctx, rctx, "key.set", project, keyName);
     if (humanOnly) return humanOnly;
   }
-  const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card };
+  const op: WriteOp = { op: "set", values: { [keyName]: body.value }, ifEpoch: typeof body.ifEpoch === "number" ? body.ifEpoch : undefined, card, createOnly };
   return dispatchWrite(request, env, ctx, project, rctx, op, writeAuditVerb(request, "key.set"));
 }
 

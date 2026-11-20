@@ -64,8 +64,8 @@ describe("glob (pinned §4.2)", () => {
 });
 
 describe("expandVerbs (§4.2)", () => {
-  it("* = beş verb; rotate ⊃ write", () => {
-    expect([...expandVerbs(["*"])].sort()).toEqual(["admin", "delete", "read", "rotate", "write"]);
+  it("* = every verb; rotate ⊃ write", () => {
+    expect([...expandVerbs(["*"])].sort()).toEqual(["admin", "create", "delete", "read", "rotate", "write"]);
     const r = expandVerbs(["rotate"]);
     expect(r.has("rotate")).toBe(true);
     expect(r.has("write")).toBe(true); // rotate-only grant düz yazmaya DA izin verir (pinli)
@@ -80,6 +80,16 @@ describe("expandVerbs (§4.2)", () => {
     const d = expandVerbs(["delete"]);
     expect(d.has("delete")).toBe(true);
     expect(d.has("write")).toBe(false); // geri-grant yok
+  });
+
+  // `create` (E-M3) permits create-only writes and nothing else.
+  it("create is its own verb: it grants neither write nor rotate, and a policy may name it", () => {
+    const c = expandVerbs(["create"]);
+    expect(c.has("create")).toBe(true);
+    expect(c.has("write")).toBe(false);
+    expect(c.has("rotate")).toBe(false);
+    const p = doc([{ group: "creators@wapps.co", projects: ["*"], keys: ["*"], verbs: ["create"] }]);
+    expect(validatePolicy(p, "primary", ["root@wapps.dev"]).rules[0].verbs).toEqual(["create"]);
   });
 });
 
