@@ -17,7 +17,7 @@ import {
   defaultRules,
   groupsByEmail,
 } from "./helpers.js";
-import { keyBlob, keyManifest, keyPointerEvent } from "../src/storage.js";
+import { keyBlob, keyCurrent, keyManifest, keyPointerEvent } from "../src/storage.js";
 import { EscrowConfig, enqueueEscrowPushes, drainEscrowPushes, EscrowPushItem, EscrowAlert } from "../src/escrow.js";
 
 const B2_HOST = "https://s3.test-region.backblazeb2.com";
@@ -98,6 +98,11 @@ afterEach(async () => {
   await inDO((_i, state) => state.storage.deleteAll());
 });
 
+async function currentManifestSha(): Promise<string> {
+  const ptr = JSON.parse(await (await env.SECRETS_BUCKET.get(keyCurrent("vaulter")))!.text()) as { manifestSha256: string };
+  return ptr.manifestSha256;
+}
+
 async function putKey(key: string, value: string): Promise<Response> {
   const jwt = await signer.makeJWT(validClaims("writer@wapps.dev"));
   return callGate(`/v1/projects/vaulter/keys/${key}`, { method: "PUT", headers: authHeader(jwt), body: JSON.stringify({ value }) });
@@ -114,7 +119,7 @@ describe("escrow write-through — fail-soft B2 push (§8.3)", () => {
     const blobHash = man.entries[0].blobHash;
     const pendingKeys = [
       "pending-escrow-push:" + keyManifest("vaulter", 1),
-      "pending-escrow-push:" + keyPointerEvent("vaulter", 1),
+      "pending-escrow-push:" + keyPointerEvent("vaulter", 1, await currentManifestSha()),
       "pending-escrow-push:" + keyBlob("vaulter", blobHash),
     ];
     const enq = await readMarkers(pendingKeys);
@@ -132,13 +137,14 @@ describe("escrow write-through — fail-soft B2 push (§8.3)", () => {
     await alarmOnce();
     const pendingKeys = [
       "pending-escrow-push:" + keyManifest("vaulter", 1),
-      "pending-escrow-push:" + keyPointerEvent("vaulter", 1),
+      "pending-escrow-push:" + keyPointerEvent("vaulter", 1, await currentManifestSha()),
       "pending-escrow-push:" + keyBlob("vaulter", blobHash),
     ];
     const drained = await readMarkers(pendingKeys);
     for (const k of pendingKeys) expect(drained[k], `marker ${k} drained`).toBeUndefined();
     expect(b2Puts.some((p) => p.includes(keyManifest("vaulter", 1)))).toBe(true);
-    expect(b2Puts.some((p) => p.includes(keyPointerEvent("vaulter", 1)))).toBe(true);
+    const eventKey = keyPointerEvent("vaulter", 1, await currentManifestSha());
+    expect(b2Puts.some((p) => p.includes(eventKey))).toBe(true);
     expect(b2Puts.some((p) => p.includes(keyBlob("vaulter", blobHash)))).toBe(true);
     expect(b2Puts.some((p) => p.endsWith("/current"))).toBe(false); // mutable current ASLA
   });

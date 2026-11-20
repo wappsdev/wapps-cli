@@ -117,14 +117,16 @@ describe("storage key encoding (one encoder: `/` -> `~`)", () => {
     expect(keyCurrent("vaulter")).toBe("secrets/vaulter/current");
     expect(keyManifest("vaulter", 3)).toBe("secrets/vaulter/manifests/3.json");
     expect(keyBlob("vaulter", "ab")).toBe("secrets/vaulter/blobs/ab");
-    expect(keyPointerEvent("vaulter", 3)).toBe("pointer-events/vaulter/3.json");
+    expect(keyPointerEvent("vaulter", 3, "ab".repeat(32))).toBe(`pointer-events/vaulter/3-${"ab".repeat(32)}.json`);
   });
 
   it("a shared id maps to secrets/<ns>~<name>/", () => {
     expect(keyCurrent("apple/asc")).toBe("secrets/apple~asc/current");
     expect(keyManifest("apple/asc", 2)).toBe("secrets/apple~asc/manifests/2.json");
     expect(keyBlob("apple/asc", "ab")).toBe("secrets/apple~asc/blobs/ab");
-    expect(keyPointerEvent("apple/asc", 2)).toBe("pointer-events/apple~asc/2.json");
+    expect(keyPointerEvent("apple/asc", 2, "ab".repeat(32))).toBe(`pointer-events/apple~asc/2-${"ab".repeat(32)}.json`);
+    expect(() => keyPointerEvent("vaulter", 2, "AB".repeat(32))).toThrow();
+    expect(() => keyPointerEvent("vaulter", 2, "ab")).toThrow();
   });
 
   it("refuses a name that could alias another prefix (`~`, extra `/`, empty part)", () => {
@@ -132,7 +134,7 @@ describe("storage key encoding (one encoder: `/` -> `~`)", () => {
       expect(() => keyCurrent(bad), bad).toThrow();
       expect(() => keyBlob(bad, "ab"), bad).toThrow();
       expect(() => keyManifest(bad, 1), bad).toThrow();
-      expect(() => keyPointerEvent(bad, 1), bad).toThrow();
+      expect(() => keyPointerEvent(bad, 1, "ab".repeat(32)), bad).toThrow();
     }
   });
 });

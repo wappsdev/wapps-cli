@@ -589,7 +589,7 @@ export class ProjectWriterDO {
    * in it: reservation deletes; the outcome batch under the idempotency key
    * `${project}:${epoch}:${manifestSha}` (a retry does not double the rows; the
    * manifest hash keeps a re-created project's epoch 1 from colliding with the old
-   * one's); the onlyIf-absent pointer event; the escrow enqueue (keyed by B2 key).
+   * one's); the onlyIf-absent pointer event (keyed by epoch and manifest hash); the escrow enqueue (keyed by B2 key).
    */
   private async finishCommit(intent: CommitIntent): Promise<void> {
     const { project, epoch, manifestSha256 } = intent;
@@ -613,7 +613,7 @@ export class ProjectWriterDO {
     }
 
     // Append-only pointer event (fail-soft; commit ZATEN kalıcı — retry marker).
-    const eventR2Key = keyPointerEvent(project, epoch);
+    const eventR2Key = keyPointerEvent(project, epoch, manifestSha256);
     const eventBody = JSON.stringify({
       schema: "wapps.pointer-event.v1",
       project,
@@ -625,7 +625,7 @@ export class ProjectWriterDO {
       await this.bucket.put(eventR2Key, utf8(eventBody), { onlyIf: { etagDoesNotMatch: "*" } });
     } catch (err) {
       console.error(`writer-do: pointer-event write failed, queued for retry (project=${project} epoch=${epoch})`, err);
-      await this.enqueuePendingPointerEvent(project, epoch, eventR2Key, eventBody);
+      await this.enqueuePendingPointerEvent(eventR2Key, eventBody);
     }
 
     // Escrow write-through (§8.3): manifest + yeni blob'lar + pointer event B2'ye
@@ -767,9 +767,10 @@ export class ProjectWriterDO {
   }
 
   /** enqueuePendingPointerEvent, yazılamayan pointer-event'i pending işaretler + alarm kurar. */
-  private async enqueuePendingPointerEvent(project: string, epoch: number, r2Key: string, body: string): Promise<void> {
+  private async enqueuePendingPointerEvent(r2Key: string, body: string): Promise<void> {
     const rec: PendingPointerEvent = { r2Key, body };
-    await this.ctx.storage.put(`${PENDING_POINTER_EVENT_PREFIX}${project}:${epoch}`, rec);
+    // Keyed by the R2 key, which names the store generation (epoch + manifest hash).
+    await this.ctx.storage.put(`${PENDING_POINTER_EVENT_PREFIX}${r2Key}`, rec);
     await this.ctx.storage.setAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
   }
 

@@ -37,9 +37,12 @@ export function keyManifest(project: string, epoch: number): string {
 export function keyCurrent(project: string): string {
   return `secrets/${storeSegment(project)}/current`;
 }
-export function keyPointerEvent(project: string, epoch: number): string {
-  // Append-only pointer-event stream on the escrow side (§8.3).
-  return `pointer-events/${storeSegment(project)}/${epoch}.json`;
+export function keyPointerEvent(project: string, epoch: number, manifestSha256: string): string {
+  // Append-only pointer-event stream on the escrow side (§8.3). The manifest hash is
+  // part of the key: a purged store that is created again restarts at epoch 1, and
+  // its events must not collide with the events of the store that was purged.
+  if (!/^[0-9a-f]{64}$/.test(manifestSha256)) throw new Error("keyPointerEvent: manifest hash must be 64 lowercase hex");
+  return `pointer-events/${storeSegment(project)}/${epoch}-${manifestSha256}.json`;
 }
 export function keyPolicyCurrent(): string {
   return `policy/current`;

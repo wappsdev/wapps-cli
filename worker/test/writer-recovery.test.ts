@@ -169,8 +169,13 @@ async function clearAlarm(): Promise<void> {
   await runInDoRetry(writerStub(), (_i: unknown, state: DurableObjectState) => state.storage.deleteAlarm());
 }
 
+async function pointerEvents(epoch: number): Promise<string[]> {
+  const prefix = keyPointerEvent(STORE, epoch, "0".repeat(64)).replace(/[0-9a-f]{64}\.json$/, "");
+  return (await env.SECRETS_BUCKET.list({ prefix })).objects.map((o) => o.key);
+}
+
 async function pointerEventExists(epoch: number): Promise<boolean> {
-  return (await env.SECRETS_BUCKET.head(keyPointerEvent(STORE, epoch))) !== null;
+  return (await pointerEvents(epoch)).length > 0;
 }
 
 const tokenSets = (r: { verb: string; decision: string; key: string | null }[]): number =>
@@ -326,6 +331,31 @@ describe("L3: the project purge runs in the writer DO", () => {
     const again = await putKey("API_TOKEN", "value-3");
     expect(again.status).toBe(200);
     expect(((await again.json()) as { epoch: number }).epoch).toBe(1);
+  });
+
+  it("a store created again after a purge writes its own epoch-1 event; the purged store's event stays", async () => {
+    expect((await putKey("API_TOKEN", "value-1")).status).toBe(200);
+    const first = (await pointer())!;
+    const res = await callGate(`/v1/admin/projects/${STORE}`, {
+      method: "DELETE",
+      headers: authHeader(await signer.makeJWT(validClaimsWrite(ADMIN_EMAIL))),
+      body: JSON.stringify({ confirm: STORE }),
+    });
+    expect(res.status).toBe(200);
+
+    expect((await putKey("API_TOKEN", "value-2")).status).toBe(200);
+    const second = (await pointer())!;
+    expect(second.epoch).toBe(1);
+    expect(second.manifestSha256).not.toBe(first.manifestSha256);
+
+    const events = await pointerEvents(1);
+    expect(events.sort()).toEqual(
+      [keyPointerEvent(STORE, 1, first.manifestSha256), keyPointerEvent(STORE, 1, second.manifestSha256)].sort(),
+    );
+    const latest = JSON.parse(await (await env.SECRETS_BUCKET.get(keyPointerEvent(STORE, 1, second.manifestSha256)))!.text()) as {
+      manifestSha256: string;
+    };
+    expect(latest.manifestSha256).toBe(second.manifestSha256);
   });
 
   it("finishes an intent whose CAS landed before purging: its audit outcome and pointer event survive", async () => {
