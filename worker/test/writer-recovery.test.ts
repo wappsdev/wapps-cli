@@ -24,7 +24,7 @@ import {
   runInDoRetry,
   ADMIN_EMAIL,
 } from "./helpers.js";
-import { keyCurrent, keyManifest } from "../src/storage.js";
+import { keyCurrent, keyManifest, keyPointerEvent } from "../src/storage.js";
 import { manifestObjectHash, parseCurrentPointer, parseManifest } from "../src/manifest.js";
 
 const STORE = "vaulter";
@@ -89,17 +89,25 @@ function faultyBucket(real: R2Bucket, failKey: string): R2Bucket {
   } as unknown as R2Bucket;
 }
 
+/** WriterInternals is the part of the writer DO the fault tests reach into. */
+interface WriterInternals {
+  bucket: R2Bucket;
+  ctx: DurableObjectState;
+  commit(project: string, meta: unknown, op: unknown): Promise<Response>;
+  finishCommit(intent: unknown): Promise<void>;
+  effectiveEscrow(): Promise<unknown>;
+}
+
 /**
- * faultedSet runs one `set` commit in the writer DO with a fault on the put of
- * `failKey`, and checks that the commit failed on that fault. It calls the commit
- * directly (the lock around it is the caller's), so the DO instance is not reset
- * by the throw and the real bucket is put back afterwards.
+ * faultedCommit runs one `set` commit in the writer DO after `inject` plants a
+ * fault in the instance, and checks that the commit failed on that fault. It calls
+ * the commit directly (the lock around it is the caller's), so the DO instance is
+ * not reset by the throw; the restore function `inject` returns runs afterwards.
  */
-async function faultedSet(failKey: string, key: string, value: string): Promise<void> {
+async function faultedCommit(inject: (w: WriterInternals) => () => void, key: string, value: string): Promise<void> {
   const seen = await runInDoRetry(writerStub(), async (instance: unknown) => {
-    const w = instance as { bucket: R2Bucket; commit(project: string, meta: unknown, op: unknown): Promise<Response> };
-    const real = w.bucket;
-    w.bucket = faultyBucket(real, failKey);
+    const w = instance as WriterInternals;
+    const restore = inject(w);
     try {
       const meta = {
         principalId: "human:writer@wapps.dev",
@@ -116,11 +124,57 @@ async function faultedSet(failKey: string, key: string, value: string): Promise<
     } catch (e) {
       return String(e);
     } finally {
-      w.bucket = real;
+      restore();
     }
   });
   expect(seen).toContain("injected fault");
 }
+
+/** faultedSet: a `set` commit whose first put of `failKey` in R2 throws. */
+async function faultedSet(failKey: string, key: string, value: string): Promise<void> {
+  await faultedCommit((w) => {
+    const real = w.bucket;
+    w.bucket = faultyBucket(real, failKey);
+    return () => {
+      w.bucket = real;
+    };
+  }, key, value);
+}
+
+/** crashAfterIntentWrite: the DO storage put of the commit intent lands, then the
+ * commit dies (the stand-in for a crash right after the intent write). */
+function crashAfterIntentWrite(w: WriterInternals): () => void {
+  const realCtx = w.ctx;
+  const realStorage = realCtx.storage;
+  const bound = (t: object, p: string | symbol): unknown => {
+    const v: unknown = Reflect.get(t, p);
+    return typeof v === "function" ? v.bind(t) : v;
+  };
+  const put = async (k: unknown, v: unknown): Promise<void> => {
+    await (realStorage.put as (k: unknown, v: unknown) => Promise<void>).call(realStorage, k, v);
+    if (k === INTENT_KEY) throw new Error("injected fault: crash after the intent write");
+  };
+  const storage = new Proxy(realStorage, { get: (t, p) => (p === "put" ? put : bound(t, p)) });
+  w.ctx = new Proxy(realCtx, { get: (t, p) => (p === "storage" ? storage : bound(t, p)) });
+  return () => {
+    w.ctx = realCtx;
+  };
+}
+
+async function alarmAt(): Promise<number | null> {
+  return runInDoRetry(writerStub(), (_i: unknown, state: DurableObjectState) => state.storage.getAlarm());
+}
+
+async function clearAlarm(): Promise<void> {
+  await runInDoRetry(writerStub(), (_i: unknown, state: DurableObjectState) => state.storage.deleteAlarm());
+}
+
+async function pointerEventExists(epoch: number): Promise<boolean> {
+  return (await env.SECRETS_BUCKET.head(keyPointerEvent(STORE, epoch))) !== null;
+}
+
+const tokenSets = (r: { verb: string; decision: string; key: string | null }[]): number =>
+  r.filter((x) => x.verb === "key.set" && x.decision === "allow" && x.key === "API_TOKEN").length;
 
 async function pointer(): Promise<{ epoch: number; manifestSha256: string } | null> {
   const o = await env.SECRETS_BUCKET.get(keyCurrent(STORE));
@@ -167,7 +221,6 @@ describe("E-M2: a fault between the manifest PUT and the pointer CAS", () => {
     expect(await intentLeft()).toBeUndefined();
 
     // The rolled-forward commit still has its outcome row (the rotate-plan oracle).
-    const tokenSets = (r: { verb: string; decision: string; key: string | null }[]) => r.filter((x) => x.verb === "key.set" && x.decision === "allow" && x.key === "API_TOKEN").length;
     const rows = await settleAudit(STORE, (r) => tokenSets(r) >= 2);
     expect(tokenSets(rows)).toBe(2);
   });
@@ -205,6 +258,42 @@ describe("E-M2: a fault between the manifest PUT and the pointer CAS", () => {
     expect(await intentLeft()).toBeUndefined();
   });
 
+  it("a crash right after the intent write is repaired by the alarm, with no further commit", async () => {
+    expect((await putKey("API_TOKEN", "value-1")).status).toBe(200);
+    await clearAlarm(); // nothing pending before the fault
+    await faultedCommit(crashAfterIntentWrite, "API_TOKEN", "value-2");
+    expect(await intentLeft()).toBeDefined();
+    expect(await alarmAt()).not.toBeNull();
+
+    // The manifest PUT never ran: the alarm discards the intent; the store is as it was.
+    expect(await runDurableObjectAlarm(writerStub())).toBe(true);
+    expect(await intentLeft()).toBeUndefined();
+    expect(await env.SECRETS_BUCKET.head(keyManifest(STORE, 2))).toBeNull();
+    expect(await assertConsistent()).toBe(1);
+    expect(await readValues(["API_TOKEN"])).toEqual({ API_TOKEN: "value-1" });
+  });
+
+  it("a fault inside finishCommit (after the CAS) is repaired by the alarm, with no further commit", async () => {
+    expect((await putKey("API_TOKEN", "value-1")).status).toBe(200);
+    await clearAlarm(); // nothing pending before the fault
+    await faultedCommit((w) => {
+      w.effectiveEscrow = () => Promise.reject(new Error("injected fault: inside finishCommit"));
+      return () => {
+        delete (w as Partial<WriterInternals>).effectiveEscrow; // the prototype method again
+      };
+    }, "API_TOKEN", "value-2");
+    expect((await pointer())!.epoch).toBe(2); // the CAS landed
+    expect(await intentLeft()).toBeDefined();
+    expect(await alarmAt()).not.toBeNull();
+
+    expect(await runDurableObjectAlarm(writerStub())).toBe(true);
+    expect(await intentLeft()).toBeUndefined();
+    expect(await assertConsistent()).toBe(2);
+    expect(await pointerEventExists(2)).toBe(true);
+    const rows = await settleAudit(STORE, (r) => tokenSets(r) >= 2);
+    expect(tokenSets(rows)).toBe(2); // the idempotent re-run did not double the row
+  });
+
   it("a successful commit leaves no intent behind", async () => {
     expect((await putKey("API_TOKEN", "value-1")).status).toBe(200);
     expect(await intentLeft()).toBeUndefined();
@@ -228,6 +317,8 @@ describe("L3: the project purge runs in the writer DO", () => {
 
     await runDurableObjectAlarm(writerStub());
     expect(await pointer()).toBeNull();
+    // The intent's CAS never landed, so purge discarded it rather than finished it.
+    expect(await pointerEventExists(2)).toBe(false);
     const left = await env.SECRETS_BUCKET.list({ prefix: `secrets/${STORE}/` });
     expect(left.objects).toEqual([]);
 
@@ -235,5 +326,33 @@ describe("L3: the project purge runs in the writer DO", () => {
     const again = await putKey("API_TOKEN", "value-3");
     expect(again.status).toBe(200);
     expect(((await again.json()) as { epoch: number }).epoch).toBe(1);
+  });
+
+  it("finishes an intent whose CAS landed before purging: its audit outcome and pointer event survive", async () => {
+    expect((await putKey("API_TOKEN", "value-1")).status).toBe(200);
+    // The crash hits right after the pointer CAS, before finishCommit runs.
+    await faultedCommit((w) => {
+      w.finishCommit = () => Promise.reject(new Error("injected fault: crash after the CAS"));
+      return () => {
+        delete (w as Partial<WriterInternals>).finishCommit; // the prototype method again
+      };
+    }, "API_TOKEN", "value-2");
+    expect((await pointer())!.epoch).toBe(2);
+    expect(await pointerEventExists(2)).toBe(false);
+    expect(await intentLeft()).toBeDefined();
+
+    const res = await callGate(`/v1/admin/projects/${STORE}`, {
+      method: "DELETE",
+      headers: authHeader(await signer.makeJWT(validClaimsWrite(ADMIN_EMAIL))),
+      body: JSON.stringify({ confirm: STORE }),
+    });
+    expect(res.status).toBe(200);
+    expect(await intentLeft()).toBeUndefined();
+    expect(await pointer()).toBeNull();
+
+    // Pointer events are append-only history outside the purged prefix.
+    expect(await pointerEventExists(2)).toBe(true);
+    const rows = await settleAudit(STORE, (r) => tokenSets(r) >= 2);
+    expect(tokenSets(rows)).toBe(2);
   });
 });

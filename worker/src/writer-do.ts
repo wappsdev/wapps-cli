@@ -472,11 +472,17 @@ export class ProjectWriterDO {
       spentReservations: [...reserved.keys(), ...(op.op === "delete" ? touched : [])],
       blobHashes: newBlobs.map((b) => b.hash),
     };
+    // The recovery alarm is armed BEFORE the intent exists, so no crash point leaves
+    // an intent without a scheduled recovery (a crash before the intent put leaves
+    // only an alarm, which finds no intent and does nothing). armAlarm never moves an
+    // alarm that is already due sooner. The alarm stays set after the intent goes;
+    // alarm() re-arms itself while an intent survives (recoverIntent failing).
+    await this.armAlarm(Date.now() + POINTER_EVENT_RETRY_MS);
     await this.ctx.storage.put(COMMIT_INTENT_KEY, intent);
 
     // 10. Manifest PUT, then the pointer CAS (If-Match prev etag; genesis'te
     // onlyIf-absent). A typed refusal means this commit did not land: its intent
-    // goes. Any other fault keeps the intent and arms the alarm that finishes it.
+    // goes. Any other fault keeps the intent for the alarm armed above.
     try {
       const wrote = await this.bucket.put(manifestKey, manifestBytes, { onlyIf: { etagDoesNotMatch: "*" } });
       if (wrote === null) throw new CommitError(HTTP.PRECONDITION_FAILED, "EPOCH_CONFLICT", { current_epoch: prevEpoch, reason: "manifest already exists" });
@@ -487,12 +493,12 @@ export class ProjectWriterDO {
       }
     } catch (e) {
       if (e instanceof CommitError) await this.ctx.storage.delete(COMMIT_INTENT_KEY);
-      else await this.armAlarm(Date.now() + POINTER_EVENT_RETRY_MS).catch(() => {}); // keep the original fault
       throw e;
     }
 
     // 11. The commit is durable: reservations, audit outcome, pointer event and
-    // escrow, then the intent goes (finishCommit).
+    // escrow, then the intent goes (finishCommit). A fault in it keeps the intent,
+    // and the alarm armed in step 9 re-runs it (every step is idempotent).
     await this.finishCommit(intent);
 
     // 12. Yanıt: yeni epoch + manifest hash (+ set/import için yeni keyVersion'lar).
@@ -659,17 +665,9 @@ export class ProjectWriterDO {
     if (!intent) return;
     const { project, epoch, manifestSha256 } = intent;
     const cur = await getObject(this.bucket, keyCurrent(project));
-    if (cur) {
-      let ptr: { epoch: number; manifestSha256: string } | null = null;
-      try {
-        ptr = parseCurrentPointer(cur.bytes);
-      } catch {
-        ptr = null; // a malformed pointer is not ours; the etag check below decides
-      }
-      if (ptr && ptr.epoch === epoch && ptr.manifestSha256 === manifestSha256) {
-        await this.finishCommit(intent);
-        return;
-      }
+    if (pointerNamesIntent(cur, intent)) {
+      await this.finishCommit(intent);
+      return;
     }
     const pointerUnchanged = cur === null ? intent.prevCurrentEtag === null : cur.etag === intent.prevCurrentEtag;
     if (pointerUnchanged) {
@@ -693,15 +691,25 @@ export class ProjectWriterDO {
   /**
    * purge deletes every data object of the store (L3, DELETE /v1/admin/projects/{p}
    * and /v1/admin/shared/{ns}/{name}). It runs under the same lock as a commit, so
-   * no commit is between its manifest PUT and its CAS while the objects go. The
-   * intent goes first: a purge that stops part-way must never leave an intent that
-   * a recovery would roll forward onto a half-deleted store. The admin route has
-   * already written the audit row. Pointer events and pending audit/escrow records
-   * stay (append-only history, §8.3).
+   * no commit is between its manifest PUT and its CAS while the objects go. A
+   * pending intent is settled first, before any object goes:
+   *  - its CAS landed (the pointer names its manifest) → the write happened, so it
+   *    is finished (finishCommit): its audit outcome and pointer event are history
+   *    the purge must not erase. If that fails, nothing is deleted and the intent
+   *    stays for the retry or the alarm.
+   *  - otherwise → it is discarded, never rolled forward: the store is going.
+   * So a purge that stops part-way never leaves an intent that a recovery would roll
+   * forward onto a half-deleted store. The admin route has already written the
+   * audit row. Pointer events and pending audit/escrow records stay (append-only
+   * history, §8.3).
    */
   private async purge(project: string): Promise<Response> {
     try {
-      await this.ctx.storage.delete(COMMIT_INTENT_KEY);
+      const intent = await this.ctx.storage.get<CommitIntent>(COMMIT_INTENT_KEY);
+      if (intent) {
+        if (pointerNamesIntent(await getObject(this.bucket, keyCurrent(intent.project)), intent)) await this.finishCommit(intent);
+        else await this.ctx.storage.delete(COMMIT_INTENT_KEY);
+      }
       const deleted = await deleteProjectObjects(this.bucket, project);
       return jsonOK({ project, deleted_objects: deleted });
     } catch (e) {
@@ -830,6 +838,18 @@ function clampLegacyIntent(row: AuditRow): AuditRow {
   if (typeof intent !== "string" || intent.length <= AUDIT_FIELD_MAX) return row;
   const marker = `…[truncated from ${intent.length}]`;
   return { ...row, intent: intent.slice(0, AUDIT_FIELD_MAX - marker.length) + marker };
+}
+
+/** pointerNamesIntent: the store's pointer names the intent's manifest, i.e. the
+ * intent's pointer CAS landed. A malformed pointer is not the intent's. */
+function pointerNamesIntent(cur: { bytes: Uint8Array } | null, intent: CommitIntent): boolean {
+  if (!cur) return false;
+  try {
+    const ptr = parseCurrentPointer(cur.bytes);
+    return ptr.epoch === intent.epoch && ptr.manifestSha256 === intent.manifestSha256;
+  } catch {
+    return false;
+  }
 }
 
 /** isTerminalRefusal: the audit DO refused on purpose (400 ROW_INVALID, 409 IDEMPOTENCY_MISMATCH); a retry cannot succeed. */
