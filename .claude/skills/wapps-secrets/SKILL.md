@@ -1,1 +1,0 @@
-../../../internal/skill/assets/wapps-secrets/SKILL.md
