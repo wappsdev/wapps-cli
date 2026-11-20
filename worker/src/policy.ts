@@ -23,6 +23,12 @@ export const SCHEMA_POLICY = "wapps-secrets/policy/v1";
 // no other verb; `write` already covers a create-only write at the edge (index.ts).
 export const POLICY_VERBS = ["read", "write", "rotate", "delete", "admin", "create"] as const;
 export type PolicyVerb = (typeof POLICY_VERBS)[number];
+// "*" expands to the data verbs only (E-M1, security review 2026-11-19): `admin` is a
+// GLOBAL verb (policy edit, purge, revoke, rewrap), so it must be named, and only an
+// all-wildcard group rule may name it (see grantsAdmin).
+const DATA_VERBS: readonly PolicyVerb[] = ["read", "write", "rotate", "delete", "create"];
+// The project globs that cover every store: all projects, all shared ids.
+const ALL_STORE_GLOBS: readonly string[] = ["*", "*/*"];
 
 /** PolicyRule, §4.2 kural şekli. Tam olarak bir selector (group|service|aud). */
 export interface PolicyRule {
@@ -120,15 +126,16 @@ export function keyGlobMatch(glob: string, key: string): boolean {
 // --- Verb genişletmesi (§4.2) --------------------------------------------------
 
 /**
- * expandVerbs, rule.verbs'i efektif verb kümesine açar: "*" = beşi; rotate ⊃ write.
- * `delete` HİÇBİR verb tarafından İMA EDİLMEZ (rotate ⊃ write zinciri delete'e
- * uzanmaz) — yalnızca açıkça yazılarak ya da "*" ile gelir.
+ * expandVerbs, rule.verbs'i efektif verb kümesine açar: "*" = the four data verbs
+ * (never admin); rotate ⊃ write. `delete` HİÇBİR verb tarafından İMA EDİLMEZ (rotate ⊃
+ * write zinciri delete'e uzanmaz) — yalnızca açıkça yazılarak ya da "*" ile gelir.
+ * A literal "admin" is listed here, but only grantsAdmin decides whether it counts.
  */
 export function expandVerbs(verbs: string[]): Set<PolicyVerb> {
   const out = new Set<PolicyVerb>();
   for (const v of verbs) {
     if (v === "*") {
-      for (const all of POLICY_VERBS) out.add(all);
+      for (const d of DATA_VERBS) out.add(d);
       continue;
     }
     if ((POLICY_VERBS as readonly string[]).includes(v)) out.add(v as PolicyVerb);
@@ -136,6 +143,21 @@ export function expandVerbs(verbs: string[]): Set<PolicyVerb> {
     if (v === "rotate") out.add("write");
   }
   return out;
+}
+
+/**
+ * grantsAdmin is the one decision on whether a rule grants the global `admin` verb:
+ * a GROUP rule that names "admin" and whose projects are all-wildcard (every glob is
+ * "*" or "*" + "/" + "*"). A service or aud rule, or a rule scoped to some projects,
+ * never does: its project and key globs would read as a limit the global verb ignores.
+ */
+export function grantsAdmin(rule: PolicyRule): boolean {
+  return (
+    rule.group !== undefined &&
+    rule.verbs.includes("admin") &&
+    rule.projects.length > 0 &&
+    rule.projects.every((g) => ALL_STORE_GLOBS.includes(g))
+  );
 }
 
 // --- Değerlendirme (§4.3, normatif algoritma) ----------------------------------
@@ -185,7 +207,13 @@ export function authorize(
       continue; // selector'süz kural (validation zaten reddeder) — asla eşleşmez
     }
     furthest = Math.max(furthest, 1);
-    // 2. verb
+    // 2. verb. Admin is global: it is decided by grantsAdmin alone, regardless of the
+    // requested project/key, so authorize agrees with hasAdminVerb and the lockout guard
+    // (an all-wildcard ["*/*"] admin rule must hold admin on a plain project too).
+    if (verb === "admin") {
+      if (grantsAdmin(rule)) return { allowed: true };
+      continue;
+    }
     if (!expandVerbs(rule.verbs).has(verb)) continue;
     furthest = Math.max(furthest, 2);
     // 3. project
@@ -283,12 +311,12 @@ export function validatePolicy(doc: unknown, topology: Topology, adminEmails: st
     for (const v of r.verbs) {
       if (v !== "*" && !(POLICY_VERBS as readonly string[]).includes(v as string)) throw new PolicyValidationError(i, `rule[${i}].verbs: unknown verb ${String(v)}`);
     }
-    if (sel === "group" && expandVerbs(r.verbs as string[]).has("admin")) hasGroupAdmin = true;
-
-    return { group: r.group as string | undefined, service: r.service as string | undefined, aud: r.aud as string | undefined, projects: r.projects as string[], keys: r.keys as string[], verbs: r.verbs as string[] };
+    const rule: PolicyRule = { group: r.group as string | undefined, service: r.service as string | undefined, aud: r.aud as string | undefined, projects: r.projects as string[], keys: r.keys as string[], verbs: r.verbs as string[] };
+    if (grantsAdmin(rule)) hasGroupAdmin = true;
+    return rule;
   });
 
-  // Lockout guard (§4.4): admin verb'i veren bir group kuralı YA DA ADMIN_EMAILS dolu.
+  // Lockout guard (§4.4): an honoured admin group rule (grantsAdmin) YA DA ADMIN_EMAILS dolu.
   if (!hasGroupAdmin && adminEmails.length === 0) throw new PolicyValidationError(null, "no admin path: no group rule grants admin and ADMIN_EMAILS is empty (lockout)");
 
   return { schema: SCHEMA_POLICY, version: o.version, rules };
@@ -393,6 +421,22 @@ function refuseDeadProjectGlobs(doc: PolicyDoc): void {
   });
 }
 
+/** refuseMisplacedAdmin is a PUT-only check (422 POLICY_INVALID naming the rule): a
+ * rule that names `admin` where grantsAdmin does not honour it (a service or aud rule,
+ * or a group rule scoped to some projects) is refused, since it reads as a grant it is
+ * not. loadPolicy does not run it, for the reason refuseDeadProjectGlobs gives: such a
+ * stored rule grants no admin (authorize and hasAdminVerb go through grantsAdmin). */
+function refuseMisplacedAdmin(doc: PolicyDoc): void {
+  doc.rules.forEach((r, i) => {
+    if (!r.verbs.includes("admin") || grantsAdmin(r)) return;
+    throw new PolicyValidationError(
+      i,
+      `rule[${i}].verbs: admin is a global verb and is honoured only on a group rule whose projects are ["*"] or ["*/*"]; ` +
+        `drop admin from this rule or move it to such a rule ("*" grants the data verbs only)`,
+    );
+  });
+}
+
 /** PolicyConflictError, CAS kaybı (412 POLICY_CONFLICT) — çağıran refetch+retry eder. */
 export class PolicyConflictError extends Error {}
 
@@ -406,6 +450,7 @@ export async function putPolicy(bucket: R2Bucket, doc: PolicyDoc, topology: Topo
   // Doküman-içi doğrulama (fırlatırsa PolicyValidationError → 422).
   const valid = validatePolicy(doc, topology, adminEmails);
   refuseDeadProjectGlobs(valid);
+  refuseMisplacedAdmin(valid);
 
   const cur = await getObject(bucket, keyPolicyCurrent());
   const curVersion = cur ? (JSON.parse(new TextDecoder().decode(cur.bytes)) as CurrentPolicyPointer).version : 0;

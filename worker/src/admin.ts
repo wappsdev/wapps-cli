@@ -26,7 +26,7 @@ import {
   PolicyValidationError,
   Topology,
   authorize,
-  expandVerbs,
+  grantsAdmin,
   putPolicy,
   rulesFor,
 } from "./policy.js";
@@ -37,6 +37,7 @@ import { auditAppendSync, auditReadAsync, AuditRow, AUDIT_DO_NAME, AUDIT_FIELD_M
 import { revokeJti } from "./token.js";
 import { fireAlert, ALERT } from "./alerts.js";
 import { doStubFetch } from "./do-util.js";
+import { BODY_CAP, readJsonBounded } from "./body.js";
 import { SCHEDULER_DO_NAME } from "./scheduler-do.js";
 
 /** rotate-plan oracle verb kümesi (§6.3) — §6.4 sözlüğünün plaintext-bilen verb'leriyle
@@ -44,15 +45,31 @@ import { SCHEDULER_DO_NAME } from "./scheduler-do.js";
 export const ROTATE_PLAN_VERBS = ["value.read", "value.read.bulk", "key.set", "key.import", "key.sync", "rotate.step"] as const;
 
 /** hasAdminVerb, principal'ın `admin` verb'ini tutup tutmadığı: kök çapa (ADMIN_EMAILS,
- * §4.5) VEYA selector'üne eşleşen herhangi bir kuralın verbs'ünde admin.
- *
- * NOT (bilinçli): eşleşen kuralın projects/keys kapsaması BURADA OKUNMAZ — `admin`
- * verb'i GLOBAL op'ları yetkilendirir (§4.2), proje/anahtar glob'ları admin op'unda
- * ölü kapsamdır. Proje-kapsamlı bir kurala admin/["*"] yazmak yanıltıcıdır; bunu
- * `wapps policy lint` kuralı (e) uyarır (§7.3). */
+ * §4.5) VEYA selector'üne eşleşen bir kural that grantsAdmin honours: a group rule
+ * naming admin whose projects are all-wildcard (E-M1). "*" never means admin, and a
+ * service, aud or project-scoped rule never grants it (policy PUT refuses such rules). */
 export function hasAdminVerb(policy: LoadedPolicy, p: AuthzPrincipal, principal: Principal, adminEmails: string[]): boolean {
   if (principal.kind === "human" && adminEmails.includes(principal.email)) return true;
-  return rulesFor(policy.doc, p).some((r) => expandVerbs(r.verbs).has("admin"));
+  return rulesFor(policy.doc, p).some(grantsAdmin);
+}
+
+// The audit verb of an admin request is chosen from this table by the path segment,
+// never built from it (L2): an unknown segment is logged as admin.unknown.
+const ADMIN_DENY_VERBS = new Map<string, string>([
+  ["rotate-plan", "admin.rotate_plan"],
+  ["token", "admin.token"],
+  ["rewrap-kek", "admin.rewrap_kek"],
+  ["key-codes", "admin.key_codes"],
+  ["projects", "admin.projects"],
+  ["shared", "admin.shared"],
+  ["scheduler", "admin.scheduler"],
+  ["audit", "admin.audit"],
+]);
+
+/** adminDenyVerb is the fixed audit verb of a refused admin request. */
+export function adminDenyVerb(method: string, segment: string | undefined): string {
+  if (segment === "policy") return method === "PUT" ? "policy.write" : "policy.read";
+  return ADMIN_DENY_VERBS.get(segment ?? "") ?? "admin.unknown";
 }
 
 export interface AdminContext {
@@ -71,7 +88,7 @@ export async function handleAdmin(
   principal: Principal,
   actx: AdminContext,
 ): Promise<Response> {
-  const denyVerb = parts[2] === "policy" ? (request.method === "PUT" ? "policy.write" : "policy.read") : `admin.${parts[2] ?? ""}`;
+  const denyVerb = adminDenyVerb(request.method, parts[2]);
 
   // Minted machine-token'lar admin rotalarında REDDEDİLİR (§5.3: minted scope,
   // service satırıyla KESİŞİR — asla genişletmez; MINTABLE_VERBS 'admin' içermez,
@@ -114,12 +131,9 @@ export async function handleAdmin(
       return jsonOK({ version: actx.policy.version, sha256: actx.policy.sha256, policy: actx.policy.doc });
     }
     if (request.method === "PUT") {
-      let raw: unknown;
-      try {
-        raw = await request.json();
-      } catch {
-        return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-      }
+      const parsed = await readJsonBounded(request, BODY_CAP.policy);
+      if (parsed instanceof Response) return parsed;
+      const raw = parsed.json;
       const oldVersion = actx.policy.version;
       const oldSha = actx.policy.sha256;
       let stored;
@@ -226,13 +240,10 @@ export async function handleAdmin(
 
   // POST /v1/admin/token/revoke (§7.6 — bare /v1/token/revoke READ app'e düşerdi).
   if (parts[2] === "token" && parts[3] === "revoke" && parts.length === 4 && request.method === "POST") {
-    let jti = "";
-    try {
-      jti = ((await request.json()) as { jti?: string }).jti ?? "";
-    } catch {
-      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-    }
-    if (!jti) return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "jti required");
+    const parsed = await readJsonBounded(request, BODY_CAP.adminSmall);
+    if (parsed instanceof Response) return parsed;
+    const jti = typeof parsed.json === "object" && parsed.json !== null ? (parsed.json as { jti?: unknown }).jti : undefined;
+    if (typeof jti !== "string" || jti === "") return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "jti required");
     try {
       await revokeJti(ctx, env, jti, actx.authz.id, request);
     } catch {
@@ -315,12 +326,11 @@ export async function handleAdmin(
   if (purge !== null) {
     const project = purge;
 
-    let body: Record<string, unknown>;
-    try {
-      body = (await request.json()) as Record<string, unknown>;
-    } catch {
-      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-    }
+    // Bounded like every other admin body (E-M4): a chunked or oversized body is
+    // refused with 413 instead of being buffered whole.
+    const read = await readJsonBounded(request, BODY_CAP.adminSmall);
+    if (read instanceof Response) return read;
+    const body = (read.json ?? {}) as Record<string, unknown>;
     // Çift-yazım onayı: istemci yanlış projeyi hedeflediyse burada durur.
     if (body.confirm !== project) {
       return jsonError(HTTP.BAD_REQUEST, "CONFIRM_MISMATCH", "body.confirm must repeat the project name or shared id", { key: project });
@@ -393,12 +403,9 @@ export async function handleAdmin(
       auditReadAsync(ctx, env.AUDIT_LOG, { ...adminRow(actx.authz.id, principal, "audit.reconcile", request), decision: "deny", intent: "root_admin_required" });
       return jsonError(HTTP.FORBIDDEN, "ROOT_ADMIN_REQUIRED", "audit reconcile needs a root admin (ADMIN_EMAILS)");
     }
-    let body: { seq?: unknown; hash?: unknown };
-    try {
-      body = (await request.json()) as { seq?: unknown; hash?: unknown };
-    } catch {
-      return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body not JSON");
-    }
+    const parsed = await readJsonBounded(request, BODY_CAP.adminSmall);
+    if (parsed instanceof Response) return parsed;
+    const body = (typeof parsed.json === "object" && parsed.json !== null ? parsed.json : {}) as { seq?: unknown; hash?: unknown };
     const { seq, hash } = body;
     if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1 || typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) {
       return jsonError(HTTP.BAD_REQUEST, "BAD_REQUEST", "body must be {seq: positive integer, hash: 64 lowercase hex}");

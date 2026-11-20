@@ -81,6 +81,68 @@ describe("policy GET/PUT (§4.1/§4.4)", () => {
     expect(((await get.json()) as { version: number }).version).toBe(2);
   });
 
+  // E-M1: admin is honoured only on a group rule whose projects are all-wildcard.
+  it("a STORED project-scoped rule with verbs [\"*\"] or an explicit admin gives no admin; the deny is audited", async () => {
+    await seedPolicy([
+      ...defaultRules(),
+      { group: "lumira-owners@wapps.co", projects: ["lumira"], keys: ["*"], verbs: ["*"] },
+      { group: "lumira-admin@wapps.co", projects: ["lumira"], keys: ["*"], verbs: ["admin"] },
+    ]);
+    groupsByEmail.set("owner@wapps.dev", ["lumira-owners@wapps.co"]);
+    groupsByEmail.set("ladmin@wapps.dev", ["lumira-admin@wapps.co"]);
+    for (const email of ["owner@wapps.dev", "ladmin@wapps.dev"]) {
+      const res = await callGate("/v1/admin/policy", { headers: authHeader(await signer.makeJWT(validClaimsWrite(email))) });
+      expect(res.status, email).toBe(403);
+      expect(((await res.json()) as { error: string }).error, email).toBe("GRANT_DENIED");
+    }
+    const rows = await allAuditRows();
+    expect(rows.some((r) => r.principal === "human:owner@wapps.dev" && r.verb === "policy.read" && r.decision === "deny")).toBe(true);
+  });
+
+  it('the all-wildcard group shapes ["*"] and ["*/*"] keep admin', async () => {
+    await seedPolicy([
+      { group: "developers@wapps.co", projects: ["*"], keys: ["*"], verbs: ["read"] },
+      { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*", "admin"] },
+      { group: "shared-admins@wapps.co", projects: ["*/*"], keys: ["*"], verbs: ["admin"] },
+    ]);
+    groupsByEmail.set("sadmin@wapps.dev", ["shared-admins@wapps.co"]);
+    for (const email of ["boss@wapps.dev", "sadmin@wapps.dev"]) {
+      const res = await callGate("/v1/admin/policy", { headers: authHeader(await signer.makeJWT(validClaimsWrite(email))) });
+      expect(res.status, email).toBe(200);
+    }
+  });
+
+  it("PUT refuses a service rule or a project-scoped group rule that carries admin: 422 naming the rule; nothing stored", async () => {
+    for (const rule of [
+      { service: "svc-ops", projects: ["*"], keys: ["*"], verbs: ["admin"] },
+      { group: "lumira-owners@wapps.co", projects: ["lumira"], keys: ["*"], verbs: ["*", "admin"] },
+    ]) {
+      const doc = { schema: SCHEMA_POLICY, version: 2, rules: [...defaultRules(), rule] };
+      const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
+      expect(res.status).toBe(422);
+      const body = (await res.json()) as { error: string; rule_index: number; message: string };
+      expect(body.error).toBe("POLICY_INVALID");
+      expect(body.rule_index).toBe(3);
+      expect(body.message).toContain("admin");
+    }
+    const get = await callGate("/v1/admin/policy", { headers: authHeader(await adminJwt()) });
+    expect(((await get.json()) as { version: number }).version).toBe(1);
+  });
+
+  // L2: the deny row's verb comes from a fixed table, never from the path segment.
+  it("a refused admin request on an unknown segment is audited as admin.unknown, the segment kept out of the row", async () => {
+    const seg = "zz-caller-chosen-segment";
+    const res = await callGate(`/v1/admin/${seg}`, { headers: authHeader(await signer.makeJWT(validClaimsWrite("writer@wapps.dev"))) });
+    expect(res.status).toBe(403);
+    const rows = await allAuditRows();
+    const deny = rows.find((r) => r.principal === "human:writer@wapps.dev" && r.decision === "deny");
+    expect(deny?.verb).toBe("admin.unknown");
+    expect(JSON.stringify(rows)).not.toContain(seg);
+    // A known segment keeps its fixed verb.
+    await callGate("/v1/admin/rotate-plan?identity=x", { headers: authHeader(await signer.makeJWT(validClaimsWrite("writer@wapps.dev"))) });
+    expect((await allAuditRows()).some((r) => r.verb === "admin.rotate_plan" && r.decision === "deny")).toBe(true);
+  });
+
   it("PUT with wrong version → 412 POLICY_CONFLICT (CAS)", async () => {
     const doc = { schema: SCHEMA_POLICY, version: 5, rules: defaultRules() };
     const res = await callGate("/v1/admin/policy", { method: "PUT", headers: authHeader(await adminJwt()), body: JSON.stringify(doc) });
@@ -265,7 +327,7 @@ describe("DELETE /v1/admin/projects/{p} — proje silme (§7.6)", () => {
 
   it("per-key `delete` grant'i YETMEZ: admin olmayan write-AUD principal 403 alır", async () => {
     await seedProject("vaulter");
-    // boss admins@ grubunda (verbs ["*"]) → admin. writer değil: read/write/rotate.
+    // boss admins@ grubunda (verbs ["*", "admin"]) → admin. writer değil: read/write/rotate.
     const res = await del(await signer.makeJWT(validClaimsWrite("writer@wapps.dev")), "vaulter", "vaulter");
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toBe("GRANT_DENIED");

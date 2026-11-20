@@ -6,7 +6,7 @@
       "name": "secrets-gate",
       "dependencies": {
         "@noble/ciphers": "2.0.1",
-        "@noble/hashes": "^1.8.0",
+        "@noble/hashes": "1.8.0",
       },
       "devDependencies": {
         "@cloudflare/vitest-pool-workers": "^0.9.0",

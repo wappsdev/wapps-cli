@@ -224,6 +224,46 @@ describe("policy gates on the wire (§4.3/§7.6)", () => {
     expect(docBoss.entries.map((e) => e.keyName).sort()).toEqual(["APP_KEY", "DB_PROD_URL"]);
   });
 
+  // L1: a manifest answer carries only what a reader needs: no wrapped DEK, blob
+  // address, rotation metadata, writer or chain hash, and an old epoch lists only
+  // the keys that still exist.
+  it("manifest responses carry reader fields only; an old epoch hides keys deleted since", async () => {
+    expect((await putKey("APP_KEY", "a")).status).toBe(200); // epoch 1
+    expect((await putKey("GONE_KEY", "g")).status).toBe(200); // epoch 2
+    const del = await callGate("/v1/projects/vaulter/keys/GONE_KEY", { method: "DELETE", headers: authHeader(await deleterJwt()) });
+    expect(del.status).toBe(200); // epoch 3
+
+    for (const sel of ["current", "2"]) {
+      const res = await callGate(`/v1/projects/vaulter/manifests/${sel}`, { headers: authHeader(await writerJwt()) });
+      expect(res.status, sel).toBe(200);
+      const doc = (await res.json()) as Record<string, unknown> & { entries: Record<string, unknown>[] };
+      expect(Object.keys(doc).sort(), sel).toEqual(["createdAt", "entries", "epoch", "project", "schema"]);
+      expect(doc.entries.map((e) => e.keyName), sel).toEqual(["APP_KEY"]);
+      for (const e of doc.entries) {
+        for (const field of ["wrap", "blobHash", "rotation"]) expect(e, `${sel} ${field}`).not.toHaveProperty(field);
+        expect(e.keyVersion, sel).toBe(1);
+      }
+    }
+    const old = (await (await callGate("/v1/projects/vaulter/manifests/2", { headers: authHeader(await writerJwt()) })).json()) as { epoch: number };
+    expect(old.epoch).toBe(2);
+  });
+
+  // L6: every answer is Cache-Control: no-store, plaintext reads above all.
+  it("responses are Cache-Control: no-store (read, list, error, DO-forwarded write)", async () => {
+    const put = await putKey("NS_KEY", "plain");
+    expect(put.headers.get("cache-control")).toBe("no-store");
+    const rd = await readKeys(["NS_KEY"]);
+    expect(rd.status).toBe(200);
+    expect(rd.headers.get("cache-control")).toBe("no-store");
+    const list = await callGate("/v1/projects/vaulter/keys", { headers: authHeader(await writerJwt()) });
+    expect(list.headers.get("cache-control")).toBe("no-store");
+    const denied = await callGate("/v1/projects/vaulter/read", { method: "POST", headers: authHeader(await signer.makeJWT(validClaims("stranger@wapps.dev"))), body: JSON.stringify({ keys: ["NS_KEY"] }) });
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get("cache-control")).toBe("no-store");
+    const unauth = await callGate("/v1/whoami", { headers: {} });
+    expect(unauth.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("service token rides the data plane DIRECTLY (§5.1) within its policy rows", async () => {
     await putKey("DEPLOY_TOKEN", "tok123");
     await putKey("OTHER_KEY", "nope");

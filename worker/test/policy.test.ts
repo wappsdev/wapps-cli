@@ -2,7 +2,7 @@
 // deny-glob kural-kapsamı, allow-birleşimi, rotate⊃write, null-key op'ları,
 // service selector'ları, PRIMARY aud-reddi, liste filtreleme, validation.
 
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import {
   AuthzPrincipal,
   PolicyDoc,
@@ -12,8 +12,14 @@ import {
   expandVerbs,
   filterReadableKeys,
   globMatch,
+  grantsAdmin,
+  putPolicy,
   validatePolicy,
+  __resetPolicyCache,
 } from "../src/policy.js";
+import { keyPolicyCurrent } from "../src/storage.js";
+import { env } from "cloudflare:test";
+import { clearBucket } from "./helpers.js";
 
 function doc(rules: PolicyDoc["rules"]): PolicyDoc {
   return { schema: SCHEMA_POLICY, version: 1, rules };
@@ -26,7 +32,7 @@ const BASE = doc([
   { group: "developers@wapps.co", projects: ["*"], keys: ["*", "!*_PROD_*"], verbs: ["read"] },
   { group: "developers@wapps.co", projects: ["*"], keys: ["*", "!*_PROD_*"], verbs: ["write", "rotate"] },
   { group: "contractors@wapps.co", projects: ["lumira"], keys: ["*", "!*_PROD_*"], verbs: ["read"] },
-  { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*"] },
+  { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*", "admin"] },
   { service: "svc-woodpecker", projects: ["vaulter"], keys: ["DEPLOY_*", "DB_*"], verbs: ["read"] },
 ]);
 
@@ -64,8 +70,8 @@ describe("glob (pinned §4.2)", () => {
 });
 
 describe("expandVerbs (§4.2)", () => {
-  it("* = every verb; rotate ⊃ write", () => {
-    expect([...expandVerbs(["*"])].sort()).toEqual(["admin", "create", "delete", "read", "rotate", "write"]);
+  it("* = the data verbs (create included), never admin; rotate ⊃ write", () => {
+    expect([...expandVerbs(["*"])].sort()).toEqual(["create", "delete", "read", "rotate", "write"]);
     const r = expandVerbs(["rotate"]);
     expect(r.has("rotate")).toBe(true);
     expect(r.has("write")).toBe(true); // rotate-only grant düz yazmaya DA izin verir (pinli)
@@ -90,6 +96,54 @@ describe("expandVerbs (§4.2)", () => {
     expect(c.has("rotate")).toBe(false);
     const p = doc([{ group: "creators@wapps.co", projects: ["*"], keys: ["*"], verbs: ["create"] }]);
     expect(validatePolicy(p, "primary", ["root@wapps.dev"]).rules[0].verbs).toEqual(["create"]);
+  });
+});
+
+// E-M1 (security review 2026-11-19): `admin` is a GLOBAL verb. A rule scoped to some
+// projects must never reach it, so "*" does not expand to admin, and admin counts only
+// on a group rule whose projects are all-wildcard.
+describe("admin verb scope (E-M1)", () => {
+  const member = (g: string): AuthzPrincipal => ({ kind: "human", id: `human:${g}`, groups: [g] });
+  const SCOPED = doc([
+    { group: "lumira-owners@wapps.co", projects: ["lumira"], keys: ["*"], verbs: ["*"] },
+    { group: "lumira-admin@wapps.co", projects: ["lumira"], keys: ["*"], verbs: ["admin"] },
+    { group: "all-admin@wapps.co", projects: ["*"], keys: ["*"], verbs: ["admin"] },
+    { group: "shared-admin@wapps.co", projects: ["*/*"], keys: ["*"], verbs: ["*", "admin"] },
+    { group: "both-admin@wapps.co", projects: ["*", "*/*"], keys: ["*"], verbs: ["admin"] },
+    { service: "svc-ops", projects: ["*"], keys: ["*"], verbs: ["*", "admin"] },
+  ]);
+
+  it('a project-scoped rule with verbs ["*"] gives no admin, but keeps its data verbs', () => {
+    const d = authorize(SCOPED, member("lumira-owners@wapps.co"), "lumira", null, "admin");
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toBe("verb");
+    for (const v of ["read", "write", "rotate", "delete"] as const) {
+      expect(authorize(SCOPED, member("lumira-owners@wapps.co"), "lumira", "K", v).allowed, v).toBe(true);
+    }
+  });
+
+  it("an explicit admin on a project-scoped group rule is not honoured", () => {
+    expect(authorize(SCOPED, member("lumira-admin@wapps.co"), "lumira", null, "admin").allowed).toBe(false);
+    expect(grantsAdmin(SCOPED.rules[1])).toBe(false);
+  });
+
+  it("a service rule never grants admin, even on all-wildcard projects", () => {
+    const svcOps: AuthzPrincipal = { kind: "service", id: "service:svc-ops", groups: [] };
+    expect(authorize(SCOPED, svcOps, "lumira", null, "admin").allowed).toBe(false);
+    expect(grantsAdmin(SCOPED.rules[5])).toBe(false);
+  });
+
+  it('the all-wildcard group shapes ["*"], ["*/*"] and ["*", "*/*"] keep admin', () => {
+    for (const g of ["all-admin@wapps.co", "shared-admin@wapps.co", "both-admin@wapps.co"]) {
+      expect(authorize(SCOPED, member(g), "lumira", null, "admin").allowed, g).toBe(true);
+    }
+    expect(grantsAdmin(SCOPED.rules[2])).toBe(true);
+    expect(grantsAdmin(SCOPED.rules[3])).toBe(true);
+    expect(grantsAdmin(SCOPED.rules[4])).toBe(true);
+  });
+
+  it('an all-wildcard group rule with only "*" holds no admin ("*" is data verbs only)', () => {
+    expect(grantsAdmin({ group: "g@x.co", projects: ["*"], keys: ["*"], verbs: ["*"] })).toBe(false);
   });
 });
 
@@ -249,7 +303,63 @@ describe("validatePolicy (§4.4)", () => {
   it("lockout guard: admin group kuralı yok + ADMIN_EMAILS boş → red; ADMIN_EMAILS dolu → kabul", () => {
     expect(() => validatePolicy(ok, "primary", [])).toThrowError(PolicyValidationError);
     expect(validatePolicy(ok, "primary", ADMINS)).toBeTruthy();
-    const withAdminGroup = { ...ok, rules: [...ok.rules, { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*"] }] };
+    const withAdminGroup = { ...ok, rules: [...ok.rules, { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*", "admin"] }] };
     expect(validatePolicy(withAdminGroup, "primary", [])).toBeTruthy();
+  });
+
+  it('lockout guard: a group admin that is not honoured (scoped, or "*" only) is no admin path', () => {
+    for (const r of [
+      { group: "admins@wapps.co", projects: ["lumira"], keys: ["*"], verbs: ["admin"] },
+      { group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*"] },
+    ]) {
+      expect(() => validatePolicy({ ...ok, rules: [...ok.rules, r] }, "primary", [])).toThrowError(PolicyValidationError);
+    }
+  });
+});
+
+// E-M1: policy set refuses any rule that carries admin where admin is not honoured,
+// naming the rule. The check is PUT-only (like dead project globs), so a stored policy
+// that holds such a rule still loads; the rule just grants no admin.
+describe("putPolicy refuses misplaced admin (E-M1)", () => {
+  // Storage is shared across test files (vitest.config.ts): start and end clean.
+  beforeEach(async () => {
+    await clearBucket();
+    __resetPolicyCache();
+  });
+  afterEach(async () => {
+    await clearBucket();
+    __resetPolicyCache();
+  });
+  const ADMINS = ["admin@wapps.dev"];
+  const base = { group: "developers@wapps.co", projects: ["*"], keys: ["*"], verbs: ["read"] };
+  const put = (rule: Record<string, unknown>, topology: "primary" | "fallback" = "primary") =>
+    putPolicy(env.SECRETS_BUCKET, { schema: SCHEMA_POLICY, version: 1, rules: [base, rule] } as unknown as PolicyDoc, topology, ADMINS);
+
+  const refused: { name: string; rule: Record<string, unknown>; topology?: "fallback" }[] = [
+    { name: "service rule with admin", rule: { service: "svc-ops", projects: ["*"], keys: ["*"], verbs: ["admin"] } },
+    { name: "aud rule with admin", rule: { aud: "aud-x", projects: ["*"], keys: ["*"], verbs: ["read", "admin"] }, topology: "fallback" },
+    { name: "project-scoped group rule with admin", rule: { group: "g@x.co", projects: ["lumira"], keys: ["*"], verbs: ["admin"] } },
+    { name: "group rule mixing a wildcard and a project", rule: { group: "g@x.co", projects: ["*", "lumira"], keys: ["*"], verbs: ["admin"] } },
+    { name: "group rule on one shared namespace", rule: { group: "g@x.co", projects: ["apple/*"], keys: ["*"], verbs: ["admin"] } },
+  ];
+  for (const c of refused) {
+    it(`refuses: ${c.name}, naming the rule`, async () => {
+      let err: unknown = null;
+      try {
+        await put(c.rule, c.topology);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(PolicyValidationError);
+      expect((err as PolicyValidationError).ruleIndex).toBe(1);
+      expect((err as Error).message).toContain("admin");
+      // Nothing was stored.
+      expect(await env.SECRETS_BUCKET.head(keyPolicyCurrent())).toBeNull();
+    });
+  }
+
+  it("accepts admin on an all-wildcard group rule", async () => {
+    const r = await put({ group: "admins@wapps.co", projects: ["*"], keys: ["*"], verbs: ["*", "admin"] });
+    expect(r.version).toBe(1);
   });
 });
