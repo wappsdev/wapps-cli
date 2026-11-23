@@ -7,12 +7,14 @@
 //   5. ISSUER PINNING: iss == https://{team_domain} (else 401 ISSUER_MISMATCH).
 //   6. AUD: must contain the route class's AUD (else 403 AUD_MISMATCH).
 //   7. Identity: human (email) | service token (common_name, NO email).
-//   8. HUMAN ONLY: the caller presents its own Access app token (cf-access-token
-//      header, else the CF_Authorization cookie). It passes steps 2-6 like the
+//   8. HUMAN ONLY: the caller presents its own Access app token in the
+//      cf-access-token header (the wapps CLI). It passes steps 2-6 like the
 //      assertion and names the same sub and email; else 401 DEVICE_SESSION_ONLY
 //      (audited as a deny). Access also admits a Cloudflare One client device
 //      session and then injects an assertion for ANY program on that device; the
-//      presented token is what proves the caller itself logged in (1cb9a4c1).
+//      presented token is what proves the caller itself logged in (1cb9a4c1). The
+//      CF_Authorization cookie does not count: for a device-session request Access
+//      adds that cookie itself (measured live 2026-11-23).
 //   9. The FORGEABLE Cf-Access-Authenticated-User-Email header is IGNORED and stripped.
 // Fail-closed: missing config → 503 SERVICE_MISCONFIGURED.
 
@@ -74,9 +76,8 @@ export interface AccessConfig {
 
 export const FORGEABLE_EMAIL_HEADER = "Cf-Access-Authenticated-User-Email";
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
-// The caller's own Access app token: the wapps CLI sends the header, a browser the cookie.
+// The caller's own Access app token, as the wapps CLI sends it.
 const PRESENTED_TOKEN_HEADER = "cf-access-token";
-const PRESENTED_TOKEN_COOKIE = "CF_Authorization";
 const LEEWAY_SECONDS = 60;
 const JWKS_TTL_MS = 60 * 60 * 1000; // 1 saat (§6.1 step 3)
 /** KID_REFETCH_COOLDOWN_MS: an unknown kid refetches the JWKS only when the cached set
@@ -307,16 +308,9 @@ export class DeviceSessionOnly extends AuthFail {
   }
 }
 
-/** presentedAppToken, the caller's own Access app token: the cf-access-token header
- * when sent (even empty), else the CF_Authorization cookie, else "". */
+/** presentedAppToken, the caller's own Access app token: the cf-access-token header, else "". */
 function presentedAppToken(request: Request): string {
-  const header = request.headers.get(PRESENTED_TOKEN_HEADER);
-  if (header !== null) return header.trim();
-  for (const part of (request.headers.get("cookie") ?? "").split(";")) {
-    const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq).trim() === PRESENTED_TOKEN_COOKIE) return part.slice(eq + 1).trim();
-  }
-  return "";
+  return (request.headers.get(PRESENTED_TOKEN_HEADER) ?? "").trim();
 }
 
 /**

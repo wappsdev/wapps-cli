@@ -1,8 +1,8 @@
 // Device-session guard (work item 1cb9a4c1). Cloudflare Access admits the owner's
 // Cloudflare One client (WARP) device session and then injects Cf-Access-Jwt-Assertion
 // for ANY program on that device. A human principal is admitted only when the caller
-// also presents its own Access app token (cf-access-token header, or the CF_Authorization
-// cookie) that verifies like the assertion and names the same subject.
+// also presents its own Access app token in the cf-access-token header that verifies like
+// the assertion and names the same subject. The CF_Authorization cookie does not count.
 
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
 import {
@@ -64,10 +64,13 @@ describe("device session alone does not admit a human (1cb9a4c1)", () => {
     expect(((await res.json()) as { principal: string }).principal).toBe(`human:${WRITER}`);
   });
 
-  it("assertion + matching CF_Authorization cookie → admitted", async () => {
+  // Measured live 2026-11-23: for a device-session request Access itself adds the
+  // CF_Authorization cookie to what reaches the Worker, so the cookie proves nothing.
+  it("assertion + matching CF_Authorization cookie only → 401 (Access adds that cookie itself)", async () => {
     const jwt = await signer.makeJWT(validClaims(WRITER));
     const res = await callGate("/v1/whoami", { headers: assertionOnly(jwt, { Cookie: `theme=dark; CF_Authorization=${jwt}; other=1` }) });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe("DEVICE_SESSION_ONLY");
   });
 
   it("presented token for another person → 401", async () => {
@@ -121,9 +124,9 @@ describe("device session alone does not admit a human (1cb9a4c1)", () => {
     expect(await errorOf(res)).toBe("DEVICE_SESSION_ONLY");
   });
 
-  it("garbage presented token (header or cookie) → 401", async () => {
+  it("garbage presented token → 401", async () => {
     const jwt = await signer.makeJWT(validClaims(WRITER));
-    const cases: Record<string, string>[] = [{ "cf-access-token": "not-a-jwt" }, { Cookie: "CF_Authorization=a.b.c" }, { "cf-access-token": "" }];
+    const cases: Record<string, string>[] = [{ "cf-access-token": "not-a-jwt" }, { "cf-access-token": "" }];
     for (const extra of cases) {
       const res = await callGate("/v1/whoami", { headers: assertionOnly(jwt, extra) });
       expect(res.status).toBe(401);
