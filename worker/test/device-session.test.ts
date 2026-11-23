@@ -167,6 +167,11 @@ describe("an oauth claim whose redirect is not exactly a loopback http URL is re
     "http://127.0.0.2:5555/cb",
     "https://127.0.0.1:5555/cb",
     "ftp://127.0.0.1/cb",
+    "HTTP://127.0.0.1/cb",
+    "http://127.1/cb",
+    "http://0x7f.1/cb",
+    "http://u:p@127.0.0.1/cb",
+    "http://127.0.0.1\\x",
   ];
   for (const uri of redirects) {
     it(`${uri} → 401 DEVICE_SESSION_ONLY`, async () => {
@@ -188,6 +193,30 @@ describe("an oauth claim whose redirect is not exactly a loopback http URL is re
     const res = await whoami({ oauth: { client_id: "client-test" } });
     expect(res.status).toBe(401);
     expect(await errorOf(res)).toBe("DEVICE_SESSION_ONLY");
+  });
+});
+
+describe("a device session is refused for every principal, human or service token", () => {
+  for (const odd of [true, "true", 1, null, {}]) {
+    it(`service token with warp_as_auth ${JSON.stringify(odd)} → 401 DEVICE_SESSION_ONLY and a deny audit row`, async () => {
+      const jwt = await signer.makeJWT(serviceTokenClaims("svc-ops", { warp_as_auth: odd }));
+      const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
+      expect(res.status).toBe(401);
+      expect(await errorOf(res)).toBe("DEVICE_SESSION_ONLY");
+
+      const rows = await settleAudit("", (r) => r.some((x) => x.decision === "deny"));
+      const deny = rows.filter((x) => x.decision === "deny");
+      expect(deny).toHaveLength(1);
+      expect(deny[0].principal).toBe("service:svc-ops");
+      expect(deny[0].principal_type).toBe("machine");
+      expect(deny[0].intent).toBe("DEVICE_SESSION_ONLY");
+    });
+  }
+
+  it("service token with warp_as_auth false → not refused as a device session", async () => {
+    const jwt = await signer.makeJWT(serviceTokenClaims("svc-ops", { warp_as_auth: false }));
+    const res = await callGate("/v1/whoami", { headers: authHeader(jwt) });
+    expect(await errorOf(res)).not.toBe("DEVICE_SESSION_ONLY");
   });
 });
 

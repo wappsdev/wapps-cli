@@ -7,10 +7,11 @@
 //   5. ISSUER PINNING: iss == https://{team_domain} (else 401 ISSUER_MISMATCH).
 //   6. AUD: must contain the route class's AUD (else 403 AUD_MISMATCH).
 //   7. Identity: human (email) | service token (common_name, NO email).
-//   8. HUMAN ONLY: the verified assertion must carry the caller's own OAuth session
-//      (requireOAuthSession): a signed `oauth` claim {client_id, client_redirect_uri}
-//      of a client registered on a 127.0.0.1 / localhost redirect (the wapps CLI,
-//      logged in through Access Managed OAuth), and no `warp_as_auth`; else 401
+//   8. EVERY principal: `warp_as_auth` (any value but absent or false) → 401
+//      DEVICE_SESSION_ONLY. HUMAN ONLY: the verified assertion must carry the caller's
+//      own OAuth session (requireOAuthSession): a signed `oauth` claim
+//      {client_id, client_redirect_uri} of a client registered on a 127.0.0.1 /
+//      localhost redirect (the wapps CLI, logged in through Access Managed OAuth); else 401
 //      DEVICE_SESSION_ONLY (audited as a deny). Access also admits a Cloudflare One
 //      client device session and then injects an assertion for ANY program on that
 //      device; only the OAuth claim proves the caller itself logged in (1cb9a4c1).
@@ -299,12 +300,21 @@ export async function authenticate(request: Request, cfg: AccessConfig, routeAud
 
   // (7) İki kimlik şekli. FORGEABLE header ASLA okunmaz — kimlik imzalı JWT'den.
   const email = typeof claims.email === "string" ? claims.email.trim() : "";
+  const cn = typeof claims.common_name === "string" ? claims.common_name.trim() : "";
+  // A device session (`warp_as_auth`: any value but absent or false) is refused for every
+  // principal, human or service token, on every route.
+  if (claims.warp_as_auth !== undefined && claims.warp_as_auth !== false && (email || cn)) {
+    throw new DeviceSessionOnly(
+      email ? `human:${email}` : `service:${cn}`,
+      email ? "human" : "machine",
+      `the request came through a device session; ${OAUTH_RECOVERY}`,
+    );
+  }
   if (email) {
     const principal: Principal = { kind: "human", id: `human:${email}`, email };
     requireOAuthSession(claims, principal.id);
     return principal;
   }
-  const cn = typeof claims.common_name === "string" ? claims.common_name.trim() : "";
   if (cn) return { kind: "service", id: `service:${cn}`, commonName: cn };
   throw new AuthFail(HTTP.UNAUTHORIZED, "AUTH_INVALID", "no identity claim");
 }
@@ -312,7 +322,7 @@ export async function authenticate(request: Request, cfg: AccessConfig, routeAud
 /** DeviceSessionOnly, a human assertion that does not prove the caller's own OAuth session
  * (step 8). It names the asserted principal so the refusal is audited under it. */
 export class DeviceSessionOnly extends AuthFail {
-  constructor(public principalId: string, msg: string) {
+  constructor(public principalId: string, public principalType: "human" | "machine", msg: string) {
     super(HTTP.UNAUTHORIZED, "DEVICE_SESSION_ONLY", msg);
   }
 }
@@ -320,35 +330,42 @@ export class DeviceSessionOnly extends AuthFail {
 const OAUTH_RECOVERY =
   "run 'wapps login'; a Cloudflare One device session or a browser session alone does not identify the program that sent this request";
 
-/** isLoopbackRedirect, true when `uri` is an http URL whose host is exactly 127.0.0.1 or localhost. */
-function isLoopbackRedirect(uri: unknown): boolean {
-  if (typeof uri !== "string") return false;
-  let url: URL;
-  try {
-    url = new URL(uri);
-  } catch {
-    return false;
+/**
+ * isLoopbackRedirect, a strict string check identical to the Rust gate's `is_loopback_http`
+ * (claims.rs): an `http://` URL (lowercase scheme) whose host is exactly `127.0.0.1` or
+ * `localhost`, with an optional port of digits that fits 0-65535. A WHATWG `URL` is NOT used:
+ * it normalises `HTTP://`, `127.1`, `0x7f.1`, userinfo and a backslash into a loopback host.
+ * The authority ends at the first `/`, `?` or `#`.
+ */
+export function isLoopbackRedirect(uri: unknown): boolean {
+  if (typeof uri !== "string" || !uri.startsWith("http://")) return false;
+  const rest = uri.slice("http://".length);
+  // Control characters (C0, DEL, C1), space and backslash can move the host in a WHATWG parser.
+  if (/[\u0000-\u001f\u007f-\u009f \\]/.test(rest)) return false;
+  const authority = rest.split(/[/?#]/, 1)[0];
+  if (authority.includes("@")) return false;
+  const colon = authority.indexOf(":");
+  const host = colon === -1 ? authority : authority.slice(0, colon);
+  if (colon !== -1) {
+    const port = authority.slice(colon + 1);
+    if (!/^[0-9]+$/.test(port) || Number(port) > 65535) return false;
   }
-  return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+  return host === "127.0.0.1" || host === "localhost";
 }
 
 /**
  * requireOAuthSession, step 8: the already verified assertion must prove the caller's own
- * OAuth session. A device session (`warp_as_auth`) is refused even when an `oauth` claim is
- * present; otherwise `oauth` must be an object with a non-empty string `client_id` and a
+ * OAuth session: `oauth` must be an object with a non-empty string `client_id` and a
  * `client_redirect_uri` on a loopback host (a CLI on this machine).
  */
 function requireOAuthSession(claims: VerifiedClaims, principalId: string): void {
-  if (claims.warp_as_auth !== undefined && claims.warp_as_auth !== false) {
-    throw new DeviceSessionOnly(principalId, `the request came through a device session; ${OAUTH_RECOVERY}`);
-  }
   const oauth = claims.oauth;
   if (typeof oauth !== "object" || oauth === null || Array.isArray(oauth)) {
-    throw new DeviceSessionOnly(principalId, `the caller has no OAuth session of its own; ${OAUTH_RECOVERY}`);
+    throw new DeviceSessionOnly(principalId, "human", `the caller has no OAuth session of its own; ${OAUTH_RECOVERY}`);
   }
   const { client_id, client_redirect_uri } = oauth as { client_id?: unknown; client_redirect_uri?: unknown };
   if (typeof client_id !== "string" || client_id === "" || !isLoopbackRedirect(client_redirect_uri)) {
-    throw new DeviceSessionOnly(principalId, `the OAuth session is not a local client's; ${OAUTH_RECOVERY}`);
+    throw new DeviceSessionOnly(principalId, "human", `the OAuth session is not a local client's; ${OAUTH_RECOVERY}`);
   }
 }
 

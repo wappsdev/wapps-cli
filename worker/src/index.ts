@@ -150,7 +150,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
       // A device session alone (no token of the caller's own) is a refusal of a known
       // person: it is audited and counted toward the deny-spike alert (A1).
       if (e instanceof DeviceSessionOnly) {
-        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, e.principalId, "human", "auth", null, null, e.code, null));
+        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, e.principalId, e.principalType, "auth", null, null, e.code, null));
         await countDenyBurst(ctx, env, e.principalId);
       }
       throw e;
