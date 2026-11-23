@@ -141,10 +141,17 @@ export async function ensureJwks(): Promise<AccessSigner> {
 
 // --- Claim setleri --------------------------------------------------------------
 
-/** validClaims, geçerli bir human read-AUD JWT claim seti üretir. */
+/** oauthClaim, the signed `oauth` claim Access puts in the assertion of a request that carries a
+ * Managed OAuth bearer: the registered client and its loopback redirect (a CLI on this machine). */
+export function oauthClaim(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { client_id: "client-test", client_redirect_uri: "http://127.0.0.1:5555/callback", ...extra };
+}
+
+/** validClaims, geçerli bir human read-AUD JWT claim seti üretir. It is an OAuth session (the
+ * caller's own credential); pass `oauth: undefined` for a browser or device-session assertion. */
 export function validClaims(email = "writer@wapps.dev", extra: Record<string, unknown> = {}): Record<string, unknown> {
   const now = Math.floor(Date.now() / 1000);
-  return { iss: ISSUER, aud: [AUD_READ], sub: subOf(email), email, iat: now, nbf: now - 10, exp: now + 3600, ...extra };
+  return { iss: ISSUER, aud: [AUD_READ], sub: subOf(email), email, iat: now, nbf: now - 10, exp: now + 3600, oauth: oauthClaim(), ...extra };
 }
 
 /** subOf, the fixture's stable Access user id for an email (Access puts the user's id in `sub`). */
@@ -152,10 +159,10 @@ export function subOf(email: string): string {
   return `user-${email}`;
 }
 
-/** validClaimsWrite, write-AUD (control-plane) human JWT claim seti. */
+/** validClaimsWrite, write-AUD (control-plane) human JWT claim seti (an OAuth session, like validClaims). */
 export function validClaimsWrite(email: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const now = Math.floor(Date.now() / 1000);
-  return { iss: ISSUER, aud: [AUD_WRITE], sub: subOf(email), email, iat: now, nbf: now - 10, exp: now + 3600, ...extra };
+  return { iss: ISSUER, aud: [AUD_WRITE], sub: subOf(email), email, iat: now, nbf: now - 10, exp: now + 3600, oauth: oauthClaim(), ...extra };
 }
 
 /** serviceTokenClaims, CF Access SERVICE-TOKEN şekilli JWT claim seti (common_name, email YOK). */
@@ -292,15 +299,9 @@ export async function callGateAt(host: string, path: string, init: RequestInit, 
   return res;
 }
 
-/** authHeader, the headers of a request the wapps CLI makes: the caller presents its own
- * Access app token (cf-access-token) and the edge adds the assertion for it. */
+/** authHeader, the headers of a request that reaches the Worker: the assertion the edge adds.
+ * Whether the caller holds its own OAuth session is decided by the assertion's `oauth` claim. */
 export function authHeader(jwt: string, extra: Record<string, string> = {}): Record<string, string> {
-  return { "Cf-Access-Jwt-Assertion": jwt, "cf-access-token": jwt, ...extra };
-}
-
-/** assertionOnly, the headers of a request the edge admitted on a device session alone
- * (Cloudflare One client): the assertion, and no token from the caller. */
-export function assertionOnly(jwt: string, extra: Record<string, string> = {}): Record<string, string> {
   return { "Cf-Access-Jwt-Assertion": jwt, ...extra };
 }
 

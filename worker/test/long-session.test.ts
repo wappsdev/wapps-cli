@@ -6,7 +6,7 @@
 //   - the long AUD is accepted only on the long host, and there only the long AUD;
 //   - the long host serves no admin route: the WRITE app (gw.meapps.dev/v1/admin, 15m)
 //     stays the only way to one;
-//   - the caller's own token (cf-access-token) is checked against the long AUD too.
+//   - the caller's own OAuth session (the signed `oauth` claim) is required on the long host too.
 
 import { beforeAll, beforeEach, describe, it, expect } from "vitest";
 import {
@@ -15,7 +15,6 @@ import {
   validClaims,
   validClaimsWrite,
   authHeader,
-  assertionOnly,
   callGate,
   callGateAt,
   seedPolicy,
@@ -100,18 +99,17 @@ describe("the long READ app's AUD is bound to the long host (204fffcc)", () => {
   });
 });
 
-describe("the caller's own token is required on the long host too (1cb9a4c1)", () => {
-  it("assertion only → 401 DEVICE_SESSION_ONLY", async () => {
-    const jwt = await signer.makeJWT(longClaims());
-    const res = await callGateAt(LONG_HOST, "/v1/whoami", { headers: assertionOnly(jwt) });
+describe("the caller's own OAuth session is required on the long host too (1cb9a4c1)", () => {
+  it("a long assertion without an oauth claim → 401 DEVICE_SESSION_ONLY", async () => {
+    const jwt = await signer.makeJWT(longClaims(WRITER, { oauth: undefined }));
+    const res = await callGateAt(LONG_HOST, "/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(401);
     expect(await errorOf(res)).toBe("DEVICE_SESSION_ONLY");
   });
 
-  it("a long assertion with the 6h READ token presented → 401 DEVICE_SESSION_ONLY", async () => {
-    const jwt = await signer.makeJWT(longClaims());
-    const readToken = await signer.makeJWT(validClaims(WRITER));
-    const res = await callGateAt(LONG_HOST, "/v1/whoami", { headers: assertionOnly(jwt, { "cf-access-token": readToken }) });
+  it("a long assertion on a device session (warp_as_auth) → 401 DEVICE_SESSION_ONLY", async () => {
+    const jwt = await signer.makeJWT(longClaims(WRITER, { warp_as_auth: true }));
+    const res = await callGateAt(LONG_HOST, "/v1/whoami", { headers: authHeader(jwt) });
     expect(res.status).toBe(401);
     expect(await errorOf(res)).toBe("DEVICE_SESSION_ONLY");
   });

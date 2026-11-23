@@ -8,14 +8,16 @@
 //   6. AUD: must contain the route class's AUD (else 403 AUD_MISMATCH). On the long
 //      READ host (ACCESS_LONG_HOST) that is the long READ app's AUD, and only there.
 //   7. Identity: human (email) | service token (common_name, NO email).
-//   8. HUMAN ONLY: the caller presents its own Access app token in the
-//      cf-access-token header (the wapps CLI). It passes steps 2-6 like the
-//      assertion and names the same sub and email; else 401 DEVICE_SESSION_ONLY
-//      (audited as a deny). Access also admits a Cloudflare One client device
-//      session and then injects an assertion for ANY program on that device; the
-//      presented token is what proves the caller itself logged in (1cb9a4c1). The
-//      CF_Authorization cookie does not count: for a device-session request Access
-//      adds that cookie itself (measured live 2026-11-23).
+//   8. HUMAN ONLY: the verified assertion must carry the caller's own OAuth session
+//      (requireOAuthSession): a signed `oauth` claim {client_id, client_redirect_uri}
+//      of a client registered on a 127.0.0.1 / localhost redirect (the wapps CLI,
+//      logged in through Access Managed OAuth), and no `warp_as_auth`; else 401
+//      DEVICE_SESSION_ONLY (audited as a deny). Access also admits a Cloudflare One
+//      client device session and then injects an assertion for ANY program on that
+//      device; only the OAuth claim proves the caller itself logged in (1cb9a4c1).
+//      Access does not forward the bearer, so nothing the caller sends is read:
+//      headers and the CF_Authorization cookie (which Access adds itself for a
+//      device session) do not count. Both claims are signed by Access.
 //   9. The FORGEABLE Cf-Access-Authenticated-User-Email header is IGNORED and stripped.
 // Fail-closed: missing config → 503 SERVICE_MISCONFIGURED.
 
@@ -88,8 +90,6 @@ export type RouteAud = "read" | "readLong" | "write";
 
 export const FORGEABLE_EMAIL_HEADER = "Cf-Access-Authenticated-User-Email";
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
-// The caller's own Access app token, as the wapps CLI sends it.
-const PRESENTED_TOKEN_HEADER = "cf-access-token";
 const LEEWAY_SECONDS = 60;
 const JWKS_TTL_MS = 60 * 60 * 1000; // 1 saat (§6.1 step 3)
 /** KID_REFETCH_COOLDOWN_MS: an unknown kid refetches the JWKS only when the cached set
@@ -223,6 +223,10 @@ interface VerifiedClaims {
   sub?: string;
   email?: string;
   common_name?: string;
+  /** Present on a device session (Cloudflare One client) assertion. */
+  warp_as_auth?: boolean;
+  /** Present on an OAuth bearer request: the registered client and its redirect. */
+  oauth?: unknown;
 }
 
 async function verifyAccessJWT(token: string, cfg: AccessConfig): Promise<VerifiedClaims> {
@@ -308,7 +312,7 @@ export async function authenticate(request: Request, cfg: AccessConfig, routeAud
   const email = typeof claims.email === "string" ? claims.email.trim() : "";
   if (email) {
     const principal: Principal = { kind: "human", id: `human:${email}`, email };
-    await requireOwnAppToken(request, cfg, wantAud, claims, email, principal.id);
+    requireOAuthSession(claims, principal.id);
     return principal;
   }
   const cn = typeof claims.common_name === "string" ? claims.common_name.trim() : "";
@@ -316,7 +320,7 @@ export async function authenticate(request: Request, cfg: AccessConfig, routeAud
   throw new AuthFail(HTTP.UNAUTHORIZED, "AUTH_INVALID", "no identity claim");
 }
 
-/** DeviceSessionOnly, a human assertion without the caller's own matching app token
+/** DeviceSessionOnly, a human assertion that does not prove the caller's own OAuth session
  * (step 8). It names the asserted principal so the refusal is audited under it. */
 export class DeviceSessionOnly extends AuthFail {
   constructor(public principalId: string, msg: string) {
@@ -324,38 +328,38 @@ export class DeviceSessionOnly extends AuthFail {
   }
 }
 
-/** presentedAppToken, the caller's own Access app token: the cf-access-token header, else "". */
-function presentedAppToken(request: Request): string {
-  return (request.headers.get(PRESENTED_TOKEN_HEADER) ?? "").trim();
+const OAUTH_RECOVERY =
+  "run 'wapps login'; a Cloudflare One device session or a browser session alone does not identify the program that sent this request";
+
+/** isLoopbackRedirect, true when `uri` is an http URL whose host is exactly 127.0.0.1 or localhost. */
+function isLoopbackRedirect(uri: unknown): boolean {
+  if (typeof uri !== "string") return false;
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return false;
+  }
+  return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
 }
 
 /**
- * requireOwnAppToken, step 8: the presented token verifies exactly like the assertion
- * (JWKS signature, exp/nbf, pinned iss, this route's AUD) and names the same sub and
- * email. A missing sub on either side refuses: without it the subject is not proven.
+ * requireOAuthSession, step 8: the already verified assertion must prove the caller's own
+ * OAuth session. A device session (`warp_as_auth`) is refused even when an `oauth` claim is
+ * present; otherwise `oauth` must be an object with a non-empty string `client_id` and a
+ * `client_redirect_uri` on a loopback host (a CLI on this machine).
  */
-async function requireOwnAppToken(
-  request: Request,
-  cfg: AccessConfig,
-  wantAud: string,
-  assertion: VerifiedClaims,
-  email: string,
-  principalId: string,
-): Promise<void> {
-  const token = presentedAppToken(request);
-  if (!token) throw new DeviceSessionOnly(principalId, "the caller presented no access token of its own");
-  let presented: VerifiedClaims;
-  try {
-    presented = await verifyAccessJWT(token, cfg);
-  } catch (e) {
-    if (e instanceof AuthFail) throw new DeviceSessionOnly(principalId, `presented access token rejected: ${e.message}`);
-    throw e;
+function requireOAuthSession(claims: VerifiedClaims, principalId: string): void {
+  if (claims.warp_as_auth === true) {
+    throw new DeviceSessionOnly(principalId, `the request came through a device session; ${OAUTH_RECOVERY}`);
   }
-  if (!audContains(presented.aud, wantAud)) throw new DeviceSessionOnly(principalId, "presented access token is for another application");
-  const sub = typeof assertion.sub === "string" ? assertion.sub : "";
-  const presentedEmail = typeof presented.email === "string" ? presented.email.trim() : "";
-  if (!sub || presented.sub !== sub || presentedEmail !== email) {
-    throw new DeviceSessionOnly(principalId, "presented access token names another subject");
+  const oauth = claims.oauth;
+  if (typeof oauth !== "object" || oauth === null || Array.isArray(oauth)) {
+    throw new DeviceSessionOnly(principalId, `the caller has no OAuth session of its own; ${OAUTH_RECOVERY}`);
+  }
+  const { client_id, client_redirect_uri } = oauth as { client_id?: unknown; client_redirect_uri?: unknown };
+  if (typeof client_id !== "string" || client_id === "" || !isLoopbackRedirect(client_redirect_uri)) {
+    throw new DeviceSessionOnly(principalId, `the OAuth session is not a local client's; ${OAUTH_RECOVERY}`);
   }
 }
 
