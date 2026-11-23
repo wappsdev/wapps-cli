@@ -87,7 +87,7 @@
     // host is unaffected). The owner fills it after the tofu apply:
     //   wapps tofu output -json apps | jq -r '.["gw-long.meapps.dev"].aud'
     "ACCESS_LONG_HOST": "gw-long.meapps.dev",
-    "ACCESS_AUD_READ_LONG": "",
+    "ACCESS_AUD_READ_LONG": "ba99bb1dd1a70d6ac7ff6e39d8d3aebcad06c89a0498de714f52e2c9c864a1c1",
     "ADMIN_EMAILS": "adnan@wapps.co",
     "MINT_KEY": "",
     "MINT_KEY_PREV": "",
