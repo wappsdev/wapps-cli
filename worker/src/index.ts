@@ -9,7 +9,7 @@
 // (§6.4 — ledger offboard rotate-oracle'ıdır); metadata okumaları async kalır.
 // C2: hiçbir console.* çağrısına değer/DEK/KEK/MASTER_KEK verilmez.
 
-import { Env, AuthFail, authenticate, loadAccessConfig, stripForgeableHeaders, Principal, resolveMachinePrincipal } from "./auth.js";
+import { Env, AuthFail, DeviceSessionOnly, authenticate, loadAccessConfig, stripForgeableHeaders, Principal, resolveMachinePrincipal } from "./auth.js";
 import { HTTP, jsonError, jsonOK } from "./errors.js";
 import { sha256Hex, utf8 } from "./crypto/encoding.js";
 import { MasterKey, loadMasterKeys, unwrapDEK, WrapError } from "./crypto/kek.js";
@@ -142,7 +142,18 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   const routeAud: "read" | "write" = isWriteApp ? "write" : "read";
 
   try {
-    let principal = await authenticate(request, cfg, routeAud);
+    let principal: Principal;
+    try {
+      principal = await authenticate(request, cfg, routeAud);
+    } catch (e) {
+      // A device session alone (no token of the caller's own) is a refusal of a known
+      // person: it is audited and counted toward the deny-spike alert (A1).
+      if (e instanceof DeviceSessionOnly) {
+        auditReadAsync(ctx, env.AUDIT_LOG, denyRow(request, e.principalId, "human", "auth", null, null, e.code, null));
+        await countDenyBurst(ctx, env, e.principalId);
+      }
+      throw e;
+    }
 
     // Rate limit: her authenticated principal 60/dk; 429 deny olarak audit'lenir.
     const rl = await checkRateLimit(env, principal.id);

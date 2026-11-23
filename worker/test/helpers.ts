@@ -141,13 +141,18 @@ export async function ensureJwks(): Promise<AccessSigner> {
 /** validClaims, geçerli bir human read-AUD JWT claim seti üretir. */
 export function validClaims(email = "writer@wapps.dev", extra: Record<string, unknown> = {}): Record<string, unknown> {
   const now = Math.floor(Date.now() / 1000);
-  return { iss: ISSUER, aud: [AUD_READ], email, iat: now, nbf: now - 10, exp: now + 3600, ...extra };
+  return { iss: ISSUER, aud: [AUD_READ], sub: subOf(email), email, iat: now, nbf: now - 10, exp: now + 3600, ...extra };
+}
+
+/** subOf, the fixture's stable Access user id for an email (Access puts the user's id in `sub`). */
+export function subOf(email: string): string {
+  return `user-${email}`;
 }
 
 /** validClaimsWrite, write-AUD (control-plane) human JWT claim seti. */
 export function validClaimsWrite(email: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const now = Math.floor(Date.now() / 1000);
-  return { iss: ISSUER, aud: [AUD_WRITE], email, iat: now, nbf: now - 10, exp: now + 3600, ...extra };
+  return { iss: ISSUER, aud: [AUD_WRITE], sub: subOf(email), email, iat: now, nbf: now - 10, exp: now + 3600, ...extra };
 }
 
 /** serviceTokenClaims, CF Access SERVICE-TOKEN şekilli JWT claim seti (common_name, email YOK). */
@@ -279,8 +284,15 @@ export async function callGate(path: string, init: RequestInit, envOverride: Rec
   return res;
 }
 
-/** authHeader, bir JWT için Cf-Access-Jwt-Assertion header'ı üretir. */
+/** authHeader, the headers of a request the wapps CLI makes: the caller presents its own
+ * Access app token (cf-access-token) and the edge adds the assertion for it. */
 export function authHeader(jwt: string, extra: Record<string, string> = {}): Record<string, string> {
+  return { "Cf-Access-Jwt-Assertion": jwt, "cf-access-token": jwt, ...extra };
+}
+
+/** assertionOnly, the headers of a request the edge admitted on a device session alone
+ * (Cloudflare One client): the assertion, and no token from the caller. */
+export function assertionOnly(jwt: string, extra: Record<string, string> = {}): Record<string, string> {
   return { "Cf-Access-Jwt-Assertion": jwt, ...extra };
 }
 

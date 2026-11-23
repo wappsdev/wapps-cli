@@ -1,15 +1,20 @@
-// CF Access kimlik doğrulama middleware'i (SPEC §6.1). Go cfaccess.go'nun TS
-// portu + ISSUER PINNING (Go orijinalinde yok). Adımlar (hepsi MUST, sırayla;
-// hata → 401, denial olarak audit'lenir — audit G7):
-//   1. Cf-Access-Jwt-Assertion oku; yoksa 401 AUTH_REQUIRED.
-//   2. Header parse; alg RS256|ES256; kid zorunlu.
-//   3. kid'i JWKS'e çöz (1 saat cache; bilinmeyen kid → 1 refetch, sonra fail).
-//   4. İmza + exp/nbf (leeway ≤ 60 s).
-//   5. ISSUER PINNING: iss == https://{team_domain} (yoksa 401 ISSUER_MISMATCH).
-//   6. AUD: rota sınıfının AUD'unu içermeli (yoksa 403 AUD_MISMATCH).
-//   7. Kimlik: human (email) | service token (common_name, email YOK).
-//   8. FORGEABLE Cf-Access-Authenticated-User-Email header'ı YOK SAYILIR/STRIP.
-// Fail-closed: config eksik → 503 SERVICE_MISCONFIGURED.
+// CF Access authentication middleware (SPEC §6.1). A TS port of Go cfaccess.go plus
+// ISSUER PINNING (absent in the Go original). Steps (all MUST, in order; failure → 401):
+//   1. Read Cf-Access-Jwt-Assertion; absent → 401 AUTH_REQUIRED.
+//   2. Parse the header; alg RS256|ES256; kid required.
+//   3. Resolve kid against the JWKS (1 h cache; unknown kid → one refetch, then fail).
+//   4. Signature + exp/nbf (leeway ≤ 60 s).
+//   5. ISSUER PINNING: iss == https://{team_domain} (else 401 ISSUER_MISMATCH).
+//   6. AUD: must contain the route class's AUD (else 403 AUD_MISMATCH).
+//   7. Identity: human (email) | service token (common_name, NO email).
+//   8. HUMAN ONLY: the caller presents its own Access app token (cf-access-token
+//      header, else the CF_Authorization cookie). It passes steps 2-6 like the
+//      assertion and names the same sub and email; else 401 DEVICE_SESSION_ONLY
+//      (audited as a deny). Access also admits a Cloudflare One client device
+//      session and then injects an assertion for ANY program on that device; the
+//      presented token is what proves the caller itself logged in (1cb9a4c1).
+//   9. The FORGEABLE Cf-Access-Authenticated-User-Email header is IGNORED and stripped.
+// Fail-closed: missing config → 503 SERVICE_MISCONFIGURED.
 
 import { HTTP, jsonError } from "./errors.js";
 import { TokenScope, verifyMintedToken } from "./mint.js";
@@ -69,6 +74,9 @@ export interface AccessConfig {
 
 export const FORGEABLE_EMAIL_HEADER = "Cf-Access-Authenticated-User-Email";
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
+// The caller's own Access app token: the wapps CLI sends the header, a browser the cookie.
+const PRESENTED_TOKEN_HEADER = "cf-access-token";
+const PRESENTED_TOKEN_COOKIE = "CF_Authorization";
 const LEEWAY_SECONDS = 60;
 const JWKS_TTL_MS = 60 * 60 * 1000; // 1 saat (§6.1 step 3)
 /** KID_REFETCH_COOLDOWN_MS: an unknown kid refetches the JWKS only when the cached set
@@ -197,6 +205,7 @@ interface VerifiedClaims {
   aud?: unknown;
   exp?: number;
   nbf?: number;
+  sub?: string;
   email?: string;
   common_name?: string;
 }
@@ -280,10 +289,64 @@ export async function authenticate(request: Request, cfg: AccessConfig, routeAud
 
   // (7) İki kimlik şekli. FORGEABLE header ASLA okunmaz — kimlik imzalı JWT'den.
   const email = typeof claims.email === "string" ? claims.email.trim() : "";
-  if (email) return { kind: "human", id: `human:${email}`, email };
+  if (email) {
+    const principal: Principal = { kind: "human", id: `human:${email}`, email };
+    await requireOwnAppToken(request, cfg, wantAud, claims, email, principal.id);
+    return principal;
+  }
   const cn = typeof claims.common_name === "string" ? claims.common_name.trim() : "";
   if (cn) return { kind: "service", id: `service:${cn}`, commonName: cn };
   throw new AuthFail(HTTP.UNAUTHORIZED, "AUTH_INVALID", "no identity claim");
+}
+
+/** DeviceSessionOnly, a human assertion without the caller's own matching app token
+ * (step 8). It names the asserted principal so the refusal is audited under it. */
+export class DeviceSessionOnly extends AuthFail {
+  constructor(public principalId: string, msg: string) {
+    super(HTTP.UNAUTHORIZED, "DEVICE_SESSION_ONLY", msg);
+  }
+}
+
+/** presentedAppToken, the caller's own Access app token: the cf-access-token header
+ * when sent (even empty), else the CF_Authorization cookie, else "". */
+function presentedAppToken(request: Request): string {
+  const header = request.headers.get(PRESENTED_TOKEN_HEADER);
+  if (header !== null) return header.trim();
+  for (const part of (request.headers.get("cookie") ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === PRESENTED_TOKEN_COOKIE) return part.slice(eq + 1).trim();
+  }
+  return "";
+}
+
+/**
+ * requireOwnAppToken, step 8: the presented token verifies exactly like the assertion
+ * (JWKS signature, exp/nbf, pinned iss, this route's AUD) and names the same sub and
+ * email. A missing sub on either side refuses: without it the subject is not proven.
+ */
+async function requireOwnAppToken(
+  request: Request,
+  cfg: AccessConfig,
+  wantAud: string,
+  assertion: VerifiedClaims,
+  email: string,
+  principalId: string,
+): Promise<void> {
+  const token = presentedAppToken(request);
+  if (!token) throw new DeviceSessionOnly(principalId, "the caller presented no access token of its own");
+  let presented: VerifiedClaims;
+  try {
+    presented = await verifyAccessJWT(token, cfg);
+  } catch (e) {
+    if (e instanceof AuthFail) throw new DeviceSessionOnly(principalId, `presented access token rejected: ${e.message}`);
+    throw e;
+  }
+  if (!audContains(presented.aud, wantAud)) throw new DeviceSessionOnly(principalId, "presented access token is for another application");
+  const sub = typeof assertion.sub === "string" ? assertion.sub : "";
+  const presentedEmail = typeof presented.email === "string" ? presented.email.trim() : "";
+  if (!sub || presented.sub !== sub || presentedEmail !== email) {
+    throw new DeviceSessionOnly(principalId, "presented access token names another subject");
+  }
 }
 
 /**
