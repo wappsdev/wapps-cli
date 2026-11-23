@@ -139,6 +139,14 @@ describe("a device session is refused even when an oauth claim is present (warp_
     expect(await errorOf(res)).toBe("DEVICE_SESSION_ONLY");
   });
 
+  for (const odd of ["true", 1, "yes", {}, null] as unknown[]) {
+    it(`warp_as_auth ${JSON.stringify(odd)} (any value but absent or false) → 401 DEVICE_SESSION_ONLY`, async () => {
+      const res = await whoami({ warp_as_auth: odd });
+      expect(res.status).toBe(401);
+      expect(await errorOf(res)).toBe("DEVICE_SESSION_ONLY");
+    });
+  }
+
   it("warp_as_auth false with a valid oauth claim → admitted", async () => {
     const res = await whoami({ warp_as_auth: false });
     expect(res.status).toBe(200);

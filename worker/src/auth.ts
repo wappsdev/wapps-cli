@@ -224,7 +224,7 @@ interface VerifiedClaims {
   email?: string;
   common_name?: string;
   /** Present on a device session (Cloudflare One client) assertion. */
-  warp_as_auth?: boolean;
+  warp_as_auth?: unknown;
   /** Present on an OAuth bearer request: the registered client and its redirect. */
   oauth?: unknown;
 }
@@ -350,7 +350,7 @@ function isLoopbackRedirect(uri: unknown): boolean {
  * `client_redirect_uri` on a loopback host (a CLI on this machine).
  */
 function requireOAuthSession(claims: VerifiedClaims, principalId: string): void {
-  if (claims.warp_as_auth === true) {
+  if (claims.warp_as_auth !== undefined && claims.warp_as_auth !== false) {
     throw new DeviceSessionOnly(principalId, `the request came through a device session; ${OAUTH_RECOVERY}`);
   }
   const oauth = claims.oauth;
