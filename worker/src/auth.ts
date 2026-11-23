@@ -5,8 +5,7 @@
 //   3. Resolve kid against the JWKS (1 h cache; unknown kid → one refetch, then fail).
 //   4. Signature + exp/nbf (leeway ≤ 60 s).
 //   5. ISSUER PINNING: iss == https://{team_domain} (else 401 ISSUER_MISMATCH).
-//   6. AUD: must contain the route class's AUD (else 403 AUD_MISMATCH). On the long
-//      READ host (ACCESS_LONG_HOST) that is the long READ app's AUD, and only there.
+//   6. AUD: must contain the route class's AUD (else 403 AUD_MISMATCH).
 //   7. Identity: human (email) | service token (common_name, NO email).
 //   8. HUMAN ONLY: the verified assertion must carry the caller's own OAuth session
 //      (requireOAuthSession): a signed `oauth` claim {client_id, client_redirect_uri}
@@ -42,10 +41,6 @@ export interface Env {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD_READ?: string;
   ACCESS_AUD_WRITE?: string;
-  // The long READ app (204fffcc): a second READ app with a 24h session on its own host.
-  // Its AUD is accepted only on that host, and only for read-class routes.
-  ACCESS_LONG_HOST?: string;
-  ACCESS_AUD_READ_LONG?: string;
   // §2.2 MASTER_KEK (64-hex Worker secret'ı) + rotasyon penceresi PREV (§2.5).
   MASTER_KEK?: string;
   MASTER_KEK_PREV?: string;
@@ -77,16 +72,12 @@ export interface AccessConfig {
   teamDomain: string;
   audRead: string;
   audWrite: string;
-  /** The long READ app's host (lower case) and AUD; "" when not configured. */
-  longHost: string;
-  audReadLong: string;
   issuer: string;
   certsURL: string;
 }
 
-/** RouteAud, the AUD a route class needs: the READ app's, the long READ app's (only on its
- * host) or the WRITE app's (/v1/admin, only on the gate's own host). */
-export type RouteAud = "read" | "readLong" | "write";
+/** RouteAud, the AUD a route class needs: the READ app's or the WRITE app's (/v1/admin). */
+export type RouteAud = "read" | "write";
 
 export const FORGEABLE_EMAIL_HEADER = "Cf-Access-Authenticated-User-Email";
 const ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion";
@@ -106,8 +97,6 @@ export function loadAccessConfig(env: Env): AccessConfig | null {
     teamDomain,
     audRead,
     audWrite,
-    longHost: (env.ACCESS_LONG_HOST ?? "").trim().toLowerCase(),
-    audReadLong: (env.ACCESS_AUD_READ_LONG ?? "").trim(),
     issuer: `https://${teamDomain}`,
     certsURL: `https://${teamDomain}/cdn-cgi/access/certs`,
   };
@@ -303,7 +292,7 @@ export async function authenticate(request: Request, cfg: AccessConfig, routeAud
   if (!token) throw new AuthFail(HTTP.UNAUTHORIZED, "AUTH_REQUIRED", "missing access assertion");
 
   const claims = await verifyAccessJWT(token, cfg);
-  const wantAud = { read: cfg.audRead, readLong: cfg.audReadLong, write: cfg.audWrite }[routeAud];
+  const wantAud = { read: cfg.audRead, write: cfg.audWrite }[routeAud];
   // An unconfigured AUD is never matched (the caller refuses that route before this).
   if (!wantAud) throw new AuthFail(HTTP.FORBIDDEN, "AUD_MISMATCH", "audience mismatch");
   if (!audContains(claims.aud, wantAud)) throw new AuthFail(HTTP.FORBIDDEN, "AUD_MISMATCH", "audience mismatch");

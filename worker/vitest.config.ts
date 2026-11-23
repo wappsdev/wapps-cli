@@ -30,9 +30,6 @@ export default defineConfig({
           ACCESS_TEAM_DOMAIN: "test-team.cloudflareaccess.com",
           ACCESS_AUD_READ: "aud-read-000000000000000000000000000000000000",
           ACCESS_AUD_WRITE: "aud-write-00000000000000000000000000000000000",
-          // The long READ app (204fffcc): helpers.ts LONG_HOST / AUD_READ_LONG.
-          ACCESS_LONG_HOST: "gate-long",
-          ACCESS_AUD_READ_LONG: "aud-read-long-00000000000000000000000000000000",
           // §4.5 kök admin çapası (test fixture'ı).
           ADMIN_EMAILS: "admin@wapps.dev",
           // §2.2 MASTER_KEK: test için sabit 32-bayt (hex64). PREV boş (rotasyon
