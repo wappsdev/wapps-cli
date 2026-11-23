@@ -16,6 +16,9 @@ import { keyPolicyCurrent, keyPolicyVersion } from "../src/storage.js";
 export const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 export const AUD_READ = "aud-read-000000000000000000000000000000000000";
 export const AUD_WRITE = "aud-write-00000000000000000000000000000000000";
+// The long READ app (204fffcc): its AUD, accepted only on its host.
+export const AUD_READ_LONG = "aud-read-long-00000000000000000000000000000000";
+export const LONG_HOST = "gate-long";
 export const ISSUER = `https://${TEAM_DOMAIN}`;
 export const CERTS_URL = `https://${TEAM_DOMAIN}/cdn-cgi/access/certs`;
 export const ADMIN_EMAIL = "admin@wapps.dev"; // ADMIN_EMAILS kök çapası
@@ -278,8 +281,13 @@ let testLimiter = createFakeRateLimiter();
  * geçici ezilebilir (ör. MASTER_KEK rotasyonu, audit DO enjeksiyonu).
  */
 export async function callGate(path: string, init: RequestInit, envOverride: Record<string, unknown> = {}): Promise<Response> {
+  return callGateAt("gate", path, init, envOverride);
+}
+
+/** callGateAt, callGate on another host of the same Worker (the long READ host, 204fffcc). */
+export async function callGateAt(host: string, path: string, init: RequestInit, envOverride: Record<string, unknown> = {}): Promise<Response> {
   const ctx = createExecutionContext();
-  const res = await worker.fetch(new Request(`https://gate${path}`, init), { ...env, RATE_LIMITER: testLimiter, ...envOverride } as never, ctx);
+  const res = await worker.fetch(new Request(`https://${host}${path}`, init), { ...env, RATE_LIMITER: testLimiter, ...envOverride } as never, ctx);
   await waitOnExecutionContext(ctx);
   return res;
 }

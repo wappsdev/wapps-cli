@@ -5,7 +5,13 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "secrets-gate",
   "main": "src/index.ts",
-  "routes": [{ "pattern": "gw.meapps.dev", "custom_domain": true }],
+  // gw-long.meapps.dev (204fffcc): the long READ app's host (24h, `wapps login --long`).
+  // Its Access app (wapps-platform infra/access, registry row gw-long.meapps.dev) must exist
+  // before this route is deployed; ACCESS_AUD_READ_LONG below is that app's AUD.
+  "routes": [
+    { "pattern": "gw.meapps.dev", "custom_domain": true },
+    { "pattern": "gw-long.meapps.dev", "custom_domain": true }
+  ],
   "compatibility_date": "2025-06-01",
   "observability": { "enabled": true },
 
@@ -76,6 +82,12 @@
     "ACCESS_TEAM_DOMAIN": "wapps-dev.cloudflareaccess.com",
     "ACCESS_AUD_READ": "8e70ed03b7852f88759b5aac1fea7f739691305d5e1b9d1395a81d8fb82f90bd",
     "ACCESS_AUD_WRITE": "037398c1f0c4346648f0064c7ae01b0a30654efade8c1ef10728494b782eb626",
+    // The long READ app (204fffcc): its AUD is accepted only on ACCESS_LONG_HOST, and that
+    // host serves no /v1/admin route. Empty AUD = the long host answers 503 (the gate's own
+    // host is unaffected). The owner fills it after the tofu apply:
+    //   wapps tofu output -json apps | jq -r '.["gw-long.meapps.dev"].aud'
+    "ACCESS_LONG_HOST": "gw-long.meapps.dev",
+    "ACCESS_AUD_READ_LONG": "",
     "ADMIN_EMAILS": "adnan@wapps.co",
     "MINT_KEY": "",
     "MINT_KEY_PREV": "",

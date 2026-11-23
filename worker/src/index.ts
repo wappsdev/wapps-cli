@@ -9,7 +9,7 @@
 // (§6.4 — ledger offboard rotate-oracle'ıdır); metadata okumaları async kalır.
 // C2: hiçbir console.* çağrısına değer/DEK/KEK/MASTER_KEK verilmez.
 
-import { Env, AuthFail, DeviceSessionOnly, authenticate, loadAccessConfig, stripForgeableHeaders, Principal, resolveMachinePrincipal } from "./auth.js";
+import { Env, AuthFail, DeviceSessionOnly, RouteAud, authenticate, loadAccessConfig, stripForgeableHeaders, Principal, resolveMachinePrincipal } from "./auth.js";
 import { HTTP, jsonError, jsonOK } from "./errors.js";
 import { sha256Hex, utf8 } from "./crypto/encoding.js";
 import { MasterKey, loadMasterKeys, unwrapDEK, WrapError } from "./crypto/kek.js";
@@ -139,7 +139,19 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   // manage_access_apps=false), o yüzden çözüm rotayı zaten write-AUD ile korunan
   // önekin ALTINA almaktır: /v1/admin/policy.
   const isWriteApp = parts[1] === "admin";
-  const routeAud: "read" | "write" = isWriteApp ? "write" : "read";
+
+  // The long READ host (204fffcc): the same Worker behind a second READ app with a 24h
+  // session. Its AUD is accepted only here, and here only it. It serves no admin route, so
+  // the WRITE app (15m, the gate's own host) stays the only way to /v1/admin.
+  const onLongHost = cfg.longHost !== "" && url.hostname === cfg.longHost;
+  if (onLongHost && isWriteApp) {
+    return jsonError(HTTP.FORBIDDEN, "LONG_HOST_NO_ADMIN", "admin routes are served only on the gate's own host");
+  }
+  if (onLongHost && !cfg.audReadLong) {
+    fireAlert(ctx, env, ALERT.A8, "SERVICE_MISCONFIGURED: ACCESS_LONG_HOST is set without ACCESS_AUD_READ_LONG");
+    return jsonError(HTTP.MISCONFIGURED, "SERVICE_MISCONFIGURED", "service configuration incomplete");
+  }
+  const routeAud: RouteAud = isWriteApp ? "write" : onLongHost ? "readLong" : "read";
 
   try {
     let principal: Principal;
