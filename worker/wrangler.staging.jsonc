@@ -23,6 +23,11 @@
   ],
   "r2_buckets": [ { "binding": "SECRETS_BUCKET", "bucket_name": "wapps-secrets-staging" } ],
   "d1_databases": [ { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit-staging", "database_id": "fb357598-42ce-490e-bd82-935ee7843ff4" } ],
+  // The broker's alert link — same binding as prod (wrangler.jsonc has the reasons). Staging
+  // alerts reach the owner's phone too, named `secrets-gate` like prod's.
+  "services": [
+    { "binding": "BROKER_ALERT", "service": "wapps-broker", "entrypoint": "AlertLink" }
+  ],
   // Per-principal rate limit (§6.1) — same contract as prod, own namespace_id so the
   // counters are never shared with prod (prod uses 8101).
   "ratelimits": [

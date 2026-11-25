@@ -38,11 +38,11 @@ import {
   EscrowPushItem,
   escrowRetryMs,
 } from "./escrow.js";
-import { deliverAlert, ALERT } from "./alerts.js";
+import { deliverAlert, ALERT, type BrokerAlertEnv, type BrokerAlertLink } from "./alerts.js";
 import { CardPatch, applyCard } from "./card.js";
 import { reserveCode, reserveCodes, validCode } from "./keycode.js";
 
-interface DOEnv extends EscrowEnv {
+interface DOEnv extends EscrowEnv, BrokerAlertEnv {
   SECRETS_BUCKET: R2Bucket;
   AUDIT_LOG: DurableObjectNamespace;
   AUDIT_DB: D1Database;
@@ -140,6 +140,7 @@ export class ProjectWriterDO {
   private masters: MasterKey[] | null;
   private escrow: EscrowConfig | null;
   private discordUrl: string;
+  private brokerAlert: BrokerAlertLink | undefined;
 
   constructor(private ctx: DurableObjectState, env: DOEnv) {
     this.bucket = env.SECRETS_BUCKET;
@@ -147,11 +148,12 @@ export class ProjectWriterDO {
     this.masters = loadMasterKeys(env);
     this.escrow = escrowConfig(env);
     this.discordUrl = (env.DISCORD_WEBHOOK_URL ?? "").trim();
+    this.brokerAlert = env.BROKER_ALERT;
   }
 
   /** escrowAlert, drenaj sırasında A4 tetikler (best-effort, throw etmez). */
   private escrowAlert = async (rule: string, summary: string, detail?: Record<string, unknown>): Promise<void> => {
-    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, rule as typeof ALERT.A4, summary, detail);
+    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog, BROKER_ALERT: this.brokerAlert }, rule as typeof ALERT.A4, summary, detail);
   };
 
   /** effectiveEscrow, etkin escrow config'i çözer (env → yoksa DO-storage fallback, test seam). */
@@ -763,7 +765,7 @@ export class ProjectWriterDO {
   private async outcomeRefused(idempotencyKey: string, err: unknown): Promise<void> {
     const code = err instanceof AuditAppendError && err.status === 400 ? "ROW_INVALID" : "IDEMPOTENCY_MISMATCH";
     console.error(`writer-do: audit outcome refused with ${code}, dropped (${idempotencyKey})`);
-    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog }, ALERT.A8, `audit outcome refused: ${code}; outcome rows not written`, { idempotencyKey }).catch(() => {});
+    await deliverAlert({ DISCORD_WEBHOOK_URL: this.discordUrl, AUDIT_LOG: this.auditLog, BROKER_ALERT: this.brokerAlert }, ALERT.A8, `audit outcome refused: ${code}; outcome rows not written`, { idempotencyKey }).catch(() => {});
   }
 
   /** enqueuePendingPointerEvent, yazılamayan pointer-event'i pending işaretler + alarm kurar. */

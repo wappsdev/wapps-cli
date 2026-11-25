@@ -45,6 +45,36 @@ export default defineConfig({
           // Alert webhook'u (test/fetchmock.ts ile intercept edilir — helpers.discordCalls).
           DISCORD_WEBHOOK_URL: "https://discord.test/webhook/xyz",
         },
+        // The broker Worker, as a stub: wrangler.jsonc binds BROKER_ALERT to its
+        // `AlertLink` entrypoint (service `wapps-broker`), so every alert path is
+        // tested over a real service binding. The stub records each call; the
+        // tests read them through BROKER_STUB (the default export's fetch:
+        // GET lists, DELETE clears). The real entrypoint's rules are the
+        // broker's (wapps-platform, crates/workers/src/alerts.rs).
+        serviceBindings: { BROKER_STUB: "wapps-broker" },
+        workers: [
+          {
+            name: "wapps-broker",
+            compatibilityDate: "2025-06-01",
+            modules: true,
+            script: `
+              import { WorkerEntrypoint } from "cloudflare:workers";
+              const calls = [];
+              export class AlertLink extends WorkerEntrypoint {
+                alert(service, rule) {
+                  calls.push({ service, rule });
+                  return true;
+                }
+              }
+              export default {
+                fetch(request) {
+                  if (request.method === "DELETE") calls.length = 0;
+                  return Response.json(calls);
+                },
+              };
+            `,
+          },
+        ],
       },
     }),
   ],

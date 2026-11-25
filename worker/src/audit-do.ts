@@ -32,7 +32,7 @@
 import { sha256Hex, utf8, bytesToB64 } from "./crypto/encoding.js";
 import { ensureSchema } from "./schema.js";
 import { AUDIT_FIELD_MAX, AuditRow, GENESIS_HASH } from "./audit.js";
-import { ALERT } from "./alerts.js";
+import { ALERT, relayToBroker, type BrokerAlertEnv, type BrokerAlertLink } from "./alerts.js";
 import {
   EscrowConfig,
   EscrowEnv,
@@ -44,7 +44,7 @@ import {
   EscrowAlert,
 } from "./escrow.js";
 
-interface DOEnv extends EscrowEnv {
+interface DOEnv extends EscrowEnv, BrokerAlertEnv {
   AUDIT_DB: D1Database;
   // §6.8: audit segments are also written through to B2 (fail-soft).
   DISCORD_WEBHOOK_URL?: string;
@@ -211,16 +211,23 @@ export class AuditLogDO {
   // §6.8 escrow write-through: audit segments are pushed to B2 (fail-soft).
   private escrow: EscrowConfig | null;
   private discordUrl: string;
+  private brokerAlert: BrokerAlertLink | undefined;
 
   constructor(private ctx: DurableObjectState, env: DOEnv) {
     this.db = env.AUDIT_DB;
     this.escrow = escrowConfig(env);
     this.discordUrl = (env.DISCORD_WEBHOOK_URL ?? "").trim();
+    this.brokerAlert = env.BROKER_ALERT;
   }
 
-  /** discordAlert posts an alert straight to Discord. The audit DO has no
-   * `alert.failed` audit fallback, because it is the audit writer itself. */
+  /** discordAlert posts an alert straight to Discord and asks the broker to push the owner's
+   * phone. The audit DO has no `alert.failed` audit fallback, because it is the audit writer
+   * itself. */
   private discordAlert: EscrowAlert = async (rule, summary, detail) => {
+    await Promise.all([this.postToDiscord(rule, summary, detail), relayToBroker(this.brokerAlert, rule)]);
+  };
+
+  private async postToDiscord(rule: string, summary: string, detail?: Record<string, unknown>): Promise<void> {
     const url = this.discordUrl;
     if (!url) return;
     const content = `[secrets-gate ${rule}] ${summary}`;
@@ -230,7 +237,7 @@ export class AuditLogDO {
     } catch {
       /* an alert is detection; a delivery error does not block the operation */
     }
-  };
+  }
 
   /** alarm drains the pending audit-segment escrow pushes (§6.8 fail-soft). */
   async alarm(): Promise<void> {

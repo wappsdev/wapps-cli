@@ -24,10 +24,10 @@ import { runGC, GCDeps } from "./gc.js";
 import { runStateReplication } from "./state-replication.js";
 import { doStubFetch } from "./do-util.js";
 import { AuditRow, AUDIT_DO_NAME } from "./audit.js";
-import { deliverAlert, ALERT, AlertRule } from "./alerts.js";
+import { deliverAlert, ALERT, AlertRule, type BrokerAlertEnv } from "./alerts.js";
 
 /** SchedulerEnv, scheduler + runner'ların ihtiyaç duyduğu env alt kümesi. */
-export interface SchedulerEnv extends EscrowEnv {
+export interface SchedulerEnv extends EscrowEnv, BrokerAlertEnv {
   SECRETS_BUCKET: R2Bucket;
   AUDIT_LOG: DurableObjectNamespace;
   DISCORD_WEBHOOK_URL?: string;
@@ -212,7 +212,7 @@ export class SchedulerDO {
   /** alertFn, fail-soft alert teslimatı (deliverAlert asla reject etmez;
    * fire-and-forget — scheduler görev akışını asla bloklamaz). */
   private alertFn: SchedulerAlert = (rule, summary, detail) => {
-    void deliverAlert({ DISCORD_WEBHOOK_URL: this.env.DISCORD_WEBHOOK_URL, AUDIT_LOG: this.env.AUDIT_LOG }, rule, summary, detail);
+    void deliverAlert({ DISCORD_WEBHOOK_URL: this.env.DISCORD_WEBHOOK_URL, AUDIT_LOG: this.env.AUDIT_LOG, BROKER_ALERT: this.env.BROKER_ALERT }, rule, summary, detail);
   };
 
   async fetch(request: Request): Promise<Response> {

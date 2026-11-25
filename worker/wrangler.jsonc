@@ -54,6 +54,18 @@
     { "binding": "AUDIT_DB", "database_name": "wapps-secrets-audit", "database_id": "f33848e6-8e02-463c-8840-40abb45cdb6f" }
   ],
 
+  // The broker's alert link: every alert that goes to Discord also asks the broker to push the
+  // owner's phone (src/alerts.ts, relayToBroker). A service binding to the `AlertLink`
+  // entrypoint of the broker Worker (wapps-platform, crates/workers/workerd/broker-entry.js):
+  // one RPC method, `alert(service, rule)`. The gate sends only its rule id (A1, A2, A4, A7,
+  // A8, A9, A10, A11) and its own name; the broker keeps the list, writes the sentence and
+  // refuses the rest. No secret, no HTTP route. Fail-soft: a failed call never blocks the
+  // request or the Discord post. Deploy the broker first; a binding to an entrypoint that does
+  // not exist yet fails at the call, and the gate swallows it.
+  "services": [
+    { "binding": "BROKER_ALERT", "service": "wapps-broker", "entrypoint": "AlertLink" }
+  ],
+
   // Per-principal rate limit (§6.1): 60 requests / 60 s, key = principal id.
   // Workers Rate Limiting binding (replaces the KV counter, which threw on bursts:
   // KV allows ~1 write/s/key). namespace_id is account-unique: prod 8101, staging 8102

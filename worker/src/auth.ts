@@ -21,6 +21,7 @@
 //   9. The FORGEABLE Cf-Access-Authenticated-User-Email header is IGNORED and stripped.
 // Fail-closed: missing config → 503 SERVICE_MISCONFIGURED.
 
+import type { BrokerAlertLink } from "./alerts.js";
 import { HTTP, jsonError } from "./errors.js";
 import { TokenScope, verifyMintedToken } from "./mint.js";
 
@@ -51,6 +52,9 @@ export interface Env {
   MINT_KEY?: string;
   MINT_KEY_PREV?: string;
   DISCORD_WEBHOOK_URL?: string;
+  // Service binding to the broker's `AlertLink` entrypoint (wrangler `services`): every
+  // alert also asks the broker to push the owner's phone. Absent = Discord only.
+  BROKER_ALERT?: BrokerAlertLink;
   // §8.3 escrow write-through — NON-Cloudflare B2 replika hedefi (append-only key).
   B2_ENDPOINT?: string;
   B2_REGION?: string;
