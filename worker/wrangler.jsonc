@@ -100,7 +100,7 @@
     // Alert-on-read sentinel glob'ları (A11, arch §2.3): virgülle ayrılmış
     // anahtar-adı glob listesi — eşleşen anahtarın her okunuşu alarm üretir.
     // Token A store'a yazılmadan ÖNCE doldurulmalı (plan P1.11 → U1 bağımlılığı).
-    "ALERT_ON_READ_KEYS": "",
+    "ALERT_ON_READ_KEYS": "WAPPS_TRIPWIRE_DO_NOT_READ",
     // SchedulerDO gate (P2.4): YALNIZCA prod "1" — staging'de scheduler HİÇ
     // koşmaz (arm reddedilir, alarm dormant kalır).
     "SCHEDULER_ENABLED": "1"
